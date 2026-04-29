@@ -17,7 +17,7 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 class PipelineResponse(BaseModel):
     status: str
     message: str
-    details: dict = {}
+    details: dict | list = {}
 
 
 @router.post("/run-team-systems", response_model=PipelineResponse)
@@ -38,6 +38,41 @@ async def run_team_systems(background_tasks: BackgroundTasks):
     return PipelineResponse(
         status="started",
         message="Team Systems Agent running for all 32 teams. Check logs for progress.",
+    )
+
+
+@router.post("/run-roster-changes", response_model=PipelineResponse)
+async def run_roster_changes(background_tasks: BackgroundTasks):
+    """Trigger Roster Changes Agent for all 32 teams. Runs in background."""
+    from backend.agents.roster_changes import run_all_teams
+
+    async def _run():
+        results = await run_all_teams(concurrency=3)
+        total = sum(results.values())
+        logger.info("Roster Changes pipeline finished: %d total flags", total)
+
+    background_tasks.add_task(_run)
+    return PipelineResponse(
+        status="started",
+        message="Roster Changes Agent running for all 32 teams.",
+    )
+
+
+@router.post("/run-roster-changes/{team_abbr}", response_model=PipelineResponse)
+async def run_roster_changes_single(team_abbr: str):
+    """Run Roster Changes Agent for a single team synchronously."""
+    from backend.agents.roster_changes import run_for_team
+    from backend.agents.team_systems import NFL_TEAMS
+
+    team = team_abbr.upper()
+    if team not in NFL_TEAMS:
+        raise HTTPException(status_code=400, detail=f"Unknown team: {team_abbr}")
+
+    flags = await run_for_team(team)
+    return PipelineResponse(
+        status="complete",
+        message=f"Roster Changes Agent completed for {team}: {len(flags)} flags",
+        details=flags,
     )
 
 
