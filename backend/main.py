@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
+from backend.routers import pipeline
 
 app = FastAPI(
     title="Fantasy Football AI Platform",
@@ -15,6 +16,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(pipeline.router)
 
 
 @app.get("/health")
