@@ -161,11 +161,11 @@ Update this section as stages complete.
 - [x] Stage 2: Data ingestion
 - [x] Stage 3: Team Systems agent
 - [x] Stage 4: Roster Changes agent
-- [ ] Stage 5: Player Profiles agent ← current
-- [ ] Stage 6: Injury Risk agent
-- [ ] Stage 7: Schedule agent
-- [ ] Stage 8: Beat Reporter agent
-- [ ] Stage 9: Valuation pass
+- [x] Stage 5: Player Profiles agent
+- [x] Stage 6: Injury Risk agent
+- [x] Stage 7: Schedule agent
+- [x] Stage 8: Beat Reporter agent
+- [ ] Stage 9: Valuation pass ← current
 - [ ] Stage 10: Yahoo API integration
 - [ ] Stage 11: Playwright draft bridge
 - [ ] Stage 12: Live draft agent
