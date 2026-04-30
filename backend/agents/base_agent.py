@@ -261,11 +261,76 @@ def _hash_input(data: dict) -> str:
 
 
 def parse_json_output(raw: str) -> dict | list:
-    """Strip accidental markdown fences then parse JSON."""
+    """
+    Parse JSON from model output, tolerating:
+    - Markdown fences (```json ... ```)
+    - Prose preamble before the JSON (model ignoring JSON-only instruction)
+    - Truncated arrays from hitting max_tokens (returns completed elements only)
+    """
     raw = raw.strip()
+
+    # Strip markdown fences
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-    return json.loads(raw)
+
+    # Fast path — clean response
+    if raw.startswith(("[", "{")):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            # May be truncated — fall through to recovery
+            pass
+    else:
+        # Model added prose preamble — find first [ or {
+        bracket = min(
+            (raw.find(c) for c in ("[", "{") if raw.find(c) != -1),
+            default=-1,
+        )
+        if bracket != -1:
+            raw = raw[bracket:]
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass  # Truncated — fall through to recovery
+
+    # Recovery: if JSON array is truncated, extract all complete objects
+    start = raw.find("[")
+    if start != -1:
+        raw = raw[start:]
+        items = []
+        depth = 0
+        obj_start = None
+        i = 0
+        in_str = False
+        escape_next = False
+        for i, ch in enumerate(raw):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_str:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                if depth == 0:
+                    obj_start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and obj_start is not None:
+                    try:
+                        items.append(json.loads(raw[obj_start : i + 1]))
+                    except json.JSONDecodeError:
+                        pass
+                    obj_start = None
+        if items:
+            return items
+
+    return json.loads(raw)  # Re-raise original error for clean failure

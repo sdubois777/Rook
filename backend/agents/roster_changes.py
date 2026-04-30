@@ -100,7 +100,7 @@ Each element must match this schema exactly:
 class RosterChangesAgent(BaseAgent):
     AGENT_NAME       = "roster_changes"
     AGENT_MODEL      = SONNET
-    AGENT_MAX_TOKENS = 2000
+    AGENT_MAX_TOKENS = 4000
 
     # ------------------------------------------------------------------
     # Data pre-aggregation — all Python, zero API calls
@@ -293,7 +293,7 @@ class RosterChangesAgent(BaseAgent):
                 user=(
                     f"Analyze the following pre-aggregated data for the "
                     f"{context['team']} roster and produce dependency flags:\n\n"
-                    f"{json.dumps(context, indent=2, default=str)}"
+                    f"{json.dumps(context, default=str)}"
                 ),
                 input_data=context,
                 entity_id=team_abbr.upper(),
@@ -325,7 +325,7 @@ class RosterChangesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, concurrency: int = 4) -> dict[str, int]:
+    async def run_all_teams(self, concurrency: int = 2) -> dict[str, int]:
         """
         Pre-loads shared data caches ONCE before concurrent team runs.
         Returns {team_abbr: flag_count}.
@@ -334,6 +334,7 @@ class RosterChangesAgent(BaseAgent):
 
         analysis_seasons = get_analysis_seasons(3)
         current_season   = get_current_season()
+        analysis_year    = get_analysis_year()
 
         # Pre-load OTC transactions once for all teams
         logger.info("Pre-loading OTC transactions for %d...", analysis_year)
