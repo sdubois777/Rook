@@ -3,6 +3,8 @@ from backend.models.team_system import TeamSystem
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.models.draft_state import DraftState, OpponentProfile
 from backend.models.season_roster import SeasonRoster
+from backend.models.agent_cache import AgentCache
+from backend.models.api_usage_log import ApiUsageLog
 
 __all__ = [
     "Player",
@@ -15,4 +17,6 @@ __all__ = [
     "DraftState",
     "OpponentProfile",
     "SeasonRoster",
+    "AgentCache",
+    "ApiUsageLog",
 ]

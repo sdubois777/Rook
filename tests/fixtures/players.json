@@ -1,0 +1,62 @@
+[
+  {
+    "yahoo_player_id": "nfl_32013",
+    "name": "Ladd McConkey",
+    "team_abbr": "LAC",
+    "position": "WR",
+    "age": 23,
+    "years_pro": 1,
+    "tier": null,
+    "baseline_value": null,
+    "contract_year": false,
+    "breakout_flag": false
+  },
+  {
+    "yahoo_player_id": "nfl_2504211",
+    "name": "Keenan Allen",
+    "team_abbr": "LAC",
+    "position": "WR",
+    "age": 32,
+    "years_pro": 12,
+    "tier": null,
+    "baseline_value": null,
+    "contract_year": false,
+    "breakout_flag": false
+  },
+  {
+    "yahoo_player_id": "nfl_30977",
+    "name": "Patrick Mahomes",
+    "team_abbr": "KC",
+    "position": "QB",
+    "age": 29,
+    "years_pro": 7,
+    "tier": "elite",
+    "baseline_value": null,
+    "contract_year": false,
+    "breakout_flag": false
+  },
+  {
+    "yahoo_player_id": "nfl_32001",
+    "name": "Michael Penix Jr.",
+    "team_abbr": "ATL",
+    "position": "QB",
+    "age": 24,
+    "years_pro": 0,
+    "tier": "rookie",
+    "baseline_value": null,
+    "contract_year": false,
+    "breakout_flag": false
+  },
+  {
+    "yahoo_player_id": "nfl_28178",
+    "name": "Lamar Jackson",
+    "team_abbr": "BAL",
+    "position": "QB",
+    "age": 27,
+    "years_pro": 6,
+    "tier": "elite",
+    "baseline_value": null,
+    "contract_year": false,
+    "breakout_flag": false
+  }
+]

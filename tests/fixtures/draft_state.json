@@ -1,0 +1,48 @@
+{
+  "session_id": "test-draft-2026",
+  "league_id": "test-league-001",
+  "draft_pick": 9,
+  "total_picks": 120,
+  "my_budget_remaining": 180,
+  "my_roster": [
+    {"player_id": "nfl_30977", "name": "Patrick Mahomes", "position": "QB", "paid": 45},
+    {"player_id": "nfl_28178", "name": "Lamar Jackson", "position": "QB", "paid": 38}
+  ],
+  "opponents": [
+    {
+      "team_name": "Alpha Squad",
+      "budget_remaining": 95,
+      "roster": [
+        {"name": "Travis Kelce", "position": "TE", "paid": 52},
+        {"name": "Justin Jefferson", "position": "WR", "paid": 48}
+      ],
+      "strategy": "stars_and_scrubs"
+    },
+    {
+      "team_name": "Beta Force",
+      "budget_remaining": 142,
+      "roster": [
+        {"name": "Derrick Henry", "position": "RB", "paid": 28}
+      ],
+      "strategy": "balanced"
+    },
+    {
+      "team_name": "Gamma Rising",
+      "budget_remaining": 67,
+      "roster": [
+        {"name": "CeeDee Lamb", "position": "WR", "paid": 61},
+        {"name": "Tyreek Hill", "position": "WR", "paid": 54},
+        {"name": "Davante Adams", "position": "WR", "paid": 40}
+      ],
+      "strategy": "wr_heavy",
+      "notes": "Dangerous WR stack — low budget, building toward budget squeeze"
+    }
+  ],
+  "current_nomination": {
+    "player_name": "Ladd McConkey",
+    "position": "WR",
+    "team": "LAC",
+    "current_bid": 12,
+    "nominated_by": "Alpha Squad"
+  }
+}

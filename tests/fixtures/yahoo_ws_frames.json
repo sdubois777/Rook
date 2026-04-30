@@ -1,0 +1,31 @@
+{
+  "_note": "Placeholder — real Yahoo WebSocket frames must be captured during a live draft session. Ask user to capture frames when draft room is accessible.",
+  "_structure": {
+    "nomination_event": {
+      "type": "nomination",
+      "player_id": "string",
+      "player_name": "string",
+      "position": "string",
+      "team": "string",
+      "starting_bid": "integer",
+      "nominated_by_team_id": "string",
+      "timestamp": "ISO8601"
+    },
+    "bid_update_event": {
+      "type": "bid_update",
+      "player_id": "string",
+      "current_bid": "integer",
+      "bidding_team_id": "string",
+      "timestamp": "ISO8601"
+    },
+    "player_sold_event": {
+      "type": "player_sold",
+      "player_id": "string",
+      "player_name": "string",
+      "winning_team_id": "string",
+      "final_price": "integer",
+      "timestamp": "ISO8601"
+    }
+  },
+  "sample_frames": []
+}

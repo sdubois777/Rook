@@ -150,14 +150,16 @@ async def get_contracts() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-async def get_roster(team_abbr: str, season: int = 2024) -> pd.DataFrame:
+async def get_roster(team_abbr: str, season: int | None = None) -> pd.DataFrame:
     """
     Return current roster for a team using nfl_data_py (sourced from OTC).
     Falls back to OTC roster page scraping if nfl_data_py is unavailable.
     """
     from backend.integrations.nfl_data import get_rosters
+    from backend.utils.seasons import get_current_season
 
-    rosters = await get_rosters(season)
+    resolved_season = season if season is not None else get_current_season()
+    rosters = await get_rosters(resolved_season)
     team_upper = team_abbr.upper()
     return rosters[rosters["team"].str.upper() == team_upper].copy()
 

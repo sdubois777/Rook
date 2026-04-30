@@ -1,28 +1,61 @@
 """
-Base agent utilities — shared across all AI agents.
+BaseAgent — foundation for all pre-draft pipeline agents.
 
-Every agent in this system uses the Anthropic SDK directly (no LangChain/CrewAI).
-This module provides:
-  - Anthropic client singleton
-  - Agentic loop with tool dispatch
-  - Structured output extraction
-  - Retry logic with exponential backoff
-  - Logging
+Every pipeline agent extends BaseAgent and calls self.call_once().
+The iterative tool-use loop (run_agent) lives in agent_loop.py
+and is ONLY imported by live_draft.py.
+
+Usage:
+    class TeamSystemsAgent(BaseAgent):
+        AGENT_NAME = "team_systems"
+        AGENT_MODEL = "claude-haiku-4-5-20251001"
+        AGENT_MAX_TOKENS = 500
+
+        async def run_for_team(self, team: str) -> dict | None:
+            context = await self._build_team_context(team)
+            raw = await self.call_once(
+                system=SYSTEM_PROMPT,
+                user=json.dumps(context),
+                input_data=context,
+                entity_id=team,
+            )
+            return parse_json_output(raw)
 """
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import json
 import logging
-import time
-from typing import Any, Callable, Awaitable
+from datetime import datetime, timezone
+from decimal import Decimal
 
 import anthropic
-from anthropic.types import Message, ToolUseBlock, TextBlock
 
 from backend.config import settings
+from backend.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model strings — only these two values exist in this project
+# ---------------------------------------------------------------------------
+
+HAIKU  = "claude-haiku-4-5-20251001"
+SONNET = "claude-sonnet-4-6"
+
+# ---------------------------------------------------------------------------
+# Pricing constants — update if Anthropic changes pricing
+# ---------------------------------------------------------------------------
+
+HAIKU_INPUT_PER_MTK   = 0.80   # per million tokens
+HAIKU_OUTPUT_PER_MTK  = 4.00
+SONNET_INPUT_PER_MTK  = 3.00
+SONNET_OUTPUT_PER_MTK = 15.00
+
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    HAIKU:  (HAIKU_INPUT_PER_MTK,  HAIKU_OUTPUT_PER_MTK),
+    SONNET: (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK),
+}
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -39,186 +72,200 @@ def get_client() -> anthropic.AsyncAnthropic:
 
 
 # ---------------------------------------------------------------------------
-# Type aliases
+# BaseAgent
 # ---------------------------------------------------------------------------
 
-ToolHandler = Callable[[str, dict], Awaitable[Any]]
-ToolDefinition = dict  # Anthropic tool schema dict
-
-
-# ---------------------------------------------------------------------------
-# Agentic loop
-# ---------------------------------------------------------------------------
-
-async def run_agent(
-    system_prompt: str,
-    user_message: str,
-    tools: list[ToolDefinition],
-    tool_handler: ToolHandler,
-    model: str = "claude-sonnet-4-5",
-    max_tokens: int = 8192,
-    max_iterations: int = 20,
-    temperature: float = 0.2,
-) -> str:
+class BaseAgent:
     """
-    Run a full agentic loop until the model stops using tools.
+    Base class for all pre-draft pipeline agents.
 
-    Returns the final text response from the model.
-    model defaults to claude-sonnet-4-5 per project spec (latest Sonnet).
+    Subclasses MUST declare these class attributes — no defaults:
+        AGENT_NAME:       str  — unique snake_case name for this agent
+        AGENT_MODEL:      str  — one of HAIKU or SONNET
+        AGENT_MAX_TOKENS: int  — hard ceiling per COST_RULES.md
+
+    The call_once() method handles caching and usage logging transparently.
+    Subclasses never call messages.create() directly.
     """
-    client = get_client()
-    messages: list[dict] = [{"role": "user", "content": user_message}]
 
-    for iteration in range(max_iterations):
-        response = await _call_with_retry(
-            client.messages.create,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            tools=tools,
-            messages=messages,
+    AGENT_NAME: str        # required — no default
+    AGENT_MODEL: str       # required — no default
+    AGENT_MAX_TOKENS: int  # required — no default
+
+    def __init__(self, dry_run: bool = False):
+        for attr in ("AGENT_NAME", "AGENT_MODEL", "AGENT_MAX_TOKENS"):
+            if not getattr(type(self), attr, None):
+                raise ValueError(f"{type(self).__name__} must declare {attr}")
+        self.dry_run = dry_run
+        self._client = get_client()
+
+    # ------------------------------------------------------------------
+    # Primary interface
+    # ------------------------------------------------------------------
+
+    async def call_once(
+        self,
+        system: str,
+        user: str,
+        input_data: dict,
+        entity_id: str = "",
+    ) -> str:
+        """
+        Single API call with transparent caching and usage logging.
+
+        Steps:
+          1. Hash input_data with sha256
+          2. Check agent_cache — if hit, log cache_hit=True and return cached text
+          3. If dry_run=True, log estimate and return ""
+          4. Call client.messages.create() with AGENT_MODEL and AGENT_MAX_TOKENS
+          5. Log to api_usage_log (cache_hit=False)
+          6. Write raw response text to agent_cache
+          7. Return response text
+
+        The caller is responsible for parsing the returned string (JSON, etc.).
+        """
+        input_hash = _hash_input(input_data)
+
+        # 1. Cache check
+        cached = await self._check_cache(input_hash, entity_id)
+        if cached is not None:
+            await self._log_usage(
+                input_tokens=0,
+                output_tokens=0,
+                cache_hit=True,
+                entity_id=entity_id,
+            )
+            logger.info("Cache hit: %s / %s", self.AGENT_NAME, entity_id)
+            return cached
+
+        # 2. Dry run
+        if self.dry_run:
+            in_price, out_price = _MODEL_PRICING.get(
+                self.AGENT_MODEL, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
+            )
+            est_input_tokens = len(user) // 4  # rough: ~4 chars per token
+            est_cost = (
+                est_input_tokens * in_price / 1_000_000
+                + self.AGENT_MAX_TOKENS * out_price / 1_000_000
+            )
+            logger.info(
+                "[DRY RUN] %s / %s — model=%s, est. %d input tokens, $%.5f",
+                self.AGENT_NAME, entity_id, self.AGENT_MODEL,
+                est_input_tokens, est_cost,
+            )
+            return ""
+
+        # 3. Real API call
+        response = await self._client.messages.create(
+            model=self.AGENT_MODEL,
+            max_tokens=self.AGENT_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": user}],
         )
 
-        # Append assistant turn
-        messages.append({"role": "assistant", "content": response.content})
+        raw = response.content[0].text
 
-        # If model is done with tools, return the final text
-        if response.stop_reason == "end_turn":
-            return _extract_text(response)
+        # 4. Log + cache
+        await self._log_usage(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_hit=False,
+            entity_id=entity_id,
+        )
+        await self._write_cache(input_hash, raw, entity_id)
 
-        # Process tool calls
-        if response.stop_reason == "tool_use":
-            tool_results = []
-            for block in response.content:
-                if isinstance(block, ToolUseBlock):
-                    logger.debug("Tool call: %s(%s)", block.name, json.dumps(block.input)[:200])
-                    try:
-                        result = await tool_handler(block.name, block.input)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": _serialize_result(result),
-                        })
-                    except Exception as exc:
-                        logger.warning("Tool %s failed: %s", block.name, exc)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": f"Error: {exc}",
-                            "is_error": True,
-                        })
+        return raw
 
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            # Unexpected stop reason
-            logger.warning("Unexpected stop_reason: %s", response.stop_reason)
-            return _extract_text(response)
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
 
-    logger.warning("Agent hit max_iterations=%d without finishing", max_iterations)
-    return _extract_text(response)
+    async def _check_cache(self, input_hash: str, entity_id: str) -> str | None:
+        from sqlalchemy import select
+        from backend.models.agent_cache import AgentCache
 
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(AgentCache).where(
+                    AgentCache.agent_name == self.AGENT_NAME,
+                    AgentCache.entity_id == entity_id,
+                    AgentCache.input_hash == input_hash,
+                )
+            )
+            hit = result.scalar_one_or_none()
+            return hit.output_json if hit else None
 
-# ---------------------------------------------------------------------------
-# Retry logic
-# ---------------------------------------------------------------------------
+    async def _write_cache(self, input_hash: str, output: str, entity_id: str) -> None:
+        from backend.models.agent_cache import AgentCache
 
-async def _call_with_retry(fn, *args, max_retries: int = 3, **kwargs) -> Message:
-    """Exponential backoff on rate limits and transient errors."""
-    for attempt in range(max_retries):
-        try:
-            return await fn(*args, **kwargs)
-        except anthropic.RateLimitError:
-            wait = 2 ** attempt * 5  # 5s, 10s, 20s
-            logger.warning("Rate limited — waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
-            await asyncio.sleep(wait)
-        except anthropic.APIStatusError as exc:
-            if exc.status_code >= 500 and attempt < max_retries - 1:
-                wait = 2 ** attempt * 2
-                logger.warning("Server error %d — retrying in %ds", exc.status_code, wait)
-                await asyncio.sleep(wait)
-            else:
-                raise
-    raise RuntimeError(f"Agent call failed after {max_retries} retries")
+        async with AsyncSessionLocal() as session:
+            session.add(AgentCache(
+                agent_name=self.AGENT_NAME,
+                entity_id=entity_id,
+                input_hash=input_hash,
+                output_json=output,
+                created_at=datetime.now(timezone.utc),
+            ))
+            await session.commit()
 
+    # ------------------------------------------------------------------
+    # Usage logging
+    # ------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Tool definition helpers
-# ---------------------------------------------------------------------------
+    async def _log_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_hit: bool,
+        entity_id: str,
+    ) -> None:
+        from backend.models.api_usage_log import ApiUsageLog
 
-def tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> ToolDefinition:
-    """Convenience builder for Anthropic tool schemas."""
-    return {
-        "name": name,
-        "description": description,
-        "input_schema": {
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-        },
-    }
+        in_price, out_price = _MODEL_PRICING.get(
+            self.AGENT_MODEL, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
+        )
+        cost = Decimal(str(
+            input_tokens * in_price / 1_000_000
+            + output_tokens * out_price / 1_000_000
+        ))
 
+        async with AsyncSessionLocal() as session:
+            session.add(ApiUsageLog(
+                agent_name=self.AGENT_NAME,
+                model=self.AGENT_MODEL,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_usd=cost,
+                cache_hit=cache_hit,
+                entity_id=entity_id,
+                called_at=datetime.now(timezone.utc),
+            ))
+            await session.commit()
 
-def string_prop(description: str) -> dict:
-    return {"type": "string", "description": description}
-
-
-def number_prop(description: str) -> dict:
-    return {"type": "number", "description": description}
-
-
-def bool_prop(description: str) -> dict:
-    return {"type": "boolean", "description": description}
-
-
-def array_prop(description: str, item_type: str = "string") -> dict:
-    return {"type": "array", "items": {"type": item_type}, "description": description}
+        if not cache_hit and (input_tokens or output_tokens):
+            logger.info(
+                "%s / %s — %d in + %d out tokens, est. $%.5f",
+                self.AGENT_NAME, entity_id,
+                input_tokens, output_tokens, float(cost),
+            )
 
 
 # ---------------------------------------------------------------------------
-# Output helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _extract_text(response: Message) -> str:
-    parts = [block.text for block in response.content if isinstance(block, TextBlock)]
-    return "\n".join(parts).strip()
+def _hash_input(data: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(data, sort_keys=True, default=str).encode()
+    ).hexdigest()
 
 
-def _serialize_result(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    try:
-        return json.dumps(result, default=str)
-    except Exception:
-        return str(result)
-
-
-def extract_json(text: str) -> dict | list | None:
-    """
-    Extract the first JSON object or array from a text string.
-    The model often wraps JSON in markdown code fences.
-    """
-    import re
-    # Strip markdown fences
-    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-    if fenced:
-        text = fenced.group(1)
-
-    # Find first { or [
-    for start_char, end_char in [('{', '}'), ('[', ']')]:
-        start = text.find(start_char)
-        if start == -1:
-            continue
-        # Walk to find matching close
-        depth = 0
-        for i, ch in enumerate(text[start:], start):
-            if ch == start_char:
-                depth += 1
-            elif ch == end_char:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start:i + 1])
-                    except json.JSONDecodeError:
-                        break
-    return None
+def parse_json_output(raw: str) -> dict | list:
+    """Strip accidental markdown fences then parse JSON."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    return json.loads(raw)
