@@ -187,7 +187,8 @@ class PlayerProfilesAgent(BaseAgent):
             ts_df["player_name"].str.contains(last, case=False, na=False) &
             (ts_df["recent_team"] == team)
         )
-        rows = ts_df[mask]
+        # Sort by games desc so the most-played player wins when multiple share a last name.
+        rows = ts_df[mask].sort_values("games", ascending=False)
         if rows.empty:
             # Player may have been on a different team in this season (pre-trade).
             # Fall back to any-team match so historical baselines include all seasons.
@@ -712,7 +713,19 @@ async def _bulk_resolve_player_ids(
             results[(name, team)] = str(candidates[0].id)
         else:
             match = [p for p in candidates if p.team_abbr and p.team_abbr.upper() == team.upper()]
-            results[(name, team)] = str(match[0].id) if match else str(candidates[0].id)
+            if not match:
+                results[(name, team)] = str(candidates[0].id)
+            elif len(match) == 1:
+                results[(name, team)] = str(match[0].id)
+            else:
+                # Multiple players on same team share a last name (e.g. DeVonta Smith vs Ainias Smith).
+                # Prefer the candidate whose first initial matches the input name.
+                first_initial = name.split()[0][0].lower() if name else ""
+                first_match = [
+                    p for p in match
+                    if p.name and p.name.split()[0][0].lower() == first_initial
+                ]
+                results[(name, team)] = str((first_match or match)[0].id)
 
     return results
 
@@ -742,6 +755,12 @@ async def _write_profiles(
                 continue
 
             ctx_player = ctx_map.get(pname, {})
+            if not ctx_player:
+                # Model hallucinated a player not in the context we sent it.
+                # Skip to avoid writing a profile for the wrong player.
+                logger.debug("Skipping hallucinated player not in context: %s (%s)", pname, team)
+                continue
+
             seasons    = ctx_player.get("seasons", [])
             ts3yr, ts_last, ay3yr = _compute_season_averages(seasons, analysis_year)
 
