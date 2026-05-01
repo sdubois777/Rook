@@ -108,7 +108,7 @@ MAX_TOKENS = {
     "player_profile_batch":      1000,
     "roster_changes_team":       2000,
     "injury_risk_batch":         1000,
-    "schedule_batch":             800,
+    "schedule_batch":            1500,  # 3-position JSON (WR/RB/TE) needs ~1100-1200 tokens
     "beat_reporter_signal":       300,
     "live_draft_recommendation":  400,
     "trade_analysis":            1500,

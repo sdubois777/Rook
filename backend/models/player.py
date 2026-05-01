@@ -178,6 +178,7 @@ class PlayerSchedule(Base):
     season_year: Mapped[int] = mapped_column(Integer, nullable=False)
 
     bye_week: Mapped[Optional[int]] = mapped_column(Integer)
+    bye_in_playoff_window: Mapped[bool] = mapped_column(Boolean, default=False)  # bye falls in weeks 14-17
 
     # Early window (weeks 1-6)
     early_window_grade: Mapped[Optional[str]] = mapped_column(String(20))  # favorable/neutral/tough

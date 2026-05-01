@@ -200,7 +200,7 @@ Low: 0 to -5% | Moderate: -10 to -20% | High: -20 to -35% | Volatile: -35%+
 ## Agent 5: Schedule
 
 **Model:** `claude-haiku-4-5-20251001`
-**Max tokens:** 800 per team batch
+**Max tokens:** 1500 per team batch (3-position JSON with playoff_matchups arrays requires ~1100-1200 tokens)
 **Total API calls:** 32
 
 **Purpose:** Grade each player's schedule across three distinct windows.

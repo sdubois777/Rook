@@ -65,10 +65,10 @@ AGENT_SPECS: dict[str, dict] = {
     "schedule": {
         "model": "haiku",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 800,
+        "max_tokens": 1500,
         "est_input_tokens": 400,
         "api_calls": 32,
-        "status": "not_built",
+        "status": "built",
         "description": "Schedule grades (early/full/playoff windows)",
     },
     "beat_reporter": {
@@ -210,7 +210,16 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
         else:
             await agent.run_all_teams()
 
-    # Remaining agents will be wired in as they are built (Stages 7-8)
+    elif name == "schedule":
+        from backend.agents.schedule import ScheduleAgent
+        agent = ScheduleAgent(dry_run=False)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams()
+
+    # Remaining agents will be wired in as they are built (Stage 8)
 
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")

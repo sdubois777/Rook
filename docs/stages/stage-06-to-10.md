@@ -118,7 +118,7 @@ full season, and playoff (weeks 14-17). Playoff grade is a first-class DB column
 
 ## Model and cost parameters
 - Model: `claude-haiku-4-5-20251001`
-- Max tokens: 800 per team batch
+- Max tokens: 1500 per team batch (800 is insufficient — 3-position JSON with playoff_matchups arrays requires ~1100-1200 tokens)
 - Total API calls: 32
 
 ---
