@@ -32,6 +32,7 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
 from backend.integrations import nfl_data
+from backend.integrations.nfl_data import normalize_player_name, build_player_lookup
 from backend.models.player import Player, PlayerProfile
 from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
@@ -105,7 +106,7 @@ Your entire response must be parseable by json.loads()."""
 class PlayerProfilesAgent(BaseAgent):
     AGENT_NAME       = "player_profiles"
     AGENT_MODEL      = HAIKU
-    AGENT_MAX_TOKENS = 1000
+    AGENT_MAX_TOKENS = 4000
 
     # Pattern 3: pre-warm once in run_all_teams(), reuse per team
     _data_cache: ClassVar[dict] = {}
@@ -149,6 +150,10 @@ class PlayerProfilesAgent(BaseAgent):
             if age_val is not None and pd.notna(age_val):
                 entry["age"] = int(age_val)
             entry["contract_year"] = bool(row.get("contract_year", False))
+            # Include nfl gsis player_id for reliable cross-source matching
+            pid = row.get("player_id")
+            if pid and pd.notna(pid):
+                entry["nfl_player_id"] = str(pid).strip()
             result.append(entry)
 
         return result
@@ -175,57 +180,92 @@ class PlayerProfilesAgent(BaseAgent):
         return len(qb_games) >= 2 and int(qb_games.iloc[1]) >= 4
 
     def _get_player_season_stats(
-        self, player_name: str, team: str, season: int
+        self, player_name: str, team: str, season: int,
+        nfl_player_id: str | None = None,
     ) -> dict | None:
-        """Return compact season stats for one player from the cached target_share df."""
+        """Return compact season stats for one player from the cached target_share df.
+
+        Match priority:
+          1. player_id column (gsis id) — 100% reliable, no name ambiguity
+          2. last-name + team filter — handles most veterans reliably
+          3. last-name + first-initial cross-team fallback — ONLY when exactly ONE
+             unique player_id has that initial+last combo to avoid wrong-player stats
+        """
         ts_df = self._data_cache.get(f"target_share_{season}")
         if ts_df is None:
             return None
 
+        def _extract(row: pd.Series) -> dict | None:
+            games = int(row.get("games", 0) or 0)
+            if games == 0:
+                return None
+            def _f(col: str, decimals: int = 3):
+                v = row.get(col)
+                try:
+                    return round(float(v), decimals) if v is not None and pd.notna(v) else None
+                except (TypeError, ValueError):
+                    return None
+            return {
+                "games":           games,
+                "recent_team":     str(row.get("recent_team", "") or ""),
+                "target_share":    _f("avg_target_share"),
+                "air_yards_share": _f("avg_air_yards_share"),
+                "targets":         int(row.get("total_targets",    0) or 0),
+                "receptions":      int(row.get("total_receptions", 0) or 0),
+                "rec_yards":       int(row.get("total_rec_yards",  0) or 0),
+                "rec_tds":         int(row.get("total_rec_tds",    0) or 0),
+                "carries":         int(row.get("total_carries",    0) or 0),
+                "rush_yards":      int(row.get("total_rush_yards", 0) or 0),
+                "rush_tds":        int(row.get("total_rush_tds",   0) or 0),
+                "ppr_per_game":    _f("ppr_per_game", 1),
+            }
+
+        # --- Path 1: player_id match (most reliable) ---
+        if nfl_player_id and "player_id" in ts_df.columns:
+            id_rows = ts_df[ts_df["player_id"] == nfl_player_id]
+            if not id_rows.empty:
+                # Prefer rows on the same team (handles mid-season trades)
+                team_rows = id_rows[id_rows["recent_team"] == team]
+                row = (team_rows if not team_rows.empty else id_rows).iloc[0]
+                return _extract(row)
+
+        # --- Path 2: last-name + team filter ---
         last = player_name.split()[-1]
         mask = (
             ts_df["player_name"].str.contains(last, case=False, na=False) &
             (ts_df["recent_team"] == team)
         )
-        # Sort by games desc so the most-played player wins when multiple share a last name.
         rows = ts_df[mask].sort_values("games", ascending=False)
-        if rows.empty:
-            # Player may have been on a different team in this season (pre-trade).
-            # Fall back to any-team match so historical baselines include all seasons.
-            # Sort by games desc so the most-played player wins (avoids wrong-name collisions).
-            rows = (
-                ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
-                .sort_values("games", ascending=False)
-            )
-        if rows.empty:
+
+        # Disambiguate same-last-name same-team players by first initial
+        if len(rows) > 1:
+            first_initial = player_name.split()[0][0].upper()
+            initial_rows = rows[rows["player_name"].str.startswith(f"{first_initial}.")]
+            if not initial_rows.empty:
+                rows = initial_rows
+
+        if not rows.empty:
+            return _extract(rows.iloc[0])
+
+        # --- Path 3: cross-team fallback (pre-trade history) ---
+        # Only use when there is exactly ONE unique player_id with this initial+last
+        # across all teams to prevent wrong-player attribution (e.g. "JaQuae Jackson"
+        # getting another team's J.Jackson stats).
+        first_initial = player_name.split()[0][0].upper()
+        all_last = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+        initial_fallback = all_last[all_last["player_name"].str.startswith(f"{first_initial}.")]
+        candidates = initial_fallback if not initial_fallback.empty else all_last
+
+        if "player_id" in candidates.columns:
+            unique_ids = candidates["player_id"].nunique()
+            if unique_ids != 1:
+                return None  # Ambiguous — refuse to attribute wrong player's stats
+        elif len(candidates["player_name"].unique()) != 1:
+            return None  # No player_id column but multiple name variants
+
+        if candidates.empty:
             return None
-
-        row   = rows.iloc[0]
-        games = int(row.get("games", 0) or 0)
-        if games == 0:
-            return None
-
-        def _f(col: str, decimals: int = 3):
-            v = row.get(col)
-            try:
-                return round(float(v), decimals) if v is not None and pd.notna(v) else None
-            except (TypeError, ValueError):
-                return None
-
-        return {
-            "games":          games,
-            "recent_team":    str(row.get("recent_team", "") or ""),
-            "target_share":   _f("avg_target_share"),
-            "air_yards_share": _f("avg_air_yards_share"),
-            "targets":        int(row.get("total_targets",    0) or 0),
-            "receptions":     int(row.get("total_receptions", 0) or 0),
-            "rec_yards":      int(row.get("total_rec_yards",  0) or 0),
-            "rec_tds":        int(row.get("total_rec_tds",    0) or 0),
-            "carries":        int(row.get("total_carries",    0) or 0),
-            "rush_yards":     int(row.get("total_rush_yards", 0) or 0),
-            "rush_tds":       int(row.get("total_rush_tds",   0) or 0),
-            "ppr_per_game":   _f("ppr_per_game", 1),
-        }
+        return _extract(candidates.sort_values("games", ascending=False).iloc[0])
 
     def _get_snap_pct(self, player_name: str, team: str, season: int) -> float | None:
         """Return avg offensive snap % from the cached snap_pct df."""
@@ -481,9 +521,10 @@ class PlayerProfilesAgent(BaseAgent):
                 continue
             seen.add(pname)
 
+            nfl_pid = info.get("nfl_player_id")
             seasons_data: list[dict] = []
             for season in analysis_seasons:
-                stats = self._get_player_season_stats(pname, team, season)
+                stats = self._get_player_season_stats(pname, team, season, nfl_player_id=nfl_pid)
                 if stats:
                     stats["year"]             = season
                     # Only apply backup_qb flag when stats are from the current team.
@@ -528,6 +569,7 @@ class PlayerProfilesAgent(BaseAgent):
                 "snap_pct":         self._get_snap_pct(pname, team, current_season),
                 "seasons":          seasons_data,
                 "dependency_flags": dep_flags.get(pname, []),
+                "nfl_player_id":    nfl_pid,  # pass through for DB ID resolution
             }
             # Merge rookie evaluation fields from Agent 2 (if applicable)
             if pname in rookie_fields:
@@ -714,16 +756,20 @@ async def _bulk_resolve_player_ids(
         else:
             match = [p for p in candidates if p.team_abbr and p.team_abbr.upper() == team.upper()]
             if not match:
-                results[(name, team)] = str(candidates[0].id)
+                # No DB player on this team shares this last name.
+                # Do NOT fall back to another team's player — that causes cross-team
+                # profile writes (e.g. "Skyy Moore" for BUF resolving to KC's Skyy Moore).
+                results[(name, team)] = None
             elif len(match) == 1:
                 results[(name, team)] = str(match[0].id)
             else:
-                # Multiple players on same team share a last name (e.g. DeVonta Smith vs Ainias Smith).
-                # Prefer the candidate whose first initial matches the input name.
-                first_initial = name.split()[0][0].lower() if name else ""
+                # Multiple players on same team share a last name (e.g. Tyreek Hill vs Julian Hill).
+                # Use full first name to pick the right record — first initial alone fails
+                # when two same-team players share it (e.g. Carlos vs Casey Washington).
+                first = name.split()[0].lower() if name else ""
                 first_match = [
                     p for p in match
-                    if p.name and p.name.split()[0][0].lower() == first_initial
+                    if p.name and p.name.split()[0].lower() == first
                 ]
                 results[(name, team)] = str((first_match or match)[0].id)
 
@@ -738,17 +784,35 @@ async def _write_profiles(
         return 0
 
     analysis_year = get_analysis_year()
-    ctx_map: dict[str, dict] = {
-        p["name"]: p for p in context.get("players", [])
+    ctx_players   = context.get("players", [])
+
+    # Build two lookups for finding the context player from model output:
+    #   1. exact name  → ctx player dict
+    #   2. normalized name → ctx player dict  (handles D.K./DK, Ja'Marr/Jamarr)
+    ctx_by_name: dict[str, dict] = {p["name"]: p for p in ctx_players}
+    ctx_by_norm: dict[str, dict] = {
+        normalize_player_name(p["name"]): p for p in ctx_players
     }
 
     async with AsyncSessionLocal() as session:
-        # Delete all existing profiles for this team's players before re-inserting.
-        # This prevents accumulation across multiple runs where the model may profile
-        # different players each time (e.g. depth-chart shuffles or token-limit cuts).
+        # Get all players for this team from DB to build ID resolution maps.
         team_players = (
             await session.execute(select(Player).where(Player.team_abbr == team))
         ).scalars().all()
+
+        # Map nfl gsis player_id → DB uuid (most reliable cross-source key)
+        nfl_id_to_db: dict[str, str] = {}
+        for p in team_players:
+            if p.yahoo_player_id and p.yahoo_player_id.startswith("nfl_"):
+                nfl_id = p.yahoo_player_id[4:]  # strip "nfl_" prefix
+                nfl_id_to_db[nfl_id] = str(p.id)
+
+        # Map normalized name → DB uuid (fallback when no nfl_player_id available)
+        name_to_db = build_player_lookup(
+            [{"name": p.name, "id": str(p.id)} for p in team_players]
+        )
+
+        # Delete all existing profiles for this team before re-inserting.
         team_player_ids = [p.id for p in team_players]
         if team_player_ids:
             existing = (
@@ -763,22 +827,32 @@ async def _write_profiles(
             if existing:
                 logger.debug("%s: deleted %d stale profile(s) before rewrite", team, len(existing))
 
-        names_and_teams = [(p.get("player_name", ""), team) for p in profiles]
-        id_map = await _bulk_resolve_player_ids(session, names_and_teams)
-
         written = 0
+        written_ids: set = set()  # deduplicate: only first profile per player_id
         for prof in profiles:
-            pname     = prof.get("player_name", "")
-            player_id = id_map.get((pname, team))
-            if not player_id:
-                logger.debug("Could not resolve player: %s (%s)", pname, team)
+            pname = prof.get("player_name", "")
+
+            # --- Resolve context player (hallucination guard) ---
+            ctx_player = ctx_by_name.get(pname) or ctx_by_norm.get(normalize_player_name(pname))
+            if not ctx_player:
+                logger.debug("Hallucinated (not in context): %s (%s)", pname, team)
                 continue
 
-            ctx_player = ctx_map.get(pname, {})
-            if not ctx_player:
-                # Model hallucinated a player not in the context we sent it.
-                # Skip to avoid writing a profile for the wrong player.
-                logger.debug("Skipping hallucinated player not in context: %s (%s)", pname, team)
+            # --- Resolve DB UUID ---
+            player_id: str | None = None
+            # Primary: nfl gsis player_id passed through from roster
+            nfl_pid = ctx_player.get("nfl_player_id")
+            if nfl_pid:
+                player_id = nfl_id_to_db.get(nfl_pid)
+            # Fallback: normalized name lookup within this team's DB records
+            if not player_id:
+                player_id = name_to_db.get(normalize_player_name(pname))
+            if not player_id:
+                logger.debug("Could not resolve DB ID: %s (%s)", pname, team)
+                continue
+
+            if player_id in written_ids:
+                logger.debug("Duplicate profile skipped: %s (%s)", pname, team)
                 continue
 
             seasons    = ctx_player.get("seasons", [])
@@ -843,6 +917,7 @@ async def _write_profiles(
                 player_row.breakout_flag   = bool(effective.get("breakout_flag", False))
                 player_row.situation_score = effective.get("situation_score")
 
+            written_ids.add(player_id)
             written += 1
 
         await session.commit()

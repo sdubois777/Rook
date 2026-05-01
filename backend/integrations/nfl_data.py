@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,48 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path("data/cache")
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+
+
+# ---------------------------------------------------------------------------
+# Name normalization utilities — shared by all agents
+# ---------------------------------------------------------------------------
+
+def normalize_player_name(name: str) -> str:
+    """
+    Normalize player names for matching across data sources.
+    Handles the most common NFL data name format differences:
+      - Suffixes: Jr., Sr., II, III, IV
+      - Double initials: D.K. → dk, A.J. → aj, J.K. → jk
+      - Apostrophes: Ja'Marr → jamarr
+      - Trailing/extra periods
+    """
+    if not name:
+        return ""
+    normalized = name.lower().strip()
+    # Remove name suffixes at end of string
+    normalized = re.sub(r"\s+(jr\.?|sr\.?|ii|iii|iv)$", "", normalized)
+    # Normalize double-initial patterns: "d.k." → "dk", "a.j." → "aj"
+    normalized = re.sub(r"([a-z])\.([a-z])\.", r"\1\2", normalized)
+    # Remove remaining periods and apostrophes
+    normalized = normalized.replace(".", "").replace("'", "")
+    # Collapse multiple spaces
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def build_player_lookup(players: list[dict]) -> dict[str, str]:
+    """
+    Build {normalized_name: player_id} from a list of player dicts.
+    Each dict must have 'name' and 'id' keys (id is the DB UUID string).
+    Build once per team run; reuse for all name-based matching.
+    """
+    lookup: dict[str, str] = {}
+    for p in players:
+        raw_name = p.get("name", "")
+        player_id = p.get("id", "")
+        if raw_name and player_id:
+            lookup[normalize_player_name(raw_name)] = str(player_id)
+    return lookup
 
 
 def _ensure_cache():
