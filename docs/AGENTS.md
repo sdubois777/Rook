@@ -69,7 +69,8 @@ Output inherited by all other agents — do not run other agents until this comp
 **Total API calls:** 32
 
 **Purpose:** Track every offseason transaction and reason through downstream consequences.
-The McConkey/Allen scenario is the canonical test case this agent must catch.
+The McConkey/Allen scenario is the canonical test case.
+NFL draft picks are treated as a special transaction category requiring full prospect evaluation.
 
 **The McConkey/Allen chain (canonical example):**
 ```
@@ -122,6 +123,90 @@ pytest tests/unit/agents/test_roster_changes.py::test_mcconkey_allen_displacemen
 
 ---
 
+### NFL Draft Picks — Special Transaction Handling
+
+Draft picks are not the same as free agent signings. A first-round WR in an
+elite system with a 40% SEC dominator rating is a completely different asset
+than a sixth-round WR with a 20% MAC dominator rating on a bad offense.
+The agent must trigger a full prospect evaluation for every draft pick.
+
+**Pipeline when `transaction_type == "draft"` is detected:**
+
+**Step 1 — College profile (pre-aggregated, no extra API call):**
+```python
+college_profile = {
+  "dominator_rating": 0.42,       # Raw % of team's receiving production
+  "target_share": 0.31,
+  "yards_per_route_run": 2.8,
+  "conference": "SEC",
+  "conference_multiplier": 1.00,
+  "adjusted_dominator": 0.42,     # dominator × conference_multiplier
+}
+```
+
+**Step 2 — Draft capital:**
+```python
+capital_value = get_draft_capital_value(round, pick_number)
+# Pick 1 = 100, Pick 32 = 74, Pick 33 = 73 ... Pick 256 = 1
+capital_signal = "high" if capital_value >= 70 else "medium" if capital_value >= 40 else "low"
+```
+
+**Step 3 — Conference adjustment:**
+Apply multiplier to dominator_rating before comparing across prospects.
+SEC = 1.00 (baseline), MAC = 0.80, full table in `docs/stages/stage-02-data-ingestion.md`.
+
+**Step 4 — Historical comps (from pre-loaded comp table):**
+Find the 3-5 most similar drafted players from the last 8-10 seasons.
+Similarity based on: adjusted_dominator, capital_value, position, age_at_draft.
+Pull their actual NFL outcomes: PPR points per game in Year 1, Year 2, Year 3.
+
+**Step 5 — Landing spot modifier:**
+```python
+LANDING_SPOT_MODIFIERS = {
+    "compound_risk": 0.75,    # Rookie QB + bad line — worst case for skill positions
+    "rookie_qb":    0.85,     # Rookie QB alone
+    "A_system":     1.18,     # Elite offense
+    "B_system":     1.08,
+    "C_system":     1.00,     # Baseline
+    "D_system":     0.88,
+    "F_system":     0.78,
+}
+```
+
+**Step 6 — College profile grade:**
+```python
+# WR / TE grading
+if adjusted_dominator >= 0.38 and yards_per_route >= 2.8: grade = "elite"
+elif adjusted_dominator >= 0.30 or yards_per_route >= 2.5: grade = "strong"
+elif adjusted_dominator >= 0.22: grade = "average"
+else: grade = "weak"
+```
+
+**Step 7 — Write rookie evaluation fields to player record:**
+```json
+{
+  "is_rookie": true,
+  "college_profile_grade": "elite",
+  "draft_capital_signal": "high",
+  "draft_capital_value": 81,
+  "adjusted_dominator_rating": 0.42,
+  "conference": "SEC",
+  "historical_comp_names": ["Ja'Marr Chase", "Justin Jefferson", "CeeDee Lamb"],
+  "comp_yr1_avg_ppg": 16.4,
+  "comp_yr2_avg_ppg": 19.8,
+  "landing_spot_modifier": 1.15,
+  "projection_confidence": "low",
+  "variance_flag": true
+}
+```
+
+**Step 8 — Displacement flags for incumbents:**
+- High capital picks (rounds 1-2): generate DISPLACED + CONTINGENT for incumbent at same position
+- Medium capital picks (rounds 3-4): generate DISPLACED with lower confidence
+- Low capital picks (rounds 5-7): no displacement flags — rarely unseat starters
+
+---
+
 ## Agent 3: Player Profiles
 
 **Model:** `claude-haiku-4-5-20251001`
@@ -130,6 +215,7 @@ pytest tests/unit/agents/test_roster_changes.py::test_mcconkey_allen_displacemen
 
 **Purpose:** Build a complete individual profile for every draftable player.
 Inherits team system context from Agent 1.
+Uses rookie evaluation fields written by Agent 2 for first-year players.
 
 **Role classifications:**
 WR: `wr1_alpha`, `slot_specialist`, `deep_threat`, `possession_wr2`, `gadget`
@@ -145,8 +231,14 @@ RB: `workhorse`, `early_down_thumper`, `pass_catching_specialist`, `committee_ba
 - Yards after contact (RBs)
 - Broken tackle rate (RBs)
 
-**Clean season baseline:** Strip injury-shortened seasons (<10 games) and
-anomalous situations (backup QB for 4+ games). Document excluded seasons.
+**Clean season baseline:**
+Strip injury-shortened seasons (<10 games) and anomalous situations (backup QB 4+ games).
+**AVERAGE across clean seasons — never sum them.**
+A player with 3 clean seasons averages them. Showing 2,800+ receiving yards = bug.
+
+**PPR formula — exactly this:**
+`ppr_points = (receptions × 1.0) + (yards × 0.1) + (touchdowns × 6.0)`
+Any divergence > 5 points = double-counting bug. Fix before proceeding.
 
 **Age curve modifiers:**
 - RBs: peak 24-26, decline flag after 28
@@ -154,11 +246,63 @@ anomalous situations (backup QB for 4+ games). Document excluded seasons.
 - TEs: peak 26-29 (slow development position)
 - Contract year flag: final year of contract → mild upward bias, note it
 
-**Breakout candidate detection:**
+**Breakout candidate detection (veterans):**
 - Year 2 or Year 3 spike window
 - Clear path to increased target share from depth chart departure
 - New OC scheme elevates this player type
 - Efficiency already above production level
+
+---
+
+### Rookie Profiling Branch
+
+Rookies have no NFL history. The agent must detect rookie status and
+route them to a completely separate profiling path.
+
+```python
+def build_player_profile(player: dict, team_context: dict) -> dict:
+    if player.get("is_rookie") or player.get("nfl_seasons_played", 0) == 0:
+        return _build_rookie_profile(player, team_context)
+    return _build_veteran_profile(player, team_context)
+```
+
+**Rookie profile inputs (pre-populated by Agent 2 — already in player record):**
+- `college_profile_grade` — elite / strong / average / weak
+- `comp_yr1_avg_ppg` — historical comp average Year 1 PPR points per game
+- `draft_capital_signal` — high / medium / low
+- `landing_spot_modifier` — from team system grade (0.75-1.18)
+
+**Confidence discounts by position:**
+```python
+ROOKIE_CONFIDENCE_DISCOUNT = {
+    "QB":  0.65,   # Most QBs take 2-3 years — highest discount
+    "WR":  0.75,   # Route running takes time against NFL coverage
+    "TE":  0.70,   # Hardest position to translate from college
+    "RB":  0.85,   # Translate fastest — smallest discount
+}
+```
+
+**Ceiling/floor width:**
+```
+Veterans: ceiling = baseline × 1.25 | floor = baseline × 0.75
+Rookies:  ceiling = baseline × 1.45 | floor = baseline × 0.55
+```
+The wider range reflects genuine uncertainty — not pessimism.
+
+**Development timeline flags by position:**
+```python
+DEVELOPMENT_TIMELINE = {
+    "QB": "year_2_to_4",    # Most QBs need 2+ years
+    "WR": "year_2_to_3",    # Route running develops over time
+    "TE": "year_3_to_4",    # Hardest transition from college
+    "RB": "year_1",         # RBs contribute immediately
+}
+```
+
+**Elite breakout flag:**
+`college_profile_grade == "elite"` AND `draft_capital_signal == "high"`
+→ `breakout_candidate = True` even in Year 1.
+This is the Ja'Marr Chase / Justin Jefferson tier — rare but real.
 
 **Output → `player_profiles` table**
 
@@ -193,6 +337,11 @@ Under 26: 1.0x | 26-28: 1.1x | 29-30: 1.25x | 31+: 1.5x
 **Risk-adjusted value modifier** (applied to baseline):
 Low: 0 to -5% | Moderate: -10 to -20% | High: -20 to -35% | Volatile: -35%+
 
+**Note for rookies:** Rookies should receive a neutral injury risk modifier
+unless they have a documented pre-draft injury concern (e.g. ACL in final
+college season). The `variance_flag` from Agent 3 already captures their
+projection uncertainty — don't double-penalize.
+
 **Output → `player_injury_profiles` table**
 
 ---
@@ -200,7 +349,7 @@ Low: 0 to -5% | Moderate: -10 to -20% | High: -20 to -35% | Volatile: -35%+
 ## Agent 5: Schedule
 
 **Model:** `claude-haiku-4-5-20251001`
-**Max tokens:** 1500 per team batch (3-position JSON with playoff_matchups arrays requires ~1100-1200 tokens)
+**Max tokens:** 1500 per team batch
 **Total API calls:** 32
 
 **Purpose:** Grade each player's schedule across three distinct windows.
