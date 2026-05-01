@@ -185,6 +185,10 @@ class PlayerProfilesAgent(BaseAgent):
         )
         rows = ts_df[mask]
         if rows.empty:
+            # Player may have been on a different team in this season (pre-trade).
+            # Fall back to any-team match so historical baselines include all seasons.
+            rows = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+        if rows.empty:
             return None
 
         row   = rows.iloc[0]
@@ -312,6 +316,39 @@ class PlayerProfilesAgent(BaseAgent):
                 "red_zone_philosophy": ts.red_zone_philosophy,
             }
 
+    async def _get_team_rookie_fields(self, team: str) -> dict[str, dict]:
+        """
+        Fetch rookie evaluation fields (written by Agent 2) for all rookies on this team.
+        Returns {player_name: {is_rookie, comp_yr1_avg_ppg, ...}}.
+        One DB query per team. Returns empty dict on any DB error.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Player).where(
+                        Player.team_abbr == team,
+                        Player.is_rookie.is_(True),
+                    )
+                )
+                players = result.scalars().all()
+        except Exception as exc:
+            logger.debug("Could not fetch rookie fields for %s: %s", team, exc)
+            return {}
+
+        fields: dict[str, dict] = {}
+        for p in players:
+            fields[p.name] = {
+                "is_rookie":            True,
+                "college_profile_grade": p.college_profile_grade,
+                "draft_capital_signal":  p.draft_capital_signal,
+                "landing_spot_modifier": float(p.landing_spot_modifier) if p.landing_spot_modifier else 1.0,
+                "comp_yr1_avg_ppg":      float(p.comp_yr1_avg_ppg) if p.comp_yr1_avg_ppg else None,
+                "comp_yr2_avg_ppg":      float(p.comp_yr2_avg_ppg) if p.comp_yr2_avg_ppg else None,
+                "historical_comp_names": p.historical_comp_names or [],
+                "depth_chart_rank":      2,  # default; Agent 2 sets via displacement flags
+            }
+        return fields
+
     async def _get_team_dependency_flags(self, team: str) -> dict[str, list[dict]]:
         """Return {player_name: [compact_flag_dicts]} for all players on this team."""
         from backend.models.dependency import PlayerDependency
@@ -416,8 +453,9 @@ class PlayerProfilesAgent(BaseAgent):
 
         self._ensure_cache_loaded(analysis_seasons, current_season)
 
-        team_system = await self._get_team_system(team)
-        dep_flags   = await self._get_team_dependency_flags(team)
+        team_system   = await self._get_team_system(team)
+        dep_flags     = await self._get_team_dependency_flags(team)
+        rookie_fields = await self._get_team_rookie_fields(team)
 
         backup_qb_flags = {
             s: self._is_backup_qb_season(team, s) for s in analysis_seasons
@@ -465,7 +503,7 @@ class PlayerProfilesAgent(BaseAgent):
             if not has_any_data and not has_flags:
                 continue
 
-            players.append({
+            player_entry: dict = {
                 "name":             pname,
                 "position":         info["position"],
                 "age":              info.get("age"),
@@ -473,7 +511,11 @@ class PlayerProfilesAgent(BaseAgent):
                 "snap_pct":         self._get_snap_pct(pname, team, current_season),
                 "seasons":          seasons_data,
                 "dependency_flags": dep_flags.get(pname, []),
-            })
+            }
+            # Merge rookie evaluation fields from Agent 2 (if applicable)
+            if pname in rookie_fields:
+                player_entry.update(rookie_fields[pname])
+            players.append(player_entry)
 
         return {
             "team":          team,
@@ -675,10 +717,21 @@ async def _write_profiles(
             seasons    = ctx_player.get("seasons", [])
             ts3yr, ts_last, ay3yr = _compute_season_averages(seasons, analysis_year)
 
-            # Compute clean_season_baseline in Python — do NOT trust model output.
-            # Rule: average across seasons with games >= 10 and not backup_qb_season.
-            # PPR formula: receptions×1 + (rec_yards+rush_yards)×0.1 + tds×6
-            clean_baseline = _compute_clean_baseline(seasons)
+            # Route rookies to Python-computed rookie profile; veterans use model output
+            # backed by Python-computed clean season baseline (most reliable).
+            is_rookie = bool(ctx_player.get("is_rookie", False))
+
+            if is_rookie:
+                # Use purely Python-computed rookie profile — model has no NFL data to work with
+                team_ctx = context.get("team_system", {})
+                rookie_prof = _build_rookie_profile(ctx_player, team_ctx)
+                clean_baseline = rookie_prof["clean_season_baseline"]
+            else:
+                # Compute clean_season_baseline in Python — do NOT trust model output.
+                # Rule: average across seasons with games >= 10 and not backup_qb_season.
+                # PPR formula: receptions×1 + (rec_yards+rush_yards)×0.1 + tds×6
+                clean_baseline = _compute_clean_baseline(seasons)
+                rookie_prof    = {}
 
             # Upsert PlayerProfile
             existing = (await session.execute(
@@ -694,32 +747,44 @@ async def _write_profiles(
                 record = PlayerProfile(player_id=player_id, season_year=analysis_year)
                 session.add(record)
 
-            record.role_classification        = prof.get("role_classification")
-            record.separation_score           = prof.get("separation_score")
-            record.yards_after_catch_score    = prof.get("yards_after_catch_score")
-            record.efficiency_signal          = prof.get("efficiency_signal")
-            record.age_curve_position         = prof.get("age_curve_position")
-            record.career_trajectory          = prof.get("career_trajectory")
+            # Veteran fields — from model output (rookies use defaults from rookie_prof)
+            effective = rookie_prof if is_rookie else prof
+            record.role_classification        = effective.get("role_classification")
+            record.separation_score           = effective.get("separation_score")
+            record.yards_after_catch_score    = effective.get("yards_after_catch_score")
+            record.efficiency_signal          = effective.get("efficiency_signal")
+            record.age_curve_position         = effective.get("age_curve_position")
+            record.career_trajectory          = effective.get("career_trajectory")
             # Use Python-computed baseline. If seasons are empty (e.g. player is
             # not in our WR/RB/TE context), set to empty dict rather than
             # falling back to the AI model's (possibly wrong) value.
             record.clean_season_baseline      = clean_baseline if clean_baseline else {}
-            record.anomalous_seasons_excluded = prof.get("anomalous_seasons_excluded") or []
-            record.breakout_flag              = bool(prof.get("breakout_flag", False))
-            record.breakout_reasoning         = prof.get("breakout_reasoning")
-            record.positional_scarcity_tier   = prof.get("positional_scarcity_tier")
+            record.anomalous_seasons_excluded = effective.get("anomalous_seasons_excluded") or []
+            record.breakout_flag              = bool(effective.get("breakout_flag", False))
+            record.breakout_reasoning         = effective.get("breakout_reasoning")
+            record.positional_scarcity_tier   = effective.get("positional_scarcity_tier")
             record.target_share_3yr_avg       = _to_decimal(ts3yr)
             record.target_share_last_season   = _to_decimal(ts_last)
             record.air_yards_share            = _to_decimal(ay3yr)
             record.snap_percentage            = _to_decimal(ctx_player.get("snap_pct"))
+
+            # Rookie-specific columns
+            record.is_rookie        = is_rookie
+            record.profile_source   = "college_comps" if is_rookie else "nfl_history"
+            record.confidence       = rookie_prof.get("confidence") if is_rookie else "medium"
+            record.variance_flag    = bool(rookie_prof.get("variance_flag", False)) if is_rookie else False
+            record.breakout_window  = rookie_prof.get("breakout_window") if is_rookie else None
+            record.year1_role       = rookie_prof.get("year1_role") if is_rookie else None
+            record.ceiling_value_ppr = _to_decimal(rookie_prof.get("ceiling_value_ppr")) if is_rookie else None
+            record.floor_value_ppr   = _to_decimal(rookie_prof.get("floor_value_ppr")) if is_rookie else None
 
             # Update parent Player record
             player_row = (await session.execute(
                 select(Player).where(Player.id == player_id)
             )).scalar_one_or_none()
             if player_row:
-                player_row.breakout_flag   = bool(prof.get("breakout_flag", False))
-                player_row.situation_score = prof.get("situation_score")
+                player_row.breakout_flag   = bool(effective.get("breakout_flag", False))
+                player_row.situation_score = effective.get("situation_score")
 
             written += 1
 
@@ -790,6 +855,107 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         "yards":       round(yards, 1),
         "touchdowns":  round(tds, 1),
         "ppr_points":  round(ppr, 1),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Rookie profiling helpers (Step 5 — non-destructive addition)
+# ---------------------------------------------------------------------------
+
+_ROOKIE_CONFIDENCE_DISCOUNT: dict[str, float] = {
+    "QB": 0.65,   # Most QBs take 2-3 years — highest uncertainty
+    "WR": 0.75,   # Route running takes time against NFL coverage
+    "TE": 0.70,   # Hardest college-to-NFL position transition
+    "RB": 0.85,   # Translate fastest — contribute in Year 1
+}
+
+_ROOKIE_DEFAULT_PPG: dict[str, float] = {
+    "QB": 16.0, "RB": 9.0, "WR": 9.5, "TE": 7.0
+}
+
+_DEVELOPMENT_TIMELINE: dict[str, str] = {
+    "QB": "year_2_to_4",
+    "WR": "year_2_to_3",
+    "TE": "year_3_to_4",
+    "RB": "year_1",
+}
+
+
+def _estimate_year1_role(player: dict, team_context: dict) -> str:
+    capital    = player.get("draft_capital_signal", "medium")
+    depth_rank = player.get("depth_chart_rank", 2)
+    if capital == "high" and depth_rank == 1:
+        return "starter"
+    if capital == "high":
+        return "rotational"
+    if capital == "medium" and depth_rank <= 2:
+        return "rotational"
+    return "depth"
+
+
+def _build_rookie_profile(player: dict, team_context: dict) -> dict:
+    """
+    Rookies are profiled from college data + historical comps pre-populated
+    by Agent 2 (Roster Changes). Returns a profile dict compatible with
+    the _write_profiles() PlayerProfile fields.
+    """
+    position = player.get("position", "WR")
+    base_ppg = player.get("comp_yr1_avg_ppg") or _ROOKIE_DEFAULT_PPG.get(position, 8.0)
+
+    # Adjust by landing spot modifier (0.75 compound risk → 1.18 elite system)
+    landing_modifier = float(player.get("landing_spot_modifier") or 1.0)
+    adjusted_ppg     = base_ppg * landing_modifier
+
+    # Season projection at 17 games, then apply confidence discount
+    projected_season = adjusted_ppg * 17
+    discount         = _ROOKIE_CONFIDENCE_DISCOUNT.get(position, 0.75)
+    discounted       = projected_season * discount
+
+    # Wider ceiling/floor than veterans (genuine uncertainty — not pessimism)
+    ceiling = discounted * 1.45
+    floor   = discounted * 0.55
+
+    # Elite breakout: Ja'Marr Chase / Justin Jefferson tier
+    is_breakout = (
+        player.get("college_profile_grade") == "elite"
+        and player.get("draft_capital_signal") == "high"
+    )
+
+    return {
+        # Fields overlapping with veteran profile schema
+        "is_rookie":               True,
+        "profile_source":          "college_comps",
+        "clean_season_baseline":   {
+            "ppr_points": round(discounted, 1),
+            "note":       "Derived from historical comp average — not NFL history",
+        },
+        "ceiling_value_ppr":       round(ceiling, 1),
+        "floor_value_ppr":         round(floor, 1),
+        "confidence":              "low",
+        "variance_flag":           True,
+        "college_profile_grade":   player.get("college_profile_grade"),
+        "draft_capital_signal":    player.get("draft_capital_signal"),
+        "historical_comp_names":   player.get("historical_comp_names", []),
+        "comp_yr1_avg_ppg":        player.get("comp_yr1_avg_ppg"),
+        "comp_yr2_avg_ppg":        player.get("comp_yr2_avg_ppg"),
+        "landing_spot_modifier":   landing_modifier,
+        "breakout_window":         _DEVELOPMENT_TIMELINE.get(position),
+        "year1_role":              _estimate_year1_role(player, team_context),
+        "breakout_flag":           is_breakout,
+        "breakout_reasoning":      (
+            "Elite college profile + high draft capital = Year 1 upside (Chase/Jefferson tier)"
+            if is_breakout else None
+        ),
+        "anomalous_seasons_excluded": [],   # N/A for rookies
+        # Veteran-only fields — set to neutral defaults
+        "role_classification":     None,
+        "separation_score":        "avg",
+        "yards_after_catch_score": "avg",
+        "efficiency_signal":       "avg",
+        "age_curve_position":      "ascending",
+        "career_trajectory":       "volatile",
+        "positional_scarcity_tier": None,
+        "situation_score":         "volatile",
     }
 
 

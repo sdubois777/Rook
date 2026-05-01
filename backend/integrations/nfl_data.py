@@ -114,6 +114,11 @@ def compute_target_share(season: int) -> pd.DataFrame:
     # Skill positions only
     weekly = weekly[weekly["position"].isin(SKILL_POSITIONS)].copy()
 
+    # Regular season only — nfl_data_py includes postseason weeks which inflates
+    # season totals (e.g. Barkley 2024 PHI = 20 games, not 17).
+    if "season_type" in weekly.columns:
+        weekly = weekly[weekly["season_type"] == "REG"].copy()
+
     # Team-level targets per week (denominator for target share)
     team_targets = (
         weekly.groupby(["season", "week", "recent_team"])["targets"]
@@ -253,3 +258,69 @@ async def get_target_share(season: int) -> pd.DataFrame:
 async def get_snap_pct(season: int) -> pd.DataFrame:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, compute_snap_pct, season)
+
+
+# ---------------------------------------------------------------------------
+# Draft pick data
+# ---------------------------------------------------------------------------
+
+def fetch_nfl_draft_picks(year: int) -> pd.DataFrame:
+    """
+    Return the NFL draft class for a given year.
+    Columns: player_name, position, round, pick_number, team, college, age_at_draft
+    """
+    return _load_or_fetch(
+        f"draft_picks_{year}",
+        lambda: nfl.import_draft_picks([year]),
+    )
+
+
+async def get_nfl_draft_picks(year: int) -> pd.DataFrame:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fetch_nfl_draft_picks, year)
+
+
+# Approximate-value draft chart (pick_overall -> normalized 0-100 value)
+# Values match stage-02-data-ingestion.md spec.
+_AV_CHART: dict[int, float] = {
+    1: 100, 2: 96, 3: 92, 4: 88, 5: 85, 6: 82, 7: 79, 8: 76, 9: 74, 10: 72,
+    11: 70, 12: 68, 13: 66, 14: 64, 15: 62, 16: 60, 17: 58, 18: 56, 19: 55, 20: 54,
+    21: 53, 22: 52, 23: 51, 24: 50, 25: 49, 26: 48, 27: 47, 28: 46, 29: 45, 30: 44,
+    31: 43, 32: 48, 33: 47, 64: 28, 96: 16, 128: 9, 160: 5, 192: 3, 224: 2, 256: 1,
+}
+
+
+def get_draft_capital_value(draft_round: int, pick_overall: int) -> float:
+    """
+    Convert draft position to normalized 0-100 value using AV-based chart.
+    Pick 1 overall = 100. Pick 256 = ~1.
+    Interpolates linearly for picks not explicitly in the chart.
+    draft_round is accepted for API symmetry; pick_overall is the canonical input.
+    """
+    if pick_overall in _AV_CHART:
+        return float(_AV_CHART[pick_overall])
+    # Linear interpolation between the two nearest bracketing chart entries
+    keys = sorted(_AV_CHART.keys())
+    for i in range(len(keys) - 1):
+        lo, hi = keys[i], keys[i + 1]
+        if lo < pick_overall < hi:
+            lo_val = float(_AV_CHART[lo])
+            hi_val = float(_AV_CHART[hi])
+            frac = (pick_overall - lo) / (hi - lo)
+            interpolated = lo_val + frac * (hi_val - lo_val)
+            return float(int(interpolated * 10 + 0.5) / 10)  # manual round-to-1dp
+    return max(1.0, 100.0 - (pick_overall * 0.38))
+
+
+def get_capital_signal(capital_value: float) -> str:
+    """
+    Categorize draft capital into high/medium/low buckets.
+    high  >= 70  → rounds 1-2
+    medium >= 40 → rounds 3-4
+    low         → rounds 5-7
+    """
+    if capital_value >= 70:
+        return "high"
+    if capital_value >= 40:
+        return "medium"
+    return "low"

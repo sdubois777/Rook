@@ -56,6 +56,20 @@ class Player(Base):
     positional_scarcity_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Rookie evaluation fields (written by Agent 2: Roster Changes)
+    is_rookie: Mapped[bool] = mapped_column(Boolean, default=False)
+    college_profile_grade: Mapped[Optional[str]] = mapped_column(String(20))     # elite/strong/average/weak
+    draft_capital_signal: Mapped[Optional[str]] = mapped_column(String(10))      # high/medium/low
+    draft_capital_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
+    adjusted_dominator_rating: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))
+    conference: Mapped[Optional[str]] = mapped_column(String(30))
+    historical_comp_names: Mapped[Optional[list]] = mapped_column(JSONB)
+    comp_yr1_avg_ppg: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    comp_yr2_avg_ppg: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    landing_spot_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))
+    projection_confidence: Mapped[Optional[str]] = mapped_column(String(10))    # low/medium/high
+    variance_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Human-readable summary (2-3 sentences, shown during live draft)
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -124,6 +138,16 @@ class PlayerProfile(Base):
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     breakout_reasoning: Mapped[Optional[str]] = mapped_column(Text)
     positional_scarcity_tier: Mapped[Optional[str]] = mapped_column(String(20))  # scarce/moderate/deep
+
+    # Rookie-specific profile fields (populated when is_rookie=True)
+    is_rookie: Mapped[bool] = mapped_column(Boolean, default=False)
+    profile_source: Mapped[Optional[str]] = mapped_column(String(20))   # nfl_history/college_comps
+    ceiling_value_ppr: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+    floor_value_ppr: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+    confidence: Mapped[Optional[str]] = mapped_column(String(10))       # low/medium/high
+    variance_flag: Mapped[bool] = mapped_column(Boolean, default=False)
+    breakout_window: Mapped[Optional[str]] = mapped_column(String(20))  # year_1/year_2_to_3/year_2_to_4/year_3_to_4
+    year1_role: Mapped[Optional[str]] = mapped_column(String(20))       # starter/rotational/depth
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

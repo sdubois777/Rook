@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, SONNET
 from backend.database import AsyncSessionLocal
-from backend.integrations import nfl_data, overthecap
+from backend.integrations import cfb_data, nfl_data, overthecap
 from backend.models.dependency import PlayerDependency
 from backend.models.player import Player
 from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_current_season
@@ -122,6 +122,9 @@ class RosterChangesAgent(BaseAgent):
         qb_histories   = await self._fetch_qb_histories(team, roster)
         system_grade   = await self._fetch_team_system(team)
 
+        # Draft picks — include college profiles for rookie evaluation context
+        draft_picks_context = await self._fetch_draft_picks_context(team)
+
         return {
             "team": team,
             "season": analysis_year,
@@ -131,6 +134,7 @@ class RosterChangesAgent(BaseAgent):
             "target_share_history": target_shares,
             "backfield_usage": backfield,
             "qb_receiver_history": qb_histories,
+            "draft_picks": draft_picks_context,
         }
 
     async def _fetch_transactions(self, team: str, analysis_year: int) -> list[dict]:
@@ -277,6 +281,330 @@ class RosterChangesAgent(BaseAgent):
             return {}
 
     # ------------------------------------------------------------------
+    # Draft pick helpers (Step 6 — non-destructive additions)
+    # ------------------------------------------------------------------
+
+    async def _fetch_draft_picks_context(self, team: str) -> list[dict]:
+        """
+        Return compact college profile + capital value for each draft pick
+        on this team. Pre-aggregated for the model prompt — no extra API call.
+        """
+        current_season = get_current_season()
+        try:
+            picks_df = nfl_data.fetch_nfl_draft_picks(current_season)
+        except Exception as exc:
+            logger.warning("Could not fetch draft picks for %d: %s", current_season, exc)
+            return []
+
+        if picks_df.empty:
+            return []
+
+        # Normalize team column name
+        team_col = next((c for c in ("team", "nfl_team") if c in picks_df.columns), None)
+        if not team_col:
+            return []
+
+        team_picks = picks_df[picks_df[team_col].str.upper() == team.upper()]
+        if team_picks.empty:
+            return []
+
+        college_df = _get_cached_data("college_target_share")
+
+        result = []
+        for _, pick in team_picks.iterrows():
+            player_name = str(pick.get("player_name", pick.get("player", "")))
+            position    = str(pick.get("position", ""))
+            draft_round = int(pick.get("round", 7))
+            pick_num    = int(pick.get("pick_number", pick.get("pick", 200)))
+
+            capital_val    = nfl_data.get_draft_capital_value(draft_round, pick_num)
+            capital_signal = nfl_data.get_capital_signal(capital_val)
+
+            college_row: dict = {}
+            if college_df is not None and not college_df.empty:
+                last = player_name.split()[-1].lower() if player_name else ""
+                matches = college_df[
+                    college_df["player_name"].str.lower().str.contains(last, na=False)
+                ] if last else type(college_df)()
+                if not matches.empty:
+                    row = matches.iloc[0]
+                    raw_dom = float(row.get("dominator_rating", 0) or 0)
+                    conf    = str(row.get("conference", "Unknown"))
+                    adj_dom = cfb_data.get_adjusted_dominator(raw_dom, conf)
+                    college_row = {
+                        "dominator_rating":    raw_dom,
+                        "adjusted_dominator":  adj_dom,
+                        "yards_per_route_run": float(row.get("yards_per_route_run", 0) or 0),
+                        "conference":          conf,
+                    }
+
+            result.append({
+                "player_name":      player_name,
+                "position":         position,
+                "round":            draft_round,
+                "pick_number":      pick_num,
+                "capital_value":    capital_val,
+                "capital_signal":   capital_signal,
+                "college_profile":  college_row,
+            })
+
+        return result
+
+    def _get_college_profile(self, player_name: str, position: str) -> dict:
+        """Look up college profile from the shared college_target_share cache."""
+        college_df = _get_cached_data("college_target_share")
+        if college_df is None or college_df.empty:
+            return {}
+        last = player_name.split()[-1].lower() if player_name else ""
+        matches = college_df[
+            college_df["player_name"].str.lower().str.contains(last, na=False)
+        ] if last else college_df.iloc[0:0]
+        if matches.empty:
+            return {}
+        row = matches.iloc[0]
+        return {
+            "dominator_rating":    float(row.get("dominator_rating", 0) or 0),
+            "yards_per_route_run": float(row.get("yards_per_route_run", 0) or 0),
+            "conference":          str(row.get("conference", "Unknown")),
+        }
+
+    def _find_historical_comps(
+        self,
+        comp_table,
+        position: str,
+        adjusted_dominator: float,
+        capital_value: float,
+        age_at_draft: int = 22,
+    ) -> list[dict]:
+        """Find 3-5 most similar drafted prospects from the historical comp table."""
+        import pandas as pd
+        if comp_table is None or (hasattr(comp_table, "empty") and comp_table.empty):
+            return []
+        filtered = comp_table[comp_table["position"] == position].copy()
+        if filtered.empty:
+            return []
+        # Similarity score: weighted distance on adjusted_dominator and capital_value
+        filtered = filtered.copy()
+        filtered["dom_dist"]  = (filtered["adjusted_dominator"] - adjusted_dominator).abs()
+        filtered["cap_dist"]  = (filtered["capital_value"] - capital_value).abs() / 100
+        filtered["sim_score"] = filtered["dom_dist"] + filtered["cap_dist"] * 0.5
+        top = filtered.nsmallest(5, "sim_score")
+        return [
+            {
+                "name":    str(row["player_name"]),
+                "yr1_ppg": float(row["yr1_ppg"]) if pd.notna(row.get("yr1_ppg")) else None,
+                "yr2_ppg": float(row["yr2_ppg"]) if pd.notna(row.get("yr2_ppg")) else None,
+            }
+            for _, row in top.iterrows()
+        ]
+
+    def _get_landing_spot_modifier(self, system_grade_dict: dict) -> float:
+        """Scale landing spot from 0.75 (compound risk) to 1.18 (elite system)."""
+        if system_grade_dict.get("compound_risk_flag"):
+            return 0.75
+        if system_grade_dict.get("rookie_qb_flag"):
+            return 0.85
+        grade = str(system_grade_dict.get("system_grade", "C"))
+        return {"A": 1.18, "B": 1.08, "C": 1.00, "D": 0.88, "F": 0.78}.get(
+            grade[0].upper(), 1.00
+        )
+
+    def _grade_college_profile(
+        self, adjusted_dominator: float, yards_per_route: float, position: str
+    ) -> str:
+        """Grade college profile: elite / strong / average / weak."""
+        if position == "RB":
+            # RBs: use adjusted_dominator as usage_rate proxy
+            if adjusted_dominator >= 0.35:
+                return "elite"
+            if adjusted_dominator >= 0.25:
+                return "strong"
+            if adjusted_dominator >= 0.15:
+                return "average"
+            return "weak"
+        # WR / TE
+        if adjusted_dominator >= 0.38 and yards_per_route >= 2.8:
+            return "elite"
+        if adjusted_dominator >= 0.30 or yards_per_route >= 2.5:
+            return "strong"
+        if adjusted_dominator >= 0.22:
+            return "average"
+        return "weak"
+
+    async def _write_rookie_evaluation(self, fields: dict) -> None:
+        """Write rookie evaluation fields from _handle_draft_pick to the players table."""
+        player_name = fields.get("player_name", "")
+        if not player_name:
+            return
+
+        async with AsyncSessionLocal() as session:
+            last = player_name.split()[-1].lower()
+            from sqlalchemy import or_
+            result = await session.execute(
+                select(Player).where(Player.name.ilike(f"%{last}%"))
+            )
+            candidates = result.scalars().all()
+            if not candidates:
+                logger.debug("Could not find player for rookie eval: %s", player_name)
+                return
+
+            # Match by name similarity
+            player = next(
+                (p for p in candidates if last in p.name.lower()), candidates[0]
+            )
+
+            from decimal import Decimal
+            player.is_rookie             = True
+            player.college_profile_grade = fields.get("college_profile_grade")
+            player.draft_capital_signal  = fields.get("draft_capital_signal")
+            if fields.get("draft_capital_value") is not None:
+                player.draft_capital_value = Decimal(str(fields["draft_capital_value"]))
+            if fields.get("adjusted_dominator_rating") is not None:
+                player.adjusted_dominator_rating = Decimal(str(fields["adjusted_dominator_rating"]))
+            player.conference            = fields.get("conference")
+            player.historical_comp_names = fields.get("historical_comp_names", [])
+            if fields.get("comp_yr1_avg_ppg") is not None:
+                player.comp_yr1_avg_ppg = Decimal(str(fields["comp_yr1_avg_ppg"]))
+            if fields.get("comp_yr2_avg_ppg") is not None:
+                player.comp_yr2_avg_ppg = Decimal(str(fields["comp_yr2_avg_ppg"]))
+            if fields.get("landing_spot_modifier") is not None:
+                player.landing_spot_modifier = Decimal(str(fields["landing_spot_modifier"]))
+            player.projection_confidence = fields.get("projection_confidence", "low")
+            player.variance_flag         = bool(fields.get("variance_flag", True))
+
+            await session.commit()
+            logger.debug("Wrote rookie evaluation for %s", player_name)
+
+    async def _generate_rookie_displacement_flags(
+        self,
+        pick: dict,
+        position: str,
+        capital_signal: str,
+        team_context: dict,
+    ) -> list[dict]:
+        """
+        Generate DISPLACED + CONTINGENT flags for incumbents threatened by a draft pick.
+        High capital (rounds 1-2): generate flags.
+        Medium capital (rounds 3-4): lower confidence.
+        Low capital (rounds 5-7): no flags.
+        """
+        if capital_signal == "low":
+            return []
+
+        flags = []
+        for incumbent in team_context.get("current_roster", []):
+            if incumbent.get("position") != position:
+                continue
+            if incumbent.get("name") == pick.get("player_name"):
+                continue
+
+            impact_pct  = -0.25 if capital_signal == "high" else -0.15
+            confidence  = "medium" if capital_signal == "high" else "low"
+            player_name = pick.get("player_name", "")
+            inc_name    = incumbent.get("name", "")
+
+            flags.append({
+                "player_name":         inc_name,
+                "player_team":         team_context.get("team", ""),
+                "player_position":     position,
+                "flag_type":           "displaced",
+                "trigger_player_name": player_name,
+                "trigger_player_team": team_context.get("team", ""),
+                "trigger_condition":   "active_and_healthy",
+                "effect_on_value":     "negative",
+                "value_impact_pct":    impact_pct,
+                "confidence":          confidence,
+                "reasoning":           (
+                    f"{player_name} drafted round {pick.get('round')} "
+                    f"({capital_signal} capital). Will compete for {position} role."
+                ),
+                "season_year":         get_analysis_year(),
+            })
+            flags.append({
+                "player_name":         inc_name,
+                "player_team":         team_context.get("team", ""),
+                "player_position":     position,
+                "flag_type":           "contingent",
+                "trigger_player_name": player_name,
+                "trigger_player_team": team_context.get("team", ""),
+                "trigger_condition":   "injured_or_absent",
+                "effect_on_value":     "positive",
+                "value_impact_pct":    abs(impact_pct) * 0.8,
+                "confidence":          confidence,
+                "reasoning":           (
+                    f"{inc_name} value recovers if {player_name} misses time."
+                ),
+                "season_year":         get_analysis_year(),
+            })
+        return flags
+
+    async def _handle_draft_pick(
+        self,
+        pick: dict,
+        team_context: dict,
+        comp_table,
+    ) -> list[dict]:
+        """
+        Full prospect evaluation for one NFL draft pick.
+        Writes rookie evaluation fields to the player record.
+        Returns displacement flags for incumbents.
+        """
+        player_name = pick.get("player_name", "")
+        position    = pick.get("position", "")
+
+        college_profile = self._get_college_profile(player_name, position)
+        capital_value   = nfl_data.get_draft_capital_value(
+            pick.get("round", 7), pick.get("pick_number", 200)
+        )
+        capital_signal  = nfl_data.get_capital_signal(capital_value)
+
+        raw_dom = college_profile.get("dominator_rating", 0.0)
+        conf    = college_profile.get("conference", "Unknown")
+        adj_dom = cfb_data.get_adjusted_dominator(raw_dom, conf)
+
+        comps        = self._find_historical_comps(
+            comp_table, position, adj_dom, capital_value,
+            age_at_draft=pick.get("age_at_draft", 22),
+        )
+        landing_mod  = self._get_landing_spot_modifier(
+            team_context.get("system_grade", {})
+        )
+        profile_grade = self._grade_college_profile(
+            adj_dom,
+            college_profile.get("yards_per_route_run", 0.0),
+            position,
+        )
+
+        yr1_ppg = (
+            sum(c["yr1_ppg"] for c in comps if c.get("yr1_ppg") is not None)
+            / max(1, sum(1 for c in comps if c.get("yr1_ppg") is not None))
+        ) if comps else None
+        yr2_ppg = (
+            sum(c["yr2_ppg"] for c in comps if c.get("yr2_ppg") is not None)
+            / max(1, sum(1 for c in comps if c.get("yr2_ppg") is not None))
+        ) if comps else None
+
+        await self._write_rookie_evaluation({
+            "player_name":            player_name,
+            "is_rookie":              True,
+            "college_profile_grade":  profile_grade,
+            "draft_capital_signal":   capital_signal,
+            "draft_capital_value":    round(capital_value, 1),
+            "adjusted_dominator_rating": round(adj_dom, 3),
+            "conference":             conf,
+            "historical_comp_names":  [c["name"] for c in comps[:3]],
+            "comp_yr1_avg_ppg":       round(yr1_ppg, 2) if yr1_ppg else None,
+            "comp_yr2_avg_ppg":       round(yr2_ppg, 2) if yr2_ppg else None,
+            "landing_spot_modifier":  round(landing_mod, 3),
+            "projection_confidence":  "low",
+            "variance_flag":          True,
+        })
+
+        return await self._generate_rookie_displacement_flags(
+            pick, position, capital_signal, team_context
+        )
+
+    # ------------------------------------------------------------------
     # Per-team runner — exactly ONE call_once()
     # ------------------------------------------------------------------
 
@@ -310,6 +638,19 @@ class RosterChangesAgent(BaseAgent):
             for f in flags:
                 if not f.get("player_team"):
                     f["player_team"] = team_abbr.upper()
+
+            # Draft pick prospect evaluation — Python-computed, no extra API call
+            comp_table = _get_cached_data("historical_comp_table")
+            draft_picks = context.get("draft_picks", [])
+            for pick in draft_picks:
+                try:
+                    rookie_flags = await self._handle_draft_pick(pick, context, comp_table)
+                    flags.extend(rookie_flags)
+                except Exception as exc:
+                    logger.warning(
+                        "Draft pick evaluation failed for %s: %s",
+                        pick.get("player_name"), exc,
+                    )
 
             written = await _write_flags(flags)
             logger.info(
@@ -350,6 +691,24 @@ class RosterChangesAgent(BaseAgent):
                 logger.info("Cached season %d data", season)
             except Exception as exc:
                 logger.warning("Could not pre-load season %d: %s", season, exc)
+
+        # Pre-load college data for draft pick evaluation
+        try:
+            college_seasons = list(range(current_season - 6, current_season))
+            logger.info("Pre-loading college target share for seasons %s...", college_seasons)
+            college_df = cfb_data.get_college_target_share(college_seasons)
+            _set_cached_data("college_target_share", college_df)
+        except Exception as exc:
+            logger.warning("Could not pre-load college data: %s", exc)
+
+        # Pre-load historical comp table (expensive — cached aggressively)
+        try:
+            logger.info("Pre-loading historical comp table...")
+            comp_table = cfb_data.build_historical_comp_table()
+            _set_cached_data("historical_comp_table", comp_table)
+            logger.info("Historical comp table: %d records", len(comp_table))
+        except Exception as exc:
+            logger.warning("Could not build historical comp table: %s", exc)
 
         # Also cache current season for backfield (may overlap with analysis_seasons)
         if f"target_share_{current_season}" not in _DATA_CACHE:

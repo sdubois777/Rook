@@ -545,3 +545,158 @@ async def test_bulk_db_write_single_transaction_per_team():
 
         # One commit for all flags — not one per flag
         session.commit.assert_called_once()
+
+
+# ===========================================================================
+# Rookie / draft pick tests (stage-04 spec — 12 required cases)
+# ===========================================================================
+
+import pandas as pd
+import pytest
+
+from backend.agents.roster_changes import RosterChangesAgent
+from backend.integrations import nfl_data
+
+
+def _make_agent() -> RosterChangesAgent:
+    return RosterChangesAgent(dry_run=True)
+
+
+# --- Draft capital value tests ---
+
+def test_draft_capital_value_round1_is_high():
+    """Round 1 pick 1 → capital_value == 100 and capital_signal == 'high'."""
+    val = nfl_data.get_draft_capital_value(1, 1)
+    sig = nfl_data.get_capital_signal(val)
+    assert val == 100.0
+    assert sig == "high"
+
+
+def test_draft_capital_value_round6_is_low():
+    """Round 6 pick (e.g. overall 180) → capital_signal == 'low'."""
+    val = nfl_data.get_draft_capital_value(6, 180)
+    sig = nfl_data.get_capital_signal(val)
+    assert val < 40
+    assert sig == "low"
+
+
+def test_draft_capital_value_decreases_with_pick_number():
+    """Later picks always produce lower capital values."""
+    val_1  = nfl_data.get_draft_capital_value(1, 1)
+    val_10 = nfl_data.get_draft_capital_value(1, 10)
+    val_64 = nfl_data.get_draft_capital_value(2, 64)
+    assert val_1 > val_10 > val_64
+
+
+# --- College dominator conference adjustment ---
+
+def test_college_dominator_adjusted_for_conference():
+    """SEC player dominator unchanged. MAC player dominator × 0.80."""
+    from backend.integrations.cfb_data import get_adjusted_dominator
+    sec = get_adjusted_dominator(0.40, "SEC")
+    mac = get_adjusted_dominator(0.40, "MAC")
+    assert sec == pytest.approx(0.40, abs=1e-4)
+    assert mac == pytest.approx(0.40 * 0.80, abs=1e-4)
+    assert mac < sec
+
+
+# --- Landing spot modifier ---
+
+def test_landing_spot_compound_risk_modifier():
+    """compound_risk_flag=True → landing_modifier == 0.75."""
+    agent = _make_agent()
+    mod = agent._get_landing_spot_modifier({"compound_risk_flag": True})
+    assert mod == 0.75
+
+
+def test_landing_spot_strong_system_modifier():
+    """A-grade system → landing_modifier == 1.18."""
+    agent = _make_agent()
+    mod = agent._get_landing_spot_modifier({"system_grade": "A", "compound_risk_flag": False})
+    assert mod == pytest.approx(1.18)
+
+
+def test_landing_spot_rookie_qb_modifier():
+    """rookie_qb_flag=True, no compound risk → landing_modifier == 0.85."""
+    agent = _make_agent()
+    mod = agent._get_landing_spot_modifier({"rookie_qb_flag": True, "compound_risk_flag": False})
+    assert mod == pytest.approx(0.85)
+
+
+# --- College profile grading ---
+
+def test_grade_college_profile_elite_wr():
+    """WR: adjusted_dominator >= 0.38 AND yards_per_route >= 2.8 → 'elite'."""
+    agent = _make_agent()
+    grade = agent._grade_college_profile(0.42, 3.0, "WR")
+    assert grade == "elite"
+
+
+def test_grade_college_profile_weak_wr():
+    """WR: adjusted_dominator < 0.22 → 'weak'."""
+    agent = _make_agent()
+    grade = agent._grade_college_profile(0.18, 1.5, "WR")
+    assert grade == "weak"
+
+
+# --- Historical comps ---
+
+def test_historical_comps_returned_for_elite_profile():
+    """Elite college profile → at least 1 comp returned from a non-empty table."""
+    agent = _make_agent()
+    comp_table = pd.DataFrame([
+        {"position": "WR", "player_name": "Ja'Marr Chase", "adjusted_dominator": 0.44,
+         "capital_value": 85.0, "yr1_ppg": 16.4, "yr2_ppg": 19.8},
+        {"position": "WR", "player_name": "Justin Jefferson", "adjusted_dominator": 0.40,
+         "capital_value": 82.0, "yr1_ppg": 14.2, "yr2_ppg": 22.1},
+    ])
+    comps = agent._find_historical_comps(comp_table, "WR", 0.42, 84.0, 21)
+    assert len(comps) >= 1
+    assert comps[0]["yr1_ppg"] is not None
+
+
+# --- Displacement flag generation ---
+
+@pytest.mark.asyncio
+async def test_high_capital_rookie_displaces_incumbent():
+    """First-round WR drafted → incumbent WR gets DISPLACED flag."""
+    agent = _make_agent()
+    pick = {"player_name": "Rookie Star", "position": "WR", "round": 1}
+    context = {
+        "team": "LAC",
+        "current_roster": [
+            {"name": "Ladd McConkey", "position": "WR"},
+            {"name": "Mike Williams", "position": "WR"},
+        ],
+    }
+    flags = await agent._generate_rookie_displacement_flags(pick, "WR", "high", context)
+    flag_types = {f["flag_type"] for f in flags}
+    assert "displaced" in flag_types
+
+
+@pytest.mark.asyncio
+async def test_high_capital_displacement_always_paired_with_contingent():
+    """Rookie DISPLACED flag always has matching CONTINGENT flag."""
+    agent = _make_agent()
+    pick = {"player_name": "Top Rookie", "position": "RB", "round": 1}
+    context = {
+        "team": "PHI",
+        "current_roster": [{"name": "Saquon Barkley", "position": "RB"}],
+    }
+    flags = await agent._generate_rookie_displacement_flags(pick, "RB", "high", context)
+    flag_types = [f["flag_type"] for f in flags]
+    assert "displaced" in flag_types
+    assert "contingent" in flag_types
+
+
+@pytest.mark.asyncio
+async def test_low_capital_pick_no_displacement():
+    """6th round pick → no displacement flags generated."""
+    agent = _make_agent()
+    pick = {"player_name": "Late Round", "position": "WR", "round": 6}
+    context = {
+        "team": "NYG",
+        "current_roster": [{"name": "Some Incumbent", "position": "WR"}],
+    }
+    flags = await agent._generate_rookie_displacement_flags(pick, "WR", "low", context)
+    assert flags == []

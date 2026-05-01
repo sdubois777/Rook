@@ -19,9 +19,13 @@ import uuid
 from backend.agents.player_profiles import (
     PlayerProfilesAgent,
     _bulk_resolve_player_ids,
+    _build_rookie_profile,
+    _compute_clean_baseline,
     _compute_season_averages,
     _to_decimal,
     _write_profiles,
+    _ROOKIE_CONFIDENCE_DISCOUNT,
+    _DEVELOPMENT_TIMELINE,
 )
 
 
@@ -1170,3 +1174,155 @@ async def test_module_run_all_teams_shim():
                       new_callable=AsyncMock, return_value={"LAC": 5}):
         result = await module_run_all_teams(concurrency=2, dry_run=False)
     assert result == {"LAC": 5}
+
+
+# ===========================================================================
+# Rookie profiling tests (stage-05 spec — 12 required cases)
+# ===========================================================================
+
+def _make_rookie(
+    position: str = "WR",
+    college_grade: str = "strong",
+    capital_signal: str = "high",
+    comp_yr1_ppg: float | None = 12.0,
+    comp_yr2_ppg: float | None = 16.0,
+    landing_modifier: float = 1.0,
+    is_rookie: bool = True,
+    depth_chart_rank: int = 1,
+) -> dict:
+    return {
+        "name": "Rookie McTest",
+        "position": position,
+        "is_rookie": is_rookie,
+        "college_profile_grade": college_grade,
+        "draft_capital_signal": capital_signal,
+        "comp_yr1_avg_ppg": comp_yr1_ppg,
+        "comp_yr2_avg_ppg": comp_yr2_ppg,
+        "landing_spot_modifier": landing_modifier,
+        "historical_comp_names": ["Ja'Marr Chase", "Justin Jefferson"],
+        "depth_chart_rank": depth_chart_rank,
+        "seasons": [],
+        "dependency_flags": [],
+    }
+
+
+def test_rookie_routed_to_rookie_branch():
+    """Player with is_rookie=True uses _build_rookie_profile, not veteran path."""
+    player = _make_rookie(is_rookie=True)
+    result = _build_rookie_profile(player, {})
+    assert result["is_rookie"] is True
+    assert result["profile_source"] == "college_comps"
+
+
+def test_veteran_not_routed_to_rookie_branch():
+    """Veteran uses clean_season_baseline from NFL history, not comp data."""
+    seasons = [
+        {"year": 2024, "games": 16, "receptions": 80, "rec_yards": 1000,
+         "rec_tds": 7, "rush_yards": 0, "rush_tds": 0, "backup_qb_season": False},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert baseline["ppr_points"] > 0
+    # Veteran baseline is from actual NFL seasons, not college comps
+    assert "note" not in baseline
+
+
+def test_rookie_profile_uses_comp_data_not_nfl_history():
+    """Rookie baseline derived from comp_yr1_avg_ppg × confidence_discount."""
+    player = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=1.0)
+    result = _build_rookie_profile(player, {})
+    discount = _ROOKIE_CONFIDENCE_DISCOUNT["WR"]  # 0.75
+    expected_baseline = round(12.0 * 17 * discount, 1)
+    assert abs(result["clean_season_baseline"]["ppr_points"] - expected_baseline) < 1.0
+
+
+def test_rookie_confidence_discount_qb_is_lowest():
+    """QB rookie discount (0.65) < WR (0.75) < TE (0.70) < RB (0.85)."""
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["QB"] == 0.65
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["WR"] == 0.75
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["TE"] == 0.70
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["QB"] < _ROOKIE_CONFIDENCE_DISCOUNT["TE"]
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["TE"] < _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+
+
+def test_rookie_confidence_discount_rb_is_highest():
+    """RB discount is 0.85 — translates fastest from college."""
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["RB"] == 0.85
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["RB"] > _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+
+
+def test_rookie_wider_ceiling_floor_range():
+    """
+    Rookie: ceiling = baseline × 1.45, floor = baseline × 0.55
+    Veteran: ceiling = baseline × 1.25, floor = baseline × 0.75
+    Rookie range must be wider than veteran range.
+    """
+    player = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=1.0)
+    result = _build_rookie_profile(player, {})
+    baseline = result["clean_season_baseline"]["ppr_points"]
+    ceiling  = result["ceiling_value_ppr"]
+    floor    = result["floor_value_ppr"]
+    # Rookie ratios
+    assert abs(ceiling - baseline * 1.45) < 1.0
+    assert abs(floor - baseline * 0.55) < 1.0
+    # Rookie range wider than veteran (1.25 / 0.75)
+    rookie_range  = ceiling - floor
+    veteran_range = baseline * 1.25 - baseline * 0.75
+    assert rookie_range > veteran_range
+
+
+def test_rookie_variance_flag_always_true():
+    """All rookies have variance_flag=True regardless of college profile grade."""
+    for grade in ("elite", "strong", "average", "weak"):
+        player = _make_rookie(college_grade=grade)
+        result = _build_rookie_profile(player, {})
+        assert result["variance_flag"] is True, f"variance_flag should be True for grade={grade}"
+
+
+def test_rb_rookie_development_timeline_year1():
+    """RB rookies → breakout_window = 'year_1'."""
+    player = _make_rookie(position="RB")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_1"
+
+
+def test_wr_rookie_development_timeline_year2_3():
+    """WR rookies → breakout_window = 'year_2_to_3'."""
+    player = _make_rookie(position="WR")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_2_to_3"
+
+
+def test_te_rookie_development_timeline_year3_4():
+    """TE rookies → breakout_window = 'year_3_to_4'."""
+    player = _make_rookie(position="TE")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_3_to_4"
+
+
+def test_elite_profile_high_capital_is_breakout_candidate():
+    """
+    college_profile_grade='elite' AND draft_capital_signal='high'
+    → breakout_candidate = True even as a rookie. (Ja'Marr Chase / Justin Jefferson tier)
+    """
+    player = _make_rookie(college_grade="elite", capital_signal="high")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_flag"] is True
+
+
+def test_landing_spot_modifier_applied_to_projection():
+    """
+    Rookie with comp_yr1_avg_ppg=12.0 and landing_modifier=0.75
+    → adjusted baseline < 12.0 × 17 games.
+    """
+    player_low  = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=0.75)
+    player_base = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=1.0)
+    result_low  = _build_rookie_profile(player_low, {})
+    result_base = _build_rookie_profile(player_base, {})
+    assert result_low["clean_season_baseline"]["ppr_points"] < result_base["clean_season_baseline"]["ppr_points"]
+
+
+def test_average_profile_low_capital_not_breakout_candidate():
+    """college_profile_grade='average', capital='low' → breakout_candidate=False."""
+    player = _make_rookie(college_grade="average", capital_signal="low")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_flag"] is False
