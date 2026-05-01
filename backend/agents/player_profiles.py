@@ -154,12 +154,16 @@ class PlayerProfilesAgent(BaseAgent):
         return result
 
     def _is_backup_qb_season(self, team: str, season: int) -> bool:
-        """True if the team's backup QB started 4+ games in this season."""
+        """True if the team's backup QB started 4+ regular-season games in this season."""
         weekly = self._data_cache.get(f"weekly_{season}")
         if weekly is None:
             return False
-        qbs = weekly[
-            (weekly["recent_team"] == team) & (weekly["position"] == "QB")
+        # Use REG season only — postseason/preseason weeks inflate QB game counts
+        w = weekly
+        if "season_type" in w.columns:
+            w = w[w["season_type"] == "REG"]
+        qbs = w[
+            (w["recent_team"] == team) & (w["position"] == "QB")
         ]
         if qbs.empty:
             return False
@@ -187,7 +191,11 @@ class PlayerProfilesAgent(BaseAgent):
         if rows.empty:
             # Player may have been on a different team in this season (pre-trade).
             # Fall back to any-team match so historical baselines include all seasons.
-            rows = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+            # Sort by games desc so the most-played player wins (avoids wrong-name collisions).
+            rows = (
+                ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+                .sort_values("games", ascending=False)
+            )
         if rows.empty:
             return None
 
@@ -205,6 +213,7 @@ class PlayerProfilesAgent(BaseAgent):
 
         return {
             "games":          games,
+            "recent_team":    str(row.get("recent_team", "") or ""),
             "target_share":   _f("avg_target_share"),
             "air_yards_share": _f("avg_air_yards_share"),
             "targets":        int(row.get("total_targets",    0) or 0),
@@ -476,7 +485,14 @@ class PlayerProfilesAgent(BaseAgent):
                 stats = self._get_player_season_stats(pname, team, season)
                 if stats:
                     stats["year"]             = season
-                    stats["backup_qb_season"] = backup_qb_flags.get(season, False)
+                    # Only apply backup_qb flag when stats are from the current team.
+                    # Pre-trade seasons used the player's old team QB, not this team's.
+                    stat_team = stats.get("recent_team", team)
+                    stats["backup_qb_season"] = (
+                        backup_qb_flags.get(season, False)
+                        if stat_team.upper() == team.upper()
+                        else False
+                    )
                     # Attach NGS efficiency data per position
                     pos = info["position"]
                     if pos in ("WR", "TE"):
@@ -516,6 +532,18 @@ class PlayerProfilesAgent(BaseAgent):
             if pname in rookie_fields:
                 player_entry.update(rookie_fields[pname])
             players.append(player_entry)
+
+        # Sort by most recent season PPR descending so token-limited output
+        # profiles the highest-value players first.
+        def _sort_key(p: dict) -> float:
+            seasons = sorted(p.get("seasons", []), key=lambda s: s.get("year", 0), reverse=True)
+            for s in seasons:
+                v = s.get("ppr_per_game")
+                if v and v > 0:
+                    return float(v)
+            return 0.0
+
+        players.sort(key=_sort_key, reverse=True)
 
         return {
             "team":          team,
