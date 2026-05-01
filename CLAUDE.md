@@ -30,6 +30,7 @@ Core philosophy: **never trust third-party projections**. Build valuations from 
 | Testing/commits | `docs/rules/GIT_RULES.md` |
 | In-season features | `docs/INSEASON.md` |
 | Current stage | `docs/stages/stage-XX-name.md` |
+| Bid ceilings, live draft, valuations, lineup optimizer | `docs/rules/LEAGUE_RULES.md` |
 
 ---
 
@@ -164,8 +165,8 @@ Update this section as stages complete.
 - [x] Stage 5: Player Profiles agent
 - [x] Stage 6: Injury Risk agent
 - [x] Stage 7: Schedule agent
-- [x] Stage 8: Beat Reporter agent
-- [ ] Stage 9: Valuation pass ← current
+- [ ] Stage 8: Beat Reporter agent ← current
+- [x] Stage 9: Valuation pass
 - [ ] Stage 10: Yahoo API integration
 - [ ] Stage 11: Playwright draft bridge
 - [ ] Stage 12: Live draft agent

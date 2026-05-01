@@ -542,6 +542,11 @@ async def _write_profiles(
             seasons    = ctx_player.get("seasons", [])
             ts3yr, ts_last, ay3yr = _compute_season_averages(seasons, analysis_year)
 
+            # Compute clean_season_baseline in Python — do NOT trust model output.
+            # Rule: average across seasons with games >= 10 and not backup_qb_season.
+            # PPR formula: receptions×1 + (rec_yards+rush_yards)×0.1 + tds×6
+            clean_baseline = _compute_clean_baseline(seasons)
+
             # Upsert PlayerProfile
             existing = (await session.execute(
                 select(PlayerProfile).where(
@@ -562,7 +567,10 @@ async def _write_profiles(
             record.efficiency_signal          = prof.get("efficiency_signal")
             record.age_curve_position         = prof.get("age_curve_position")
             record.career_trajectory          = prof.get("career_trajectory")
-            record.clean_season_baseline      = prof.get("clean_season_baseline")
+            # Use Python-computed baseline. If seasons are empty (e.g. player is
+            # not in our WR/RB/TE context), set to empty dict rather than
+            # falling back to the AI model's (possibly wrong) value.
+            record.clean_season_baseline      = clean_baseline if clean_baseline else {}
             record.anomalous_seasons_excluded = prof.get("anomalous_seasons_excluded") or []
             record.breakout_flag              = bool(prof.get("breakout_flag", False))
             record.breakout_reasoning         = prof.get("breakout_reasoning")
@@ -612,6 +620,44 @@ def _compute_season_averages(
     ts3yr = round(sum(ts_vals) / len(ts_vals), 3) if ts_vals else None
     ay3yr = round(sum(ay_vals) / len(ay_vals), 3) if ay_vals else None
     return ts3yr, ts_last, ay3yr
+
+
+def _compute_clean_baseline(seasons: list[dict]) -> dict:
+    """
+    Compute clean_season_baseline as an average across clean seasons.
+
+    Clean season = games >= 10 AND NOT backup_qb_season.
+    Falls back to all seasons with games > 0 if no clean seasons exist.
+
+    PPR formula (LEAGUE_RULES.md Rule #7):
+        ppr_points = receptions × 1 + (rec_yards + rush_yards) × 0.1 + (rec_tds + rush_tds) × 6
+    """
+    clean = [
+        s for s in seasons
+        if s.get("games", 0) >= 10 and not s.get("backup_qb_season", False)
+    ]
+    if not clean:
+        clean = [s for s in seasons if s.get("games", 0) > 0]
+    if not clean:
+        return {}
+
+    n = len(clean)
+    rec       = sum(s.get("receptions", 0) for s in clean) / n
+    rec_yards = sum(s.get("rec_yards",  0) for s in clean) / n
+    rec_tds   = sum(s.get("rec_tds",    0) for s in clean) / n
+    rush_yards = sum(s.get("rush_yards", 0) for s in clean) / n
+    rush_tds   = sum(s.get("rush_tds",  0) for s in clean) / n
+
+    yards = rec_yards + rush_yards
+    tds   = rec_tds + rush_tds
+    ppr   = rec * 1.0 + yards * 0.1 + tds * 6.0
+
+    return {
+        "receptions":  round(rec, 1),
+        "yards":       round(yards, 1),
+        "touchdowns":  round(tds, 1),
+        "ppr_points":  round(ppr, 1),
+    }
 
 
 def _to_decimal(value) -> Decimal | None:

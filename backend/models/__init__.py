@@ -5,6 +5,7 @@ from backend.models.draft_state import DraftState, OpponentProfile
 from backend.models.season_roster import SeasonRoster
 from backend.models.agent_cache import AgentCache
 from backend.models.api_usage_log import ApiUsageLog
+from backend.models.league_settings import LeagueSettings
 
 __all__ = [
     "Player",
@@ -19,4 +20,5 @@ __all__ = [
     "SeasonRoster",
     "AgentCache",
     "ApiUsageLog",
+    "LeagueSettings",
 ]

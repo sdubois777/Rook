@@ -197,15 +197,21 @@ class BaseAgent:
 
     async def _write_cache(self, input_hash: str, output: str, entity_id: str) -> None:
         from backend.models.agent_cache import AgentCache
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         async with AsyncSessionLocal() as session:
-            session.add(AgentCache(
-                agent_name=self.AGENT_NAME,
-                entity_id=entity_id,
-                input_hash=input_hash,
-                output_json=output,
-                created_at=datetime.now(timezone.utc),
-            ))
+            stmt = (
+                pg_insert(AgentCache)
+                .values(
+                    agent_name=self.AGENT_NAME,
+                    entity_id=entity_id,
+                    input_hash=input_hash,
+                    output_json=output,
+                    created_at=datetime.now(timezone.utc),
+                )
+                .on_conflict_do_nothing(constraint="uq_agent_cache_key")
+            )
+            await session.execute(stmt)
             await session.commit()
 
     # ------------------------------------------------------------------

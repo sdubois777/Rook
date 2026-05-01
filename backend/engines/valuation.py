@@ -44,19 +44,35 @@ from backend.utils.seasons import get_analysis_year
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# League defaults
+# League defaults — matches docs/rules/LEAGUE_RULES.md
 # ---------------------------------------------------------------------------
 
-LEAGUE_BUDGET  = 200   # dollars per team — standard Yahoo auction
-LEAGUE_TEAMS   = 12
+# SKILL_STARTER_BUDGET ($185) × 12 teams = $2,220 total skill position pool
+# This is the CORRECT calibration pool per LEAGUE_RULES.md Rule #3.
+# NOT $200×12=$2,400 (full auction budget — wrong) and NOT $183×12=$2,196 (wrong).
+LEAGUE_SKILL_BUDGET = 185   # skill starter budget per team
+LEAGUE_TEAMS        = 12
+LEAGUE_SKILL_DOLLAR_POOL = LEAGUE_SKILL_BUDGET * LEAGUE_TEAMS  # = 2220
 
-# Budget share allocated to each position group (of total auction pool)
-# Calibrated for 12-team, 1QB/2RB/3WR/1TE/1FLEX PPR auction format
+# Positional budget allocation targets (% of LEAGUE_SKILL_DOLLAR_POOL)
+# From LEAGUE_RULES.md: RB=38%, WR=32%, QB=10%, TE=10%
+# Do NOT invert WR and QB. QB is 10%, not 38%.
 POSITION_BUDGET_SHARE: dict[str, float] = {
-    "QB": 0.12,
-    "RB": 0.35,
-    "WR": 0.38,
-    "TE": 0.12,
+    "QB": 0.10,
+    "RB": 0.38,
+    "WR": 0.32,
+    "TE": 0.10,
+}
+
+# Maximum realistic bid per position — any ceiling above $80 is a calculation error
+# per LEAGUE_RULES.md Rule #1 and #3
+MAX_REALISTIC_BID: dict[str, int] = {
+    "RB": 80,
+    "WR": 70,
+    "QB": 50,
+    "TE": 45,
+    "K":   2,
+    "DEF": 2,
 }
 
 # Replacement rank cutoff — lowest draftable starter at each position
@@ -219,21 +235,24 @@ def _to_dec(value: float | Decimal) -> Decimal:
 
 
 async def run_valuation_pass(
-    league_budget: int = LEAGUE_BUDGET,
+    skill_budget: int = LEAGUE_SKILL_BUDGET,
     league_teams: int = LEAGUE_TEAMS,
 ) -> dict:
     """
     Load all players with profiles, compute valuations, write back to DB.
 
+    Uses LEAGUE_SKILL_DOLLAR_POOL = skill_budget × league_teams = $185 × 12 = $2,220
+    as the total calibration pool per docs/rules/LEAGUE_RULES.md Rule #3.
+
     Args:
-        league_budget: Per-team auction budget (default 200).
+        skill_budget:  Skill starter budget per team (default 185).
         league_teams:  Number of teams in league (default 12).
 
     Returns:
         Summary dict: {processed, updated, skipped, analysis_year}.
     """
     analysis_year = get_analysis_year()
-    total_budget = float(league_budget * league_teams)
+    total_budget = float(skill_budget * league_teams)  # = 185 × 12 = 2220
 
     async with AsyncSessionLocal() as session:
         # Eager-load profiles and injury profiles — one query, no N+1
@@ -301,6 +320,18 @@ async def run_valuation_pass(
                 rm = _get_risk_modifier(player.injury_profile)
 
                 ceiling  = compute_bid_ceiling(sv, player.market_value, tier, pos, rm)
+
+                # Sanity check: any bid ceiling above $80 is a calculation error
+                # per docs/rules/LEAGUE_RULES.md Rule #1
+                max_bid = MAX_REALISTIC_BID.get(pos, 80)
+                if ceiling > Decimal(str(max_bid)):
+                    logger.warning(
+                        "BID CEILING SANITY FAIL: %s (%s T%d) ceiling=$%s exceeds max $%d — "
+                        "check calibration. sv=$%s, total_par=%.1f, pool=$%.0f",
+                        player.name, pos, tier, ceiling, max_bid,
+                        sv, ctx["total_par"], ctx["position_budget"],
+                    )
+
                 let_go   = compute_let_go_threshold(ceiling)
                 gap, sig = compute_value_gap(sv, player.market_value)
                 risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
