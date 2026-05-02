@@ -1,31 +1,50 @@
 {
-  "_note": "Placeholder — real Yahoo WebSocket frames must be captured during a live draft session. Ask user to capture frames when draft room is accessible.",
-  "_structure": {
-    "nomination_event": {
+  "_note": "Synthetic placeholder frames used for unit tests. Replace raw_payload values with real Yahoo WebSocket payloads captured via Chrome DevTools once the draft room is accessible (~August). See docs/stages/stage-11-yahoo-playwright.md for capture instructions.",
+  "_capture_instructions": "Chrome DevTools > Network tab > WS filter > click the Yahoo WebSocket connection > Messages tab > copy Message payload for each event type",
+
+  "nomination": {
+    "raw_payload": "{\"type\": \"nomination\", \"player_id\": \"30977\", \"player_name\": \"Patrick Mahomes\", \"position\": \"QB\", \"nominated_by\": \"Team Alpha\", \"clock_seconds\": 30, \"starting_bid\": 1}",
+    "expected_parsed": {
       "type": "nomination",
-      "player_id": "string",
-      "player_name": "string",
-      "position": "string",
-      "team": "string",
-      "starting_bid": "integer",
-      "nominated_by_team_id": "string",
-      "timestamp": "ISO8601"
-    },
-    "bid_update_event": {
-      "type": "bid_update",
-      "player_id": "string",
-      "current_bid": "integer",
-      "bidding_team_id": "string",
-      "timestamp": "ISO8601"
-    },
-    "player_sold_event": {
-      "type": "player_sold",
-      "player_id": "string",
-      "player_name": "string",
-      "winning_team_id": "string",
-      "final_price": "integer",
-      "timestamp": "ISO8601"
+      "player_id": "30977",
+      "player_name": "Patrick Mahomes",
+      "nominated_by": "Team Alpha",
+      "clock_seconds": 30
     }
   },
-  "sample_frames": []
+
+  "bid_update": {
+    "raw_payload": "{\"type\": \"bid_update\", \"player_id\": \"30977\", \"current_bid\": 45, \"current_bidder\": \"Team Beta\"}",
+    "expected_parsed": {
+      "type": "bid_update",
+      "current_bid": 45,
+      "current_bidder": "Team Beta"
+    }
+  },
+
+  "draft_pick": {
+    "raw_payload": "{\"type\": \"draft_pick\", \"player_id\": \"30977\", \"player_name\": \"Patrick Mahomes\", \"team_id\": \"t.5\", \"final_price\": 52}",
+    "expected_parsed": {
+      "type": "draft_pick",
+      "player_id": "30977",
+      "team_id": "t.5",
+      "final_price": 52
+    }
+  },
+
+  "clock_warning": {
+    "raw_payload": "{\"type\": \"clock_warning\", \"seconds_remaining\": 5}",
+    "expected_parsed": {
+      "type": "clock_warning",
+      "seconds_remaining": 5
+    }
+  },
+
+  "clock_expired": {
+    "raw_payload": "{\"type\": \"clock_expired\", \"player_id\": \"30977\"}",
+    "expected_parsed": {
+      "type": "clock_expired",
+      "player_id": "30977"
+    }
+  }
 }

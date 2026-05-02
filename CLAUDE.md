@@ -167,7 +167,14 @@ Update this section as stages complete.
 - [x] Stage 7: Schedule agent
 - [x] Stage 8: Beat Reporter agent
 - [x] Stage 9: Valuation pass
-- [ ] Stage 10: Yahoo API integration
+- [~] Stage 10: Yahoo API integration — PARTIALLY COMPLETE
+  - OAuth flow implemented and routes registered (GET /auth/yahoo, GET /auth/yahoo/callback)
+  - get_players() uses game-level endpoint, available year-round
+  - League endpoints (get_league, get_teams, get_rosters, get_draft_results) implemented
+    but UNTESTABLE until league is active (~August). League ID not yet set.
+  - To complete: 1) add YAHOO_LEAGUE_ID to .env once league is created,
+    2) complete OAuth flow (GET /auth/yahoo → authorize → copy refresh token to .env),
+    3) run POST /pipeline/sync-yahoo-players and POST /pipeline/sync-league-settings
 - [ ] Stage 11: Playwright draft bridge
 - [ ] Stage 12: Live draft agent
 - [ ] Stage 13: Draft UI

@@ -115,12 +115,15 @@ async def test_token_refresh_raises_without_refresh_token(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_players_returns_list(mock_settings):
-    """get_players() returns a list of player dicts parsed from Yahoo API response."""
-    # Simulate a single-page Yahoo players response
+    """
+    get_players() returns a list of player dicts parsed from Yahoo API response.
+    Uses game-level endpoint (/game/nfl/players) — available year-round, no league needed.
+    """
+    # Game-level response structure: fantasy_content → game → [metadata, {players: {...}}]
     fake_yahoo_response: dict[str, Any] = {
         "fantasy_content": {
-            "league": [
-                {},  # league metadata
+            "game": [
+                {},  # game metadata
                 {
                     "players": {
                         "0": {
@@ -154,7 +157,7 @@ async def test_get_players_returns_list(mock_settings):
 async def test_get_players_empty_response_returns_empty_list(mock_settings):
     """get_players() returns [] when Yahoo returns no players."""
     empty_response: dict[str, Any] = {
-        "fantasy_content": {"league": [{}, {"players": {"count": 0}}]}
+        "fantasy_content": {"game": [{}, {"players": {"count": 0}}]}
     }
 
     with patch.object(yahoo_mod, "_api_get", AsyncMock(return_value=empty_response)):

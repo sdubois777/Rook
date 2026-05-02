@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import auth, pipeline
+from backend.routers import auth, draft, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ app.add_middleware(
 
 
 app.include_router(auth.router)
+app.include_router(draft.router)
 app.include_router(pipeline.router)
 
 _scheduler = None

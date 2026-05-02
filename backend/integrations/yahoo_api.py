@@ -176,10 +176,18 @@ async def _api_get(path: str, **extra_params: str) -> dict[str, Any]:
 # Yahoo Fantasy API functions
 # ---------------------------------------------------------------------------
 
+# UNTESTABLE UNTIL LEAGUE ACTIVE (~August)
+# League ID: stored in YAHOO_LEAGUE_ID env var
+# These endpoints require an active Yahoo Fantasy league.
+# Run POST /pipeline/sync-league-settings and POST /pipeline/sync-yahoo-players
+# once the league is set up (typically late July / early August).
+
 async def get_league() -> dict[str, Any]:
     """
     Return league metadata dict.
     Includes: name, scoring_type, num_teams, auction_draft, playoff_start_week, etc.
+
+    UNTESTABLE UNTIL LEAGUE ACTIVE (~August) — requires YAHOO_LEAGUE_ID set in .env.
     """
     data = await _api_get(f"league/{_league_key()}")
     league_list = data.get("fantasy_content", {}).get("league", [])
@@ -187,7 +195,11 @@ async def get_league() -> dict[str, Any]:
 
 
 async def get_teams() -> list[dict[str, Any]]:
-    """Return list of team metadata dicts for all teams in the league."""
+    """
+    Return list of team metadata dicts for all teams in the league.
+
+    UNTESTABLE UNTIL LEAGUE ACTIVE (~August) — requires YAHOO_LEAGUE_ID set in .env.
+    """
     data = await _api_get(f"league/{_league_key()}/teams")
     content = data.get("fantasy_content", {}).get("league", [{}, {}])
     teams_raw = content[1].get("teams", {}) if len(content) > 1 else {}
@@ -211,7 +223,11 @@ async def get_teams() -> list[dict[str, Any]]:
 
 async def get_players(count: int = 300) -> list[dict[str, Any]]:
     """
-    Return up to `count` players from the Yahoo player universe for this league.
+    Return up to `count` players from Yahoo's NFL player universe.
+
+    Uses the game-level endpoint (/game/nfl/players) — available year-round,
+    does NOT require an active league. Safe to call in the offseason.
+
     Paginates in batches of 25 (Yahoo's per-request maximum).
     """
     all_players: list[dict[str, Any]] = []
@@ -220,10 +236,8 @@ async def get_players(count: int = 300) -> list[dict[str, Any]]:
 
     while start < count:
         batch = min(page_size, count - start)
-        data = await _api_get(
-            f"league/{_league_key()}/players;start={start};count={batch}"
-        )
-        content = data.get("fantasy_content", {}).get("league", [{}, {}])
+        data = await _api_get(f"game/nfl/players;start={start};count={batch}")
+        content = data.get("fantasy_content", {}).get("game", [{}, {}])
         players_raw = content[1].get("players", {}) if len(content) > 1 else {}
 
         batch_players: list[dict[str, Any]] = []
@@ -253,7 +267,12 @@ async def get_players(count: int = 300) -> list[dict[str, Any]]:
 
 
 async def get_draft_results() -> list[dict[str, Any]]:
-    """Return list of draft pick dicts: {pick, round, team_key, player_key}."""
+    """
+    Return list of draft pick dicts: {pick, round, team_key, player_key}.
+
+    UNTESTABLE UNTIL LEAGUE ACTIVE (~August) — requires YAHOO_LEAGUE_ID set in .env
+    and a completed draft.
+    """
     data = await _api_get(f"league/{_league_key()}/draftresults")
     content = data.get("fantasy_content", {}).get("league", [{}, {}])
     results_raw = content[1].get("draft_results", {}) if len(content) > 1 else {}
@@ -270,6 +289,9 @@ async def get_rosters() -> dict[str, list[dict[str, Any]]]:
     """
     Return all team rosters keyed by team_key.
     {team_key: [player_dict, ...]}
+
+    UNTESTABLE UNTIL LEAGUE ACTIVE (~August) — requires YAHOO_LEAGUE_ID set in .env
+    and teams with active rosters.
     """
     data = await _api_get(f"league/{_league_key()}/teams//roster")
     content = data.get("fantasy_content", {}).get("league", [{}, {}])
