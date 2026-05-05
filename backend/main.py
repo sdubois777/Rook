@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.routers import admin, auth, draft, draftboard, news, pipeline, players, preferences, teams
+from backend.routers import admin, assistant, auth, draft, draftboard, news, pipeline, players, preferences, teams
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ app.add_middleware(
 
 
 app.include_router(admin.router)
+app.include_router(assistant.router)
 app.include_router(auth.router)
 app.include_router(draft.router)
 app.include_router(draftboard.router)

@@ -90,6 +90,21 @@ Yahoo ← Playwright page.evaluate() ← FastAPI endpoint ← User action
 
 ---
 
+## AI Assistant
+
+A chat interface powered by Claude Sonnet that gives full access to the draft bible data. Ask questions about players, trades, draft strategy, and lineup decisions with real context from the platform's research agents.
+
+- **Streaming responses** via Server-Sent Events for immediate feedback
+- **Auto-detects players** mentioned in your question and injects their full profile (valuation, flags, injury, schedule)
+- **Context toggles** for roster and opponent data inclusion
+- **Accessible everywhere** via floating button (bottom-right corner, all pages)
+- **Player detail integration** — "Ask about this player" button in every player profile panel
+- **Conversation history** maintained during the session
+
+The assistant references actual system values, bid ceilings, dependency flags, and schedule grades rather than speaking in generalities. It uses the two-value auction system to frame all bid/trade advice.
+
+---
+
 ## In-Season Features
 
 | Feature | Schedule | Purpose |
@@ -229,7 +244,7 @@ fantasy-football-ai/
 │   ├── routers/                 # FastAPI route handlers
 │   ├── utils/                   # Shared utilities (seasons.py, etc.)
 │   └── websocket/               # WebSocket manager
-├── frontend/                    # React + Vite + Tailwind (planned)
+├── frontend/                    # React + Vite + Tailwind + Zustand
 ├── tests/
 │   ├── unit/
 │   ├── integration/

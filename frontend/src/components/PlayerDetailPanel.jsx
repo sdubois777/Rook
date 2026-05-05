@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { X, Star, StarOff } from 'lucide-react'
+import { X, Star, StarOff, MessageCircle } from 'lucide-react'
 import { fetchPlayer } from '../api/players'
 import { useUIStore } from '../stores/ui'
 import { usePreferencesStore } from '../stores/preferences'
+import { useAssistantStore } from '../stores/assistant'
 import PositionBadge from './shared/PositionBadge'
 import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
@@ -13,6 +14,7 @@ export default function PlayerDetailPanel({ playerId }) {
   const isWatchlisted = usePreferencesStore((s) => s.isWatchlisted(playerId))
   const addToWatchlist = usePreferencesStore((s) => s.addToWatchlist)
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
+  const prefillForPlayer = useAssistantStore((s) => s.prefillForPlayer)
 
   const { data: player, isLoading } = useQuery({
     queryKey: ['player', playerId],
@@ -235,6 +237,18 @@ export default function PlayerDetailPanel({ playerId }) {
                 <p className="text-xs text-slate-400 leading-relaxed">{player.notes}</p>
               </Section>
             )}
+
+            {/* Ask AI Assistant */}
+            <button
+              onClick={() => prefillForPlayer(
+                [playerId],
+                `What should I know about ${player.name}?`
+              )}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600/10 border border-blue-500/20 rounded-lg text-blue-400 text-sm hover:bg-blue-600/20 transition-colors"
+            >
+              <MessageCircle size={14} />
+              Ask about this player
+            </button>
           </div>
         )}
       </div>

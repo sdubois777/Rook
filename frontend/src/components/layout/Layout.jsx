@@ -1,4 +1,6 @@
 import Sidebar from './Sidebar'
+import AssistantButton from '../AssistantButton'
+import AssistantPanel from '../AssistantPanel'
 import { useUIStore } from '../../stores/ui'
 
 export default function Layout({ children }) {
@@ -14,6 +16,8 @@ export default function Layout({ children }) {
       >
         <div className="p-6">{children}</div>
       </main>
+      <AssistantButton />
+      <AssistantPanel />
     </div>
   )
 }
