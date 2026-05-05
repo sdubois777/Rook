@@ -1,0 +1,18 @@
+import api from './client'
+
+export async function fetchPipelineStatus() {
+  const { data } = await api.get('/admin/pipeline-status')
+  return data
+}
+
+export async function triggerPipelineRun(agentName, teamAbbr = null) {
+  const body = { agent_name: agentName }
+  if (teamAbbr) body.team_abbr = teamAbbr
+  const { data } = await api.post('/admin/pipeline/run', body)
+  return data
+}
+
+export async function fetchCostReport(days = 30) {
+  const { data } = await api.get('/admin/cost-report', { params: { days } })
+  return data
+}

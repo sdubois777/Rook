@@ -31,6 +31,7 @@ Core philosophy: **never trust third-party projections**. Build valuations from 
 | In-season features | `docs/INSEASON.md` |
 | Current stage | `docs/stages/stage-XX-name.md` |
 | Bid ceilings, live draft, valuations, lineup optimizer | `docs/rules/LEAGUE_RULES.md` |
+| App design and UI | docs/APP_DESIGN.md |
 
 ---
 
