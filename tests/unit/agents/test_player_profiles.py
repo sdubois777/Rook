@@ -1421,3 +1421,98 @@ def test_no_decline_flag_when_stable():
     ]
     baseline = _compute_clean_baseline(seasons)
     assert "declining" not in baseline
+
+
+# ---------------------------------------------------------------------------
+# QB baseline tests
+# ---------------------------------------------------------------------------
+
+
+def test_qb_baseline_uses_fantasy_points_not_targets():
+    """QB baseline uses fantasy_points_ppr directly (includes passing scoring)."""
+    from backend.agents.player_profiles import _compute_qb_baseline
+
+    seasons = [
+        {"year": 2023, "games": 17, "fantasy_points_ppr": 380.0, "ppr_per_game": 22.4,
+         "passing_yards": 4500, "passing_tds": 30, "interceptions": 10, "cpoe": 2.1},
+        {"year": 2024, "games": 17, "fantasy_points_ppr": 400.0, "ppr_per_game": 23.5,
+         "passing_yards": 4700, "passing_tds": 32, "interceptions": 8, "cpoe": 2.5},
+    ]
+    baseline = _compute_qb_baseline(seasons)
+    assert baseline != {}
+    # PPR should be ~390 (avg of 380 and 400) mapped to 17 games via ppg
+    # avg_ppg = (22.4 + 23.5) / 2 = 22.95 → ppr_points = 22.95 * 17 = 390.15
+    assert baseline["ppr_points"] > 350, (
+        f"QB baseline {baseline['ppr_points']} should reflect passing (>350)"
+    )
+    assert baseline["ppg"] > 20
+
+
+def test_qb_minimum_games_threshold():
+    """QBs with fewer than 10 career games get no baseline."""
+    from backend.agents.player_profiles import _compute_qb_baseline
+
+    seasons = [
+        {"year": 2024, "games": 4, "fantasy_points_ppr": 80.0, "ppr_per_game": 20.0,
+         "passing_yards": 1000, "passing_tds": 6, "interceptions": 3},
+    ]
+    baseline = _compute_qb_baseline(seasons)
+    assert baseline == {}
+
+
+def test_qb_ppr_scoring_uses_correct_formula():
+    """QB PPR ≈ pass_td*4 + pass_yds*0.04 + rush_yds*0.1 + rush_td*6 - INT*2 + rec*1."""
+    from backend.agents.player_profiles import _compute_qb_baseline
+
+    # Mahomes-like season: 4500 yards, 35 TDs, 12 INT, 300 rush, 2 rush TD
+    # Expected PPR: 4500*0.04 + 35*4 + 12*(-2) + 300*0.1 + 2*6 = 180+140-24+30+12 = 338
+    # With fantasy_points_ppr directly = ~338 + some receptions
+    seasons = [
+        {"year": 2024, "games": 17, "fantasy_points_ppr": 345.0, "ppr_per_game": 20.3,
+         "passing_yards": 4500, "passing_tds": 35, "interceptions": 12,
+         "rushing_yards": 300, "rushing_tds": 2},
+    ]
+    baseline = _compute_qb_baseline(seasons)
+    assert baseline != {}
+    # Should be close to 345 (ppr_per_game * 17 = 20.3*17 = 345.1)
+    assert abs(baseline["ppr_points"] - 345.0) < 5
+
+
+def test_qb_baseline_with_decline():
+    """QB with career decline gets weighted baseline."""
+    from backend.agents.player_profiles import _compute_qb_baseline
+
+    seasons = [
+        {"year": 2022, "games": 17, "fantasy_points_ppr": 400.0, "ppr_per_game": 23.5,
+         "passing_yards": 4800, "passing_tds": 35, "interceptions": 8},
+        {"year": 2023, "games": 17, "fantasy_points_ppr": 380.0, "ppr_per_game": 22.4,
+         "passing_yards": 4500, "passing_tds": 30, "interceptions": 10},
+        {"year": 2024, "games": 16, "fantasy_points_ppr": 220.0, "ppr_per_game": 13.8,
+         "passing_yards": 2800, "passing_tds": 15, "interceptions": 14},
+    ]
+    baseline = _compute_qb_baseline(seasons)
+    assert baseline != {}
+    assert baseline.get("declining") is True
+    # Flat average ppg = (23.5+22.4+13.8)/3 = 19.9
+    # Decline-weighted should be closer to 13.8 than 19.9
+    assert baseline["ppg"] < 19.9
+
+
+def test_qb_included_in_skill_positions():
+    """SKILL_POSITIONS includes QB."""
+    from backend.agents.player_profiles import SKILL_POSITIONS
+    assert "QB" in SKILL_POSITIONS
+
+
+def test_qb_mobility_elite():
+    """QB with > 40 rush ypg is elite mobility."""
+    from backend.agents.team_systems import _derive_qb_mobility
+    qb_data = {"games_played": 17, "rushing_yards": 850}  # 50 ypg
+    assert _derive_qb_mobility(qb_data) == "elite"
+
+
+def test_qb_mobility_pocket_only():
+    """QB with < 15 rush ypg is pocket_only."""
+    from backend.agents.team_systems import _derive_qb_mobility
+    qb_data = {"games_played": 17, "rushing_yards": 100}  # 5.9 ypg
+    assert _derive_qb_mobility(qb_data) == "pocket_only"

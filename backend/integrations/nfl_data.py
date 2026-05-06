@@ -307,6 +307,185 @@ async def get_snap_pct(season: int) -> pd.DataFrame:
 # Draft pick data
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# QB and O-line aggregation functions
+# ---------------------------------------------------------------------------
+
+
+def compute_qb_season_stats(season: int) -> pd.DataFrame:
+    """
+    Per-QB season aggregates from weekly stats + NGS passing data.
+
+    Returns one row per QB with passing, rushing, and efficiency metrics.
+    Cached as parquet.
+    """
+    cache_name = f"qb_season_{season}"
+    path = _cache_path(cache_name)
+    if path.exists():
+        return pd.read_parquet(path)
+
+    weekly = fetch_weekly_stats(season)
+
+    # QB rows, regular season only
+    qbs = weekly[weekly["position"] == "QB"].copy()
+    if "season_type" in qbs.columns:
+        qbs = qbs[qbs["season_type"] == "REG"].copy()
+
+    if qbs.empty:
+        empty = pd.DataFrame()
+        empty.to_parquet(path, index=False)
+        return empty
+
+    # Season-level aggregation per QB
+    agg = (
+        qbs.groupby(["player_id", "player_name", "recent_team"])
+        .agg(
+            games=("week", "count"),
+            completions=("completions", "sum"),
+            attempts=("attempts", "sum"),
+            passing_yards=("passing_yards", "sum"),
+            passing_tds=("passing_tds", "sum"),
+            interceptions=("interceptions", "sum"),
+            sacks=("sacks", "sum"),
+            rushing_yards=("rushing_yards", "sum"),
+            rushing_tds=("rushing_tds", "sum"),
+            carries=("carries", "sum"),
+            fantasy_points_ppr=("fantasy_points_ppr", "sum"),
+        )
+        .reset_index()
+    )
+
+    # Derived metrics (use float division to avoid NAType round issues)
+    agg["completion_pct"] = (
+        agg["completions"].astype(float) / agg["attempts"].replace(0, float("nan"))
+    ).round(3)
+    agg["ppr_per_game"] = (
+        agg["fantasy_points_ppr"].astype(float) / agg["games"].replace(0, float("nan"))
+    ).round(1)
+    agg["rushing_yards_per_game"] = (
+        agg["rushing_yards"].astype(float) / agg["games"].replace(0, float("nan"))
+    ).round(1)
+    agg["season"] = season
+
+    # Merge NGS passing data (CPOE, time_to_throw, aggressiveness)
+    try:
+        ngs = fetch_ngs_data("passing", season)
+        if not ngs.empty:
+            # Filter to season-level (week==0) REG rows
+            ngs_season = ngs[
+                (ngs["season_type"] == "REG") & (ngs["week"] == 0)
+            ].copy()
+            if not ngs_season.empty:
+                ngs_cols = ngs_season[["player_gsis_id", "completion_percentage_above_expectation",
+                                       "avg_time_to_throw", "aggressiveness"]].copy()
+                ngs_cols = ngs_cols.rename(columns={
+                    "player_gsis_id": "player_id",
+                    "completion_percentage_above_expectation": "cpoe",
+                })
+                agg = agg.merge(ngs_cols, on="player_id", how="left")
+    except Exception as exc:
+        logger.warning("Could not merge NGS passing data for %d: %s", season, exc)
+
+    # Ensure NGS columns exist even if merge failed
+    for col in ("cpoe", "avg_time_to_throw", "aggressiveness"):
+        if col not in agg.columns:
+            agg[col] = pd.NA
+
+    agg.to_parquet(path, index=False)
+    return agg
+
+
+def compute_team_oline_stats(season: int) -> pd.DataFrame:
+    """
+    Per-team O-line metrics: sack_rate and avg_time_to_throw.
+
+    Sack rate = total_sacks / total_dropbacks (pass attempts + sacks).
+    Time to throw from NGS passing data aggregated to team level.
+    Cached as parquet.
+    """
+    cache_name = f"oline_stats_{season}"
+    path = _cache_path(cache_name)
+    if path.exists():
+        return pd.read_parquet(path)
+
+    weekly = fetch_weekly_stats(season)
+
+    # QB rows, regular season only
+    qbs = weekly[weekly["position"] == "QB"].copy()
+    if "season_type" in qbs.columns:
+        qbs = qbs[qbs["season_type"] == "REG"].copy()
+
+    if qbs.empty:
+        empty = pd.DataFrame()
+        empty.to_parquet(path, index=False)
+        return empty
+
+    # Aggregate sacks/attempts per team
+    team_agg = (
+        qbs.groupby("recent_team")
+        .agg(
+            total_attempts=("attempts", "sum"),
+            total_sacks=("sacks", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"recent_team": "team"})
+    )
+
+    # Dropbacks = attempts + sacks (sacks don't count as pass attempts in weekly)
+    team_agg["total_dropbacks"] = team_agg["total_attempts"] + team_agg["total_sacks"]
+    team_agg["sack_rate"] = (
+        team_agg["total_sacks"].astype(float) / team_agg["total_dropbacks"].replace(0, float("nan"))
+    ).round(4)
+    team_agg["season"] = season
+
+    # Merge team-level avg_time_to_throw from NGS
+    try:
+        ngs = fetch_ngs_data("passing", season)
+        if not ngs.empty:
+            ngs_season = ngs[
+                (ngs["season_type"] == "REG") & (ngs["week"] == 0)
+            ].copy()
+            if not ngs_season.empty and "avg_time_to_throw" in ngs_season.columns:
+                # Weight by attempts for team-level average
+                ngs_season = ngs_season[["team_abbr", "avg_time_to_throw", "attempts"]].copy()
+                ngs_season["weighted_ttt"] = ngs_season["avg_time_to_throw"] * ngs_season["attempts"]
+                team_ttt = (
+                    ngs_season.groupby("team_abbr")
+                    .agg(total_weighted_ttt=("weighted_ttt", "sum"), total_att=("attempts", "sum"))
+                    .reset_index()
+                )
+                team_ttt["avg_time_to_throw"] = (
+                    team_ttt["total_weighted_ttt"].astype(float) / team_ttt["total_att"].replace(0, float("nan"))
+                ).round(3)
+                team_ttt = team_ttt[["team_abbr", "avg_time_to_throw"]].rename(
+                    columns={"team_abbr": "team"}
+                )
+                team_agg = team_agg.merge(team_ttt, on="team", how="left")
+    except Exception as exc:
+        logger.warning("Could not merge NGS time_to_throw for %d: %s", season, exc)
+
+    if "avg_time_to_throw" not in team_agg.columns:
+        team_agg["avg_time_to_throw"] = pd.NA
+
+    team_agg.to_parquet(path, index=False)
+    return team_agg
+
+
+async def get_qb_season_stats(season: int) -> pd.DataFrame:
+    """Async wrapper for compute_qb_season_stats."""
+    return await asyncio.to_thread(compute_qb_season_stats, season)
+
+
+async def get_team_oline_stats(season: int) -> pd.DataFrame:
+    """Async wrapper for compute_team_oline_stats."""
+    return await asyncio.to_thread(compute_team_oline_stats, season)
+
+
+# ---------------------------------------------------------------------------
+# Draft capital and AV chart
+# ---------------------------------------------------------------------------
+
+
 def fetch_nfl_draft_picks(year: int) -> pd.DataFrame:
     """
     Return the NFL draft class for a given year.

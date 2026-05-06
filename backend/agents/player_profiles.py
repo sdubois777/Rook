@@ -38,7 +38,7 @@ from backend.utils.seasons import get_current_season, get_analysis_seasons, get_
 
 logger = logging.getLogger(__name__)
 
-SKILL_POSITIONS = {"WR", "RB", "TE"}
+SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -67,6 +67,7 @@ Each object must match this schema exactly:
 }
 
 role_classification MUST match the player's actual position — never cross-assign roles:
+  QB players → use only: qb_elite, qb_starter, qb_streamer, qb_backup
   WR players → use only: wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
   RB players → use only: workhorse, early_down_thumper, pass_catching_specialist, committee_back
   TE players → use only: te1_inline, te1_pass_catcher, te2_blocker, te2_flex
@@ -79,7 +80,7 @@ Rules:
   new scheme elevates this player type, efficiency metrics already exceed production statistics.
 - situation_score: strong for high system grade + elite QB + no displacement;
   volatile or weak for displaced/committee flags or rookie QB; moderate otherwise.
-- Age curve peaks: RB 24-26, WR 24-29, TE 26-29. ascending = before peak; descending = past peak.
+- Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29. ascending = before peak; descending = past peak.
 - Contract year flag (contract_year=true) → slight upward bias in trajectory.
 - compound_risk_flag on team → all players lean toward volatile/weak situation_score.
 
@@ -266,6 +267,64 @@ class PlayerProfilesAgent(BaseAgent):
         if candidates.empty:
             return None
         return _extract(candidates.sort_values("games", ascending=False).iloc[0])
+
+    def _get_qb_season(
+        self, player_name: str, team: str, season: int,
+        nfl_player_id: str | None = None,
+    ) -> dict | None:
+        """Return QB-specific season stats from cached qb_season data."""
+        qb_df = self._data_cache.get(f"qb_season_{season}")
+        if qb_df is None:
+            return None
+
+        # Match by player_id first (most reliable)
+        match = pd.DataFrame()
+        if nfl_player_id and "player_id" in qb_df.columns:
+            match = qb_df[qb_df["player_id"] == nfl_player_id]
+
+        # Fallback: name + team
+        if match.empty:
+            normalized = normalize_player_name(player_name)
+            if "player_name" in qb_df.columns:
+                qb_df_team = qb_df[qb_df["recent_team"] == team]
+                for _, row in qb_df_team.iterrows():
+                    if normalize_player_name(str(row.get("player_name", ""))) == normalized:
+                        match = qb_df_team[qb_df_team.index == row.name]
+                        break
+
+        if match.empty:
+            return None
+
+        row = match.iloc[0]
+        games = int(row.get("games", 0) or 0)
+        if games == 0:
+            return None
+
+        def _safe_float(col: str, decimals: int = 1):
+            v = row.get(col)
+            try:
+                return round(float(v), decimals) if v is not None and pd.notna(v) else None
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "games":              games,
+            "recent_team":        str(row.get("recent_team", team)),
+            "completions":        int(row.get("completions", 0) or 0),
+            "attempts":           int(row.get("attempts", 0) or 0),
+            "completion_pct":     _safe_float("completion_pct", 3),
+            "passing_yards":      int(row.get("passing_yards", 0) or 0),
+            "passing_tds":        int(row.get("passing_tds", 0) or 0),
+            "interceptions":      int(row.get("interceptions", 0) or 0),
+            "sacks":              int(row.get("sacks", 0) or 0),
+            "cpoe":               _safe_float("cpoe", 2),
+            "avg_time_to_throw":  _safe_float("avg_time_to_throw", 3),
+            "rushing_yards":      int(row.get("rushing_yards", 0) or 0),
+            "rushing_tds":        int(row.get("rushing_tds", 0) or 0),
+            "carries":            int(row.get("carries", 0) or 0),
+            "fantasy_points_ppr": _safe_float("fantasy_points_ppr", 1),
+            "ppr_per_game":       _safe_float("ppr_per_game", 1),
+        }
 
     def _get_snap_pct(self, player_name: str, team: str, season: int) -> float | None:
         """Return avg offensive snap % from the cached snap_pct df."""
@@ -477,6 +536,13 @@ class PlayerProfilesAgent(BaseAgent):
                 except Exception as exc:
                     logger.warning("Could not load ngs_rushing %d: %s", season, exc)
 
+            if f"qb_season_{season}" not in self._data_cache:
+                try:
+                    self._data_cache[f"qb_season_{season}"] = nfl_data.compute_qb_season_stats(season)
+                    logger.info("Loaded qb_season %d on demand", season)
+                except Exception as exc:
+                    logger.warning("Could not load qb_season %d: %s", season, exc)
+
         if f"rosters_{current_season}" not in self._data_cache:
             try:
                 self._data_cache[f"rosters_{current_season}"] = nfl_data.fetch_rosters(current_season)
@@ -522,37 +588,48 @@ class PlayerProfilesAgent(BaseAgent):
             seen.add(pname)
 
             nfl_pid = info.get("nfl_player_id")
+            pos = info["position"]
             seasons_data: list[dict] = []
-            for season in analysis_seasons:
-                stats = self._get_player_season_stats(pname, team, season, nfl_player_id=nfl_pid)
-                if stats:
-                    stats["year"]             = season
-                    # Only apply backup_qb flag when stats are from the current team.
-                    # Pre-trade seasons used the player's old team QB, not this team's.
-                    stat_team = stats.get("recent_team", team)
-                    stats["backup_qb_season"] = (
-                        backup_qb_flags.get(season, False)
-                        if stat_team.upper() == team.upper()
-                        else False
-                    )
-                    # Attach NGS efficiency data per position
-                    pos = info["position"]
-                    if pos in ("WR", "TE"):
-                        ngs = self._get_ngs_receiving_stats(pname, team, season)
-                        if ngs:
-                            stats.update(ngs)
-                    elif pos == "RB":
-                        ngs = self._get_ngs_rushing_stats(pname, team, season)
-                        if ngs:
-                            stats.update(ngs)
-                    seasons_data.append(stats)
-                else:
-                    seasons_data.append({
-                        "year":             season,
-                        "games":            0,
-                        "backup_qb_season": backup_qb_flags.get(season, False),
-                        "note":             "no data",
-                    })
+
+            if pos == "QB":
+                # QB branch: use QB-specific passing stats
+                for season in analysis_seasons:
+                    stats = self._get_qb_season(pname, team, season, nfl_player_id=nfl_pid)
+                    if stats:
+                        stats["year"] = season
+                        seasons_data.append(stats)
+                    else:
+                        seasons_data.append({"year": season, "games": 0, "note": "no data"})
+            else:
+                # WR/RB/TE branch: use target_share data
+                for season in analysis_seasons:
+                    stats = self._get_player_season_stats(pname, team, season, nfl_player_id=nfl_pid)
+                    if stats:
+                        stats["year"]             = season
+                        # Only apply backup_qb flag when stats are from the current team.
+                        stat_team = stats.get("recent_team", team)
+                        stats["backup_qb_season"] = (
+                            backup_qb_flags.get(season, False)
+                            if stat_team.upper() == team.upper()
+                            else False
+                        )
+                        # Attach NGS efficiency data per position
+                        if pos in ("WR", "TE"):
+                            ngs = self._get_ngs_receiving_stats(pname, team, season)
+                            if ngs:
+                                stats.update(ngs)
+                        elif pos == "RB":
+                            ngs = self._get_ngs_rushing_stats(pname, team, season)
+                            if ngs:
+                                stats.update(ngs)
+                        seasons_data.append(stats)
+                    else:
+                        seasons_data.append({
+                            "year":             season,
+                            "games":            0,
+                            "backup_qb_season": backup_qb_flags.get(season, False),
+                            "note":             "no data",
+                        })
 
             # Skip only players with zero history AND no dependency flags
             # (rookies with dependency flags still get profiled; pure depth with nothing to say are skipped)
@@ -867,9 +944,12 @@ async def _write_profiles(
                 team_ctx = context.get("team_system", {})
                 rookie_prof = _build_rookie_profile(ctx_player, team_ctx)
                 clean_baseline = rookie_prof["clean_season_baseline"]
+            elif ctx_player.get("position") == "QB":
+                # QB baseline uses fantasy_points_ppr (includes passing scoring)
+                clean_baseline = _compute_qb_baseline(seasons)
+                rookie_prof    = {}
             else:
-                # Compute clean_season_baseline in Python — do NOT trust model output.
-                # Rule: average across seasons with games >= 10 and not backup_qb_season.
+                # WR/RB/TE: compute clean_season_baseline in Python — do NOT trust model output.
                 # PPR formula: receptions×1 + (rec_yards+rush_yards)×0.1 + tds×6
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
@@ -920,9 +1000,80 @@ async def _write_profiles(
             written_ids.add(player_id)
             written += 1
 
+        # --- Second pass: QBs not in model output get Python-only profiles ---
+        for ctx_player in ctx_players:
+            if ctx_player.get("position") != "QB":
+                continue
+            pname = ctx_player["name"]
+            nfl_pid = ctx_player.get("nfl_player_id")
+
+            # Resolve DB ID (same logic as above)
+            player_id: str | None = None
+            if nfl_pid:
+                player_id = nfl_id_to_db.get(nfl_pid)
+            if not player_id:
+                player_id = name_to_db.get(normalize_player_name(pname))
+            if not player_id or player_id in written_ids:
+                continue  # already written above or can't resolve
+
+            seasons = ctx_player.get("seasons", [])
+            clean_baseline = _compute_qb_baseline(seasons)
+            if not clean_baseline:
+                continue  # not enough data
+
+            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
+            session.add(record)
+            record.role_classification = _derive_qb_role(clean_baseline)
+            record.clean_season_baseline = clean_baseline
+            record.anomalous_seasons_excluded = []
+            record.is_rookie = bool(ctx_player.get("is_rookie", False))
+            record.profile_source = "nfl_history"
+            record.confidence = "medium"
+            record.age_curve_position = _derive_qb_age_curve(ctx_player.get("age"))
+            record.efficiency_signal = _derive_qb_efficiency(clean_baseline)
+
+            written_ids.add(player_id)
+            written += 1
+            logger.debug("QB Python-only profile: %s (%s)", pname, team)
+
         await session.commit()
 
     return written
+
+
+def _derive_qb_role(baseline: dict) -> str:
+    """Derive QB role classification from PPG baseline."""
+    ppg = baseline.get("ppg", 0)
+    if ppg >= 22:
+        return "qb_elite"
+    if ppg >= 18:
+        return "qb_starter"
+    if ppg >= 14:
+        return "qb_streamer"
+    return "qb_backup"
+
+
+def _derive_qb_age_curve(age: int | None) -> str:
+    """Derive age curve position for QBs (peak 26-32)."""
+    if age is None:
+        return "peak"
+    if age < 26:
+        return "ascending"
+    if age <= 32:
+        return "peak"
+    return "descending"
+
+
+def _derive_qb_efficiency(baseline: dict) -> str:
+    """Derive efficiency signal from QB PPG."""
+    ppg = baseline.get("ppg", 0)
+    if ppg >= 22:
+        return "elite"
+    if ppg >= 18:
+        return "above_avg"
+    if ppg >= 14:
+        return "average"
+    return "below_avg"
 
 
 def _compute_season_averages(
@@ -953,6 +1104,77 @@ def _compute_season_averages(
 
 
 _MINIMUM_TOUCHES_FOR_PROJECTION = 50  # career receptions + carries across all seasons
+_MINIMUM_QB_GAMES = 10  # minimum career games for QB projection
+
+
+def _compute_qb_baseline(seasons: list[dict]) -> dict:
+    """
+    Compute clean_season_baseline for QBs using fantasy_points_ppr directly.
+
+    QB PPR scoring includes passing (which the rec/rush formula doesn't capture):
+        passing_td × 4 + passing_yards × 0.04 + INT × -2 +
+        rushing_yards × 0.1 + rushing_td × 6 + receptions × 1
+
+    Clean season = games >= 10.
+    Minimum threshold: 10+ career games across all seasons.
+    Career decline detection: same 65% rule as skill positions.
+    """
+    total_games = sum(s.get("games", 0) for s in seasons)
+    if total_games < _MINIMUM_QB_GAMES:
+        return {}
+
+    clean = [s for s in seasons if s.get("games", 0) >= 10]
+    if not clean:
+        clean = [s for s in seasons if s.get("games", 0) > 0]
+    if not clean:
+        return {}
+
+    def _season_ppg(s: dict) -> float:
+        fp = s.get("fantasy_points_ppr") or s.get("ppr_per_game", 0)
+        games = s.get("games", 1)
+        if s.get("ppr_per_game"):
+            return float(s["ppr_per_game"])
+        return float(fp) / games if games > 0 else 0.0
+
+    # Career decline detection
+    sorted_clean = sorted(clean, key=lambda s: s.get("year", 0))
+    season_ppgs = [_season_ppg(s) for s in sorted_clean]
+    peak_ppg = max(season_ppgs) if season_ppgs else 0
+    recent_ppg = season_ppgs[-1] if season_ppgs else 0
+
+    is_declining = peak_ppg > 0 and recent_ppg < peak_ppg * 0.65
+
+    if is_declining and len(sorted_clean) >= 2:
+        career_ppg = sum(season_ppgs) / len(season_ppgs)
+        avg_ppg = recent_ppg * 0.6 + career_ppg * 0.4
+    else:
+        avg_ppg = sum(season_ppgs) / len(season_ppgs)
+
+    ppr_points = round(avg_ppg * 17, 1)  # 17-game projection
+
+    # Passing stats averages
+    pass_yds_pg = sum(
+        s.get("passing_yards", 0) / max(s.get("games", 1), 1) for s in clean
+    ) / len(clean)
+    pass_tds_pg = sum(
+        s.get("passing_tds", 0) / max(s.get("games", 1), 1) for s in clean
+    ) / len(clean)
+    avg_cpoe = None
+    cpoe_vals = [s.get("cpoe") for s in clean if s.get("cpoe") is not None]
+    if cpoe_vals:
+        avg_cpoe = round(sum(cpoe_vals) / len(cpoe_vals), 2)
+
+    result = {
+        "ppr_points": ppr_points,
+        "ppg": round(avg_ppg, 1),
+        "passing_yards_pg": round(pass_yds_pg, 1),
+        "passing_tds_pg": round(pass_tds_pg, 2),
+    }
+    if avg_cpoe is not None:
+        result["cpoe"] = avg_cpoe
+    if is_declining:
+        result["declining"] = True
+    return result
 
 
 def _compute_clean_baseline(seasons: list[dict]) -> dict:

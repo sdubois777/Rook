@@ -111,10 +111,21 @@ class TeamSystemsAgent(BaseAgent):
         No API calls here — only nfl_data_py and DB lookups.
         """
         current_season = get_current_season()
+        analysis_seasons = get_analysis_seasons(3)
 
-        oline = await self._get_oline_data(team, current_season)
-        qb    = await self._get_qb_data(team, current_season)
-        pers  = await self._get_personnel_data(team, current_season)
+        # Use most recent season with available weekly data for stats.
+        # current_season (2025) may not have data yet if season hasn't started.
+        stats_season = current_season
+        if f"weekly_{current_season}" not in self._data_cache:
+            # Fall back to most recent available
+            for s in sorted(analysis_seasons, reverse=True):
+                if f"weekly_{s}" in self._data_cache:
+                    stats_season = s
+                    break
+
+        oline = await self._get_oline_data(team, stats_season)
+        qb    = await self._get_qb_data(team, stats_season)
+        pers  = await self._get_personnel_data(team, stats_season)
         roster = await self._get_roster_summary(team, current_season)
 
         return {
@@ -148,14 +159,31 @@ class TeamSystemsAgent(BaseAgent):
 
         total_attempts = team_df["attempts"].sum()
         total_sacks    = team_df["sacks"].sum() if "sacks" in team_df.columns else 0
-        sack_rate      = float(total_sacks / total_attempts) if total_attempts > 0 else None
+        # Dropbacks = attempts + sacks (sacks don't count as pass attempts)
+        total_dropbacks = int(total_attempts + total_sacks)
+        sack_rate      = float(total_sacks / total_dropbacks) if total_dropbacks > 0 else None
+
+        # Get avg_time_to_throw from pre-loaded oline stats
+        avg_ttt = None
+        oline_stats = self._data_cache.get(f"oline_stats_{season}")
+        if oline_stats is not None and not oline_stats.empty:
+            import pandas as pd
+            team_row = oline_stats[oline_stats["team"] == team]
+            if not team_row.empty:
+                ttt_val = team_row.iloc[0].get("avg_time_to_throw")
+                if ttt_val is not None and pd.notna(ttt_val):
+                    avg_ttt = round(float(ttt_val), 3)
 
         return {
             "team": team,
             "season": season,
-            "total_dropbacks": int(total_attempts),
+            "total_dropbacks": total_dropbacks,
             "sack_rate": round(sack_rate, 4) if sack_rate is not None else None,
-            "note": "Sack rate is a proxy for pass protection. Supplement with your knowledge of this team's O-line personnel.",
+            "avg_time_to_throw": avg_ttt,
+            "note": (
+                "Use sack_rate and avg_time_to_throw as primary inputs for pass_protection_grade. "
+                "Lower sack_rate (<5%) and moderate time_to_throw (~2.6-2.8s) indicate good protection."
+            ),
         }
 
     async def _get_qb_data(self, team: str, season: int) -> dict:
@@ -199,6 +227,8 @@ class TeamSystemsAgent(BaseAgent):
                 round(float(starter_df["passing_air_yards"].sum() / total_att), 2)
                 if total_att > 0 else None
             ),
+            "rushing_yards": int(starter_df["rushing_yards"].sum()) if "rushing_yards" in starter_df.columns else 0,
+            "rushing_tds": int(starter_df["rushing_tds"].sum()) if "rushing_tds" in starter_df.columns else 0,
             "dakota": (
                 round(float(starter_df["dakota"].mean()), 3)
                 if "dakota" in starter_df.columns and not starter_df["dakota"].isna().all()
@@ -297,6 +327,13 @@ class TeamSystemsAgent(BaseAgent):
             # Enforce team_abbr from our canonical list
             data["team_abbr"] = team
 
+            # Attach Python-computed numerics (NOT from model output)
+            oline_data = context.get("oline", {})
+            qb_data = context.get("qb_metrics", {})
+            data["_sack_rate"] = oline_data.get("sack_rate")
+            data["_avg_time_to_throw"] = oline_data.get("avg_time_to_throw")
+            data["_qb_mobility"] = _derive_qb_mobility(qb_data)
+
             async with AsyncSessionLocal() as session:
                 await _upsert_team_system(session, data)
 
@@ -332,6 +369,15 @@ class TeamSystemsAgent(BaseAgent):
                 except Exception as exc:
                     logger.warning("Could not pre-load weekly stats %d: %s", season, exc)
 
+            # Pre-load oline stats (sack_rate + avg_time_to_throw)
+            oline_key = f"oline_stats_{season}"
+            if oline_key not in self._data_cache:
+                try:
+                    self._data_cache[oline_key] = nfl_data.compute_team_oline_stats(season)
+                    logger.info("Cached oline stats %d", season)
+                except Exception as exc:
+                    logger.warning("Could not pre-load oline stats %d: %s", season, exc)
+
         rosters_key = f"rosters_{current_season}"
         if rosters_key not in self._data_cache:
             try:
@@ -356,6 +402,30 @@ class TeamSystemsAgent(BaseAgent):
         success = sum(1 for v in results.values() if v)
         logger.info("Team Systems pipeline complete: %d/32 teams successful", success)
         return results
+
+
+# ---------------------------------------------------------------------------
+# QB mobility helper
+# ---------------------------------------------------------------------------
+
+
+def _derive_qb_mobility(qb_data: dict) -> str | None:
+    """
+    Classify QB mobility from rushing stats.
+    > 40 rush yards/game = elite (Lamar, Hurts)
+    15-40 = average
+    < 15 = pocket_only
+    """
+    games = qb_data.get("games_played", 0)
+    rush_yards = qb_data.get("rushing_yards", 0) if isinstance(qb_data.get("rushing_yards"), (int, float)) else 0
+    if not games or games < 5:
+        return None
+    rush_ypg = rush_yards / games
+    if rush_ypg > 40:
+        return "elite"
+    if rush_ypg >= 15:
+        return "average"
+    return "pocket_only"
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +472,11 @@ async def _upsert_team_system(session: AsyncSession, data: dict) -> None:
     record.system_ceiling              = data.get("system_ceiling")
     record.system_grade                = data.get("system_grade")
     record.notes                       = data.get("notes")
+
+    # Python-computed numerics (prefixed with _ in data dict)
+    record.sack_rate                   = data.get("_sack_rate")
+    record.avg_time_to_throw           = data.get("_avg_time_to_throw")
+    record.qb_mobility                 = data.get("_qb_mobility")
 
     await session.commit()
     logger.info(

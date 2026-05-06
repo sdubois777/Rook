@@ -45,6 +45,11 @@ class TeamSystem(Base):
     personnel_tendency: Mapped[Optional[str]] = mapped_column(String(10))  # 11/12/21/etc
     red_zone_philosophy: Mapped[Optional[str]] = mapped_column(String(20)) # wr1/te/rb/spread
 
+    # Numeric O-line metrics (Python-computed, stored for querying)
+    sack_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4))      # sacks / dropbacks
+    avg_time_to_throw: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))  # seconds
+    qb_mobility: Mapped[Optional[str]] = mapped_column(String(20))           # elite/average/pocket_only
+
     # System summary
     system_ceiling: Mapped[Optional[str]] = mapped_column(String(20))  # high/moderate/low
     system_grade: Mapped[Optional[str]] = mapped_column(String(5))     # A+, A, A-, B+, ...

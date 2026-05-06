@@ -288,3 +288,49 @@ async def test_output_written_to_team_systems_table():
     call_args = mock_upsert.call_args
     written_data = call_args[0][1]  # second positional arg is the data dict
     assert written_data["team_abbr"] == "LAC"
+
+
+# ---------------------------------------------------------------------------
+# O-line numerics and QB mobility tests
+# ---------------------------------------------------------------------------
+
+
+def test_qb_mobility_derived_from_rushing():
+    """QB mobility is derived from rushing yards per game."""
+    from backend.agents.team_systems import _derive_qb_mobility
+
+    # Elite rusher (Lamar Jackson type)
+    assert _derive_qb_mobility({"games_played": 17, "rushing_yards": 850}) == "elite"
+    # Average (some scrambling)
+    assert _derive_qb_mobility({"games_played": 17, "rushing_yards": 400}) == "average"
+    # Pocket passer
+    assert _derive_qb_mobility({"games_played": 17, "rushing_yards": 100}) == "pocket_only"
+    # Not enough games
+    assert _derive_qb_mobility({"games_played": 3, "rushing_yards": 200}) is None
+
+
+@pytest.mark.asyncio
+async def test_sack_rate_passed_to_upsert():
+    """run_for_team attaches Python-computed sack_rate to upsert data."""
+    from backend.agents.team_systems import _derive_qb_mobility
+
+    agent = TeamSystemsAgent(dry_run=False)
+
+    context = {
+        "team": "KC",
+        "oline": {"sack_rate": 0.0512, "avg_time_to_throw": 2.8},
+        "qb_metrics": {"games_played": 17, "rushing_yards": 200},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    response = _minimal_team_system("KC")
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", new=AsyncMock(return_value=json.dumps(response))):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()) as mock_upsert:
+                await agent.run_for_team("KC")
+
+    written_data = mock_upsert.call_args[0][1]
+    assert written_data["_sack_rate"] == 0.0512
+    assert written_data["_avg_time_to_throw"] == 2.8
+    assert written_data["_qb_mobility"] == "pocket_only"
