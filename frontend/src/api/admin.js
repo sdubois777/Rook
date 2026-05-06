@@ -16,3 +16,8 @@ export async function fetchCostReport(days = 30) {
   const { data } = await api.get('/admin/cost-report', { params: { days } })
   return data
 }
+
+export async function fetchMarketValueStatus() {
+  const { data } = await api.get('/pipeline/market-values/status')
+  return data
+}

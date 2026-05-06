@@ -88,8 +88,10 @@ async def get_auction_values(format: str = "ppr") -> list[dict]
 async def get_adp(format: str = "ppr") -> list[dict]
 ```
 
-**ASK USER** if they want to run this now or defer until closer to draft.
+The scraper is implemented and wired to `scripts/refresh_market_values.py` (CLI)
+and `POST /pipeline/refresh-market-values` (API). Also triggerable from the Pipeline Admin UI.
 Market values should be refreshed within 72 hours of the actual draft.
+FantasyPros publishes data ~July/August — running before that returns empty (no error).
 
 ### 5. Data seeding script
 Create `scripts/seed_nfl_data.py`:

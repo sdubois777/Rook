@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Star, StarOff } from 'lucide-react'
 import { fetchDraftboard } from '../api/draftboard'
+import { fetchMarketValueStatus } from '../api/admin'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import PositionBadge from '../components/shared/PositionBadge'
@@ -48,6 +49,12 @@ export default function DraftBoard() {
       }),
   })
 
+  const { data: marketStatus } = useQuery({
+    queryKey: ['market-value-status'],
+    queryFn: fetchMarketValueStatus,
+    staleTime: 5 * 60 * 1000,
+  })
+
   const tiers = data?.tiers || {}
   const tierKeys = Object.keys(tiers).sort((a, b) => parseInt(a) - parseInt(b))
   const totalPlayers = data?.total_players || 0
@@ -63,6 +70,19 @@ export default function DraftBoard() {
         <h1 className="text-2xl font-semibold text-slate-100">Draft Board</h1>
         <span className="text-sm text-slate-500">{totalPlayers} players</span>
       </div>
+
+      {marketStatus?.year && (
+        <div className={`text-xs px-3 py-1.5 rounded mb-3 ${
+          marketStatus.is_current_season
+            ? 'bg-emerald-900/30 text-emerald-400'
+            : 'bg-amber-900/30 text-amber-400'
+        }`}>
+          {marketStatus.is_current_season
+            ? `Using ${marketStatus.year} auction values — current season`
+            : `Using ${marketStatus.year} auction values — refresh in July when ${marketStatus.year + 1} data is available`
+          }
+        </div>
+      )}
 
       <FilterBar>
         <FilterSelect

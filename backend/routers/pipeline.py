@@ -122,6 +122,81 @@ async def sync_yahoo_players():
     )
 
 
+@router.post("/refresh-market-values", response_model=PipelineResponse)
+async def refresh_market_values():
+    """
+    Scrape FantasyPros auction values and update market_value fields on players.
+    Uses Playwright (slow) — runs synchronously so caller sees results.
+    Automatically determines best year (current if July+, previous otherwise).
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.engines.market_values import sync_market_values
+
+    async with AsyncSessionLocal() as session:
+        result = await sync_market_values(session, scoring_format="ppr")
+
+    year = result.get("year")
+    is_current = result.get("is_current_season")
+    season_label = "current" if is_current else "previous"
+
+    return PipelineResponse(
+        status="complete",
+        message=(
+            f"Market values synced — "
+            f"{result['matched']} matched, {result['unmatched']} unmatched "
+            f"({year} {season_label} season)"
+        ),
+        details=result,
+    )
+
+
+@router.get("/market-values/status")
+async def market_values_status():
+    """
+    Return the most recent market value refresh metadata.
+    Used by the frontend to show source year and staleness warnings.
+    """
+    from sqlalchemy import select
+
+    from backend.database import AsyncSessionLocal
+    from backend.models.market_value_metadata import MarketValueMetadata
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(MarketValueMetadata)
+                .order_by(MarketValueMetadata.refreshed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if row is None:
+        return {
+            "source": None,
+            "year": None,
+            "is_current_season": None,
+            "player_count": 0,
+            "refreshed_at": None,
+            "note": "No market values loaded yet — run the refresh pipeline",
+        }
+
+    note = None
+    if not row.is_current_season:
+        note = (
+            f"Using {row.year} data — "
+            f"refresh in July when {row.year + 1} data is available"
+        )
+
+    return {
+        "source": row.source,
+        "year": row.year,
+        "is_current_season": row.is_current_season,
+        "player_count": row.player_count,
+        "refreshed_at": row.refreshed_at.isoformat() if row.refreshed_at else None,
+        "note": note,
+    }
+
+
 @router.post("/sync-league-settings", response_model=PipelineResponse)
 async def sync_league_settings():
     """

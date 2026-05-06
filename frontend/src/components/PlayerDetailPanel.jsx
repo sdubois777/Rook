@@ -89,7 +89,7 @@ export default function PlayerDetailPanel({ playerId }) {
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
                 <StatBox label="System" value={`$${player.baseline_value?.toFixed(0) || '--'}`} />
-                <StatBox label="Market" value={`$${player.market_value?.toFixed(0) || '--'}`} />
+                <StatBox label="Market (FP)" value={`$${player.market_value?.toFixed(0) || '--'}`} />
               </div>
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <StatBox label="Ceiling" value={`$${player.ceiling_value?.toFixed(0) || '--'}`} />

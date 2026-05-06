@@ -327,8 +327,11 @@ Anchor weights: T1=0.80, T2=0.40, T3=0.15, T4-5=0.00
 Scarcity: T1 RB=1.35, T1 WR=1.20, T1 QB=1.10, T2+=1.00
 
 ### 5. Market value refresh
-**ASK USER** to run `scripts/refresh_market_values.py` to pull current FantasyPros data.
+Run `scripts/refresh_market_values.py` to pull current FantasyPros auction data.
+Also available via `POST /pipeline/refresh-market-values` or the Pipeline Admin UI.
+Use `--dry-run` to preview matches, `--revalue` to re-run valuations after sync.
 Market values must be current within 72 hours of the draft.
+FantasyPros publishes auction values ~July/August — before that the script exits cleanly with no data.
 
 ### 6. Value gap computation
 `value_gap = system_value - market_value`

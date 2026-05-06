@@ -88,13 +88,15 @@ REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
 # Injury recovery discount applied to PPR baseline for players with major injuries
 POST_MAJOR_INJURY_DISCOUNT = 0.75  # 25% discount
 
-# Replacement rank cutoff — lowest draftable starter at each position
-REPLACEMENT_RANK: dict[str, int] = {
-    "QB": 12,
-    "RB": 30,
-    "WR": 42,
-    "TE": 12,
+# Default roster slots for a standard Yahoo PPR league
+DEFAULT_ROSTER_SLOTS: dict[str, int] = {
+    "QB": 1, "RB": 2, "WR": 2, "FLEX": 1, "TE": 1,
+    "K": 1, "DEF": 1, "BENCH": 7,
 }
+
+# FLEX and bench allocation splits by position (empirical auction norms)
+_FLEX_SPLIT: dict[str, float] = {"RB": 0.30, "WR": 0.60, "TE": 0.10}
+_BENCH_SPLIT: dict[str, float] = {"QB": 0.08, "RB": 0.28, "WR": 0.35, "TE": 0.14}
 
 # Draftable positions for this pass
 DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
@@ -243,6 +245,136 @@ def _to_dec(value: float | Decimal) -> Decimal:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic pool sizes and replacement levels (FIX 1 + FIX 2)
+# ---------------------------------------------------------------------------
+
+
+def get_draftable_pool_sizes(
+    teams: int = LEAGUE_TEAMS,
+    roster_slots: dict | None = None,
+) -> dict[str, int]:
+    """
+    Calculate how many players at each position realistically get drafted.
+
+    Formula per position:
+      starters = roster_slots[position] × team_count
+      + flex allocation (split 60% WR, 30% RB, 10% TE)
+      + bench depth allocation
+
+    Returns dict like {"QB": 19, "RB": 52, "WR": 60, "TE": 25}.
+    """
+    slots = roster_slots or DEFAULT_ROSTER_SLOTS
+
+    qb_starters = slots.get("QB", 1) * teams
+    rb_starters = slots.get("RB", 2) * teams
+    wr_starters = slots.get("WR", 2) * teams
+    te_starters = slots.get("TE", 1) * teams
+
+    flex = slots.get("FLEX", 1)
+    bench = slots.get("BENCH", 7)
+
+    rb_flex = round(flex * teams * _FLEX_SPLIT["RB"])
+    wr_flex = round(flex * teams * _FLEX_SPLIT["WR"])
+    te_flex = round(flex * teams * _FLEX_SPLIT["TE"])
+
+    qb_bench = round(bench * teams * _BENCH_SPLIT["QB"])
+    rb_bench = round(bench * teams * _BENCH_SPLIT["RB"])
+    wr_bench = round(bench * teams * _BENCH_SPLIT["WR"])
+    te_bench = round(bench * teams * _BENCH_SPLIT["TE"])
+
+    return {
+        "QB": qb_starters + qb_bench,
+        "RB": rb_starters + rb_flex + rb_bench,
+        "WR": wr_starters + wr_flex + wr_bench,
+        "TE": te_starters + te_flex + te_bench,
+    }
+
+
+def calculate_replacement_level(
+    sorted_pprs: list[float],
+    pool_size: int,
+) -> float:
+    """
+    Replacement level = projected PPR of the last player in the draftable pool.
+
+    Args:
+        sorted_pprs: PPR values sorted descending.
+        pool_size: Number of players drafted at this position.
+
+    Returns the replacement-level PPR (season total).
+    """
+    if not sorted_pprs:
+        return 0.0
+    if len(sorted_pprs) >= pool_size:
+        return sorted_pprs[pool_size - 1]
+    return sorted_pprs[-1]
+
+
+def sanity_check_valuations(
+    valued_players: list,
+    league_pool: float = LEAGUE_SKILL_DOLLAR_POOL,
+) -> list[str]:
+    """
+    Post-valuation sanity checks. Returns list of warning strings.
+    Empty list = all checks passed.
+
+    Args:
+        valued_players: Player objects with baseline_value set.
+        league_pool: Expected total dollar pool.
+    """
+    warnings: list[str] = []
+
+    by_pos: dict[str, list[float]] = {}
+    total = 0.0
+    for p in valued_players:
+        val = float(p.baseline_value or 0)
+        by_pos.setdefault(p.position, []).append(val)
+        total += val
+
+    # Check 1: Total value shouldn't exceed pool by >10%
+    if total > league_pool * 1.10:
+        warnings.append(
+            f"Total system value ${total:.0f} exceeds "
+            f"pool ${league_pool:.0f} by >10%"
+        )
+
+    # Check 2: No position's max should exceed position cap
+    for pos, values in by_pos.items():
+        max_val = max(values) if values else 0
+        cap = MAX_REALISTIC_BID.get(pos, 80)
+        if max_val > cap:
+            warnings.append(
+                f"Max {pos} value ${max_val:.0f} exceeds cap ${cap}"
+            )
+
+    # Check 3: Reasonable number of players > $10
+    above_10 = sum(1 for vals in by_pos.values() for v in vals if v > 10)
+    if above_10 < 50 or above_10 > 140:
+        warnings.append(
+            f"Unusual distribution: {above_10} players "
+            f"above $10 (expected 50-140)"
+        )
+
+    # Check 4: Average values per position should be reasonable
+    # Averages include many $1 players below replacement, so lower bound is low
+    expected_avg: dict[str, tuple[float, float]] = {
+        "QB": (3, 25), "RB": (5, 25),
+        "WR": (4, 22), "TE": (3, 22),
+    }
+    for pos, values in by_pos.items():
+        if not values or pos not in expected_avg:
+            continue
+        avg = sum(values) / len(values)
+        lo, hi = expected_avg[pos]
+        if not (lo <= avg <= hi):
+            warnings.append(
+                f"{pos} average ${avg:.1f} outside expected range ${lo}-${hi}"
+            )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Async valuation pass — loads data, computes, writes back
 # ---------------------------------------------------------------------------
 
@@ -304,26 +436,14 @@ async def run_valuation_pass(
         for pos in pos_groups:
             pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
 
-        # --------------- Compute replacement levels + PAR per position -------
+        # --------------- Dynamic pool sizes + replacement levels ---------------
+        pool_sizes = get_draftable_pool_sizes(league_teams)
+
         par_context: dict[str, dict] = {}
         for pos, group in pos_groups.items():
-            repl_rank = REPLACEMENT_RANK[pos]
-            if len(group) >= repl_rank:
-                repl_ppr = group[repl_rank - 1][1]
-            else:
-                repl_ppr = group[-1][1] if group else 0.0
-
-            # FIX 2: Verify replacement level against per-game floor.
-            # If dynamic value is unreasonably low, use floor × 17 games.
-            ppg_floor = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 5.0)
-            season_floor = ppg_floor * 17
-            if repl_ppr < season_floor:
-                logger.warning(
-                    "REPLACEMENT LEVEL LOW: %s dynamic=%.1f < floor=%.1f (%.1f ppg × 17). "
-                    "Using floor.",
-                    pos, repl_ppr, season_floor, ppg_floor,
-                )
-                repl_ppr = season_floor
+            pool_size = pool_sizes.get(pos, len(group))
+            sorted_pprs = [ppr for _, ppr in group]
+            repl_ppr = calculate_replacement_level(sorted_pprs, pool_size)
 
             total_par = sum(max(0.0, ppr - repl_ppr) for _, ppr in group)
             pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
@@ -332,7 +452,16 @@ async def run_valuation_pass(
                 "replacement_ppr": repl_ppr,
                 "total_par":       total_par,
                 "position_budget": pos_budget,
+                "pool_size":       pool_size,
             }
+
+            logger.info(
+                "PAR context %s: pool=%d, repl=%.1f PPR (#%d of %d players), "
+                "total_par=%.1f, budget=$%.0f",
+                pos, pool_size, repl_ppr,
+                min(pool_size, len(group)), len(group),
+                total_par, pos_budget,
+            )
 
         # --------------- Compute and write valuations ------------------------
         processed = 0
@@ -370,6 +499,9 @@ async def run_valuation_pass(
 
                 let_go   = compute_let_go_threshold(ceiling)
                 gap, sig = compute_value_gap(sv, player.market_value)
+                # FIX 5: explicit signal when no market data
+                if sig is None and player.market_value is None:
+                    sig = "no_market_data"
                 risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
                 anchor   = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
                 scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
@@ -411,6 +543,14 @@ async def run_valuation_pass(
                     cleared += 1
                 skipped += 1
 
+        # --------------- Sanity check before commit ----------------------------
+        valued_list = [p for p, _ in
+                       (item for group in pos_groups.values() for item in group)
+                       if p.id in valued_player_ids]
+        warnings = sanity_check_valuations(valued_list, float(total_budget))
+        for w in warnings:
+            logger.warning("SANITY CHECK: %s", w)
+
         await session.commit()
 
     logger.info(
@@ -423,6 +563,11 @@ async def run_valuation_pass(
         "skipped":       skipped,
         "cleared":       cleared,
         "analysis_year": analysis_year,
+        "pool_sizes":    pool_sizes,
+        "replacement_levels": {
+            pos: ctx["replacement_ppr"] for pos, ctx in par_context.items()
+        },
+        "warnings":      warnings,
     }
 
 

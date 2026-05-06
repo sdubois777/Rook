@@ -427,6 +427,9 @@ from backend.engines.valuation import (
     REPLACEMENT_LEVEL_PPR_PER_GAME,
     POST_MAJOR_INJURY_DISCOUNT,
     _apply_injury_discount,
+    get_draftable_pool_sizes,
+    calculate_replacement_level,
+    sanity_check_valuations,
 )
 
 
@@ -607,3 +610,208 @@ async def test_free_agents_get_zero_value():
     assert rb_none.tier is None
     # Active player should have a value
     assert rb_active.baseline_value is not None
+
+
+# ===========================================================================
+# FIX 1+2: Dynamic pool sizes and replacement levels
+# ===========================================================================
+
+
+def test_pool_sizes_derived_from_league_settings():
+    """Pool sizes calculated from roster slots × teams + bench/flex allocation."""
+    sizes = get_draftable_pool_sizes(teams=12)
+    # Standard 12-team league: each position should include starters + bench depth
+    assert sizes["QB"] >= 15   # 12 starters + bench
+    assert sizes["RB"] >= 40   # 24 starters + flex + bench
+    assert sizes["WR"] >= 50   # 24 starters + flex + bench
+    assert sizes["TE"] >= 20   # 12 starters + flex + bench
+    total = sum(sizes.values())
+    assert 130 <= total <= 200, f"Total pool {total} outside expected range"
+
+
+def test_pool_sizes_scale_with_teams():
+    """10-team league should have smaller pools than 14-team."""
+    small = get_draftable_pool_sizes(teams=10)
+    large = get_draftable_pool_sizes(teams=14)
+    for pos in ("QB", "RB", "WR", "TE"):
+        assert small[pos] < large[pos], f"{pos} pool didn't scale with teams"
+
+
+def test_replacement_level_is_last_player_in_pool():
+    """Replacement level = PPR of the Nth player in the pool."""
+    # 10 players: 100, 90, 80, 70, 60, 50, 40, 30, 20, 10
+    sorted_pprs = [100 - i * 10 for i in range(10)]
+    # Pool size 5 → replacement = player #5 = 60
+    repl = calculate_replacement_level(sorted_pprs, pool_size=5)
+    assert repl == 60.0
+
+
+def test_replacement_level_fewer_players_than_pool():
+    """When fewer players exist than pool size, use the last player."""
+    sorted_pprs = [200.0, 150.0, 100.0]
+    repl = calculate_replacement_level(sorted_pprs, pool_size=10)
+    assert repl == 100.0
+
+
+def test_replacement_level_not_hardcoded():
+    """REPLACEMENT_RANK constant should not exist in valuation.py."""
+    import re
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent.parent.parent / "backend" / "engines" / "valuation.py"
+    source = path.read_text(encoding="utf-8")
+    # The old hardcoded constant should be gone
+    assert "REPLACEMENT_RANK" not in source, "REPLACEMENT_RANK still exists — should use dynamic pool sizes"
+
+
+@pytest.mark.asyncio
+async def test_total_system_value_near_skill_dollar_pool():
+    """Total system value across all positions should be near $2,220."""
+    # Build a realistic multi-position player set
+    mock_players = []
+    # 20 QBs, 60 RBs, 70 WRs, 30 TEs — enough to fill all pools
+    for i in range(20):
+        mock_players.append(_make_player("QB", ppr_points=400 - i * 8))
+    for i in range(60):
+        mock_players.append(_make_player("RB", ppr_points=300 - i * 3.5))
+    for i in range(70):
+        mock_players.append(_make_player("WR", ppr_points=320 - i * 3))
+    for i in range(30):
+        mock_players.append(_make_player("TE", ppr_points=260 - i * 6))
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        result = await run_valuation_pass()
+
+    # Sum all baseline_value assignments
+    total_sv = sum(
+        float(p.baseline_value) for p in mock_players
+        if p.baseline_value is not None
+    )
+    # Should be near $2,220 (± 15%)
+    assert 1800 <= total_sv <= 2600, f"Total system value ${total_sv:.0f} out of range"
+
+
+@pytest.mark.asyncio
+async def test_value_gap_signals_mixed_not_all_same():
+    """With market values present, gap signals should be mixed."""
+    mock_players = []
+    # RBs with varied market values — some over, some under, some aligned
+    ppr_values = [300, 250, 220, 190, 160, 140, 120, 100, 80, 60]
+    market_values = [40, 10, 35, 25, 5, 20, 15, 8, 3, 1]
+    for i in range(10):
+        mock_players.append(
+            _make_player("RB", ppr_points=ppr_values[i], market_value=market_values[i])
+        )
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    signals = {p.value_gap_signal for p in mock_players if p.value_gap_signal}
+    # Should have at least 2 different signal types
+    assert len(signals) >= 2, f"Signals too uniform: {signals}"
+
+
+@pytest.mark.asyncio
+async def test_value_gap_no_market_data_signal():
+    """Players without market_value get 'no_market_data' signal."""
+    mock_players = [_make_player("WR", ppr_points=200)]  # no market_value
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    assert mock_players[0].value_gap_signal == "no_market_data"
+    assert mock_players[0].value_gap is None
+
+
+def test_gibbs_system_value_in_reasonable_range():
+    """With realistic RB pool, Gibbs-level PPR (300) should value $35-65."""
+    # Simulate: 52 RBs, replacement at ~100 PPR
+    # Total PAR across pool ≈ 3000-5000
+    val = ppr_to_system_value(
+        ppr_points=300.0,
+        replacement_ppr=100.0,
+        total_par=4000.0,
+        position_budget=844.0,  # 38% of 2220
+    )
+    assert Decimal("35") <= val <= Decimal("65"), f"Gibbs-level system value ${val} out of range"
+
+
+def test_williams_system_value_in_reasonable_range():
+    """With realistic RB pool, Williams-level PPR (268) should value $20-50."""
+    val = ppr_to_system_value(
+        ppr_points=268.0,
+        replacement_ppr=100.0,
+        total_par=4000.0,
+        position_budget=844.0,
+    )
+    assert Decimal("20") <= val <= Decimal("50"), f"Williams-level system value ${val} out of range"
+
+
+def test_sanity_check_passes_clean_data():
+    """Sanity check returns no warnings for well-calibrated data."""
+    players = []
+    # Build data that sums to ~$2100 (within 10% of $2220 pool)
+    for i in range(50):
+        p = MagicMock()
+        p.position = "RB"
+        p.baseline_value = Decimal(str(max(1, 30 - i * 0.5)))
+        players.append(p)
+    for i in range(50):
+        p = MagicMock()
+        p.position = "WR"
+        p.baseline_value = Decimal(str(max(1, 25 - i * 0.4)))
+        players.append(p)
+    for i in range(15):
+        p = MagicMock()
+        p.position = "QB"
+        p.baseline_value = Decimal(str(max(1, 20 - i * 1.0)))
+        players.append(p)
+    for i in range(15):
+        p = MagicMock()
+        p.position = "TE"
+        p.baseline_value = Decimal(str(max(1, 18 - i * 0.9)))
+        players.append(p)
+
+    warnings = sanity_check_valuations(players, 2220.0)
+    critical = [w for w in warnings if "exceeds pool" in w or "exceeds cap" in w]
+    assert not critical, f"Critical warnings: {critical}"
+
+
+def test_sanity_check_flags_inflated_total():
+    """Sanity check flags total value exceeding pool by >10%."""
+    players = []
+    for i in range(10):
+        p = MagicMock()
+        p.position = "RB"
+        p.baseline_value = Decimal("300")  # absurdly high
+        players.append(p)
+
+    warnings = sanity_check_valuations(players, 2220.0)
+    assert any("exceeds pool" in w for w in warnings)

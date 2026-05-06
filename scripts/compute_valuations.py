@@ -34,10 +34,16 @@ def print_dry_run() -> None:
         LEAGUE_TEAMS,
         POSITION_BUDGET_SHARE,
         MAX_REALISTIC_BID,
+        get_draftable_pool_sizes,
     )
+    pool_sizes = get_draftable_pool_sizes(LEAGUE_TEAMS)
     print("\n=== Valuation Pass — Dry Run ===")
     print(f"  Skill budget : ${LEAGUE_SKILL_BUDGET}/team × {LEAGUE_TEAMS} teams = ${LEAGUE_SKILL_DOLLAR_POOL}")
     print(f"  No API calls — pure Python computation")
+    print(f"\n  Draftable pool sizes (dynamic from league settings):")
+    for pos, size in sorted(pool_sizes.items()):
+        print(f"    {pos}: {size} players")
+    print(f"    Total: {sum(pool_sizes.values())} skill position players")
     print(f"\n  Positional budget allocation:")
     for pos, pct in POSITION_BUDGET_SHARE.items():
         budget = LEAGUE_SKILL_DOLLAR_POOL * pct
@@ -107,6 +113,21 @@ async def main() -> None:
         f"  Skipped  : {result['skipped']} players (no profile)\n"
         f"  Year     : {result['analysis_year']}"
     )
+
+    # Show pool sizes and replacement levels
+    if "pool_sizes" in result:
+        print(f"\n  Pool sizes:")
+        for pos, size in sorted(result["pool_sizes"].items()):
+            repl = result["replacement_levels"].get(pos, 0)
+            print(f"    {pos}: {size} players, replacement = {repl:.1f} PPR")
+
+    # Show sanity check warnings
+    if result.get("warnings"):
+        print(f"\n  SANITY CHECK WARNINGS:")
+        for w in result["warnings"]:
+            print(f"    WARNING: {w}")
+    else:
+        print(f"\n  Sanity checks: all passed.")
 
     # Surface any >$80 warnings
     from sqlalchemy import select
