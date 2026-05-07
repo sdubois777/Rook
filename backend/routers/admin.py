@@ -76,7 +76,6 @@ KNOWN_AGENTS = [
     "injury_risk",
     "schedule",
     "beat_reporter",
-    "market_values",
 ]
 
 
@@ -142,11 +141,6 @@ async def trigger_pipeline_run(body: PipelineRunRequest):
             elif body.agent_name == "beat_reporter":
                 from backend.agents.beat_reporter import run
                 await run()
-            elif body.agent_name == "market_values":
-                from backend.database import AsyncSessionLocal as _ASL
-                from backend.engines.market_values import sync_market_values
-                async with _ASL() as _session:
-                    await sync_market_values(_session, scoring_format="ppr")
             logger.info("Pipeline run completed: agent=%s", body.agent_name)
         except Exception as exc:
             logger.error("Pipeline run failed: agent=%s error=%s", body.agent_name, exc)

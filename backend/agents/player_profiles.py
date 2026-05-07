@@ -221,14 +221,70 @@ class PlayerProfilesAgent(BaseAgent):
                 "ppr_per_game":    _f("ppr_per_game", 1),
             }
 
+        def _extract_combined(rows: pd.DataFrame) -> dict | None:
+            """Aggregate stats across multi-team splits for the same player."""
+            def _int_sum(col: str) -> int:
+                return int(rows[col].fillna(0).sum()) if col in rows.columns else 0
+
+            total_games = _int_sum("games")
+            if total_games == 0:
+                return None
+
+            # Use the team with the most games as the primary team
+            primary_team = rows.loc[rows["games"].fillna(0).astype(int).idxmax(), "recent_team"]
+
+            # Games-weighted average for rate stats
+            game_weights = rows["games"].fillna(0).astype(float)
+            weight_sum = game_weights.sum()
+
+            def _weighted_avg(col: str, decimals: int = 3):
+                if col not in rows.columns:
+                    return None
+                vals = rows[col].apply(
+                    lambda v: float(v) if v is not None and pd.notna(v) else 0.0
+                )
+                avg = (vals * game_weights).sum() / weight_sum if weight_sum > 0 else 0.0
+                return round(avg, decimals) if avg else None
+
+            receptions = _int_sum("total_receptions")
+            rec_yards = _int_sum("total_rec_yards")
+            rec_tds = _int_sum("total_rec_tds")
+            rush_yards = _int_sum("total_rush_yards")
+            rush_tds = _int_sum("total_rush_tds")
+
+            # PPR cross-validation against source fantasy_points_ppr
+            computed_ppr = receptions * 1.0 + (rec_yards + rush_yards) * 0.1 + (rec_tds + rush_tds) * 6.0
+            fantasy_ppr = float(rows["total_fantasy_points"].fillna(0).sum()) if "total_fantasy_points" in rows.columns else 0.0
+            if fantasy_ppr > 0 and abs(computed_ppr - fantasy_ppr) / fantasy_ppr > 0.15:
+                pid = rows.iloc[0].get("player_id", "?")
+                logger.warning(
+                    "PPR divergence for player_id=%s: computed=%.1f vs source=%.1f",
+                    pid, computed_ppr, fantasy_ppr,
+                )
+
+            return {
+                "games":           total_games,
+                "recent_team":     str(primary_team or ""),
+                "target_share":    _weighted_avg("avg_target_share"),
+                "air_yards_share": _weighted_avg("avg_air_yards_share"),
+                "targets":         _int_sum("total_targets"),
+                "receptions":      receptions,
+                "rec_yards":       rec_yards,
+                "rec_tds":         rec_tds,
+                "carries":         _int_sum("total_carries"),
+                "rush_yards":      rush_yards,
+                "rush_tds":        rush_tds,
+                "ppr_per_game":    _weighted_avg("ppr_per_game", 1),
+            }
+
         # --- Path 1: player_id match (most reliable) ---
         if nfl_player_id and "player_id" in ts_df.columns:
             id_rows = ts_df[ts_df["player_id"] == nfl_player_id]
             if not id_rows.empty:
-                # Prefer rows on the same team (handles mid-season trades)
-                team_rows = id_rows[id_rows["recent_team"] == team]
-                row = (team_rows if not team_rows.empty else id_rows).iloc[0]
-                return _extract(row)
+                if len(id_rows) == 1:
+                    return _extract(id_rows.iloc[0])
+                # Multiple rows = multi-team season — aggregate across splits
+                return _extract_combined(id_rows)
 
         # --- Path 2: last-name + team filter ---
         last = player_name.split()[-1]
@@ -606,11 +662,12 @@ class PlayerProfilesAgent(BaseAgent):
                     stats = self._get_player_season_stats(pname, team, season, nfl_player_id=nfl_pid)
                     if stats:
                         stats["year"]             = season
-                        # Only apply backup_qb flag when stats are from the current team.
+                        # Only apply backup_qb flag to WRs/TEs whose production is
+                        # depressed by backup QB play.  RBs are largely unaffected.
                         stat_team = stats.get("recent_team", team)
                         stats["backup_qb_season"] = (
                             backup_qb_flags.get(season, False)
-                            if stat_team.upper() == team.upper()
+                            if pos in ("WR", "TE") and stat_team.upper() == team.upper()
                             else False
                         )
                         # Attach NGS efficiency data per position

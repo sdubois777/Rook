@@ -10,7 +10,6 @@ const AGENT_LABELS = {
   injury_risk: 'Injury Risk',
   schedule: 'Schedule',
   beat_reporter: 'Beat Reporter',
-  market_values: 'Market Values',
 }
 
 export default function PipelineAdmin() {

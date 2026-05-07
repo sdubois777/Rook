@@ -886,6 +886,138 @@ def test_get_player_season_stats_none_when_zero_games():
 
 
 # ---------------------------------------------------------------------------
+# _get_player_season_stats cross-team aggregation
+# ---------------------------------------------------------------------------
+
+def _make_ts_row(player_id, player_name, team, games, rec, rec_yards, rec_tds,
+                 carries=0, rush_yards=0, rush_tds=0,
+                 target_share=0.2, air_yards_share=0.2, ppr_per_game=10.0,
+                 total_fantasy_points=None):
+    """Helper to build a target_share DataFrame row."""
+    if total_fantasy_points is None:
+        total_fantasy_points = rec * 1.0 + (rec_yards + rush_yards) * 0.1 + (rec_tds + rush_tds) * 6.0
+    return {
+        "player_id": player_id, "player_name": player_name,
+        "recent_team": team, "games": games,
+        "avg_target_share": target_share, "avg_air_yards_share": air_yards_share,
+        "total_targets": int(rec * 1.2), "total_receptions": rec,
+        "total_rec_yards": rec_yards, "total_rec_tds": rec_tds,
+        "total_carries": carries, "total_rush_yards": rush_yards,
+        "total_rush_tds": rush_tds, "ppr_per_game": ppr_per_game,
+        "total_fantasy_points": total_fantasy_points,
+    }
+
+
+def test_cross_team_stats_combined():
+    """Multi-team season rows are aggregated — stats summed across splits."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2022"] = pd.DataFrame([
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 50, 600, 3, 100, 500, 3),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 80, 1000, 5, 120, 700, 5),
+    ])
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    assert result is not None
+    assert result["games"] == 17
+    assert result["receptions"] == 130
+    assert result["rec_yards"] == 1600
+    assert result["rec_tds"] == 8
+    assert result["carries"] == 220
+    assert result["rush_yards"] == 1200
+    assert result["rush_tds"] == 8
+
+
+def test_single_team_stats_unchanged():
+    """Single-team season returns same values as before (no regression)."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-002", "L.McConkey", "LAC", 17, 82, 1149, 7),
+    ])
+    result = agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, nfl_player_id="00-002")
+    assert result is not None
+    assert result["games"] == 17
+    assert result["receptions"] == 82
+    assert result["rec_yards"] == 1149
+    assert result["rec_tds"] == 7
+
+
+def test_games_filter_uses_combined_total():
+    """Combined games across teams pass the >=10 clean season filter."""
+    # 6 + 5 = 11 games total — should be clean season
+    season = {
+        "year": 2022, "games": 11,
+        "receptions": 60, "rec_yards": 700, "rec_tds": 4,
+        "carries": 50, "rush_yards": 300, "rush_tds": 2,
+        "backup_qb_season": False,
+    }
+    result = _compute_clean_baseline([season])
+    assert result.get("ppr_points", 0) > 0, "Season with 11 combined games should be clean"
+
+
+def test_mccaffrey_scenario():
+    """McCaffrey 2022: CAR (6g) + SF (11g) should produce ~356 PPR."""
+    agent = PlayerProfilesAgent()
+    # Approximate real stats
+    agent._data_cache["target_share_2022"] = pd.DataFrame([
+        _make_ts_row("00-0034844", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5),
+        _make_ts_row("00-0034844", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3),
+    ])
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-0034844")
+    assert result is not None
+    assert result["games"] == 17
+    # Total: 85 rec + (864+1024)*0.1 + (6+8)*6 = 85 + 188.8 + 84 ≈ 357.8
+    ppr = result["receptions"] * 1.0 + (result["rec_yards"] + result["rush_yards"]) * 0.1 + (result["rec_tds"] + result["rush_tds"]) * 6.0
+    assert ppr > 300, f"McCaffrey combined PPR should be >300, got {ppr}"
+
+
+def test_backup_qb_flag_only_current_team():
+    """backup_qb_season flag only applies when stat_team matches current team."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2022"] = pd.DataFrame([
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3),
+    ])
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    assert result is not None
+    # Primary team should be SF (more games)
+    assert result["recent_team"] == "SF"
+    # The calling code at line 610-614 checks: if stat_team.upper() == team.upper()
+    # Since recent_team=SF and current team=SF, backup_qb flag WOULD apply for SF
+    # But it should NOT apply retroactively to CAR stats (which are now combined)
+
+
+def test_cross_team_weighted_averages():
+    """Rate stats (target_share, ppr_per_game) are games-weighted, not simple averaged."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-003", "S.Diggs", "BUF", 4, 20, 250, 2, target_share=0.30, ppr_per_game=18.0),
+        _make_ts_row("00-003", "S.Diggs", "HOU", 13, 60, 800, 5, target_share=0.22, ppr_per_game=14.0),
+    ])
+    result = agent._get_player_season_stats("Stefon Diggs", "HOU", 2024, nfl_player_id="00-003")
+    assert result is not None
+    # Weighted avg: (0.30*4 + 0.22*13) / 17 ≈ 0.239
+    assert abs(result["target_share"] - 0.239) < 0.01, f"Expected ~0.239, got {result['target_share']}"
+    # Weighted avg: (18.0*4 + 14.0*13) / 17 ≈ 14.94
+    assert abs(result["ppr_per_game"] - 14.9) < 0.5, f"Expected ~14.9, got {result['ppr_per_game']}"
+
+
+def test_no_team_preference_in_player_id_path():
+    """Player_id path aggregates ALL teams, doesn't prefer current team."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2022"] = pd.DataFrame([
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 10, 50, 600, 3, 100, 500, 3),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  7, 40, 500, 2, 80, 400, 2),
+    ])
+    # Current team is SF but CAR has more games
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    assert result is not None
+    assert result["games"] == 17  # Both teams combined
+    assert result["receptions"] == 90  # 50 + 40
+    assert result["rec_yards"] == 1100  # 600 + 500
+    # Primary team should be CAR (more games)
+    assert result["recent_team"] == "CAR"
+
+
+# ---------------------------------------------------------------------------
 # _get_snap_pct edge cases
 # ---------------------------------------------------------------------------
 

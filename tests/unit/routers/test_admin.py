@@ -20,7 +20,7 @@ async def test_get_pipeline_status():
     """GET /admin/pipeline-status returns agent freshness."""
     session = AsyncMock()
 
-    # Each agent returns (last_run, count) — 7 agents total
+    # Each agent returns (last_run, count) — 6 agents total
     last_run = datetime(2026, 5, 1, tzinfo=timezone.utc)
     result_mock = MagicMock()
     result_mock.one.return_value = (last_run, 32)
@@ -38,7 +38,7 @@ async def test_get_pipeline_status():
     assert resp.status_code == 200
     data = resp.json()
     assert "agents" in data
-    assert len(data["agents"]) == 7
+    assert len(data["agents"]) == 6
     assert data["agents"][0]["agent_name"] == "team_systems"
     assert data["agents"][0]["entity_count"] == 32
     assert data["agents"][0]["stale"] is False
