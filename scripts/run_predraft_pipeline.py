@@ -45,13 +45,13 @@ AGENT_SPECS: dict[str, dict] = {
         "description": "Player dependency flags (DISPLACED, CONTINGENT, etc.)",
     },
     "player_profiles": {
-        "model": "haiku",
+        "model": "mixed",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 1000,
-        "est_input_tokens": 500,
-        "api_calls": 32,
+        "max_tokens": 4000,
+        "est_input_tokens": 1500,
+        "api_calls": 120,
         "status": "built",
-        "description": "Player role classification and efficiency metrics",
+        "description": "Player projections — Haiku batch + Sonnet for complex players",
     },
     "injury_risk": {
         "model": "haiku",
@@ -94,10 +94,10 @@ AGENT_SPECS: dict[str, dict] = {
 PIPELINE_ORDER = [
     "team_systems",
     "roster_changes",
-    "player_profiles",
     "injury_risk",
     "schedule",
     "beat_reporter",
+    "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
     "valuation",
 ]
 
@@ -111,7 +111,23 @@ _RATES = {
 def _estimate_cost(spec: dict, calls: int) -> float | None:
     if calls == 0:
         return None
-    rates = _RATES[spec["model"]]
+    model = spec["model"]
+    if model == "mixed":
+        # Estimate: 32 haiku batch + remaining sonnet individual
+        haiku_calls = min(32, calls)
+        sonnet_calls = max(0, calls - 32)
+        h = haiku_calls * (
+            spec["est_input_tokens"] * _RATES["haiku"]["input"]
+            + spec["max_tokens"] * _RATES["haiku"]["output"]
+        ) / 1_000_000
+        s = sonnet_calls * (
+            spec["est_input_tokens"] * _RATES["sonnet"]["input"]
+            + 800 * _RATES["sonnet"]["output"]  # 800 max_tokens for Sonnet per-player
+        ) / 1_000_000
+        return h + s
+    if model == "none":
+        return 0.0
+    rates = _RATES[model]
     input_cost  = spec["est_input_tokens"] * calls * rates["input"]  / 1_000_000
     output_cost = spec["max_tokens"]       * calls * rates["output"] / 1_000_000
     return input_cost + output_cost

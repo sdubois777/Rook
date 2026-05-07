@@ -202,9 +202,9 @@ If your agent run significantly exceeds these, something is wrong:
 |-------|-------|-------|--------------|
 | Team Systems (32 teams) | 32 | Haiku | ~$0.05 |
 | Roster Changes (32 teams) | 32 | Sonnet | ~$0.40 |
-| Player Profiles (32 batches) | 32 | Haiku | ~$0.10 |
+| Player Profiles (32 batch + ~90 Sonnet) | ~120 | Mixed | ~$1.20 |
 | Injury Risk (32 batches) | 32 | Haiku | ~$0.08 |
 | Schedule (32 batches) | 32 | Haiku | ~$0.06 |
 | Beat Reporter (daily) | 10-20 | Haiku | ~$0.02/day |
-| **Full pipeline** | ~200 | Mixed | **~$1.00** |
+| **Full pipeline** | ~280 | Mixed | **~$2.00** |
 | Weekly in-season refresh | 20-40 | Mixed | ~$0.20/week |

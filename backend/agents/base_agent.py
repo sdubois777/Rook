@@ -109,21 +109,30 @@ class BaseAgent:
         user: str,
         input_data: dict,
         entity_id: str = "",
+        model: str | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """
         Single API call with transparent caching and usage logging.
+
+        Args:
+            model: Override class AGENT_MODEL for this call (e.g. Sonnet for complex players).
+            max_tokens: Override class AGENT_MAX_TOKENS for this call.
 
         Steps:
           1. Hash input_data with sha256
           2. Check agent_cache — if hit, log cache_hit=True and return cached text
           3. If dry_run=True, log estimate and return ""
-          4. Call client.messages.create() with AGENT_MODEL and AGENT_MAX_TOKENS
+          4. Call client.messages.create() with effective model and max_tokens
           5. Log to api_usage_log (cache_hit=False)
           6. Write raw response text to agent_cache
           7. Return response text
 
         The caller is responsible for parsing the returned string (JSON, etc.).
         """
+        effective_model = model or self.AGENT_MODEL
+        effective_max = max_tokens or self.AGENT_MAX_TOKENS
+
         input_hash = _hash_input(input_data)
 
         # 1. Cache check
@@ -134,6 +143,7 @@ class BaseAgent:
                 output_tokens=0,
                 cache_hit=True,
                 entity_id=entity_id,
+                model_override=effective_model,
             )
             logger.info("Cache hit: %s / %s", self.AGENT_NAME, entity_id)
             return cached
@@ -141,24 +151,24 @@ class BaseAgent:
         # 2. Dry run
         if self.dry_run:
             in_price, out_price = _MODEL_PRICING.get(
-                self.AGENT_MODEL, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
+                effective_model, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
             )
             est_input_tokens = len(user) // 4  # rough: ~4 chars per token
             est_cost = (
                 est_input_tokens * in_price / 1_000_000
-                + self.AGENT_MAX_TOKENS * out_price / 1_000_000
+                + effective_max * out_price / 1_000_000
             )
             logger.info(
                 "[DRY RUN] %s / %s — model=%s, est. %d input tokens, $%.5f",
-                self.AGENT_NAME, entity_id, self.AGENT_MODEL,
+                self.AGENT_NAME, entity_id, effective_model,
                 est_input_tokens, est_cost,
             )
             return ""
 
         # 3. Real API call
         response = await self._client.messages.create(
-            model=self.AGENT_MODEL,
-            max_tokens=self.AGENT_MAX_TOKENS,
+            model=effective_model,
+            max_tokens=effective_max,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -171,6 +181,7 @@ class BaseAgent:
             output_tokens=response.usage.output_tokens,
             cache_hit=False,
             entity_id=entity_id,
+            model_override=effective_model,
         )
         await self._write_cache(input_hash, raw, entity_id)
 
@@ -229,11 +240,13 @@ class BaseAgent:
         output_tokens: int,
         cache_hit: bool,
         entity_id: str,
+        model_override: str | None = None,
     ) -> None:
         from backend.models.api_usage_log import ApiUsageLog
 
+        effective_model = model_override or self.AGENT_MODEL
         in_price, out_price = _MODEL_PRICING.get(
-            self.AGENT_MODEL, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
+            effective_model, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
         )
         cost = Decimal(str(
             input_tokens * in_price / 1_000_000
@@ -243,7 +256,7 @@ class BaseAgent:
         async with AsyncSessionLocal() as session:
             session.add(ApiUsageLog(
                 agent_name=self.AGENT_NAME,
-                model=self.AGENT_MODEL,
+                model=effective_model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 estimated_cost_usd=cost,

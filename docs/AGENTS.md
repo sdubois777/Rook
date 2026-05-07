@@ -207,14 +207,18 @@ else: grade = "weak"
 
 ---
 
-## Agent 3: Player Profiles
+## Agent 3: Player Profiles (Synthesis Agent)
 
-**Model:** `claude-haiku-4-5-20251001`
-**Max tokens:** 1000 per team batch
-**Total API calls:** 32
+**Model:** Mixed — Haiku batch (32 calls) + Sonnet per complex player (~80-120 calls)
+**Max tokens:** 4000 (Haiku batch), 800 (Sonnet individual)
+**Total API calls:** ~120
+**Pipeline position:** 6th (runs AFTER all upstream agents, before valuation)
 
-**Purpose:** Build a complete individual profile for every draftable player.
-Inherits team system context from Agent 1.
+**Purpose:** Synthesize ALL upstream agent outputs into forward-looking PPR projections.
+Runs last so it has access to: team systems, dependency flags, injury risk profiles,
+schedule grades, and beat reporter signals. Complex players (rookies, flagged,
+contract year, high injury risk) get Sonnet for causal reasoning; stable veterans
+get Haiku batch processing.
 Uses rookie evaluation fields written by Agent 2 for first-year players.
 
 **Role classifications:**

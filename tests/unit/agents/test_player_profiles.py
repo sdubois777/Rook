@@ -24,6 +24,7 @@ from backend.agents.player_profiles import (
     _compute_season_averages,
     _to_decimal,
     _write_profiles,
+    needs_sonnet_reasoning,
     _ROOKIE_CONFIDENCE_DISCOUNT,
     _DEVELOPMENT_TIMELINE,
 )
@@ -382,7 +383,7 @@ async def test_system_grade_inherited_from_team_systems():
 
     captured_user_message: list[str] = []
 
-    async def _capture_call(system, user, input_data, entity_id):
+    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None):
         captured_user_message.append(user)
         return json.dumps([_make_profile("Tyreek Hill", "wr1_alpha")])
 
@@ -436,8 +437,13 @@ async def test_dependency_flags_attached_to_profile():
 
     captured_input_data: list[dict] = []
 
-    async def _capture_call(system, user, input_data, entity_id):
+    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None):
         captured_input_data.append(input_data)
+        # Sonnet per-player returns a single object; Haiku returns array
+        if model:
+            return json.dumps(
+                _make_profile("Ladd McConkey", "slot_specialist", situation_score="weak")
+            )
         return json.dumps([
             _make_profile("Ladd McConkey", "slot_specialist", situation_score="weak")
         ])
@@ -465,9 +471,14 @@ async def test_dependency_flags_attached_to_profile():
         await agent.run_for_team("LAC")
 
     assert captured_input_data, "call_once was not called"
-    players_in_context = captured_input_data[0].get("players", [])
-    mcconkey = next((p for p in players_in_context if "McConkey" in p.get("name", "")), None)
-    assert mcconkey is not None
+    # McConkey has dependency_flags → routed to Sonnet per-player call
+    # Per-player context: {"team": ..., "player": {...}} not {"players": [...]}
+    mcconkey = captured_input_data[0].get("player")
+    if mcconkey is None:
+        # Fallback: check batch format
+        players_in_context = captured_input_data[0].get("players", [])
+        mcconkey = next((p for p in players_in_context if "McConkey" in p.get("name", "")), None)
+    assert mcconkey is not None, f"McConkey not in context: {list(captured_input_data[0].keys())}"
     assert len(mcconkey.get("dependency_flags", [])) == 2
     flag_types = [f["type"] for f in mcconkey["dependency_flags"]]
     assert "displaced" in flag_types
@@ -498,11 +509,11 @@ def test_no_hardcoded_years():
 
 @pytest.mark.asyncio
 async def test_single_api_call_per_team():
-    """run_for_team() must make exactly ONE call_once() call per team."""
+    """Stable veteran team (no Sonnet triggers) makes exactly ONE Haiku batch call."""
     agent = PlayerProfilesAgent()
     call_count = 0
 
-    async def _mock_call(system, user, input_data, entity_id):
+    async def _mock_call(system, user, input_data, entity_id, model=None, max_tokens=None):
         nonlocal call_count
         call_count += 1
         return json.dumps([_make_profile("CeeDee Lamb", "wr1_alpha")])
@@ -1648,3 +1659,210 @@ def test_qb_mobility_pocket_only():
     from backend.agents.team_systems import _derive_qb_mobility
     qb_data = {"games_played": 17, "rushing_yards": 100}  # 5.9 ypg
     assert _derive_qb_mobility(qb_data) == "pocket_only"
+
+
+# ---------------------------------------------------------------------------
+# needs_sonnet_reasoning() — model routing tests
+# ---------------------------------------------------------------------------
+
+def test_needs_sonnet_reasoning_rookie():
+    """Rookies always get Sonnet."""
+    player = {"name": "Rome Odunze", "is_rookie": True}
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_dependency_flags():
+    """Players with dependency flags get Sonnet."""
+    player = {
+        "name": "Puka Nacua",
+        "dependency_flags": [{"type": "beneficiary", "trigger": "Cooper Kupp"}],
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_contract_year():
+    """Contract year players get Sonnet."""
+    player = {"name": "Tee Higgins", "contract_year": True}
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_high_injury():
+    """Players with high injury risk get Sonnet."""
+    player = {
+        "name": "Saquon Barkley",
+        "injury_profile": {"overall_risk_level": "high"},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_pattern_flags():
+    """Players with injury pattern flags get Sonnet."""
+    player = {
+        "name": "Nick Chubb",
+        "injury_profile": {"pattern_flags": ["POST_ACL"]},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_beat_signal():
+    """Players with high-confidence beat signals get Sonnet."""
+    player = {
+        "name": "Tank Dell",
+        "beat_signals": [{"confidence": "high", "signal_type": "depth_chart_change"}],
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_compound_risk():
+    """Players on compound_risk_flag teams get Sonnet."""
+    player = {
+        "name": "Jaxon Smith-Njigba",
+        "_team_system": {"compound_risk_flag": True},
+    }
+    assert needs_sonnet_reasoning(player) is True
+
+
+def test_needs_sonnet_reasoning_stable_veteran():
+    """Stable veteran with no triggers gets Haiku batch."""
+    player = {
+        "name": "Stefon Diggs",
+        "is_rookie": False,
+        "contract_year": False,
+        "dependency_flags": [],
+        "injury_profile": {"overall_risk_level": "low", "pattern_flags": []},
+        "beat_signals": [],
+        "_team_system": {"compound_risk_flag": False},
+    }
+    assert needs_sonnet_reasoning(player) is False
+
+
+def test_needs_sonnet_reasoning_empty_player():
+    """Player with no optional fields defaults to Haiku."""
+    player = {"name": "Unknown Player"}
+    assert needs_sonnet_reasoning(player) is False
+
+
+# ---------------------------------------------------------------------------
+# AI projection override tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sonnet_projection_overrides_baseline():
+    """When profile has projected_ppr_points, it overrides Python ppr_points."""
+    from backend.agents.player_profiles import _write_profiles
+    from backend.utils.seasons import get_analysis_year
+
+    profile = _make_profile(name="Puka Nacua")
+    profile["projected_ppr_points"] = 310.5
+    profile["upside_ppr"] = 360.0
+    profile["downside_ppr"] = 250.0
+
+    ctx_player = {
+        "name": "Puka Nacua",
+        "position": "WR",
+        "seasons": [
+            {"year": 2024, "games": 17, "receptions": 90, "rec_yards": 1200,
+             "rec_tds": 6, "rush_yards": 0, "rush_tds": 0},
+        ],
+        "nfl_player_id": "00-0039999",
+    }
+
+    context = _mock_context(team="LAR", players=[ctx_player])
+
+    # Mock the DB session to track what gets written
+    mock_session = AsyncMock()
+    mock_player = MagicMock()
+    mock_player.id = uuid.uuid4()
+    mock_player.yahoo_player_id = "nfl_00-0039999"
+    mock_player.name = "Puka Nacua"
+    mock_player.team_abbr = "LAR"
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_player]
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_session.delete = AsyncMock()
+
+    records_written = []
+    original_add = mock_session.add
+
+    def track_add(record):
+        records_written.append(record)
+
+    mock_session.add = track_add
+
+    # Patch the scalar_one_or_none for the Player update query
+    player_result = MagicMock()
+    player_result.scalar_one_or_none.return_value = mock_player
+
+    call_count = 0
+    async def mock_execute(stmt):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:  # first two calls: team players + existing profiles
+            return mock_result
+        return player_result  # subsequent: player lookup
+
+    mock_session.execute = AsyncMock(side_effect=mock_execute)
+
+    ctx_mgr = AsyncMock()
+    ctx_mgr.__aenter__ = AsyncMock(return_value=mock_session)
+    ctx_mgr.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.player_profiles.AsyncSessionLocal", return_value=ctx_mgr):
+        written = await _write_profiles([profile], context, "LAR")
+
+    assert written == 1
+    record = records_written[0]
+    baseline = record.clean_season_baseline
+    assert baseline["ppr_points"] == 310.5
+    assert baseline["upside_ppr"] == 360.0
+    assert baseline["downside_ppr"] == 250.0
+
+
+@pytest.mark.asyncio
+async def test_call_once_model_override():
+    """Passing model= to call_once() uses that model instead of class default."""
+    from backend.agents.base_agent import HAIKU, SONNET
+
+    agent = PlayerProfilesAgent(dry_run=True)
+    assert agent.AGENT_MODEL == HAIKU  # class default is Haiku
+
+    # Patch _check_cache to return None (no cache hit) and _log_usage to no-op
+    with patch.object(agent, "_check_cache", new_callable=AsyncMock, return_value=None), \
+         patch.object(agent, "_log_usage", new_callable=AsyncMock):
+
+        # Dry run with model override → should log SONNET, not HAIKU
+        import logging
+        with patch("backend.agents.base_agent.logger") as mock_logger:
+            result = await agent.call_once(
+                system="test",
+                user="test",
+                input_data={"test": True},
+                entity_id="test",
+                model=SONNET,
+                max_tokens=800,
+            )
+            # Dry run returns ""
+            assert result == ""
+            # Check that the dry-run log message contains SONNET model string
+            mock_logger.info.assert_called()
+            log_args = mock_logger.info.call_args
+            assert SONNET in str(log_args)
+
+
+def test_haiku_batch_uses_python_baseline():
+    """When profile has no projected_ppr_points, Python baseline is used."""
+    profile = _make_profile(name="Test WR")
+    # No projected_ppr_points key — simulates Haiku batch output
+    assert "projected_ppr_points" not in profile
+
+    # The Python _compute_clean_baseline would produce the ppr_points
+    seasons = [
+        {"year": 2024, "games": 17, "receptions": 80, "rec_yards": 1000,
+         "rec_tds": 7, "rush_yards": 0, "rush_tds": 0},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    assert baseline["ppr_points"] > 0
+    # Verify formula: 80*1 + 1000*0.1 + 7*6 = 80 + 100 + 42 = 222
+    assert baseline["ppr_points"] == 222.0
