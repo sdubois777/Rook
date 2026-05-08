@@ -9,24 +9,33 @@ into final valuation fields on the players table:
   - baseline_value (PPR points → auction dollars via PAR method)
   - risk_adjusted_value (baseline × (1 + risk_modifier))
   - recommended_bid_ceiling (two-value formula from ARCHITECTURE.md)
-  - let_go_threshold (bid ceiling × 1.15)
+  - let_go_threshold (bid ceiling × risk-adjusted multiplier)
   - value_gap and value_gap_signal (system vs market gap)
 
 Formulas from docs/ARCHITECTURE.md — Two-Value Auction System:
 
+  Risk is applied as a discount to market_value BEFORE blending,
+  not as a multiplier on the final ceiling.
+
+  risk_adjusted_market = market_value × (1 - RISK_MARKET_DISCOUNT[risk_level])
+
   Tier 1:
-    blend = system_value × (1 - anchor_weight) + market_value × anchor_weight
-    ceiling = blend × positional_scarcity_modifier × (1 + risk_modifier)
+    blend = system_value × (1 - anchor_weight) + risk_adjusted_market × anchor_weight
+    ceiling = blend × positional_scarcity_modifier
 
   Tier 2-3:
-    blend = system_value × 0.85 + market_value × 0.15
-    ceiling = blend × (1 + risk_modifier)
+    blend = system_value × 0.85 + risk_adjusted_market × 0.15
+    ceiling = blend
 
   Tier 4-5:
-    ceiling = system_value × (1 + risk_modifier)
+    ceiling = system_value
+
+  let_go_threshold = ceiling × LET_GO_MULTIPLIER[risk_level]
 
 Anchor weights: T1=0.80, T2=0.40, T3=0.15, T4-5=0.00
 Scarcity:       T1 RB=1.35, T1 WR=1.20, T1 QB/TE=1.10
+Risk discounts:  low=0%, moderate=8%, high=15%, volatile=22%
+Let-go:          low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
 """
 from __future__ import annotations
 
@@ -136,6 +145,26 @@ SCARCITY_MODIFIERS: dict[str, Decimal] = {
     "TE": Decimal("1.10"),
 }
 
+# Risk market discount — applied to market_value BEFORE blending.
+# Higher risk = larger discount to what the room is willing to pay.
+# This replaces the old approach of multiplying risk_modifier on the final ceiling,
+# which crushed elite injured players into undraftable territory.
+RISK_MARKET_DISCOUNT: dict[str, Decimal] = {
+    "low":      Decimal("0.00"),
+    "moderate": Decimal("0.08"),
+    "high":     Decimal("0.15"),
+    "volatile": Decimal("0.22"),
+}
+
+# Let-go threshold multiplier — risk-adjusted walk-away price above ceiling.
+# Low risk = willing to stretch (1.20×), volatile = tight leash (1.05×).
+LET_GO_MULTIPLIER: dict[str, Decimal] = {
+    "low":      Decimal("1.20"),
+    "moderate": Decimal("1.15"),
+    "high":     Decimal("1.10"),
+    "volatile": Decimal("1.05"),
+}
+
 # ---------------------------------------------------------------------------
 # Value gap thresholds
 # ---------------------------------------------------------------------------
@@ -178,33 +207,41 @@ def compute_bid_ceiling(
     market_value: Optional[Decimal],
     tier: int,
     position: str,
-    risk_modifier: Optional[Decimal],
+    risk_level: str = "low",
 ) -> Decimal:
     """
     Compute the recommended bid ceiling using the two-value formula.
 
-    When market_value is None, treat market_value = system_value for blending
-    (neutral blend — system value drives the result entirely).
+    Risk is applied as a discount to market_value BEFORE blending, not as a
+    multiplier on the final ceiling. This prevents elite injured players from
+    becoming undraftable (e.g., Amon-Ra $16 ceiling on $49 market).
+
+    Args:
+        system_value: PAR-derived auction dollar value.
+        market_value: Consensus market price (None = use system_value).
+        tier: Player tier (1-5).
+        position: Position string (QB, RB, WR, TE).
+        risk_level: Injury risk level (low/moderate/high/volatile).
 
     Returns:
         Decimal bid ceiling in dollars (minimum $1).
     """
     mv = market_value if market_value is not None else system_value
-    rm = risk_modifier if risk_modifier is not None else Decimal("0")
-    risk_factor = Decimal("1") + rm
+    discount = RISK_MARKET_DISCOUNT.get(risk_level, Decimal("0.00"))
+    risk_adjusted_market = mv * (Decimal("1") - discount)
 
     if tier == 1:
         anchor = ANCHOR_WEIGHTS[1]
-        blend = system_value * (Decimal("1") - anchor) + mv * anchor
+        blend = system_value * (Decimal("1") - anchor) + risk_adjusted_market * anchor
         scarcity = SCARCITY_MODIFIERS.get(position, Decimal("1.00"))
-        ceiling = blend * scarcity * risk_factor
+        ceiling = blend * scarcity
 
     elif tier in (2, 3):
-        blend = system_value * Decimal("0.85") + mv * Decimal("0.15")
-        ceiling = blend * risk_factor
+        blend = system_value * Decimal("0.85") + risk_adjusted_market * Decimal("0.15")
+        ceiling = blend
 
     else:  # Tier 4-5
-        ceiling = system_value * risk_factor
+        ceiling = system_value
 
     return _to_dec(max(Decimal("1.00"), ceiling))
 
@@ -234,9 +271,13 @@ def compute_value_gap(
     return gap, signal
 
 
-def compute_let_go_threshold(bid_ceiling: Decimal) -> Decimal:
-    """Let-go threshold = bid ceiling + 15%."""
-    return _to_dec(bid_ceiling * Decimal("1.15"))
+def compute_let_go_threshold(bid_ceiling: Decimal, risk_level: str = "low") -> Decimal:
+    """Let-go threshold — risk-adjusted walk-away price above ceiling.
+
+    Low risk = 1.20x (willing to stretch), volatile = 1.05x (tight leash).
+    """
+    multiplier = LET_GO_MULTIPLIER.get(risk_level, Decimal("1.20"))
+    return _to_dec(bid_ceiling * multiplier)
 
 
 def _to_dec(value: float | Decimal) -> Decimal:
@@ -505,9 +546,13 @@ async def run_valuation_pass(
                     position_budget   = ctx["position_budget"],
                 )
 
+                risk_level = "low"
+                if player.injury_profile and player.injury_profile.overall_risk_level:
+                    risk_level = player.injury_profile.overall_risk_level
+
                 rm = _get_risk_modifier(player.injury_profile)
 
-                ceiling  = compute_bid_ceiling(sv, player.market_value, tier, pos, rm)
+                ceiling  = compute_bid_ceiling(sv, player.market_value, tier, pos, risk_level)
 
                 # FIX 5: Hard cap enforcement — cap ceiling to MAX_REALISTIC_BID
                 max_bid = MAX_REALISTIC_BID.get(pos, 80)
@@ -521,7 +566,7 @@ async def run_valuation_pass(
                     )
                     ceiling = max_bid_dec
 
-                let_go   = compute_let_go_threshold(ceiling)
+                let_go   = compute_let_go_threshold(ceiling, risk_level)
                 gap, sig = compute_value_gap(sv, player.market_value)
                 # FIX 5: explicit signal when no market data
                 if sig is None and player.market_value is None:

@@ -220,23 +220,37 @@ The gap between them is the edge.
 
 ### Bid ceiling calculation
 
+Risk is applied as a discount to market_value **before** blending, not as a
+multiplier on the final ceiling. This prevents elite injured players from
+becoming undraftable.
+
+```
+risk_adjusted_market = market_value × (1 - RISK_MARKET_DISCOUNT[risk_level])
+```
+
+Risk market discounts: low=0%, moderate=8%, high=15%, volatile=22%
+
 Tier 1 (elite, positional scarcity applies):
 ```
-bid_ceiling = (system_value × (1 - anchor_weight)) + (market_value × anchor_weight)
-bid_ceiling = bid_ceiling × positional_scarcity_modifier
-bid_ceiling = bid_ceiling × (1 + risk_modifier)
+blend = (system_value × (1 - anchor_weight)) + (risk_adjusted_market × anchor_weight)
+bid_ceiling = blend × positional_scarcity_modifier
 ```
 
 Tier 2-3:
 ```
-bid_ceiling = (system_value × 0.85) + (market_value × 0.15)
-bid_ceiling = bid_ceiling × (1 + risk_modifier)
+bid_ceiling = (system_value × 0.85) + (risk_adjusted_market × 0.15)
 ```
 
 Tier 4-5:
 ```
-bid_ceiling = system_value × (1 + risk_modifier)
+bid_ceiling = system_value
 ```
+
+Let-go threshold (risk-adjusted walk-away price):
+```
+let_go = bid_ceiling × LET_GO_MULTIPLIER[risk_level]
+```
+Let-go multipliers: low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
 
 Anchor weights: T1=0.80, T2=0.40, T3=0.15, T4-5=0.00
 Scarcity modifiers: T1 RB=1.35, T1 WR=1.20, T1 QB=1.10, T2+=1.00

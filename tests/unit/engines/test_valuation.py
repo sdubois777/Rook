@@ -86,13 +86,13 @@ def test_ppr_to_system_value_zero_total_par_returns_one_dollar():
 # ===========================================================================
 
 def test_tier1_bid_ceiling_uses_anchor_weight():
-    """Tier 1: blend = system × 0.20 + market × 0.80, then × scarcity × risk_factor."""
+    """Tier 1: blend = system × 0.20 + risk_adj_market × 0.80, then × scarcity."""
     sv = Decimal("40")
     mv = Decimal("50")
+    # low risk = 0% discount → risk_adj_market = 50
     # anchor = 0.80 → blend = 40×0.20 + 50×0.80 = 8 + 40 = 48
     # scarcity for WR T1 = 1.20 → 48 × 1.20 = 57.60
-    # risk factor = 1 + 0 = 1.0 → ceiling = 57.60
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="WR", risk_modifier=Decimal("0"))
+    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="WR", risk_level="low")
     assert ceiling == Decimal("57.60")
 
 
@@ -105,7 +105,7 @@ def test_scarcity_modifier_applied_to_tier1_rb():
     sv = Decimal("40")
     mv = Decimal("40")
     # blend = 40×0.20 + 40×0.80 = 40, scarcity 1.35 → 40×1.35 = 54
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB")
     assert ceiling == Decimal("54.00")
 
 
@@ -122,11 +122,12 @@ def test_tier1_wr_scarcity_modifier_is_1_20():
 # ===========================================================================
 
 def test_tier2_bid_ceiling_uses_85_15_blend():
-    """Tier 2: blend = system × 0.85 + market × 0.15."""
+    """Tier 2: blend = system × 0.85 + risk_adj_market × 0.15."""
     sv = Decimal("20")
     mv = Decimal("30")
+    # low risk → risk_adj_market = 30
     # blend = 20×0.85 + 30×0.15 = 17 + 4.5 = 21.5
-    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR")
     assert ceiling == Decimal("21.50")
 
 
@@ -134,7 +135,7 @@ def test_tier3_bid_ceiling_uses_85_15_blend():
     sv = Decimal("10")
     mv = Decimal("15")
     # blend = 10×0.85 + 15×0.15 = 8.5 + 2.25 = 10.75
-    ceiling = compute_bid_ceiling(sv, mv, tier=3, position="RB", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, mv, tier=3, position="RB")
     assert ceiling == Decimal("10.75")
 
 
@@ -143,54 +144,53 @@ def test_tier3_bid_ceiling_uses_85_15_blend():
 # ===========================================================================
 
 def test_tier4_bid_ceiling_ignores_market_value():
-    """Tier 4: ceiling = system_value × (1 + risk_modifier), market ignored."""
+    """Tier 4: ceiling = system_value, market ignored."""
     sv = Decimal("5")
     mv = Decimal("100")   # large market value — should not influence ceiling
-    ceiling = compute_bid_ceiling(sv, mv, tier=4, position="RB", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, mv, tier=4, position="RB")
     assert ceiling == Decimal("5.00")
 
 
 def test_tier5_bid_ceiling_ignores_market_value():
     sv = Decimal("3")
     mv = Decimal("50")
-    ceiling = compute_bid_ceiling(sv, mv, tier=5, position="WR", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, mv, tier=5, position="WR")
     assert ceiling == Decimal("3.00")
 
 
 def test_tier4_bid_ceiling_uses_system_value_only():
-    """Confirm Tier 4-5 is exactly system_value when no risk modifier."""
+    """Confirm Tier 4-5 is exactly system_value (no market influence)."""
     sv = Decimal("7")
-    ceiling = compute_bid_ceiling(sv, None, tier=4, position="QB", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, None, tier=4, position="QB")
     assert ceiling == sv
 
 
 # ===========================================================================
-# compute_bid_ceiling — risk modifier
+# compute_bid_ceiling — risk level (market discount)
 # ===========================================================================
 
-def test_risk_modifier_reduces_ceiling_correctly():
-    """A negative risk modifier (e.g. -0.20) reduces ceiling by 20%."""
+def test_risk_discount_reduces_market_before_blend():
+    """High risk (15% discount) reduces market_value before blending."""
     sv = Decimal("30")
-    # Tier 2, no market value → blend = 30×0.85 + 30×0.15 = 30, then × 0.80
-    ceiling = compute_bid_ceiling(
-        sv, None, tier=2, position="WR", risk_modifier=Decimal("-0.20")
-    )
-    assert ceiling == Decimal("24.00")
+    mv = Decimal("40")
+    # Tier 2, high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
+    # blend = 30 × 0.85 + 34 × 0.15 = 25.5 + 5.1 = 30.6
+    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
+    assert ceiling == Decimal("30.60")
 
 
-def test_zero_risk_modifier_no_change():
+def test_low_risk_no_market_discount():
+    """low risk = 0% market discount, same as default."""
     sv = Decimal("20")
-    ceiling_no_rm = compute_bid_ceiling(sv, None, tier=3, position="TE", risk_modifier=None)
-    ceiling_zero  = compute_bid_ceiling(sv, None, tier=3, position="TE", risk_modifier=Decimal("0"))
-    assert ceiling_no_rm == ceiling_zero
+    ceiling_default = compute_bid_ceiling(sv, None, tier=3, position="TE")
+    ceiling_low = compute_bid_ceiling(sv, None, tier=3, position="TE", risk_level="low")
+    assert ceiling_default == ceiling_low
 
 
 def test_ceiling_minimum_is_one_dollar():
-    """Even with a large negative risk modifier, ceiling never drops below $1."""
+    """Even with volatile risk, ceiling never drops below $1."""
     sv = Decimal("1")
-    ceiling = compute_bid_ceiling(
-        sv, None, tier=5, position="RB", risk_modifier=Decimal("-0.99")
-    )
+    ceiling = compute_bid_ceiling(sv, None, tier=5, position="RB", risk_level="volatile")
     assert ceiling == Decimal("1.00")
 
 
@@ -198,7 +198,7 @@ def test_market_value_none_uses_system_value_for_blend():
     """When market_value is None, market treated as = system_value → neutral blend."""
     sv = Decimal("20")
     # Tier 2, no market → blend = 20×0.85 + 20×0.15 = 20
-    ceiling = compute_bid_ceiling(sv, None, tier=2, position="WR", risk_modifier=None)
+    ceiling = compute_bid_ceiling(sv, None, tier=2, position="WR")
     assert ceiling == Decimal("20.00")
 
 
@@ -246,15 +246,22 @@ def test_value_gap_exact_threshold_aligned():
 # compute_let_go_threshold
 # ===========================================================================
 
-def test_let_go_threshold_is_ceiling_plus_15_pct():
+def test_let_go_threshold_low_risk_is_ceiling_plus_20_pct():
     ceiling = Decimal("40")
-    let_go = compute_let_go_threshold(ceiling)
-    assert let_go == Decimal("46.00")
+    let_go = compute_let_go_threshold(ceiling, risk_level="low")
+    assert let_go == Decimal("48.00")
+
+
+def test_let_go_threshold_volatile_is_ceiling_plus_5_pct():
+    ceiling = Decimal("40")
+    let_go = compute_let_go_threshold(ceiling, risk_level="volatile")
+    assert let_go == Decimal("42.00")
 
 
 def test_let_go_threshold_rounds_to_two_dp():
     ceiling = Decimal("33")
-    let_go = compute_let_go_threshold(ceiling)
+    let_go = compute_let_go_threshold(ceiling, risk_level="moderate")
+    # 33 × 1.15 = 37.95
     assert let_go == Decimal("37.95")
 
 
@@ -270,6 +277,7 @@ def _make_player(
     ppr_points: float,
     market_value: float | None = None,
     risk_modifier: float | None = None,
+    risk_level: str | None = None,
     post_acl_flag: bool = False,
     workload_cliff_flag: bool = False,
     team_abbr: str = "NYG",
@@ -294,9 +302,10 @@ def _make_player(
     player.profile = profile
     player.dependencies = []
 
-    if risk_modifier is not None or post_acl_flag or workload_cliff_flag:
+    if risk_modifier is not None or risk_level is not None or post_acl_flag or workload_cliff_flag:
         inj = MagicMock()
         inj.risk_adjusted_value_modifier = Decimal(str(risk_modifier)) if risk_modifier is not None else None
+        inj.overall_risk_level = risk_level if risk_level is not None else "low"
         inj.post_acl_flag = post_acl_flag
         inj.workload_cliff_flag = workload_cliff_flag
         player.injury_profile = inj
@@ -427,6 +436,8 @@ from backend.engines.valuation import (
     MAX_REALISTIC_BID,
     REPLACEMENT_LEVEL_PPR_PER_GAME,
     POST_MAJOR_INJURY_DISCOUNT,
+    RISK_MARKET_DISCOUNT,
+    LET_GO_MULTIPLIER,
     _apply_injury_discount,
     _apply_dependency_adjustment,
     get_draftable_pool_sizes,
@@ -440,8 +451,7 @@ def test_bid_ceiling_hard_cap_enforced():
     # RB max is $80 — create a T1 RB with system_value that would produce ceiling > $80
     sv = Decimal("70")  # high system value
     mv = Decimal("75")  # high market value
-    tier = 1
-    ceiling = compute_bid_ceiling(sv, mv, tier, "RB", Decimal("0.0"))
+    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="low")
     # Without hard cap, T1 RB ceiling = blend * scarcity = high
     # The compute_bid_ceiling itself doesn't cap — run_valuation_pass caps after
     # But we can verify MAX_REALISTIC_BID is correct
@@ -1122,3 +1132,123 @@ async def test_low_ppr_wrs_get_dollar_1():
     assert mock_players[2].baseline_value == Decimal("1.00")
     # Star WR gets meaningful value
     assert mock_players[0].baseline_value > Decimal("1.00")
+
+
+# ===========================================================================
+# Risk market discount — bid ceiling redesign tests
+# ===========================================================================
+
+
+def test_volatile_still_draftable():
+    """Volatile T2 WR with $49 market should have ceiling > $20.
+
+    Old formula: ceiling = blend × (1 + -0.35) → $16.22 (undraftable).
+    New formula: market discount only → ceiling stays reasonable.
+    """
+    sv = Decimal("21")
+    mv = Decimal("49")
+    # volatile discount = 22%: risk_adj_market = 49 × 0.78 = 38.22
+    # T2 blend = 21 × 0.85 + 38.22 × 0.15 = 17.85 + 5.733 = 23.583
+    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="volatile")
+    assert ceiling > Decimal("20.00")
+    assert ceiling < Decimal("30.00")
+
+
+def test_risk_discount_constants_valid():
+    """Verify RISK_MARKET_DISCOUNT and LET_GO_MULTIPLIER have all four levels."""
+    for level in ("low", "moderate", "high", "volatile"):
+        assert level in RISK_MARKET_DISCOUNT
+        assert level in LET_GO_MULTIPLIER
+    assert RISK_MARKET_DISCOUNT["low"] == Decimal("0.00")
+    assert RISK_MARKET_DISCOUNT["volatile"] == Decimal("0.22")
+    assert LET_GO_MULTIPLIER["low"] == Decimal("1.20")
+    assert LET_GO_MULTIPLIER["volatile"] == Decimal("1.05")
+
+
+def test_tighter_let_go_for_risky_players():
+    """Volatile let_go = ceiling × 1.05 vs low = ceiling × 1.20."""
+    ceiling = Decimal("30")
+    let_go_low = compute_let_go_threshold(ceiling, "low")
+    let_go_vol = compute_let_go_threshold(ceiling, "volatile")
+    assert let_go_low == Decimal("36.00")   # 30 × 1.20
+    assert let_go_vol == Decimal("31.50")   # 30 × 1.05
+    assert let_go_vol < let_go_low
+
+
+def test_healthy_tier1_near_market():
+    """Healthy T1 RB: ceiling should be close to market (heavy anchor, no discount)."""
+    sv = Decimal("55")
+    mv = Decimal("60")
+    # low risk → risk_adj_market = 60
+    # blend = 55 × 0.20 + 60 × 0.80 = 11 + 48 = 59
+    # scarcity RB = 1.35 → 59 × 1.35 = 79.65
+    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="low")
+    assert ceiling == Decimal("79.65")
+
+
+def test_risk_level_not_risk_modifier_in_ceiling():
+    """compute_bid_ceiling uses risk_level (str), not risk_modifier (Decimal)."""
+    import inspect
+    sig = inspect.signature(compute_bid_ceiling)
+    param_names = list(sig.parameters.keys())
+    assert "risk_level" in param_names
+    assert "risk_modifier" not in param_names
+
+
+def test_amon_ra_ceiling_above_20():
+    """Amon-Ra scenario: T2 WR, sv=$21, mv=$49, high risk → ceiling > $20."""
+    sv = Decimal("21")
+    mv = Decimal("49")
+    # high discount = 15%: risk_adj_market = 49 × 0.85 = 41.65
+    # blend = 21 × 0.85 + 41.65 × 0.15 = 17.85 + 6.2475 = 24.0975
+    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
+    assert ceiling > Decimal("20.00")
+    assert ceiling == Decimal("24.10")
+
+
+def test_cmc_ceiling_above_45():
+    """CMC scenario: T1 RB, sv=$55, mv=$60, moderate risk → ceiling > $45."""
+    sv = Decimal("55")
+    mv = Decimal("60")
+    # moderate discount = 8%: risk_adj_market = 60 × 0.92 = 55.2
+    # blend = 55 × 0.20 + 55.2 × 0.80 = 11 + 44.16 = 55.16
+    # scarcity RB = 1.35 → 55.16 × 1.35 = 74.466
+    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="moderate")
+    assert ceiling > Decimal("45.00")
+    assert ceiling == Decimal("74.47")
+
+
+@pytest.mark.asyncio
+async def test_no_high_market_player_ceiling_below_15():
+    """No player with market > $35 should have ceiling < $15.
+
+    This is the Amon-Ra regression guard — the old formula crushed
+    high-market injured players to undraftable levels.
+    """
+    mock_players = []
+    for i in range(40):
+        ppr = 340 - i * 5
+        mv = max(1, 60 - i * 2)
+        rl = "high" if i % 3 == 0 else "low"
+        p = _make_player("WR", ppr_points=ppr, market_value=float(mv), risk_level=rl)
+        p.name = f"WR_{i+1}"
+        mock_players.append(p)
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    for p in mock_players:
+        if p.market_value and p.market_value > Decimal("35"):
+            assert p.recommended_bid_ceiling >= Decimal("15"), (
+                f"{p.name} market=${p.market_value} but ceiling=${p.recommended_bid_ceiling}"
+            )
