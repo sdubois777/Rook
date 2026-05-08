@@ -616,9 +616,26 @@ async def run_valuation_pass(
                 anchor   = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
                 scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
 
+                # Compute ceiling/floor dollar values from upside/downside PPR
+                upside_ppr, downside_ppr = _extract_upside_downside(player.profile)
+                ceiling_val = None
+                floor_val = None
+                if upside_ppr > 0:
+                    ceiling_val = ppr_to_system_value(
+                        upside_ppr, ctx["replacement_ppr"],
+                        ctx["total_par"], ctx["position_budget"],
+                    )
+                if downside_ppr > 0:
+                    floor_val = ppr_to_system_value(
+                        downside_ppr, ctx["replacement_ppr"],
+                        ctx["total_par"], ctx["position_budget"],
+                    )
+
                 # Update in-session player object
                 player.tier                       = tier
                 player.baseline_value             = sv
+                player.ceiling_value              = ceiling_val
+                player.floor_value                = floor_val
                 player.risk_adjusted_value        = _to_dec(max(Decimal("1.00"), risk_adj))
                 player.recommended_bid_ceiling    = ceiling
                 player.let_go_threshold           = let_go
@@ -695,6 +712,19 @@ def _extract_ppr(profile: Optional[PlayerProfile]) -> float:
         return max(0.0, float(val or 0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _extract_upside_downside(profile: Optional[PlayerProfile]) -> tuple[float, float]:
+    """Extract upside_ppr and downside_ppr from clean_season_baseline, or (0, 0)."""
+    if not profile or not profile.clean_season_baseline:
+        return 0.0, 0.0
+    baseline = profile.clean_season_baseline
+    try:
+        upside = max(0.0, float(baseline.get("upside_ppr", 0) or 0))
+        downside = max(0.0, float(baseline.get("downside_ppr", 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    return upside, downside
 
 
 # Per LEAGUE_RULES.md: volatile = -35% or worse. Cap at -40% absolute maximum.

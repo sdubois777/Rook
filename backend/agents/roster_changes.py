@@ -126,8 +126,50 @@ def validate_flag(flag: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Post-processing: enforce committee/displaced mutual exclusivity
+# Post-processing: dedup + mutual exclusivity
 # ---------------------------------------------------------------------------
+
+def deduplicate_flags(flags: list[dict]) -> list[dict]:
+    """Remove duplicate and conflicting flags.
+
+    Rules:
+    1. When displaced exists for a player+trigger, remove any beneficiary
+       for the same pair (displaced+contingent supersedes beneficiary).
+    2. Remove exact duplicates (same player+trigger+flag_type).
+    """
+    # Step 1: beneficiary superseded by displaced for same player+trigger
+    displaced_pairs = {
+        (f["player_name"], f.get("trigger_player_name", ""))
+        for f in flags
+        if f.get("flag_type") == "displaced"
+    }
+
+    flags = [
+        f for f in flags
+        if not (
+            f.get("flag_type") == "beneficiary"
+            and (f["player_name"], f.get("trigger_player_name", "")) in displaced_pairs
+        )
+    ]
+
+    # Step 2: deduplicate by (player_name, trigger_player_name, flag_type)
+    seen: set[tuple] = set()
+    result = []
+    for f in flags:
+        key = (
+            f.get("player_name", ""),
+            f.get("trigger_player_name", ""),
+            f.get("flag_type", ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            result.append(f)
+
+    removed = len(flags) - len(result)
+    if removed:
+        logger.info("Deduplicated %d flags", removed)
+    return result
+
 
 def enforce_flag_mutual_exclusivity(flags: list[dict]) -> list[dict]:
     """Remove committee flags that conflict with displaced flags for the same trigger.
@@ -885,6 +927,184 @@ class RosterChangesAgent(BaseAgent):
         return flags
 
     # ------------------------------------------------------------------
+    # Arrival-based DISPLACED + CONTINGENT flags — Python-generated
+    # ------------------------------------------------------------------
+
+    async def _handle_arrivals(
+        self,
+        team_abbr: str,
+        roster: list[dict],
+    ) -> list[dict]:
+        """
+        Generate DISPLACED + CONTINGENT flags for incumbents when a significant
+        player arrives on the team. Mirror of _handle_departures().
+
+        Detection: compares current roster against previous season's roster for
+        this team. Players currently on the roster who were NOT on this team
+        last season are arrivals. Only flags arrivals with meaningful prior
+        production (>=80 targets for WR/TE, >=150 carries for RB).
+        """
+        from backend.integrations.nfl_data import fetch_rosters, compute_target_share
+
+        team = team_abbr.upper()
+        skill_pos = {"WR", "RB", "TE"}
+
+        # Current skill position players from OTC roster
+        current_skill = [p for p in roster if p.get("position") in skill_pos]
+        current_names = {p["name"] for p in current_skill}
+
+        prev_season = get_current_season() - 1
+
+        # Load previous roster to identify who was on this team last year
+        try:
+            prev_rosters = fetch_rosters(prev_season)
+        except Exception as exc:
+            logger.warning(
+                "Could not load %d rosters for arrival detection: %s",
+                prev_season, exc,
+            )
+            return []
+
+        team_col = next(
+            (c for c in ("team", "team_abbr") if c in prev_rosters.columns), None
+        )
+        name_col = next(
+            (c for c in ("full_name", "player_name") if c in prev_rosters.columns), None
+        )
+        if not team_col or not name_col:
+            return []
+
+        # Players who were on THIS team last season
+        prev_team_mask = prev_rosters[team_col].str.upper() == team
+        prev_team_names = set(prev_rosters[prev_team_mask][name_col].dropna().unique())
+
+        # Arrivals = on current roster but NOT on this team last season
+        arrival_names = current_names - prev_team_names
+        if not arrival_names:
+            return []
+
+        # Load target share for production filter (ALL teams — arrival was elsewhere)
+        try:
+            ts_df = compute_target_share(prev_season)
+        except Exception:
+            ts_df = None
+
+        # Build production lookup by player_id
+        prod_by_id: dict[str, tuple[int, int]] = {}
+        if ts_df is not None and "player_id" in ts_df.columns:
+            for _, r in ts_df.iterrows():
+                pid = str(r.get("player_id", "")).strip()
+                tgts = int(r.get("total_targets", 0) or 0)
+                carries = int(r.get("total_carries", 0) or 0)
+                if pid:
+                    existing = prod_by_id.get(pid, (0, 0))
+                    prod_by_id[pid] = (
+                        max(existing[0], tgts),
+                        max(existing[1], carries),
+                    )
+
+        MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
+        MIN_CARRIES = 150  # ~9 carries/game — RB1 level
+
+        flags: list[dict] = []
+        for arrival_name in arrival_names:
+            arrival_pos = next(
+                (p["position"] for p in current_skill if p["name"] == arrival_name),
+                None,
+            )
+            if not arrival_pos or arrival_pos not in skill_pos:
+                continue
+
+            # Find arrival's player_id from previous roster (any team)
+            arrival_mask = prev_rosters[name_col] == arrival_name
+            arrival_rows = prev_rosters[arrival_mask]
+            if arrival_rows.empty:
+                # Last-name fallback — only if unique player_id
+                last = arrival_name.split()[-1] if arrival_name else ""
+                if not last:
+                    continue
+                arrival_mask = prev_rosters[name_col].str.contains(
+                    last, case=False, na=False
+                )
+                arrival_rows = prev_rosters[arrival_mask]
+                if "player_id" in arrival_rows.columns:
+                    if arrival_rows["player_id"].nunique() != 1:
+                        continue  # Ambiguous — skip
+
+            if arrival_rows.empty:
+                continue
+
+            arrival_pid = str(
+                arrival_rows.iloc[0].get("player_id", "")
+            ).strip()
+            tgts, carries = prod_by_id.get(arrival_pid, (0, 0))
+
+            # Production threshold — only flag significant arrivals
+            if arrival_pos in ("WR", "TE") and tgts < MIN_TARGETS:
+                continue
+            if arrival_pos == "RB" and carries < MIN_CARRIES:
+                continue
+
+            logger.info(
+                "%s arrival: %s (%s) — targets=%d, carries=%d",
+                team, arrival_name, arrival_pos, tgts, carries,
+            )
+
+            # Generate displaced + contingent for same-position incumbents
+            same_pos = [
+                inc for inc in current_skill
+                if inc.get("position") == arrival_pos
+                and inc.get("name") != arrival_name
+            ]
+
+            impact_pct = -0.30 if arrival_pos in ("WR", "TE") else -0.25
+
+            for inc in same_pos:
+                inc_name = inc.get("name", "")
+                flags.append({
+                    "player_name": inc_name,
+                    "player_team": team,
+                    "player_position": arrival_pos,
+                    "flag_type": "displaced",
+                    "trigger_player_name": arrival_name,
+                    "trigger_player_team": team,
+                    "trigger_condition": "active_and_healthy",
+                    "effect_on_value": "negative",
+                    "value_impact_pct": impact_pct,
+                    "confidence": "high",
+                    "reasoning": (
+                        f"{arrival_name} arrived on {team} with "
+                        f"{tgts} targets / {carries} carries last season "
+                        f"— {inc_name} target share threatened."
+                    ),
+                    "season_year": get_analysis_year(),
+                })
+                flags.append({
+                    "player_name": inc_name,
+                    "player_team": team,
+                    "player_position": arrival_pos,
+                    "flag_type": "contingent",
+                    "trigger_player_name": arrival_name,
+                    "trigger_player_team": team,
+                    "trigger_condition": "injured_or_absent",
+                    "effect_on_value": "positive",
+                    "value_impact_pct": abs(impact_pct) * 0.8,
+                    "confidence": "high",
+                    "reasoning": (
+                        f"{inc_name} value recovers if "
+                        f"{arrival_name} misses time."
+                    ),
+                    "season_year": get_analysis_year(),
+                })
+
+        if flags:
+            logger.info(
+                "%s: %d arrival DISPLACED/CONTINGENT flags generated",
+                team_abbr, len(flags),
+            )
+        return flags
+
+    # ------------------------------------------------------------------
     # Per-team runner — exactly ONE call_once()
     # ------------------------------------------------------------------
 
@@ -932,7 +1152,19 @@ class RosterChangesAgent(BaseAgent):
                         pick.get("player_name"), exc,
                     )
 
-            # Enforce committee/displaced mutual exclusivity before DB write
+            # Arrival-based DISPLACED + CONTINGENT flags — Python-generated
+            try:
+                arrival_flags = await self._handle_arrivals(
+                    team_abbr,
+                    context.get("current_roster", []),
+                )
+                if arrival_flags:
+                    flags.extend(arrival_flags)
+            except Exception as exc:
+                logger.warning("Arrival handler failed for %s: %s", team_abbr, exc)
+
+            # Dedup + enforce mutual exclusivity before DB write
+            flags = deduplicate_flags(flags)
             flags = enforce_flag_mutual_exclusivity(flags)
 
             written = await _write_flags(flags)
@@ -1051,12 +1283,12 @@ class RosterChangesAgent(BaseAgent):
 async def _bulk_resolve_player_ids(
     session: AsyncSession,
     names_and_teams: list[tuple[str, str | None]],
-) -> dict[tuple, str | None]:
+) -> dict[tuple, tuple[str | None, str | None]]:
     """
     Resolve all player names in ONE query.
-    Returns {(name, team): player_id}.
+    Returns {(name, team): (player_id, resolved_team)}.
     """
-    results: dict[tuple, str | None] = {}
+    results: dict[tuple, tuple[str | None, str | None]] = {}
     unique_lasts = {name.split()[-1] for name, _ in names_and_teams if name}
     if not unique_lasts:
         return results
@@ -1074,21 +1306,29 @@ async def _bulk_resolve_player_ids(
 
     for name, team in names_and_teams:
         if not name:
-            results[(name, team)] = None
+            results[(name, team)] = (None, None)
             continue
         last = name.split()[-1].lower()
         candidates = player_map.get(last, [])
         if not candidates:
-            results[(name, team)] = None
+            results[(name, team)] = (None, None)
         elif len(candidates) == 1:
-            results[(name, team)] = str(candidates[0].id)
+            results[(name, team)] = (str(candidates[0].id), candidates[0].team_abbr)
         else:
+            # Prefer exact full-name match
+            exact = [p for p in candidates if p.name.lower() == name.lower()]
+            if len(exact) == 1:
+                results[(name, team)] = (str(exact[0].id), exact[0].team_abbr)
+                continue
+            # Then filter by team
             if team:
-                match = [p for p in candidates if p.team_abbr == team.upper()]
+                match = [p for p in (exact or candidates) if p.team_abbr == team.upper()]
                 if match:
-                    results[(name, team)] = str(match[0].id)
+                    results[(name, team)] = (str(match[0].id), match[0].team_abbr)
                     continue
-            results[(name, team)] = str(candidates[0].id)
+            # Last resort: first candidate (but flag team for cross-team validation)
+            pick = (exact or candidates)[0]
+            results[(name, team)] = (str(pick.id), pick.team_abbr)
 
     return results
 
@@ -1115,6 +1355,11 @@ async def _write_flags(flags: list[dict]) -> int:
     from sqlalchemy import delete as sa_delete
     analysis_year = get_analysis_year()
 
+    # Flag types that REQUIRE player and trigger on the same team.
+    # beneficiary with trigger_condition="departed_team" is exempt
+    # (the trigger left the team, so they're on a different team now).
+    SAME_TEAM_FLAG_TYPES = {"displaced", "contingent", "committee", "scheme_fit", "college_trust"}
+
     async with AsyncSessionLocal() as session:
         # Collect all names for bulk resolution
         names_and_teams: list[tuple[str, str | None]] = []
@@ -1127,7 +1372,7 @@ async def _write_flags(flags: list[dict]) -> int:
         # Collect the player IDs that will be written so we can purge stale rows first
         player_ids_in_batch: set = set()
         for flag in flags:
-            pid = id_map.get((flag.get("player_name", ""), flag.get("player_team")))
+            pid, _ = id_map.get((flag.get("player_name", ""), flag.get("player_team")), (None, None))
             if pid:
                 player_ids_in_batch.add(pid)
 
@@ -1141,25 +1386,66 @@ async def _write_flags(flags: list[dict]) -> int:
             )
 
         written = 0
+        cross_team_rejected = 0
         for flag in flags:
             player_name  = flag.get("player_name", "")
             player_team  = flag.get("player_team")
             trigger_name = flag.get("trigger_player_name", "")
             trigger_team = flag.get("trigger_player_team")
 
-            player_id  = id_map.get((player_name, player_team))
-            trigger_id = id_map.get((trigger_name, trigger_team))
+            player_id, player_resolved_team = id_map.get(
+                (player_name, player_team), (None, None)
+            )
+            trigger_id, trigger_resolved_team = id_map.get(
+                (trigger_name, trigger_team), (None, None)
+            )
 
             if not player_id:
                 logger.debug("Could not resolve player: %s (%s)", player_name, player_team)
                 continue
 
+            # Cross-team validation: reject flags where player and trigger
+            # resolved to different teams (phantom flags from model errors).
+            flag_type = flag.get("flag_type", "")
+            trigger_condition = flag.get("trigger_condition", "")
+            if (
+                trigger_id
+                and player_resolved_team
+                and trigger_resolved_team
+                and player_resolved_team != trigger_resolved_team
+                and flag_type in SAME_TEAM_FLAG_TYPES
+            ):
+                cross_team_rejected += 1
+                logger.debug(
+                    "Rejected cross-team %s: %s (%s) <- %s (%s)",
+                    flag_type, player_name, player_resolved_team,
+                    trigger_name, trigger_resolved_team,
+                )
+                continue
+            # Also reject beneficiary flags where trigger is on a different
+            # team BUT the trigger_condition is NOT "departed_team"
+            if (
+                flag_type == "beneficiary"
+                and trigger_condition != "departed_team"
+                and trigger_id
+                and player_resolved_team
+                and trigger_resolved_team
+                and player_resolved_team != trigger_resolved_team
+            ):
+                cross_team_rejected += 1
+                logger.debug(
+                    "Rejected cross-team beneficiary: %s (%s) <- %s (%s)",
+                    player_name, player_resolved_team,
+                    trigger_name, trigger_resolved_team,
+                )
+                continue
+
             session.add(PlayerDependency(
                 player_id=player_id,
-                flag_type=flag.get("flag_type", ""),
+                flag_type=flag_type,
                 trigger_player_id=trigger_id,
                 trigger_player_name=trigger_name,
-                trigger_condition=flag.get("trigger_condition", "active_and_healthy"),
+                trigger_condition=trigger_condition or "active_and_healthy",
                 effect_on_value=flag.get("effect_on_value", ""),
                 value_impact_pct=flag.get("value_impact_pct"),
                 confidence=flag.get("confidence", "medium"),
@@ -1167,6 +1453,9 @@ async def _write_flags(flags: list[dict]) -> int:
                 season_year=flag.get("season_year", analysis_year),
             ))
             written += 1
+
+        if cross_team_rejected:
+            logger.info("Rejected %d cross-team phantom flags", cross_team_rejected)
 
         await session.commit()
 

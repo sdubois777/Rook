@@ -16,6 +16,7 @@ import pytest
 
 from backend.agents.roster_changes import (
     RosterChangesAgent,
+    deduplicate_flags,
     enforce_flag_mutual_exclusivity,
     validate_flag,
 )
@@ -1259,3 +1260,76 @@ def test_valid_flag_passes_validation():
     flag = _make_flag("RB A", "DEN", "RB", "displaced", "RB B", "DEN",
                       "active_and_healthy", "negative", -25)
     assert validate_flag(flag) is True
+
+
+# ===========================================================================
+# deduplicate_flags — beneficiary superseded by displaced
+# ===========================================================================
+
+def test_dedup_removes_beneficiary_when_displaced_exists():
+    """When displaced exists for player+trigger, beneficiary is removed."""
+    flags = [
+        _make_flag("WR Star", "LAC", "WR", "beneficiary", "Keenan Allen", "LAC",
+                   "injured", "positive", 15),
+        _make_flag("WR Star", "LAC", "WR", "displaced", "Keenan Allen", "LAC",
+                   "active_and_healthy", "negative", -30),
+        _make_flag("WR Star", "LAC", "WR", "contingent", "Keenan Allen", "LAC",
+                   "injured_or_absent", "positive", 24),
+    ]
+    result = deduplicate_flags(flags)
+    flag_types = {f["flag_type"] for f in result}
+    assert "displaced" in flag_types
+    assert "contingent" in flag_types
+    assert "beneficiary" not in flag_types
+
+
+def test_dedup_keeps_beneficiary_without_displaced():
+    """Beneficiary without matching displaced is kept."""
+    flags = [
+        _make_flag("WR Star", "LAC", "WR", "beneficiary", "Departed WR", "LAC",
+                   "departed_team", "positive", 35),
+    ]
+    result = deduplicate_flags(flags)
+    assert len(result) == 1
+    assert result[0]["flag_type"] == "beneficiary"
+
+
+def test_dedup_removes_exact_duplicates():
+    """Duplicate flags (same player+trigger+type) are deduplicated."""
+    flag = _make_flag("WR A", "LAC", "WR", "displaced", "WR B", "LAC",
+                      "active_and_healthy", "negative", -30)
+    flags = [flag, flag.copy()]
+    result = deduplicate_flags(flags)
+    assert len(result) == 1
+
+
+# ===========================================================================
+# _extract_upside_downside — valuation engine
+# ===========================================================================
+
+def test_extract_upside_downside_from_profile():
+    """Upside/downside PPR extracted from clean_season_baseline."""
+    from backend.engines.valuation import _extract_upside_downside
+    profile = MagicMock()
+    profile.clean_season_baseline = {
+        "ppr_points": 250,
+        "upside_ppr": 300,
+        "downside_ppr": 180,
+    }
+    upside, downside = _extract_upside_downside(profile)
+    assert upside == 300.0
+    assert downside == 180.0
+
+
+def test_extract_upside_downside_no_profile():
+    """No profile returns (0, 0)."""
+    from backend.engines.valuation import _extract_upside_downside
+    assert _extract_upside_downside(None) == (0.0, 0.0)
+
+
+def test_extract_upside_downside_empty_baseline():
+    """Empty baseline returns (0, 0)."""
+    from backend.engines.valuation import _extract_upside_downside
+    profile = MagicMock()
+    profile.clean_season_baseline = {}
+    assert _extract_upside_downside(profile) == (0.0, 0.0)
