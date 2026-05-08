@@ -217,8 +217,11 @@ async def run_agent(name: str, teams: list[str] | None) -> None:
     if name == "team_systems":
         from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS
         agent = TeamSystemsAgent(dry_run=False)
-        for team in (teams or NFL_TEAMS):
-            await agent.run_for_team(team)
+        if teams:
+            for team in teams:
+                await agent.run_for_team(team)
+        else:
+            await agent.run_all_teams()
 
     elif name == "roster_changes":
         from backend.agents.roster_changes import RosterChangesAgent

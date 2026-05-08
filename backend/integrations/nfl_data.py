@@ -127,6 +127,14 @@ def fetch_rosters(season: int) -> pd.DataFrame:
     )
 
 
+def fetch_seasonal_rosters(season: int) -> pd.DataFrame:
+    """Current roster data — uses import_seasonal_rosters (not weekly game rosters)."""
+    return _load_or_fetch(
+        f"seasonal_rosters_{season}",
+        lambda: nfl.import_seasonal_rosters([season]),
+    )
+
+
 def fetch_injuries(season: int) -> pd.DataFrame:
     return _load_or_fetch(
         f"injuries_{season}",
@@ -281,6 +289,10 @@ async def get_players() -> pd.DataFrame:
 async def get_rosters(season: int) -> pd.DataFrame:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, fetch_rosters, season)
+
+
+async def get_seasonal_rosters(season: int) -> pd.DataFrame:
+    return await asyncio.to_thread(fetch_seasonal_rosters, season)
 
 
 async def get_ngs_data(stat_type: str, season: int) -> pd.DataFrame:

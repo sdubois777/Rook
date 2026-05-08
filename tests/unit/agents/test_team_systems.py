@@ -334,3 +334,151 @@ async def test_sack_rate_passed_to_upsert():
     assert written_data["_sack_rate"] == 0.0512
     assert written_data["_avg_time_to_throw"] == 2.8
     assert written_data["_qb_mobility"] == "pocket_only"
+
+
+# ---------------------------------------------------------------------------
+# Two-source QB identification tests
+# ---------------------------------------------------------------------------
+
+def _mock_seasonal_roster(entries: list[dict]) -> "pd.DataFrame":
+    """Build a minimal seasonal roster DataFrame."""
+    import pandas as pd
+    return pd.DataFrame(entries)
+
+
+def _mock_weekly_qb_rows(rows: list[dict]) -> "pd.DataFrame":
+    """Build a weekly stats DataFrame with QB rows and required columns."""
+    import pandas as pd
+    defaults = {
+        "position": "QB", "completions": 0, "attempts": 0,
+        "passing_yards": 0, "passing_tds": 0, "interceptions": 0,
+        "passing_air_yards": 0, "rushing_yards": 0, "rushing_tds": 0,
+        "sacks": 0, "targets": 0, "dakota": None,
+    }
+    full_rows = []
+    for r in rows:
+        row = {**defaults, **r}
+        full_rows.append(row)
+    return pd.DataFrame(full_rows)
+
+
+@pytest.mark.asyncio
+async def test_qb_from_seasonal_roster_not_stats_leader():
+    """Roster QB (Darnold) should be returned, not stats leader (Geno)."""
+    agent = TeamSystemsAgent(dry_run=False)
+
+    seasonal = _mock_seasonal_roster([
+        {"team": "SEA", "position": "QB", "status": "ACT", "player_name": "Sam Darnold"},
+    ])
+    weekly = _mock_weekly_qb_rows([
+        {"player_name": "Geno Smith", "recent_team": "SEA", "attempts": 500, "completions": 320, "passing_yards": 3600},
+        {"player_name": "Sam Darnold", "recent_team": "MIN", "attempts": 450, "completions": 280, "passing_yards": 3200},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
+    agent._data_cache[f"weekly_{current}"] = weekly
+
+    result = await agent._get_qb_data("SEA", current)
+
+    assert result["starter_name"] == "Sam Darnold"
+    assert result["source"] == "roster+stats"
+
+
+@pytest.mark.asyncio
+async def test_qb_stats_pulled_from_previous_team():
+    """Stats should come from Darnold's MIN data even though he's now on SEA."""
+    agent = TeamSystemsAgent(dry_run=False)
+
+    seasonal = _mock_seasonal_roster([
+        {"team": "SEA", "position": "QB", "status": "ACT", "player_name": "Sam Darnold"},
+    ])
+    weekly = _mock_weekly_qb_rows([
+        {"player_name": "Geno Smith", "recent_team": "SEA", "attempts": 500, "completions": 320, "passing_yards": 3600},
+        {"player_name": "Sam Darnold", "recent_team": "MIN", "attempts": 450, "completions": 280, "passing_yards": 3200, "passing_tds": 25},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
+    agent._data_cache[f"weekly_{current}"] = weekly
+
+    result = await agent._get_qb_data("SEA", current)
+
+    assert result["starter_name"] == "Sam Darnold"
+    assert result["passing_yards"] == 3200
+    assert result["passing_tds"] == 25
+    assert result["total_attempts"] == 450
+
+
+@pytest.mark.asyncio
+async def test_qb_fallback_when_no_seasonal_roster():
+    """Without seasonal roster, fall back to most-attempts on team."""
+    agent = TeamSystemsAgent(dry_run=False)
+
+    weekly = _mock_weekly_qb_rows([
+        {"player_name": "Geno Smith", "recent_team": "SEA", "attempts": 500, "completions": 320, "passing_yards": 3600},
+        {"player_name": "Drew Lock", "recent_team": "SEA", "attempts": 50, "completions": 28, "passing_yards": 400},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    # Ensure no seasonal roster in cache (ClassVar shared across tests)
+    agent._data_cache.pop(f"seasonal_rosters_{current}", None)
+    agent._data_cache[f"weekly_{current}"] = weekly
+
+    result = await agent._get_qb_data("SEA", current)
+
+    assert result["starter_name"] == "Geno Smith"
+    assert result["source"] == "stats_fallback"
+
+
+@pytest.mark.asyncio
+async def test_qb_roster_only_no_stats():
+    """Rookie QB on roster with zero weekly stats should return roster_only."""
+    agent = TeamSystemsAgent(dry_run=False)
+
+    seasonal = _mock_seasonal_roster([
+        {"team": "NE", "position": "QB", "status": "ACT", "player_name": "Drake Maye"},
+    ])
+    # Weekly data has no Drake Maye rows at all
+    weekly = _mock_weekly_qb_rows([
+        {"player_name": "Mac Jones", "recent_team": "JAX", "attempts": 100, "completions": 60, "passing_yards": 800},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
+    agent._data_cache[f"weekly_{current}"] = weekly
+
+    result = await agent._get_qb_data("NE", current)
+
+    assert result["starter_name"] == "Drake Maye"
+    assert result["source"] == "roster_only"
+    assert "no stats found" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_qb_mismatch_logged(caplog):
+    """When roster QB differs from stats leader, log the change."""
+    import logging
+    agent = TeamSystemsAgent(dry_run=False)
+
+    seasonal = _mock_seasonal_roster([
+        {"team": "SEA", "position": "QB", "status": "ACT", "player_name": "Sam Darnold"},
+    ])
+    weekly = _mock_weekly_qb_rows([
+        {"player_name": "Geno Smith", "recent_team": "SEA", "attempts": 500, "completions": 320, "passing_yards": 3600},
+        {"player_name": "Sam Darnold", "recent_team": "MIN", "attempts": 450, "completions": 280, "passing_yards": 3200},
+    ])
+
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
+    agent._data_cache[f"weekly_{current}"] = weekly
+
+    with caplog.at_level(logging.INFO, logger="backend.agents.team_systems"):
+        await agent._get_qb_data("SEA", current)
+
+    assert any("QB CHANGE" in msg and "Sam Darnold" in msg and "Geno Smith" in msg for msg in caplog.messages)

@@ -187,6 +187,31 @@ class TeamSystemsAgent(BaseAgent):
         }
 
     async def _get_qb_data(self, team: str, season: int) -> dict:
+        """
+        Two-source QB identification:
+        1. Seasonal roster (current_season) → who IS the QB
+        2. Weekly stats (stats_season) → pull that QB's stats across ALL teams
+        3. Fallback: most passing attempts on this team (legacy behavior)
+        """
+        from backend.integrations.nfl_data import normalize_player_name
+
+        current_season = get_current_season()
+
+        # --- Source 1: Identify current QB from seasonal roster ---
+        roster_key = f"seasonal_rosters_{current_season}"
+        roster = self._data_cache.get(roster_key)
+
+        starter_name = None
+        if roster is not None and not roster.empty:
+            team_qbs = roster[
+                (roster["team"] == team)
+                & (roster["position"] == "QB")
+                & (roster["status"] == "ACT")
+            ]
+            if not team_qbs.empty:
+                starter_name = team_qbs.iloc[0]["player_name"]
+
+        # --- Source 2: Weekly stats ---
         cache_key = f"weekly_{season}"
         weekly = self._data_cache.get(cache_key)
         if weekly is None:
@@ -195,25 +220,67 @@ class TeamSystemsAgent(BaseAgent):
                 self._data_cache[cache_key] = weekly
             except Exception as exc:
                 logger.warning("Could not load weekly stats %d: %s", season, exc)
+                if starter_name:
+                    return {
+                        "team": team, "season": season,
+                        "starter_name": starter_name,
+                        "source": "roster_only",
+                        "note": f"{starter_name} identified from roster but no weekly stats available — use model knowledge",
+                    }
                 return {"team": team, "note": "No QB data — use model knowledge"}
 
-        qb_data = weekly[(weekly["recent_team"] == team) & (weekly["position"] == "QB")]
-        if qb_data.empty:
-            return {"team": team, "note": "No QB data — use model knowledge"}
+        all_qb_data = weekly[weekly["position"] == "QB"]
 
-        starter_name = (
-            qb_data.groupby("player_name")["attempts"]
-            .sum()
-            .sort_values(ascending=False)
-            .index[0]
-        )
-        starter_df = qb_data[qb_data["player_name"] == starter_name]
-        total_att  = starter_df["attempts"].sum()
+        if starter_name:
+            # Search by normalized name across ALL teams
+            norm_target = normalize_player_name(starter_name)
+            qb_copy = all_qb_data.copy()
+            qb_copy["_norm"] = qb_copy["player_name"].apply(normalize_player_name)
+            starter_df = qb_copy[qb_copy["_norm"] == norm_target]
+
+            # Log QB change if roster QB differs from stats leader on this team
+            team_qb_stats = all_qb_data[all_qb_data["recent_team"] == team]
+            if not team_qb_stats.empty:
+                stats_leader = (
+                    team_qb_stats.groupby("player_name")["attempts"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .index[0]
+                )
+                if normalize_player_name(stats_leader) != norm_target:
+                    logger.info(
+                        "QB CHANGE: %s — roster=%s, stats_leader=%s",
+                        team, starter_name, stats_leader,
+                    )
+
+            if starter_df.empty:
+                # Roster says this is the QB but no stats found (true rookie, etc.)
+                return {
+                    "team": team, "season": season,
+                    "starter_name": starter_name,
+                    "source": "roster_only",
+                    "note": f"{starter_name} identified from roster but no stats found — use model knowledge",
+                }
+        else:
+            # --- Fallback: most passing attempts on this team ---
+            team_qb_data = all_qb_data[all_qb_data["recent_team"] == team]
+            if team_qb_data.empty:
+                return {"team": team, "note": "No QB data — use model knowledge"}
+            starter_name = (
+                team_qb_data.groupby("player_name")["attempts"]
+                .sum()
+                .sort_values(ascending=False)
+                .index[0]
+            )
+            starter_df = team_qb_data[team_qb_data["player_name"] == starter_name]
+
+        total_att = starter_df["attempts"].sum()
 
         return {
             "team": team,
             "season": season,
             "starter_name": starter_name,
+            "source": "roster+stats" if roster is not None else "stats_fallback",
             "games_played": int(len(starter_df)),
             "total_attempts": int(total_att),
             "completion_pct": (
@@ -385,6 +452,15 @@ class TeamSystemsAgent(BaseAgent):
                 logger.info("Cached rosters %d", current_season)
             except Exception as exc:
                 logger.warning("Could not pre-load rosters %d: %s", current_season, exc)
+
+        # Seasonal rosters — used by _get_qb_data() for current QB identity
+        seasonal_key = f"seasonal_rosters_{current_season}"
+        if seasonal_key not in self._data_cache:
+            try:
+                self._data_cache[seasonal_key] = nfl_data.fetch_seasonal_rosters(current_season)
+                logger.info("Cached seasonal rosters %d", current_season)
+            except Exception as exc:
+                logger.warning("Could not pre-load seasonal rosters %d: %s", current_season, exc)
 
         logger.info(
             "Starting Team Systems pipeline for all 32 teams (concurrency=%d)", concurrency
