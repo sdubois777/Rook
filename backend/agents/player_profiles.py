@@ -648,6 +648,7 @@ class PlayerProfilesAgent(BaseAgent):
         for p in players:
             fields[p.name] = {
                 "is_rookie":            True,
+                "position":             p.position,
                 "college_profile_grade": p.college_profile_grade,
                 "draft_capital_signal":  p.draft_capital_signal,
                 "landing_spot_modifier": float(p.landing_spot_modifier) if p.landing_spot_modifier else 1.0,
@@ -883,6 +884,17 @@ class PlayerProfilesAgent(BaseAgent):
         }
 
         roster = self._get_team_roster(team, current_season)
+
+        # Inject rookies from DB that aren't in nfl_data_py rosters yet
+        # (drafted players won't appear in roster cache until next season)
+        roster_names = {r["name"] for r in roster}
+        for rname, rfields in rookie_fields.items():
+            if rname not in roster_names:
+                roster.append({
+                    "name": rname,
+                    "position": rfields.get("position", "WR"),
+                })
+
         seen:    set[str]   = set()
         players: list[dict] = []
 
@@ -937,11 +949,12 @@ class PlayerProfilesAgent(BaseAgent):
                             "note":             "no data",
                         })
 
-            # Skip only players with zero history AND no dependency flags
-            # (rookies with dependency flags still get profiled; pure depth with nothing to say are skipped)
+            # Skip only players with zero history AND no dependency flags AND not a rookie
+            # (rookies get profiled from college data; pure depth with nothing to say are skipped)
             has_any_data    = any(s.get("games", 0) > 0 for s in seasons_data)
             has_flags       = bool(dep_flags.get(pname, []))
-            if not has_any_data and not has_flags:
+            is_rookie_player = pname in rookie_fields
+            if not has_any_data and not has_flags and not is_rookie_player:
                 continue
 
             # Detect team change: compare most recent season's team to current

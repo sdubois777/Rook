@@ -22,10 +22,12 @@ from backend.agents.player_profiles import (
     _build_rookie_profile,
     _compute_clean_baseline,
     _compute_season_averages,
+    _estimate_year1_role,
     _to_decimal,
     _write_profiles,
     needs_sonnet_reasoning,
     _ROOKIE_CONFIDENCE_DISCOUNT,
+    _ROOKIE_DEFAULT_PPG,
     _DEVELOPMENT_TIMELINE,
 )
 
@@ -2039,3 +2041,203 @@ def test_haiku_batch_uses_python_baseline():
     assert baseline["ppr_points"] > 0
     # Verify formula: 80*1 + 1000*0.1 + 7*6 = 80 + 100 + 42 = 222
     assert baseline["ppr_points"] == 222.0
+
+
+# ===========================================================================
+# Rookie profiling tests (12 tests from stage-05 spec)
+# ===========================================================================
+
+def _make_rookie(**overrides) -> dict:
+    """Build a minimal rookie player dict for _build_rookie_profile."""
+    base = {
+        "position": "WR",
+        "is_rookie": True,
+        "comp_yr1_avg_ppg": 12.0,
+        "comp_yr2_avg_ppg": 15.0,
+        "college_profile_grade": "strong",
+        "draft_capital_signal": "high",
+        "landing_spot_modifier": 1.0,
+        "historical_comp_names": ["Jaylen Waddle", "Chris Olave"],
+        "depth_chart_rank": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_rookie_routed_to_rookie_branch():
+    """Player with is_rookie=True uses _build_rookie_profile, not veteran path."""
+    player = _make_rookie()
+    result = _build_rookie_profile(player, {})
+    assert result["is_rookie"] is True
+    assert result["profile_source"] == "college_comps"
+
+
+def test_veteran_not_routed_to_rookie_branch():
+    """Player with is_rookie=False uses veteran baseline, not rookie path."""
+    # Veterans go through _compute_clean_baseline, not _build_rookie_profile
+    seasons = [
+        {"year": 2024, "games": 17, "receptions": 90, "rec_yards": 1100,
+         "rec_tds": 8, "rush_yards": 0, "rush_tds": 0},
+    ]
+    baseline = _compute_clean_baseline(seasons)
+    # Veteran baseline has stat components — not the "note" field
+    assert "receptions" in baseline
+    assert baseline["ppr_points"] > 0
+
+
+def test_rookie_profile_uses_comp_data_not_nfl_history():
+    """Rookie baseline derived from comp_yr1_avg_ppg * confidence_discount."""
+    player = _make_rookie(position="WR", comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
+    result = _build_rookie_profile(player, {})
+    # WR discount = 0.75, so: 12.0 * 17 * 0.75 = 153.0
+    expected = 12.0 * 17 * _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+    assert result["clean_season_baseline"]["ppr_points"] == round(expected, 1)
+    assert result["clean_season_baseline"]["note"] == "Derived from historical comp average — not NFL history"
+
+
+def test_rookie_confidence_discount_qb_is_lowest():
+    """QB rookie discount (0.65) < TE (0.70) < WR (0.75) < RB (0.85)."""
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["QB"] == 0.65
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["QB"] < _ROOKIE_CONFIDENCE_DISCOUNT["TE"]
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["TE"] < _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["WR"] < _ROOKIE_CONFIDENCE_DISCOUNT["RB"]
+
+
+def test_rookie_confidence_discount_rb_is_highest():
+    """RB discount is 0.85 — translates fastest from college."""
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["RB"] == 0.85
+    assert _ROOKIE_CONFIDENCE_DISCOUNT["RB"] == max(_ROOKIE_CONFIDENCE_DISCOUNT.values())
+
+
+def test_rookie_wider_ceiling_floor_range():
+    """
+    Rookie: ceiling = baseline * 1.45, floor = baseline * 0.55
+    Veteran: ceiling = baseline * 1.25, floor = baseline * 0.75
+    Rookie range must be wider.
+    """
+    player = _make_rookie(position="RB", comp_yr1_avg_ppg=10.0, landing_spot_modifier=1.0)
+    result = _build_rookie_profile(player, {})
+    baseline = result["clean_season_baseline"]["ppr_points"]
+    assert result["ceiling_value_ppr"] == round(baseline * 1.45, 1)
+    assert result["floor_value_ppr"] == round(baseline * 0.55, 1)
+    # Verify range is wider than veteran (1.45 - 0.55 = 0.90 > 1.25 - 0.75 = 0.50)
+    rookie_range = result["ceiling_value_ppr"] - result["floor_value_ppr"]
+    vet_equivalent_range = baseline * 1.25 - baseline * 0.75
+    assert rookie_range > vet_equivalent_range
+
+
+def test_rookie_variance_flag_always_true():
+    """All rookies have variance_flag=True regardless of college profile grade."""
+    for grade in ["elite", "strong", "average", "weak"]:
+        player = _make_rookie(college_profile_grade=grade)
+        result = _build_rookie_profile(player, {})
+        assert result["variance_flag"] is True
+
+
+def test_rb_rookie_development_timeline_year1():
+    """RB rookies -> breakout_window = 'year_1'."""
+    player = _make_rookie(position="RB")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_1"
+    assert _DEVELOPMENT_TIMELINE["RB"] == "year_1"
+
+
+def test_wr_rookie_development_timeline_year2_3():
+    """WR rookies -> breakout_window = 'year_2_to_3'."""
+    player = _make_rookie(position="WR")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_2_to_3"
+
+
+def test_te_rookie_development_timeline_year3_4():
+    """TE rookies -> breakout_window = 'year_3_to_4'."""
+    player = _make_rookie(position="TE")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_window"] == "year_3_to_4"
+
+
+def test_elite_profile_high_capital_is_breakout_candidate():
+    """
+    college_profile_grade='elite' AND draft_capital_signal='high'
+    -> breakout_flag = True even as a rookie (Chase/Jefferson tier).
+    """
+    player = _make_rookie(college_profile_grade="elite", draft_capital_signal="high")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_flag"] is True
+    assert result["breakout_reasoning"] is not None
+
+
+def test_landing_spot_modifier_applied_to_projection():
+    """
+    Rookie with comp_yr1_avg_ppg=12.0 and landing_modifier=0.75
+    -> adjusted baseline < 12.0 * 17 games.
+    """
+    player_good = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
+    player_bad = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=0.75)
+    good = _build_rookie_profile(player_good, {})
+    bad = _build_rookie_profile(player_bad, {})
+    assert bad["clean_season_baseline"]["ppr_points"] < good["clean_season_baseline"]["ppr_points"]
+    # 0.75 modifier should reduce by 25%
+    ratio = bad["clean_season_baseline"]["ppr_points"] / good["clean_season_baseline"]["ppr_points"]
+    assert abs(ratio - 0.75) < 0.01
+
+
+def test_average_profile_low_capital_not_breakout_candidate():
+    """college_profile_grade='average', capital='low' -> breakout_flag=False."""
+    player = _make_rookie(college_profile_grade="average", draft_capital_signal="low")
+    result = _build_rookie_profile(player, {})
+    assert result["breakout_flag"] is False
+    assert result["breakout_reasoning"] is None
+
+
+# ---------------------------------------------------------------------------
+# Rookie roster injection — rookies not in nfl_data_py rosters get injected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_team_context_injects_rookies_not_in_roster():
+    """Rookies from DB should appear in context even if absent from nfl_data_py roster."""
+    agent = PlayerProfilesAgent(dry_run=True)
+    # Pre-populate data cache with empty DataFrames so internal helpers don't crash
+    agent._data_cache = {}
+
+    # Mock: nfl_data_py roster returns only one veteran
+    veteran_roster = [{"name": "Derrick Henry", "position": "RB", "age": 31}]
+
+    # Mock: DB has a rookie on this team
+    rookie_fields = {
+        "Cam Ward": {
+            "is_rookie": True,
+            "position": "QB",
+            "college_profile_grade": "weak",
+            "draft_capital_signal": "high",
+            "landing_spot_modifier": 1.0,
+            "comp_yr1_avg_ppg": None,
+            "comp_yr2_avg_ppg": None,
+            "historical_comp_names": [],
+            "depth_chart_rank": 2,
+        },
+    }
+
+    with patch.object(agent, "_get_team_roster", return_value=veteran_roster), \
+         patch.object(agent, "_get_team_rookie_fields", new_callable=AsyncMock, return_value=rookie_fields), \
+         patch.object(agent, "_get_team_system", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_dependency_flags", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_injury_profiles", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_schedules", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_beat_signals", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_get_team_market_values", new_callable=AsyncMock, return_value={}), \
+         patch.object(agent, "_ensure_cache_loaded"), \
+         patch.object(agent, "_is_backup_qb_season", return_value=False), \
+         patch.object(agent, "_get_player_season_stats", return_value=None), \
+         patch.object(agent, "_get_qb_season", return_value=None), \
+         patch.object(agent, "_get_snap_pct", return_value=None):
+
+        ctx = await agent._build_team_context("TEN")
+
+    player_names = [p["name"] for p in ctx["players"]]
+    assert "Cam Ward" in player_names, "Rookie should be injected into context"
+    cam = next(p for p in ctx["players"] if p["name"] == "Cam Ward")
+    assert cam["is_rookie"] is True
+    assert cam["position"] == "QB"

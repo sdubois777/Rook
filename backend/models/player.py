@@ -66,6 +66,12 @@ class Player(Base):
     positional_scarcity_modifier: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
     breakout_flag: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Draft metadata
+    draft_round: Mapped[Optional[int]] = mapped_column(Integer)
+    draft_pick: Mapped[Optional[int]] = mapped_column(Integer)       # Overall pick number
+    draft_year: Mapped[Optional[int]] = mapped_column(Integer)
+    nfl_seasons_played: Mapped[Optional[int]] = mapped_column(Integer)
+
     # Rookie evaluation fields (written by Agent 2: Roster Changes)
     is_rookie: Mapped[bool] = mapped_column(Boolean, default=False)
     college_profile_grade: Mapped[Optional[str]] = mapped_column(String(20))     # elite/strong/average/weak

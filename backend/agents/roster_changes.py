@@ -422,7 +422,13 @@ class RosterChangesAgent(BaseAgent):
         if not team_col:
             return []
 
-        team_picks = picks_df[picks_df[team_col].str.upper() == team.upper()]
+        # PFR team codes differ from standard NFL abbreviations for 8 teams
+        _NFL_TO_PFR = {
+            "GB": "GNB", "KC": "KAN", "LA": "LAR", "LV": "LVR",
+            "NO": "NOR", "NE": "NWE", "SF": "SFO", "TB": "TAM",
+        }
+        pfr_code = _NFL_TO_PFR.get(team.upper(), team.upper())
+        team_picks = picks_df[picks_df[team_col].str.upper() == pfr_code]
         if team_picks.empty:
             return []
 
@@ -430,7 +436,7 @@ class RosterChangesAgent(BaseAgent):
 
         result = []
         for _, pick in team_picks.iterrows():
-            player_name = str(pick.get("player_name", pick.get("player", "")))
+            player_name = str(pick.get("pfr_player_name", pick.get("player_name", pick.get("player", ""))))
             position    = str(pick.get("position", ""))
             draft_round = int(pick.get("round", 7))
             pick_num    = int(pick.get("pick_number", pick.get("pick", 200)))
