@@ -189,26 +189,22 @@ async def pipeline_dry_run(body: PipelineRunRequest):
         estimates = []
 
         if agent == "player_profiles":
-            # Count players that would need profiling (no cached profile or stale)
+            # Player profiles batches by team (32 calls).
+            # Each team call uses Haiku, but top-tier players get a
+            # second Sonnet call (~15% of players).
             total_result = await session.execute(
                 select(func.count(Player.id))
                 .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
             )
             total_players = total_result.scalar() or 0
-            cached_result = await session.execute(
-                select(func.count(AgentCache.id))
-                .where(AgentCache.agent_name == "player_profiles")
-            )
-            cached = cached_result.scalar() or 0
-            needs_refresh = max(0, total_players - cached)
-
-            sonnet_calls = int(needs_refresh * 0.40)
-            haiku_calls = int(needs_refresh * 0.60)
+            team_count = 32 if not body.team_abbr else 1
+            sonnet_calls = max(1, int(total_players * 0.15))  # ~15% top-tier get Sonnet
+            haiku_calls = team_count  # one Haiku call per team
             cost = sonnet_calls * 0.003 + haiku_calls * 0.0003
 
             estimates.append(DryRunAgentEstimate(
                 agent_name="player_profiles",
-                estimated_entities=needs_refresh,
+                estimated_entities=total_players,
                 estimated_sonnet_calls=sonnet_calls,
                 estimated_haiku_calls=haiku_calls,
                 estimated_cost_usd=round(cost, 4),

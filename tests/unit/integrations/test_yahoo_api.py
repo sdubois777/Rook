@@ -21,64 +21,42 @@ from backend.integrations.yahoo_api import (
 # get_all_user_leagues
 # ---------------------------------------------------------------------------
 
+def _league_response(league_key, league_id, name, season, draft_type="auction",
+                     renew="", renewed=""):
+    """Helper to build a Yahoo league/{key} response."""
+    info = {
+        "league_key": league_key,
+        "league_id": league_id,
+        "name": name,
+        "season": season,
+        "num_teams": 14,
+        "draft_type": draft_type,
+    }
+    if renew:
+        info["renew"] = renew
+    if renewed:
+        info["renewed"] = renewed
+    return {"fantasy_content": {"league": [info]}}
+
+
 @pytest.mark.asyncio
 async def test_get_all_user_leagues_parses_response():
-    """Verify parsing of nested Yahoo users/games/leagues response."""
-    mock_response = {
-        "fantasy_content": {
-            "users": {
-                "0": {
-                    "user": [
-                        {"guid": "ABCDEF"},
-                        {
-                            "games": {
-                                "0": {
-                                    "game": [
-                                        {"game_key": "nfl"},
-                                        {
-                                            "leagues": {
-                                                "0": {
-                                                    "league": [
-                                                        {
-                                                            "league_key": "nfl.l.12345",
-                                                            "league_id": "12345",
-                                                            "name": "My League",
-                                                            "season": "2024",
-                                                            "num_teams": 14,
-                                                            "draft_type": "auction",
-                                                            "draft_status": "postdraft",
-                                                        }
-                                                    ]
-                                                },
-                                                "1": {
-                                                    "league": [
-                                                        {
-                                                            "league_key": "nfl.l.12345",
-                                                            "league_id": "12345",
-                                                            "name": "My League",
-                                                            "season": "2023",
-                                                            "num_teams": 14,
-                                                            "draft_type": "auction",
-                                                            "draft_status": "postdraft",
-                                                        }
-                                                    ]
-                                                },
-                                                "count": 2,
-                                            }
-                                        },
-                                    ]
-                                },
-                                "count": 1,
-                            }
-                        },
-                    ]
-                },
-                "count": 1,
-            }
-        }
-    }
+    """Verify chain-walking discovery finds linked seasons."""
+    # 2024 league links back to 2023, forward to none
+    resp_2024 = _league_response("449.l.12345", "12345", "My League", "2024",
+                                 renew="423_12345")
+    resp_2023 = _league_response("423.l.12345", "12345", "My League", "2023")
 
-    with patch("backend.integrations.yahoo_api._api_get", new_callable=AsyncMock, return_value=mock_response):
+    async def mock_api_get(path, **kw):
+        if "449.l.12345" in path:
+            return resp_2024
+        if "423.l.12345" in path:
+            return resp_2023
+        raise Exception("404")
+
+    with patch("backend.integrations.yahoo_api._api_get", new_callable=AsyncMock, side_effect=mock_api_get), \
+         patch("backend.integrations.yahoo_api.settings") as mock_settings:
+        mock_settings.yahoo_league_id = "12345"
         leagues = await get_all_user_leagues()
 
     assert len(leagues) == 2
@@ -91,46 +69,16 @@ async def test_get_all_user_leagues_parses_response():
 @pytest.mark.asyncio
 async def test_get_all_user_leagues_non_auction_not_flagged():
     """Non-auction leagues have is_auction=False."""
-    mock_response = {
-        "fantasy_content": {
-            "users": {
-                "0": {
-                    "user": [
-                        {"guid": "X"},
-                        {
-                            "games": {
-                                "0": {
-                                    "game": [
-                                        {"game_key": "nfl"},
-                                        {
-                                            "leagues": {
-                                                "0": {
-                                                    "league": [
-                                                        {
-                                                            "league_key": "nfl.l.99",
-                                                            "league_id": "99",
-                                                            "name": "Snake League",
-                                                            "season": "2024",
-                                                            "draft_type": "live",
-                                                        }
-                                                    ]
-                                                },
-                                                "count": 1,
-                                            }
-                                        },
-                                    ]
-                                },
-                                "count": 1,
-                            }
-                        },
-                    ]
-                },
-                "count": 1,
-            }
-        }
-    }
+    resp = _league_response("449.l.99", "99", "Snake League", "2024", draft_type="live")
 
-    with patch("backend.integrations.yahoo_api._api_get", new_callable=AsyncMock, return_value=mock_response):
+    async def mock_api_get(path, **kw):
+        if "449.l.99" in path:
+            return resp
+        raise Exception("404")
+
+    with patch("backend.integrations.yahoo_api._api_get", new_callable=AsyncMock, side_effect=mock_api_get), \
+         patch("backend.integrations.yahoo_api.settings") as mock_settings:
+        mock_settings.yahoo_league_id = "99"
         leagues = await get_all_user_leagues()
 
     assert len(leagues) == 1
