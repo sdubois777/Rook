@@ -16,6 +16,7 @@ HTTP actions (called by React UI):
   GET  /draft/state      → current draft state snapshot
   POST /draft/frame      → inject a frame into the engine (testing/manual)
   GET  /draft/recommendation → last AI recommendation
+  GET  /draft/opponents  → opponent budgets, threats, and combo alerts
   POST /draft/end        → close draft session
 """
 from __future__ import annotations
@@ -255,6 +256,32 @@ async def get_recommendation():
     if _engine.last_recommendation is None:
         return {"status": "no_recommendation", "message": "No nomination processed yet"}
     return _engine.last_recommendation
+
+
+@router.get("/opponents", summary="Opponent budget and threat data")
+async def get_opponents():
+    """Return opponent budgets, rosters, and combo alerts."""
+    _require_engine()
+    opponents = {}
+    for team_id, roster in _state.opponent_rosters.items():
+        budget = _state.opponent_budgets.get(team_id, 0)
+        combos = _engine.threat_analyzer.get_active_combo_flags(roster)
+        score = _engine.threat_analyzer.get_threat_score(roster, team_id=team_id)
+        opponents[team_id] = {
+            "budget": budget,
+            "roster_count": len(roster),
+            "threat_score": score,
+            "combos": combos,
+            "roster": [
+                {
+                    "player_name": p.player_name,
+                    "position": p.position,
+                    "price": p.price,
+                }
+                for p in roster
+            ],
+        }
+    return {"opponents": opponents}
 
 
 @router.post("/end", summary="Close draft session")

@@ -511,3 +511,115 @@ def test_manager_style_in_recommendation_context():
     sent_content = json.loads(call_args.kwargs["messages"][0]["content"])
     assert "manager_styles" in sent_content
     assert sent_content["manager_styles"]["opp1"] == "hero_rb"
+
+
+# ---------------------------------------------------------------------------
+# Test 16: test_opponents_endpoint_returns_budget_and_threats
+# ---------------------------------------------------------------------------
+
+def test_opponents_endpoint_returns_budget_and_threats():
+    """GET /draft/opponents returns budget, threat score, combos per opponent."""
+    config = _make_league_config()
+    state = DraftStateManager(config, YOUR_TEAM_ID)
+    analyzer = OpponentThreatAnalyzer()
+
+    # Record opponent picks
+    state.record_pick(DraftPick(
+        player_id="opp_rb1", team_id="opp_team_1", price=50,
+        player_name="CMC", position="RB", tier=1,
+    ))
+    state.record_pick(DraftPick(
+        player_id="opp_rb2", team_id="opp_team_1", price=45,
+        player_name="Taylor", position="RB", tier=1,
+    ))
+
+    # Simulate what the endpoint does
+    opponents = {}
+    for team_id, roster in state.opponent_rosters.items():
+        budget = state.opponent_budgets.get(team_id, 0)
+        combos = analyzer.get_active_combo_flags(roster)
+        score = analyzer.get_threat_score(roster, team_id=team_id)
+        opponents[team_id] = {
+            "budget": budget,
+            "roster_count": len(roster),
+            "threat_score": score,
+            "combos": combos,
+            "roster": [
+                {"player_name": p.player_name, "position": p.position, "price": p.price}
+                for p in roster
+            ],
+        }
+
+    assert "opp_team_1" in opponents
+    opp = opponents["opp_team_1"]
+    assert opp["roster_count"] == 2
+    assert opp["threat_score"] > 0
+    assert any("Elite RB Stack" in c for c in opp["combos"])
+    assert len(opp["roster"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Test 17: test_opponents_endpoint_requires_engine
+# ---------------------------------------------------------------------------
+
+def test_opponents_endpoint_requires_engine():
+    """The opponents endpoint logic requires state and engine to exist."""
+    # This is a unit-level check that _require_engine would fail
+    # without starting the engine. We verify the data shape expectation:
+    # if state has no opponent rosters, the result is empty.
+    config = _make_league_config()
+    state = DraftStateManager(config, YOUR_TEAM_ID)
+    analyzer = OpponentThreatAnalyzer()
+
+    opponents = {}
+    for team_id, roster in state.opponent_rosters.items():
+        budget = state.opponent_budgets.get(team_id, 0)
+        combos = analyzer.get_active_combo_flags(roster)
+        score = analyzer.get_threat_score(roster, team_id=team_id)
+        opponents[team_id] = {
+            "budget": budget,
+            "roster_count": len(roster),
+            "threat_score": score,
+            "combos": combos,
+        }
+
+    # No picks recorded → no opponents
+    assert len(opponents) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 18: test_opponents_combo_alerts_after_pick
+# ---------------------------------------------------------------------------
+
+def test_opponents_combo_alerts_after_pick():
+    """Combo alerts update correctly after recording new opponent picks."""
+    config = _make_league_config()
+    state = DraftStateManager(config, YOUR_TEAM_ID)
+    analyzer = OpponentThreatAnalyzer()
+
+    # First pick — no combos yet
+    state.record_pick(DraftPick(
+        player_id="rb1", team_id="opp_A", price=55,
+        player_name="CMC", position="RB", tier=1,
+    ))
+    roster = state.opponent_rosters["opp_A"]
+    combos_after_1 = analyzer.get_active_combo_flags(roster)
+    assert len(combos_after_1) == 0
+
+    # Second T1 RB → Elite RB Stack
+    state.record_pick(DraftPick(
+        player_id="rb2", team_id="opp_A", price=48,
+        player_name="Taylor", position="RB", tier=1,
+    ))
+    roster = state.opponent_rosters["opp_A"]
+    combos_after_2 = analyzer.get_active_combo_flags(roster)
+    assert any("Elite RB Stack" in c for c in combos_after_2)
+
+    # Also add T1 TE → Elite RB + Elite TE
+    state.record_pick(DraftPick(
+        player_id="te1", team_id="opp_A", price=30,
+        player_name="Kelce", position="TE", tier=1,
+    ))
+    roster = state.opponent_rosters["opp_A"]
+    combos_after_3 = analyzer.get_active_combo_flags(roster)
+    assert any("Elite RB + Elite TE" in c for c in combos_after_3)

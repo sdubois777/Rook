@@ -158,7 +158,7 @@ fantasy-football-ai/
 ## Current Project Status
 
 Update this section as stages complete.
-702 unit tests passing across 36 test files. 54 Python backend files, 43 JS/JSX frontend files.
+719 unit tests passing across 37 test files. 58 Python backend files, 43 JS/JSX frontend files.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -229,10 +229,16 @@ Update this section as stages complete.
   - Top opportunities: 13/15 delivered value (87%)
   - backtest_results_2025.csv generated for manual review
   - NOTE: Backtest is operator-only. Not a user-facing feature.
-- [ ] Stage 12: Live draft agent — NOT STARTED
-  - agent_loop.py (run_agent with tool-use) ready as infrastructure
-  - DraftState + OpponentProfile DB models exist
-  - Needs: DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
+- [x] Stage 12: Live draft agent
+  - DraftStateManager: pure Python state tracker (budget, rosters, spendable calc)
+  - DependencyResolver: flag activation (McConkey/Allen displaced scenario)
+  - OpponentThreatAnalyzer: combo detection, block values, nomination strategy,
+    historical manager tendencies (positional bias from league_auction.py)
+  - LiveDraftEngine: Sonnet-powered real-time recommendations in <2s,
+    single messages.create() call (400 tokens), JSON-only output
+  - Draft router: /start, /state, /frame, /recommendation, /end endpoints
+  - Bridge event callbacks for engine integration
+  - 15 tests, all passing (12 spec + 3 tendencies)
 - [x] Stage 13a: Pre-draft UI — COMPLETE
   - React 19 + Vite + Tailwind 4 + Zustand 5 + React Query 5
   - 7 pages: Dashboard, DraftBoard, Players, Teams, TeamDetail, News, PipelineAdmin
@@ -247,9 +253,16 @@ Update this section as stages complete.
   - 4 frontend test files (FlagBadge, SystemGradeBadge, ValueComparisonBar, NewsFeedItem)
   - All pages fetch live data from backend (no mocks)
   - Dark theme, responsive sidebar, WebSocket live news updates
-- [ ] Stage 13b: Draft UI — NOT STARTED
-  - Needs: bid/nominate forms, clock countdown, recommendation cards,
-    opponent budget tracker, roster grid, MANUAL_ACTION_REQUIRED alert
+- [x] Stage 13b: Draft Room UI — COMPLETE
+  - Full-screen 4-zone grid layout (no sidebar)
+  - DraftRoom.jsx: RecommendationPanel, NominationPanel, MyRoster, AvailablePlayers
+  - OpponentTracker collapsible sidebar with threat scores + combo alerts
+  - DraftSetup overlay (team ID + optional draft room URL)
+  - Zustand draft store + native WebSocket hook with auto-reconnect
+  - Color-coded recommendations (buy/bid_to/block/pass), one-click bid, pass confirm
+  - GET /draft/opponents endpoint for opponent budgets + threats
+  - 10 API functions in api/draft.js, reuses existing /draftboard endpoint
+  - 10 frontend tests + 3 backend tests, all passing
 - [ ] Stage 14: Season roster store
 - [ ] Stage 15–16: Roster monitor + opponent analyzer
 - [ ] Stage 17–19: Trade value + trade analyzer + trade proposals

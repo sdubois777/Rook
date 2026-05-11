@@ -97,14 +97,20 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Draft Room — disabled until live */}
-        <div
-          className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 cursor-not-allowed"
-          title="Available during live draft"
+        {/* Draft Room — full-screen live draft */}
+        <NavLink
+          to="/draft-room"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+              isActive
+                ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
+                : 'text-amber-400 hover:text-amber-300 hover:bg-[#1c1f2e]'
+            }`
+          }
         >
           <Swords size={18} />
           {!collapsed && <span>Draft Room</span>}
-        </div>
+        </NavLink>
       </nav>
 
       {/* Footer — pipeline freshness */}
