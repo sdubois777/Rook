@@ -3,8 +3,9 @@
 Seed script — downloads and caches 3 seasons of NFL data, seeds the players table.
 
 Usage:
-    python scripts/seed_nfl_data.py           # full run
-    python scripts/seed_nfl_data.py --verify  # verification only (no download)
+    python scripts/seed_nfl_data.py            # full run
+    python scripts/seed_nfl_data.py --dry-run  # show what would be fetched
+    python scripts/seed_nfl_data.py --verify   # verification only (no download)
 
 Data is cached to data/cache/ as parquet files (gitignored).
 The players table is seeded with every skill-position player from the current season.
@@ -26,10 +27,71 @@ from sqlalchemy import select
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player
 from backend.integrations import nfl_data
+from backend.integrations.nfl_data import CACHE_DIR
 from backend.utils.seasons import get_analysis_seasons, get_current_season
 
 SEASONS = get_analysis_seasons(3)
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
+
+# Per-season data sets fetched by download_all()
+PER_SEASON_DATASETS = [
+    ("weekly_data", "weekly stats"),
+    ("seasonal_data", "seasonal data"),
+    ("snap_counts", "snap counts"),
+    ("schedules", "schedules"),
+    ("target_share", "target share"),
+    ("snap_pct", "snap pct"),
+    ("injuries", "injuries"),
+]
+
+# One-time datasets (not per-season)
+GLOBAL_DATASETS = [
+    ("players", "players"),
+    (f"rosters_{get_current_season()}", f"rosters {get_current_season()}"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Dry run
+# ---------------------------------------------------------------------------
+
+def show_dry_run():
+    """Show what would be fetched without fetching. Per COST_RULES.md Rule 7."""
+    print("=" * 60)
+    print("DRY RUN — showing what would be fetched")
+    print(f"Seasons: {SEASONS}")
+    print(f"Current season (rosters): {get_current_season()}")
+    print("=" * 60)
+
+    total = 0
+    cached = 0
+
+    for season in SEASONS:
+        print(f"\n  [{season}]")
+        for cache_key, label in PER_SEASON_DATASETS:
+            path = CACHE_DIR / f"{cache_key}_{season}.parquet"
+            hit = path.exists()
+            status = "CACHED" if hit else "FETCH"
+            print(f"    {label:<16} {status}")
+            total += 1
+            if hit:
+                cached += 1
+
+    print(f"\n  [roster / player info]")
+    for cache_key, label in GLOBAL_DATASETS:
+        path = CACHE_DIR / f"{cache_key}.parquet"
+        hit = path.exists()
+        status = "CACHED" if hit else "FETCH"
+        print(f"    {label:<16} {status}")
+        total += 1
+        if hit:
+            cached += 1
+
+    fetches = total - cached
+    print(f"\nSummary: {total} datasets, {cached} cached, {fetches} to fetch")
+    print("DB seed: would insert/update skill-position players")
+    print("\nNo data was downloaded. Run without --dry-run to execute.")
+
 
 # ---------------------------------------------------------------------------
 # Download / cache
@@ -244,7 +306,11 @@ async def verify_db():
 # Entry point
 # ---------------------------------------------------------------------------
 
-async def main(verify_only: bool = False):
+async def main(verify_only: bool = False, dry_run: bool = False):
+    if dry_run:
+        show_dry_run()
+        return
+
     if not verify_only:
         download_all()
         await seed_players()
@@ -258,6 +324,7 @@ async def main(verify_only: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed NFL data into cache and database")
     parser.add_argument("--verify", action="store_true", help="Skip download, run verification only")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be fetched without fetching")
     args = parser.parse_args()
 
-    asyncio.run(main(verify_only=args.verify))
+    asyncio.run(main(verify_only=args.verify, dry_run=args.dry_run))
