@@ -19,6 +19,42 @@ logger = logging.getLogger(__name__)
 
 FAIR_VALUE_PPR_PER_DOLLAR = 3.8
 
+_BUY_ASSESSMENTS = {"elite_value", "good_value"}
+_AVOID_ASSESSMENTS = {"avoid", "slight_overpay"}
+
+
+def derive_system_signal(
+    value_assessment: str | None,
+    pay_up_flag: bool,
+    value_gap: float,
+    ai_ceiling: float | None,
+    league_price: float,
+) -> str:
+    """Derive backtest signal from value_assessment + pay_up_flag (primary)
+    with value_gap as secondary confirmation.
+
+    This mirrors the actual system logic:  the valuation engine sets
+    value_assessment and pay_up_flag *before* the draft, and those are
+    the fields that drive bid recommendations.  Pure gap arithmetic
+    can disagree when the AI ceiling is close to league price but the
+    system still considers the player a buy (e.g. Nacua: pay_up_flag=True).
+    """
+    if pay_up_flag:
+        return "strong_buy"
+
+    if value_assessment in _BUY_ASSESSMENTS:
+        return "strong_buy" if value_gap >= 5 else "buy"
+
+    if value_assessment in _AVOID_ASSESSMENTS:
+        return "strong_avoid" if value_gap <= -10 else "avoid"
+
+    # Fallback for fair_value or missing assessment — use gap only
+    if value_gap >= 5:
+        return "buy"
+    if value_gap <= -5:
+        return "avoid"
+    return "neutral"
+
 
 @dataclass
 class BacktestMetrics:
@@ -138,16 +174,13 @@ async def run_backtest(session: AsyncSession, season: int = 2025) -> tuple[Backt
         actual_vpd = actual_ppr / league_price if actual_ppr and league_price > 0 else None
         was_good_buy = actual_vpd is not None and actual_vpd >= FAIR_VALUE_PPR_PER_DOLLAR
 
-        if value_gap >= 8:
-            system_signal = "strong_buy"
-        elif value_gap >= 3:
-            system_signal = "buy"
-        elif value_gap >= -3:
-            system_signal = "neutral"
-        elif value_gap >= -8:
-            system_signal = "avoid"
-        else:
-            system_signal = "strong_avoid"
+        system_signal = derive_system_signal(
+            value_assessment=player.value_assessment,
+            pay_up_flag=bool(player.pay_up_flag),
+            value_gap=value_gap,
+            ai_ceiling=ai_ceiling,
+            league_price=league_price,
+        )
 
         system_correct = None
         if system_signal in ("strong_buy", "buy"):
@@ -164,6 +197,8 @@ async def run_backtest(session: AsyncSession, season: int = 2025) -> tuple[Backt
             "ai_ceiling": ai_ceiling,
             "value_gap": round(value_gap, 1),
             "system_signal": system_signal,
+            "value_assessment": player.value_assessment,
+            "pay_up_flag": bool(player.pay_up_flag),
             "proj_ppr": proj_ppr,
             "actual_ppr": actual_ppr,
             "actual_games": actual_games,

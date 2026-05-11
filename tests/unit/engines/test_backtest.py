@@ -10,6 +10,7 @@ from backend.engines.backtest import (
     FAIR_VALUE_PPR_PER_DOLLAR,
     BacktestMetrics,
     _load_actual_season,
+    derive_system_signal,
     run_backtest,
 )
 
@@ -135,6 +136,7 @@ async def test_run_backtest_returns_metrics_and_df():
     player1.ai_bid_ceiling = 30
     player1.recommended_bid_ceiling = 28
     player1.value_assessment = "good_value"
+    player1.pay_up_flag = False
     player1.tier = 2
 
     profile1 = MagicMock()
@@ -156,3 +158,94 @@ async def test_run_backtest_returns_metrics_and_df():
     assert df.iloc[0]["actual_ppr"] == 250.0
     assert df.iloc[0]["value_gap"] == 10.0  # 30 - 20
     assert df.iloc[0]["system_signal"] == "strong_buy"
+
+
+# ---------------------------------------------------------------------------
+# derive_system_signal tests
+# ---------------------------------------------------------------------------
+
+
+def test_pay_up_flag_overrides_negative_gap():
+    """pay_up_flag=True should produce strong_buy even with negative gap."""
+    signal = derive_system_signal(
+        value_assessment="fair_value",
+        pay_up_flag=True,
+        value_gap=-5.0,
+        ai_ceiling=20.0,
+        league_price=25.0,
+    )
+    assert signal == "strong_buy"
+
+
+def test_good_value_assessment_generates_buy():
+    """good_value assessment → buy (or strong_buy with large gap)."""
+    signal = derive_system_signal(
+        value_assessment="good_value",
+        pay_up_flag=False,
+        value_gap=2.0,
+        ai_ceiling=22.0,
+        league_price=20.0,
+    )
+    assert signal == "buy"
+
+    signal_strong = derive_system_signal(
+        value_assessment="good_value",
+        pay_up_flag=False,
+        value_gap=10.0,
+        ai_ceiling=30.0,
+        league_price=20.0,
+    )
+    assert signal_strong == "strong_buy"
+
+
+def test_avoid_assessment_generates_avoid():
+    """avoid assessment → avoid/strong_avoid depending on gap."""
+    signal = derive_system_signal(
+        value_assessment="avoid",
+        pay_up_flag=False,
+        value_gap=-3.0,
+        ai_ceiling=17.0,
+        league_price=20.0,
+    )
+    assert signal == "avoid"
+
+    signal_strong = derive_system_signal(
+        value_assessment="avoid",
+        pay_up_flag=False,
+        value_gap=-12.0,
+        ai_ceiling=8.0,
+        league_price=20.0,
+    )
+    assert signal_strong == "strong_avoid"
+
+
+def test_nacua_signal_is_buy_after_fix():
+    """Nacua-like scenario: negative gap but good_value + pay_up_flag → strong_buy."""
+    # Nacua: ai_ceiling=45, league_price=50, gap=-5, but pay_up_flag=True
+    signal = derive_system_signal(
+        value_assessment="good_value",
+        pay_up_flag=True,
+        value_gap=-5.0,
+        ai_ceiling=45.0,
+        league_price=50.0,
+    )
+    assert signal == "strong_buy"
+
+
+def test_fair_value_no_flag_uses_gap():
+    """fair_value with no pay_up_flag falls back to gap-based signal."""
+    assert derive_system_signal("fair_value", False, 6.0, 26.0, 20.0) == "buy"
+    assert derive_system_signal("fair_value", False, 0.0, 20.0, 20.0) == "neutral"
+    assert derive_system_signal("fair_value", False, -6.0, 14.0, 20.0) == "avoid"
+
+
+def test_slight_overpay_generates_avoid():
+    """slight_overpay assessment → avoid."""
+    signal = derive_system_signal(
+        value_assessment="slight_overpay",
+        pay_up_flag=False,
+        value_gap=-2.0,
+        ai_ceiling=18.0,
+        league_price=20.0,
+    )
+    assert signal == "avoid"

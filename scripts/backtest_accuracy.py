@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sqlalchemy import select  # noqa: E402
 
 from backend.database import AsyncSessionLocal  # noqa: E402
+from backend.engines.backtest import derive_system_signal  # noqa: E402
 from backend.integrations.nfl_data import get_seasonal_stats  # noqa: E402
 from backend.models.player import Player, PlayerProfile  # noqa: E402
 
@@ -131,17 +132,14 @@ async def run_backtest(actual_season: int = 2025) -> pd.DataFrame:
             actual_vpd is not None and actual_vpd >= FAIR_VALUE_PPR_PER_DOLLAR
         )
 
-        # System signal
-        if value_gap >= 8:
-            system_signal = "strong_buy"
-        elif value_gap >= 3:
-            system_signal = "buy"
-        elif value_gap >= -3:
-            system_signal = "neutral"
-        elif value_gap >= -8:
-            system_signal = "avoid"
-        else:
-            system_signal = "strong_avoid"
+        # System signal — use value_assessment + pay_up_flag as primary
+        system_signal = derive_system_signal(
+            value_assessment=player.value_assessment,
+            pay_up_flag=bool(player.pay_up_flag),
+            value_gap=value_gap,
+            ai_ceiling=ai_ceiling,
+            league_price=league_price,
+        )
 
         # Was system right?
         system_correct = None
@@ -161,6 +159,7 @@ async def run_backtest(actual_season: int = 2025) -> pd.DataFrame:
             "value_gap": round(value_gap, 1),
             "system_signal": system_signal,
             "value_assessment": player.value_assessment,
+            "pay_up_flag": bool(player.pay_up_flag),
             "proj_ppr": proj_ppr,
             "actual_ppr": actual_ppr,
             "actual_games": actual_games,
@@ -250,9 +249,15 @@ def print_backtest_report(df: pd.DataFrame, season: int) -> dict:
         print("No projection data available for comparison.")
         summary["mae"] = None
 
-    # -- SECTION 2: VALUE GAP ACCURACY ----------------------
-    print("\n  VALUE GAP ACCURACY (Buy/Avoid Signals)")
+    # -- SECTION 2: SIGNAL ACCURACY -------------------------
+    print("\n  SIGNAL ACCURACY (value_assessment + pay_up_flag)")
     print("-" * 50)
+    print("Signals derived from valuation engine output:")
+    print("  pay_up_flag=True -> strong_buy")
+    print("  value_assessment in {elite_value, good_value} -> buy/strong_buy")
+    print("  value_assessment in {avoid, slight_overpay} -> avoid/strong_avoid")
+    print("  fallback: value_gap thresholds")
+    print()
 
     signal_df = df[
         df["system_correct"].notna() & df["actual_ppr"].notna()
