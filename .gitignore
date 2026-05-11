@@ -57,3 +57,6 @@ htmlcov/
 
 # Claude Code auto-memory
 .claude/
+
+# Backtest output
+backtest_results_*.csv

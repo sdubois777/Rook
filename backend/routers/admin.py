@@ -281,3 +281,22 @@ async def get_cost_report(days: int = 30):
         grand_total_usd=float(grand_total),
         period_days=days,
     )
+
+
+# ---------------------------------------------------------------------------
+# Backtest endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backtest")
+async def get_backtest_results(season: int = 2024):
+    """Run backtest comparing system projections against actual season results."""
+    from backend.engines.backtest import run_backtest
+
+    async with AsyncSessionLocal() as session:
+        try:
+            metrics, _ = await run_backtest(session, season)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return metrics.to_dict()

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, PlayCircle, RefreshCw, DollarSign, CheckCircle, AlertCircle, Clock, FlaskConical } from 'lucide-react'
-import { fetchPipelineStatus, triggerPipelineRun, fetchCostReport, fetchDryRun } from '../api/admin'
+import { Play, PlayCircle, RefreshCw, DollarSign, CheckCircle, AlertCircle, Clock, FlaskConical, BarChart3 } from 'lucide-react'
+import { fetchPipelineStatus, triggerPipelineRun, fetchCostReport, fetchDryRun, fetchBacktest } from '../api/admin'
 
 const AGENT_LABELS = {
   team_systems: 'Team Systems',
@@ -249,6 +249,9 @@ export default function PipelineAdmin() {
         )}
       </div>
 
+      {/* System Validation / Backtest */}
+      <BacktestSection />
+
       {/* Toast notification */}
       {toast && (
         <div className={`fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium animate-fade-in ${
@@ -259,6 +262,89 @@ export default function PipelineAdmin() {
           {toast.message}
         </div>
       )}
+    </div>
+  )
+}
+
+
+function BacktestSection() {
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['backtest'],
+    queryFn: () => fetchBacktest(2024),
+    enabled: false,
+    staleTime: Infinity,
+  })
+
+  const gradeColor = {
+    STRONG: 'text-emerald-400',
+    MODERATE: 'text-amber-400',
+    WEAK: 'text-red-400',
+    POOR: 'text-red-500',
+  }
+
+  return (
+    <div className="bg-[#1c1f2e] rounded-xl p-5 border border-[#2d3148]/50">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <BarChart3 size={18} className="text-purple-400" />
+          <h2 className="text-lg font-semibold text-slate-200">System Validation</h2>
+        </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-sm transition-colors disabled:opacity-50"
+        >
+          {isFetching ? <RefreshCw size={14} className="animate-spin" /> : <FlaskConical size={14} />}
+          {isFetching ? 'Running...' : 'Run Backtest'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-red-400 text-sm mb-3">
+          Error: {error.message}
+        </div>
+      )}
+
+      {!data && !isLoading && !error && (
+        <p className="text-sm text-slate-500">
+          Run a backtest to compare system projections against actual 2024 season results.
+        </p>
+      )}
+
+      {data && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs text-slate-500">2024 Season</span>
+            <span className={`text-sm font-semibold ${gradeColor[data.grade] || 'text-slate-400'}`}>
+              {data.grade}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Signal accuracy" value={data.signals?.accuracy != null ? `${data.signals.accuracy}%` : '--'} />
+            <Stat label="Projection MAE" value={data.projection?.mae != null ? `${data.projection.mae} PPR` : '--'} />
+            <Stat label="Buy signals right" value={data.signals?.buy_accuracy != null ? `${data.signals.buy_accuracy}%` : '--'} sub={`${data.signals?.buy_count || 0} calls`} />
+            <Stat label="Avoid signals right" value={data.signals?.avoid_accuracy != null ? `${data.signals.avoid_accuracy}%` : '--'} sub={`${data.signals?.avoid_count || 0} calls`} />
+            <Stat label="Top opportunities" value={`${data.top_opportunities?.delivered || 0}/${data.top_opportunities?.flagged || 0}`} sub="delivered value" />
+            <Stat label="Correlation (r)" value={data.projection?.correlation != null ? data.projection.correlation.toFixed(3) : '--'} />
+          </div>
+
+          <div className="text-[10px] text-slate-600 mt-2">
+            {data.players_matched}/{data.players_analyzed} players matched | {data.injury_excluded} injury-excluded
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+function Stat({ label, value, sub }) {
+  return (
+    <div className="bg-[#161822] rounded-lg p-2.5">
+      <div className="text-[10px] text-slate-500 mb-0.5">{label}</div>
+      <div className="text-sm font-mono font-semibold text-slate-200">{value}</div>
+      {sub && <div className="text-[10px] text-slate-600">{sub}</div>}
     </div>
   )
 }

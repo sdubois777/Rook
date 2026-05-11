@@ -26,3 +26,8 @@ export async function fetchMarketValueStatus() {
   const { data } = await api.get('/pipeline/market-values/status')
   return data
 }
+
+export async function fetchBacktest(season = 2024) {
+  const { data } = await api.get('/admin/backtest', { params: { season } })
+  return data
+}
