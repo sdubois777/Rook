@@ -702,3 +702,70 @@ async def build_manager_profiles(
     await session.commit()
     logger.info("Built %d manager profiles from %d auction history (year=%d)", created, season_year, analysis_year)
     return {"created": created, "season_year": analysis_year}
+
+
+async def load_manager_tendencies(
+    session: AsyncSession,
+) -> dict[str, dict]:
+    """
+    Load historical manager tendencies from OpponentProfile records.
+
+    Returns dict keyed by yahoo_team_id (or team_name fallback):
+        {
+            "style": "hero_rb"|"zero_rb"|"balanced",
+            "management_style": "stars_and_scrubs"|"conservative"|"analytical",
+            "positional_bias": {"RB": 1.3, "WR": 0.9, ...},
+        }
+
+    Positional bias is computed by comparing each manager's spending percentages
+    to the league average. A value of 1.3 means 30% more spent than average.
+    """
+    from backend.models.draft_state import OpponentProfile
+
+    result = await session.execute(
+        select(OpponentProfile)
+        .where(OpponentProfile.positional_scores.isnot(None))
+        .order_by(OpponentProfile.season_year.desc())
+    )
+    profiles = result.scalars().all()
+
+    if not profiles:
+        return {}
+
+    # Use most recent season_year only
+    latest_year = profiles[0].season_year
+    profiles = [p for p in profiles if p.season_year == latest_year]
+
+    # Compute league-average positional spending
+    league_totals: dict[str, float] = {}
+    league_counts: dict[str, int] = {}
+    for p in profiles:
+        for pos, pct in (p.positional_scores or {}).items():
+            league_totals[pos] = league_totals.get(pos, 0.0) + pct
+            league_counts[pos] = league_counts.get(pos, 0) + 1
+
+    league_avg: dict[str, float] = {
+        pos: league_totals[pos] / league_counts[pos]
+        for pos in league_totals
+        if league_counts[pos] > 0
+    }
+
+    tendencies: dict[str, dict] = {}
+    for p in profiles:
+        key = p.yahoo_team_id or p.team_name
+        pos_scores = p.positional_scores or {}
+
+        # Positional bias = manager's pct / league average pct
+        positional_bias: dict[str, float] = {}
+        for pos, pct in pos_scores.items():
+            avg = league_avg.get(pos)
+            if avg and avg > 0:
+                positional_bias[pos] = round(pct / avg, 2)
+
+        tendencies[key] = {
+            "style": p.apparent_strategy or "balanced",
+            "management_style": p.management_style or "analytical",
+            "positional_bias": positional_bias,
+        }
+
+    return tendencies

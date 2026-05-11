@@ -24,8 +24,8 @@ SETTINGS = {
     "min_bid": 1,
     "skill_starter_budget": 185,
     "league_skill_dollar_pool": 2220,   # 185 × 12
-    "total_roster_size": 15,
-    "starting_lineup_size": 8,
+    "total_roster_size": 16,
+    "starting_lineup_size": 9,
     "roster_slots": {
         "QB": 1,
         "RB": 2,

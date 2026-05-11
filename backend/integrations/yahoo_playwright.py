@@ -56,6 +56,7 @@ class YahooPlaywrightBridge:
         self.browser = None
         self._connected: bool = False
         self._draft_room_url: str | None = None
+        self._event_callbacks: list = []
 
     # ---------------------------------------------------------------------------
     # Connection management
@@ -256,9 +257,18 @@ class YahooPlaywrightBridge:
     # Event dispatch
     # ---------------------------------------------------------------------------
 
+    def register_event_callback(self, callback) -> None:
+        """Register an async callback to receive all draft events."""
+        self._event_callbacks.append(callback)
+
     async def _dispatch_event(self, event: dict[str, Any]) -> None:
-        """Route parsed event to FastAPI WebSocketManager → React clients."""
+        """Route parsed event to WebSocketManager and registered callbacks."""
         await self.ws_manager.broadcast(event)
+        for callback in self._event_callbacks:
+            try:
+                await callback(event)
+            except Exception as exc:
+                logger.error("Event callback error: %s", exc)
 
     # ---------------------------------------------------------------------------
     # Draft actions (user → Yahoo)

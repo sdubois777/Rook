@@ -33,8 +33,8 @@ class LeagueSettings(Base):
     league_skill_dollar_pool: Mapped[int] = mapped_column(Integer, nullable=False, default=2220)
 
     # Roster construction
-    total_roster_size: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
-    starting_lineup_size: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    total_roster_size: Mapped[int] = mapped_column(Integer, nullable=False, default=16)
+    starting_lineup_size: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
 
     # Roster slots as JSONB: {"QB": 1, "RB": 2, "WR": 2, "FLEX": 1, "TE": 1, "K": 1, "DEF": 1, "BENCH": 7}
     roster_slots: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

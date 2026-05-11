@@ -12,6 +12,11 @@ HTTP actions (called by React UI):
   POST /draft/nominate   → nominate a player
   POST /draft/pass       → pass on current nomination
   POST /draft/connect    → start bridge connection to Yahoo draft room
+  POST /draft/start      → initialize draft engine + state manager
+  GET  /draft/state      → current draft state snapshot
+  POST /draft/frame      → inject a frame into the engine (testing/manual)
+  GET  /draft/recommendation → last AI recommendation
+  POST /draft/end        → close draft session
 """
 from __future__ import annotations
 
@@ -25,8 +30,10 @@ from backend.websocket.manager import ws_manager
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
-# Bridge instance — created on POST /draft/connect
+# Module-level singletons — created on POST /draft/start
 _bridge = None
+_engine = None
+_state = None
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +51,15 @@ class NominateRequest(BaseModel):
 
 class ConnectRequest(BaseModel):
     draft_room_url: str
+
+
+class StartDraftRequest(BaseModel):
+    your_team_id: str
+    draft_room_url: str | None = None
+
+
+class FrameRequest(BaseModel):
+    frame: dict
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +147,137 @@ async def pass_nomination():
 
 
 # ---------------------------------------------------------------------------
+# Draft engine lifecycle
+# ---------------------------------------------------------------------------
+
+@router.post("/start", summary="Initialize draft engine and state manager")
+async def start_draft(req: StartDraftRequest):
+    """
+    Create DraftStateManager + LiveDraftEngine.
+    Optionally connect the Playwright bridge if draft_room_url is provided.
+    Registers the engine as an event callback on the bridge.
+    """
+    global _bridge, _engine, _state
+
+    from backend.database import async_session
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+    from backend.engines.dependency_resolver import DependencyResolver
+    from backend.engines.opponent_threat import OpponentThreatAnalyzer
+    from backend.engines.live_draft import LiveDraftEngine
+
+    if _engine is not None:
+        return {"status": "already_started", "your_team_id": req.your_team_id}
+
+    config = LeagueConfig()
+    _state = DraftStateManager(config, req.your_team_id)
+
+    resolver = DependencyResolver()
+
+    # Load historical manager tendencies from league auction data
+    tendencies: dict = {}
+    try:
+        from backend.engines.league_auction import load_manager_tendencies
+        async with async_session() as session:
+            tendencies = await load_manager_tendencies(session)
+        if tendencies:
+            logger.info("Loaded tendencies for %d managers", len(tendencies))
+    except Exception as exc:
+        logger.warning("Could not load manager tendencies: %s", exc)
+
+    threat_analyzer = OpponentThreatAnalyzer(tendencies=tendencies)
+
+    _engine = LiveDraftEngine(
+        state=_state,
+        resolver=resolver,
+        threat_analyzer=threat_analyzer,
+        db_session_factory=async_session,
+        ws_manager=ws_manager,
+    )
+
+    # Connect bridge if URL provided
+    if req.draft_room_url:
+        from backend.integrations.yahoo_playwright import YahooPlaywrightBridge
+
+        _bridge = YahooPlaywrightBridge(ws_manager)
+        _bridge.register_event_callback(_engine.handle_event)
+        try:
+            await _bridge.connect(req.draft_room_url)
+        except Exception as exc:
+            logger.error("Bridge connect failed during start: %s", exc)
+            # Engine is still usable without bridge (manual frame injection)
+
+    # If bridge already existed (from /draft/connect), register callback
+    elif _bridge is not None:
+        _bridge.register_event_callback(_engine.handle_event)
+
+    logger.info("Draft engine started for team %s", req.your_team_id)
+    return {"status": "started", "your_team_id": req.your_team_id}
+
+
+@router.get("/state", summary="Current draft state snapshot")
+async def get_draft_state():
+    """Return budget, roster, and pick history."""
+    _require_engine()
+    return {
+        "your_remaining_budget": _state.get_your_remaining_budget(),
+        "spendable_on_next_player": _state.get_spendable_on_this_player(),
+        "minimum_completion_budget": _state.get_minimum_completion_budget(),
+        "roster_slots_remaining": _state.get_roster_slots_remaining(),
+        "your_roster": [
+            {
+                "player_id": p.player_id,
+                "player_name": p.player_name,
+                "position": p.position,
+                "price": p.price,
+            }
+            for p in _state.your_roster
+        ],
+        "total_picks": len(_state.picks),
+        "positional_counts": _state.get_your_positional_counts(),
+    }
+
+
+@router.post("/frame", summary="Inject a frame into the engine")
+async def inject_frame(req: FrameRequest):
+    """
+    Manually inject a draft event into the engine.
+    Used for testing or when the bridge is not connected.
+    """
+    _require_engine()
+    await _engine.handle_event(req.frame)
+    return {"status": "processed", "event_type": req.frame.get("type")}
+
+
+@router.get("/recommendation", summary="Last AI recommendation")
+async def get_recommendation():
+    """Return the most recent recommendation from the engine."""
+    _require_engine()
+    if _engine.last_recommendation is None:
+        return {"status": "no_recommendation", "message": "No nomination processed yet"}
+    return _engine.last_recommendation
+
+
+@router.post("/end", summary="Close draft session")
+async def end_draft():
+    """Tear down the engine and state. Does not disconnect the bridge."""
+    global _engine, _state
+    _engine = None
+    _state = None
+    logger.info("Draft session ended")
+    return {"status": "ended"}
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _require_engine() -> None:
+    if _engine is None or _state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Draft engine not started — POST /draft/start first",
+        )
+
 
 def _require_bridge() -> None:
     if _bridge is None or not getattr(_bridge, "_connected", False):

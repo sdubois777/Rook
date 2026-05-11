@@ -1,0 +1,103 @@
+{
+  "_note": "Fixtures for Stage 12 live draft engine tests. Player IDs are synthetic but match the format used in the draft state manager.",
+
+  "mcconkey_record": {
+    "yahoo_player_id": "nfl_32013",
+    "name": "Ladd McConkey",
+    "position": "WR",
+    "team_abbr": "LAC",
+    "tier": 3,
+    "system_value": 28.0,
+    "market_value": 31.0,
+    "ai_bid_ceiling": 26,
+    "recommended_bid_ceiling": 28.0,
+    "risk_level": "low",
+    "pay_up_flag": false,
+    "value_assessment": "good_value",
+    "notes": "Target share capped by Allen presence",
+    "dependencies": [
+      {
+        "flag_type": "displaced",
+        "trigger_yahoo_player_id": "nfl_2504211",
+        "trigger_player_name": "Keenan Allen",
+        "trigger_condition": "active_and_healthy",
+        "value_impact_pct": -0.35,
+        "confidence": "high"
+      }
+    ]
+  },
+
+  "allen_yahoo_id": "nfl_2504211",
+
+  "taylor_record": {
+    "yahoo_player_id": "nfl_33112",
+    "name": "Jonathan Taylor",
+    "position": "RB",
+    "team_abbr": "IND",
+    "tier": 1,
+    "system_value": 55.0,
+    "market_value": 60.0,
+    "ai_bid_ceiling": 58,
+    "recommended_bid_ceiling": 55.0,
+    "risk_level": "moderate",
+    "pay_up_flag": false,
+    "value_assessment": "good_value",
+    "notes": "Elite RB1",
+    "dependencies": []
+  },
+
+  "cmc_pick": {
+    "player_id": "nfl_30157",
+    "team_id": "opp1",
+    "price": 65,
+    "player_name": "Christian McCaffrey",
+    "position": "RB",
+    "tier": 1
+  },
+
+  "taylor_pick": {
+    "player_id": "nfl_33112",
+    "team_id": "opp1",
+    "price": 58,
+    "player_name": "Jonathan Taylor",
+    "position": "RB",
+    "tier": 1
+  },
+
+  "bowers_pick": {
+    "player_id": "nfl_40100",
+    "team_id": "opp1",
+    "price": 30,
+    "player_name": "Brock Bowers",
+    "position": "TE",
+    "tier": 1
+  },
+
+  "your_picks": [
+    {"player_id": "p1", "team_id": "my_team", "price": 45, "player_name": "Player 1", "position": "RB", "tier": 1},
+    {"player_id": "p2", "team_id": "my_team", "price": 35, "player_name": "Player 2", "position": "WR", "tier": 2},
+    {"player_id": "p3", "team_id": "my_team", "price": 25, "player_name": "Player 3", "position": "WR", "tier": 2},
+    {"player_id": "p4", "team_id": "my_team", "price": 20, "player_name": "Player 4", "position": "RB", "tier": 3},
+    {"player_id": "p5", "team_id": "my_team", "price": 15, "player_name": "Player 5", "position": "QB", "tier": 2}
+  ],
+
+  "opponent_picks": [
+    {"player_id": "op1", "team_id": "opp1", "price": 65, "player_name": "CMC", "position": "RB", "tier": 1},
+    {"player_id": "op2", "team_id": "opp2", "price": 40, "player_name": "Opponent WR1", "position": "WR", "tier": 2}
+  ],
+
+  "nomination_event": {
+    "type": "nomination",
+    "player_id": "nfl_32013",
+    "player_name": "Ladd McConkey",
+    "nominated_by": "opp2",
+    "clock_seconds": 30,
+    "starting_bid": 1
+  },
+
+  "nomination_targets_pool": [
+    {"yahoo_player_id": "nt1", "name": "Overvalued Player A", "position": "RB", "system_value": 20.0, "market_value": 45.0, "tier": 2},
+    {"yahoo_player_id": "nt2", "name": "Fair Value Player B", "position": "WR", "system_value": 30.0, "market_value": 32.0, "tier": 2},
+    {"yahoo_player_id": "nt3", "name": "Overvalued Player C", "position": "TE", "system_value": 10.0, "market_value": 28.0, "tier": 3}
+  ]
+}
