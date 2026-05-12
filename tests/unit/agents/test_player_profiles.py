@@ -38,6 +38,47 @@ from backend.agents.player_profiles import (
 
 
 # ---------------------------------------------------------------------------
+# Mock warehouse for tests (replaces agent._data_cache)
+# ---------------------------------------------------------------------------
+
+class _MockWarehouse:
+    """Minimal warehouse substitute for tests."""
+    def __init__(self, **kwargs):
+        self._data = kwargs
+        self.rosters = kwargs.get("rosters", pd.DataFrame())
+        self.seasonal_rosters = kwargs.get("seasonal_rosters", pd.DataFrame())
+        self.prev_rosters = kwargs.get("prev_rosters", pd.DataFrame())
+        self.schedule = kwargs.get("schedule", pd.DataFrame())
+        self.schedule_year = kwargs.get("schedule_year", 2026)
+
+    def get_seasonal_stats(self, season):
+        return self._data.get("seasonal_stats", {}).get(season)
+    def get_target_share(self, season):
+        return self._data.get("target_share", {}).get(season)
+    def get_qb_stats(self, season):
+        return self._data.get("qb_stats", {}).get(season)
+    def get_oline_stats(self, season):
+        return self._data.get("oline_stats", {}).get(season)
+    def get_def_grades(self, season):
+        return self._data.get("def_grades", {}).get(season)
+    def get_injuries(self, season):
+        return self._data.get("injuries", {}).get(season)
+    def get_most_recent_def_grades(self):
+        return self._data.get("most_recent_def_grades")
+    def get_snap_pct(self, season):
+        return self._data.get("snap_pct", {}).get(season)
+    def get_ngs_receiving(self, season):
+        return self._data.get("ngs_receiving", {}).get(season)
+    def get_ngs_rushing(self, season):
+        return self._data.get("ngs_rushing", {}).get(season)
+    def summary(self):
+        return {}
+
+def _make_warehouse(**kwargs):
+    return _MockWarehouse(**kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
@@ -154,7 +195,6 @@ def test_clean_season_baseline_strips_backup_qb_year():
     We verify the agent correctly annotates backup QB seasons in context.
     """
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
 
     from backend.utils.seasons import get_analysis_seasons
     seasons = get_analysis_seasons(3)
@@ -172,15 +212,16 @@ def test_clean_season_baseline_strips_backup_qb_year():
                          "player_name": "Easton Stick", "week": w})
         return pd.DataFrame(rows)
 
-    # Season with 5 backup starts → should be flagged
-    agent._data_cache[f"weekly_{seasons[-1]}"] = _make_weekly_df(5)
+    # Build warehouse with seasonal_stats for the seasons we need
+    seasonal_stats = {
+        seasons[-1]: _make_weekly_df(5),   # 5 backup starts → should be flagged
+        seasons[-2]: _make_weekly_df(2),   # 2 backup starts → not flagged
+    }
+    agent._warehouse = _make_warehouse(seasonal_stats=seasonal_stats)
+
     assert agent._is_backup_qb_season("LAC", seasons[-1]) is True
-
-    # Season with 2 backup starts → not flagged
-    agent._data_cache[f"weekly_{seasons[-2]}"] = _make_weekly_df(2)
     assert agent._is_backup_qb_season("LAC", seasons[-2]) is False
-
-    # No data → not flagged
+    # No data for seasons[0] → not flagged
     assert agent._is_backup_qb_season("LAC", seasons[0]) is False
 
 
@@ -603,7 +644,6 @@ async def test_zero_history_player_included_in_context():
     from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_current_season
 
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
 
     analysis_seasons = get_analysis_seasons(3)
     current_season   = get_current_season()
@@ -617,19 +657,26 @@ async def test_zero_history_player_included_in_context():
         "age": 26,
         "contract_year": False,
     }])
-    agent._data_cache[f"rosters_{current_season}"] = roster_data
 
     # No stats in any analysis season
+    target_share = {}
+    seasonal_stats = {}
     for season in analysis_seasons:
-        agent._data_cache[f"target_share_{season}"] = pd.DataFrame(
+        target_share[season] = pd.DataFrame(
             columns=["player_name", "recent_team", "games", "avg_target_share",
                      "avg_air_yards_share", "total_targets", "total_receptions",
                      "total_rec_yards", "total_rec_tds", "total_carries",
                      "total_rush_yards", "total_rush_tds", "ppr_per_game"]
         )
-        agent._data_cache[f"weekly_{season}"] = pd.DataFrame(
+        seasonal_stats[season] = pd.DataFrame(
             columns=["recent_team", "position", "player_name", "week"]
         )
+
+    agent._warehouse = _make_warehouse(
+        rosters=roster_data,
+        target_share=target_share,
+        seasonal_stats=seasonal_stats,
+    )
 
     # Beneficiary flag — player should not be completely skipped
     dep_flags = {"Mecole Hardman": [
@@ -667,7 +714,6 @@ async def test_ngs_receiving_data_in_context():
     from backend.utils.seasons import get_analysis_seasons, get_current_season
 
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
 
     analysis_seasons = get_analysis_seasons(3)
     current_season   = get_current_season()
@@ -682,12 +728,14 @@ async def test_ngs_receiving_data_in_context():
         "age": 28,
         "contract_year": False,
     }])
-    agent._data_cache[f"rosters_{current_season}"] = roster_data
 
     # Season stats for one season
+    target_share = {}
+    seasonal_stats = {}
+    ngs_receiving = {}
     for season in analysis_seasons:
         if season == season_with_data:
-            agent._data_cache[f"target_share_{season}"] = pd.DataFrame([{
+            target_share[season] = pd.DataFrame([{
                 "player_name": "Deebo Samuel",
                 "recent_team": "SF",
                 "games": 16,
@@ -703,19 +751,26 @@ async def test_ngs_receiving_data_in_context():
                 "ppr_per_game": 13.5,
             }])
             # NGS receiving data for this season
-            agent._data_cache[f"ngs_receiving_{season}"] = pd.DataFrame([{
+            ngs_receiving[season] = pd.DataFrame([{
                 "player_display_name": "Deebo Samuel",
                 "team_abbr": "SF",
                 "avg_separation": 2.8,
                 "avg_yac_above_expectation": 1.4,
             }])
         else:
-            agent._data_cache[f"target_share_{season}"] = pd.DataFrame(
+            target_share[season] = pd.DataFrame(
                 columns=["player_name", "recent_team", "games"]
             )
-        agent._data_cache[f"weekly_{season}"] = pd.DataFrame(
+        seasonal_stats[season] = pd.DataFrame(
             columns=["recent_team", "position", "player_name", "week"]
         )
+
+    agent._warehouse = _make_warehouse(
+        rosters=roster_data,
+        target_share=target_share,
+        seasonal_stats=seasonal_stats,
+        ngs_receiving=ngs_receiving,
+    )
 
     with patch.object(agent, "_get_team_system", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_dependency_flags",
@@ -746,7 +801,6 @@ async def test_ngs_rushing_data_in_context():
     from backend.utils.seasons import get_analysis_seasons, get_current_season
 
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
 
     analysis_seasons = get_analysis_seasons(3)
     current_season   = get_current_season()
@@ -760,11 +814,13 @@ async def test_ngs_rushing_data_in_context():
         "age": 27,
         "contract_year": False,
     }])
-    agent._data_cache[f"rosters_{current_season}"] = roster_data
 
+    target_share = {}
+    seasonal_stats = {}
+    ngs_rushing = {}
     for season in analysis_seasons:
         if season == season_with_data:
-            agent._data_cache[f"target_share_{season}"] = pd.DataFrame([{
+            target_share[season] = pd.DataFrame([{
                 "player_name": "David Montgomery",
                 "recent_team": "DET",
                 "games": 17,
@@ -779,19 +835,26 @@ async def test_ngs_rushing_data_in_context():
                 "total_rush_tds": 9,
                 "ppr_per_game": 12.1,
             }])
-            agent._data_cache[f"ngs_rushing_{season}"] = pd.DataFrame([{
+            ngs_rushing[season] = pd.DataFrame([{
                 "player_display_name": "David Montgomery",
                 "team_abbr": "DET",
                 "rush_yards_over_expected_per_att": 0.4,
                 "rush_pct_over_expected": 55.0,
             }])
         else:
-            agent._data_cache[f"target_share_{season}"] = pd.DataFrame(
+            target_share[season] = pd.DataFrame(
                 columns=["player_name", "recent_team", "games"]
             )
-        agent._data_cache[f"weekly_{season}"] = pd.DataFrame(
+        seasonal_stats[season] = pd.DataFrame(
             columns=["recent_team", "position", "player_name", "week"]
         )
+
+    agent._warehouse = _make_warehouse(
+        rosters=roster_data,
+        target_share=target_share,
+        seasonal_stats=seasonal_stats,
+        ngs_rushing=ngs_rushing,
+    )
 
     with patch.object(agent, "_get_team_system", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_dependency_flags",
@@ -812,12 +875,12 @@ async def test_ngs_rushing_data_in_context():
 
 def test_get_ngs_receiving_stats_returns_data():
     agent = PlayerProfilesAgent()
-    agent._data_cache["ngs_receiving_2024"] = pd.DataFrame([{
+    agent._warehouse = _make_warehouse(ngs_receiving={2024: pd.DataFrame([{
         "player_display_name": "Tyreek Hill",
         "team_abbr": "MIA",
         "avg_separation": 3.2,
         "avg_yac_above_expectation": 1.8,
-    }])
+    }])})
     result = agent._get_ngs_receiving_stats("Tyreek Hill", "MIA", 2024)
     assert result.get("avg_separation") == pytest.approx(3.2, abs=0.01)
     assert result.get("avg_yac_above_expectation") == pytest.approx(1.8, abs=0.01)
@@ -825,34 +888,34 @@ def test_get_ngs_receiving_stats_returns_data():
 
 def test_get_ngs_receiving_stats_no_cache():
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_ngs_receiving_stats("Tyreek Hill", "MIA", 2024) == {}
 
 
 def test_get_ngs_receiving_stats_no_match():
     agent = PlayerProfilesAgent()
-    agent._data_cache["ngs_receiving_2024"] = pd.DataFrame([{
+    agent._warehouse = _make_warehouse(ngs_receiving={2024: pd.DataFrame([{
         "player_display_name": "Someone Else", "team_abbr": "MIA",
         "avg_separation": 1.0, "avg_yac_above_expectation": 0.5,
-    }])
+    }])})
     assert agent._get_ngs_receiving_stats("Tyreek Hill", "MIA", 2024) == {}
 
 
 def test_get_ngs_rushing_stats_returns_data():
     agent = PlayerProfilesAgent()
-    agent._data_cache["ngs_rushing_2024"] = pd.DataFrame([{
+    agent._warehouse = _make_warehouse(ngs_rushing={2024: pd.DataFrame([{
         "player_display_name": "Derrick Henry",
         "team_abbr": "BAL",
         "rush_yards_over_expected_per_att": 0.8,
         "rush_pct_over_expected": 62.0,
-    }])
+    }])})
     result = agent._get_ngs_rushing_stats("Derrick Henry", "BAL", 2024)
     assert result.get("rush_yards_over_expected_per_att") == pytest.approx(0.8, abs=0.01)
 
 
 def test_get_ngs_rushing_stats_no_cache():
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_ngs_rushing_stats("Derrick Henry", "BAL", 2024) == {}
 
 
@@ -891,27 +954,27 @@ def test_aggregate_ngs_missing_col_returns_empty():
 
 def test_get_player_season_stats_none_when_no_cache():
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
 def test_get_player_season_stats_none_when_no_match():
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame(
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame(
         columns=["player_name", "recent_team", "games"]
-    )
+    )})
     assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
 def test_get_player_season_stats_none_when_zero_games():
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([{
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([{
         "player_name": "Ladd McConkey", "recent_team": "LAC",
         "games": 0, "avg_target_share": None, "avg_air_yards_share": None,
         "total_targets": 0, "total_receptions": 0, "total_rec_yards": 0,
         "total_rec_tds": 0, "total_carries": 0, "total_rush_yards": 0,
         "total_rush_tds": 0, "ppr_per_game": None,
-    }])
+    }])})
     assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
@@ -941,10 +1004,10 @@ def _make_ts_row(player_id, player_name, team, games, rec, rec_yards, rec_tds,
 def test_cross_team_stats_combined():
     """Multi-team season rows are aggregated — stats summed across splits."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2022"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2022: pd.DataFrame([
         _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 50, 600, 3, 100, 500, 3, position="RB"),
         _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 80, 1000, 5, 120, 700, 5, position="RB"),
-    ])
+    ])})
     result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
     assert result["games"] == 17
@@ -959,9 +1022,9 @@ def test_cross_team_stats_combined():
 def test_single_team_stats_unchanged():
     """Single-team season returns same values as before (no regression)."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-002", "L.McConkey", "LAC", 17, 82, 1149, 7),
-    ])
+    ])})
     result = agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR", nfl_player_id="00-002")
     assert result is not None
     assert result["games"] == 17
@@ -987,10 +1050,10 @@ def test_mccaffrey_scenario():
     """McCaffrey 2022: CAR (6g) + SF (11g) should produce ~356 PPR."""
     agent = PlayerProfilesAgent()
     # Approximate real stats
-    agent._data_cache["target_share_2022"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2022: pd.DataFrame([
         _make_ts_row("00-0034844", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5, position="RB"),
         _make_ts_row("00-0034844", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3, position="RB"),
-    ])
+    ])})
     result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-0034844")
     assert result is not None
     assert result["games"] == 17
@@ -1002,10 +1065,10 @@ def test_mccaffrey_scenario():
 def test_backup_qb_flag_only_current_team():
     """backup_qb_season flag only applies when stat_team matches current team."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2022"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2022: pd.DataFrame([
         _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5, position="RB"),
         _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3, position="RB"),
-    ])
+    ])})
     result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
     # Primary team should be SF (more games)
@@ -1018,10 +1081,10 @@ def test_backup_qb_flag_only_current_team():
 def test_cross_team_weighted_averages():
     """Rate stats (target_share, ppr_per_game) are games-weighted, not simple averaged."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-003", "S.Diggs", "BUF", 4, 20, 250, 2, target_share=0.30, ppr_per_game=18.0),
         _make_ts_row("00-003", "S.Diggs", "HOU", 13, 60, 800, 5, target_share=0.22, ppr_per_game=14.0),
-    ])
+    ])})
     result = agent._get_player_season_stats("Stefon Diggs", "HOU", 2024, position="WR", nfl_player_id="00-003")
     assert result is not None
     # Weighted avg: (0.30*4 + 0.22*13) / 17 ≈ 0.239
@@ -1033,10 +1096,10 @@ def test_cross_team_weighted_averages():
 def test_no_team_preference_in_player_id_path():
     """Player_id path aggregates ALL teams, doesn't prefer current team."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2022"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2022: pd.DataFrame([
         _make_ts_row("00-001", "C.McCaffrey", "CAR", 10, 50, 600, 3, 100, 500, 3, position="RB"),
         _make_ts_row("00-001", "C.McCaffrey", "SF",  7, 40, 500, 2, 80, 400, 2, position="RB"),
-    ])
+    ])})
     # Current team is SF but CAR has more games
     result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
@@ -1053,13 +1116,13 @@ def test_no_team_preference_in_player_id_path():
 
 def test_get_snap_pct_none_when_no_cache():
     agent = PlayerProfilesAgent()
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_snap_pct("Ladd McConkey", "LAC", 2025) is None
 
 
 def test_get_snap_pct_none_when_missing_columns():
     agent = PlayerProfilesAgent()
-    agent._data_cache["snap_pct_2025"] = pd.DataFrame([{"bad_col": 1}])
+    agent._warehouse = _make_warehouse(snap_pct={2025: pd.DataFrame([{"bad_col": 1}])})
     assert agent._get_snap_pct("Ladd McConkey", "LAC", 2025) is None
 
 
@@ -1105,19 +1168,14 @@ async def test_run_for_team_exception_returns_zero():
 async def test_run_all_teams_runs_all_32_teams():
     """run_all_teams invokes run_for_team for all 32 NFL teams."""
     agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse()
     call_log: list[str] = []
 
     async def _mock_run(team: str, force: bool = False) -> int:
         call_log.append(team)
         return 5
 
-    with patch.object(agent, "run_for_team", side_effect=_mock_run), \
-         patch("backend.agents.player_profiles.nfl_data") as mock_nfl:
-        mock_nfl.compute_target_share.return_value = pd.DataFrame()
-        mock_nfl.fetch_weekly_stats.return_value = pd.DataFrame()
-        mock_nfl.fetch_ngs_data.return_value = pd.DataFrame()
-        mock_nfl.fetch_rosters.return_value = pd.DataFrame()
-        mock_nfl.compute_snap_pct.return_value = pd.DataFrame()
+    with patch.object(agent, "run_for_team", side_effect=_mock_run):
         results = await agent.run_all_teams(concurrency=4)
 
     assert len(results) == 32
@@ -2216,8 +2274,7 @@ def test_average_profile_low_capital_not_breakout_candidate():
 async def test_build_team_context_injects_rookies_not_in_roster():
     """Rookies from DB should appear in context even if absent from nfl_data_py roster."""
     agent = PlayerProfilesAgent(dry_run=True)
-    # Pre-populate data cache with empty DataFrames so internal helpers don't crash
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
 
     # Mock: nfl_data_py roster returns only one veteran
     veteran_roster = [{"name": "Derrick Henry", "position": "RB", "age": 31}]
@@ -2249,7 +2306,6 @@ async def test_build_team_context_injects_rookies_not_in_roster():
          patch.object(agent, "_get_team_schedules", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_beat_signals", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_market_values", new_callable=AsyncMock, return_value={}), \
-         patch.object(agent, "_ensure_cache_loaded"), \
          patch.object(agent, "_is_backup_qb_season", return_value=False), \
          patch.object(agent, "_get_player_season_stats", return_value=None), \
          patch.object(agent, "_get_qb_season", return_value=None), \
@@ -2414,7 +2470,7 @@ async def test_market_value_prevents_skip_in_context():
     keeps fantasy-relevant players.
     """
     agent = PlayerProfilesAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
 
     roster = [{"name": "Existing Vet", "position": "RB", "age": 28}]
     db_players = [{"name": "IR Player", "position": "QB", "age": 23}]
@@ -2430,7 +2486,6 @@ async def test_market_value_prevents_skip_in_context():
          patch.object(agent, "_get_team_schedules", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_beat_signals", new_callable=AsyncMock, return_value={}), \
          patch.object(agent, "_get_team_market_values", new_callable=AsyncMock, return_value=market_values), \
-         patch.object(agent, "_ensure_cache_loaded"), \
          patch.object(agent, "_is_backup_qb_season", return_value=False), \
          patch.object(agent, "_get_player_season_stats", return_value=None), \
          patch.object(agent, "_get_qb_season", return_value=None), \
@@ -2541,10 +2596,10 @@ def test_weighted_baseline_handles_missing_seasons():
 def test_position_required_for_stat_match():
     """Position filter prevents cross-position name collisions (Taylor WR vs RB on IND)."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-RB1", "J.Taylor", "IND", 17, 40, 350, 2,
                      carries=270, rush_yards=1200, rush_tds=10, position="RB"),
-    ])
+    ])})
     # Looking up a WR named "Taylor" on IND must NOT match the RB
     result = agent._get_player_season_stats("Blayne Taylor", "IND", 2024, position="WR")
     assert result is None, "WR Taylor must not get RB Taylor's stats"
@@ -2553,11 +2608,11 @@ def test_position_required_for_stat_match():
 def test_exact_name_match_wins():
     """Exact player_name match with correct position returns correct stats."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-WR1", "L.McConkey", "LAC", 17, 82, 1149, 7, position="WR"),
         _make_ts_row("00-RB1", "J.McCaffrey", "LAC", 5, 3, 20, 0,
                      carries=10, rush_yards=40, rush_tds=0, position="RB"),
-    ])
+    ])})
     result = agent._get_player_season_stats(
         "Ladd McConkey", "LAC", 2024, position="WR", nfl_player_id="00-WR1"
     )
@@ -2569,10 +2624,10 @@ def test_exact_name_match_wins():
 def test_no_stats_returns_empty_not_wrong_player():
     """Fringe player with same last name as a star gets None, not star's stats."""
     agent = PlayerProfilesAgent()
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-RB1", "K.Williams", "LA", 17, 30, 250, 2,
                      carries=250, rush_yards=1200, rush_tds=12, position="RB"),
-    ])
+    ])})
     # Mario Williams (WR) on LA must not get Kyren Williams (RB) stats
     result = agent._get_player_season_stats("Mario Williams", "LA", 2024, position="WR")
     assert result is None, "WR Williams must not get RB Williams stats"
@@ -2592,11 +2647,11 @@ def test_nfl_player_id_match_takes_priority():
     """When nfl_player_id matches, position filter is not needed (Path 1)."""
     agent = PlayerProfilesAgent()
     # Two players named "Jones" on MIN — one RB, one WR
-    agent._data_cache["target_share_2024"] = pd.DataFrame([
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([
         _make_ts_row("00-RB9", "A.Jones", "MIN", 17, 40, 350, 3,
                      carries=200, rush_yards=1000, rush_tds=8, position="RB"),
         _make_ts_row("00-WR9", "J.Jones", "MIN", 8, 15, 120, 1, position="WR"),
-    ])
+    ])})
     # Path 1: nfl_player_id match gets RB Jones regardless of position arg
     result = agent._get_player_season_stats(
         "Aaron Jones", "MIN", 2024, position="RB", nfl_player_id="00-RB9"

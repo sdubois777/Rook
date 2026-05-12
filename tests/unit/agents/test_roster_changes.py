@@ -20,11 +20,64 @@ from backend.agents.roster_changes import (
     enforce_flag_mutual_exclusivity,
     validate_flag,
 )
+from backend.utils.seasons import get_current_season
 
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
+
+import pandas as pd
+
+
+class _MockWarehouse:
+    """Minimal warehouse substitute for tests."""
+
+    def __init__(self, **kwargs):
+        self._data = kwargs
+        self.rosters = kwargs.get("rosters", pd.DataFrame())
+        self.seasonal_rosters = kwargs.get("seasonal_rosters", pd.DataFrame())
+        self.prev_rosters = kwargs.get("prev_rosters", pd.DataFrame())
+        self.schedule = kwargs.get("schedule", pd.DataFrame())
+        self.schedule_year = kwargs.get("schedule_year", 2026)
+
+    def get_seasonal_stats(self, season):
+        return self._data.get("seasonal_stats", {}).get(season, pd.DataFrame())
+
+    def get_target_share(self, season):
+        return self._data.get("target_share", {}).get(season, pd.DataFrame())
+
+    def get_qb_stats(self, season):
+        return self._data.get("qb_stats", {}).get(season, pd.DataFrame())
+
+    def get_oline_stats(self, season):
+        return self._data.get("oline_stats", {}).get(season, pd.DataFrame())
+
+    def get_def_grades(self, season):
+        return self._data.get("def_grades", {}).get(season, pd.DataFrame())
+
+    def get_injuries(self, season):
+        return self._data.get("injuries", {}).get(season, pd.DataFrame())
+
+    def get_most_recent_def_grades(self):
+        return self._data.get("most_recent_def_grades", pd.DataFrame())
+
+    def get_snap_pct(self, season):
+        return self._data.get("snap_pct", {}).get(season, pd.DataFrame())
+
+    def get_ngs_receiving(self, season):
+        return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
+
+    def get_ngs_rushing(self, season):
+        return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+
+    def summary(self):
+        return {}
+
+
+def _make_warehouse(**kwargs):
+    return _MockWarehouse(**kwargs)
+
 
 def _make_flag(
     player: str,
@@ -484,17 +537,13 @@ async def test_single_api_call_per_team():
 
 
 @pytest.mark.asyncio
-async def test_data_cache_used_not_reloaded():
+async def test_warehouse_used_not_reloaded():
     """
-    When _DATA_CACHE is pre-populated, _fetch_target_shares should not
-    call compute_target_share again for cached seasons.
+    When warehouse has target_share data, _fetch_target_shares reads it
+    without calling nfl_data.compute_target_share.
     """
-    import backend.agents.roster_changes as rc_module
-
     agent = RosterChangesAgent()
 
-    # Pre-populate cache
-    import pandas as pd
     fake_df = pd.DataFrame({
         "player_name": ["Test Player"],
         "recent_team": ["LAC"],
@@ -506,16 +555,16 @@ async def test_data_cache_used_not_reloaded():
     })
 
     from backend.utils.seasons import get_analysis_seasons
-    for season in get_analysis_seasons(3):
-        rc_module._DATA_CACHE[f"target_share_{season}"] = fake_df
+    analysis_seasons = get_analysis_seasons(3)
+    target_share = {season: fake_df for season in analysis_seasons}
+    agent._warehouse = _make_warehouse(target_share=target_share)
 
     with patch("backend.integrations.nfl_data.compute_target_share") as mock_load:
-        await agent._fetch_target_shares([{"name": "Test Player", "position": "WR"}])
+        result = await agent._fetch_target_shares([{"name": "Test Player", "position": "WR"}])
 
     mock_load.assert_not_called()
-
-    # Cleanup
-    rc_module._DATA_CACHE.clear()
+    assert "Test Player" in result
+    assert len(result["Test Player"]) == len(analysis_seasons)
 
 
 @pytest.mark.asyncio
@@ -1146,7 +1195,6 @@ def _make_target_share_df(players: list[tuple[str, str, str, int, int]]) -> pd.D
 @pytest.mark.asyncio
 async def test_handle_departures_generates_beneficiary():
     """Departed WR with significant production generates BENEFICIARY flags."""
-    agent = RosterChangesAgent()
     prev_df = _make_prev_roster_df([
         ("Cooper Kupp", "WR", "LAR", "pid-1"),
         ("Puka Nacua", "WR", "LAR", "pid-2"),
@@ -1157,15 +1205,17 @@ async def test_handle_departures_generates_beneficiary():
         ("pid-1", "C.Kupp", "LAR", 120, 0),
         ("pid-2", "P.Nacua", "LAR", 150, 0),
     ])
+    prev_season = get_current_season() - 1
+    agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=prev_df, target_share={prev_season: ts_df},
+    ))
     roster = [
         {"name": "Puka Nacua", "position": "WR"},
         {"name": "Tutu Atwell", "position": "WR"},
         {"name": "Kyren Williams", "position": "RB"},
     ]
 
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
-        flags = await agent._handle_departures("LAR", roster)
+    flags = await agent._handle_departures("LAR", roster)
 
     assert len(flags) == 2
     for f in flags:
@@ -1181,20 +1231,21 @@ async def test_handle_departures_generates_beneficiary():
 @pytest.mark.asyncio
 async def test_handle_departures_no_change_no_flags():
     """When no one left the team, no BENEFICIARY flags are generated."""
-    agent = RosterChangesAgent()
     prev_df = _make_prev_roster_df([
         ("Puka Nacua", "WR", "LAR", "pid-1"),
         ("Tutu Atwell", "WR", "LAR", "pid-2"),
     ])
     ts_df = _make_target_share_df([("pid-1", "P.Nacua", "LAR", 150, 0)])
+    prev_season = get_current_season() - 1
+    agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=prev_df, target_share={prev_season: ts_df},
+    ))
     roster = [
         {"name": "Puka Nacua", "position": "WR"},
         {"name": "Tutu Atwell", "position": "WR"},
     ]
 
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
-        flags = await agent._handle_departures("LAR", roster)
+    flags = await agent._handle_departures("LAR", roster)
 
     assert len(flags) == 0
 
@@ -1202,17 +1253,18 @@ async def test_handle_departures_no_change_no_flags():
 @pytest.mark.asyncio
 async def test_handle_departures_ignores_qb():
     """QB departures do not generate BENEFICIARY flags (WR/RB/TE only)."""
-    agent = RosterChangesAgent()
     prev_df = _make_prev_roster_df([
         ("Old QB", "QB", "LAR", "pid-1"),
         ("WR Guy", "WR", "LAR", "pid-2"),
     ])
     ts_df = _make_target_share_df([])
+    prev_season = get_current_season() - 1
+    agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=prev_df, target_share={prev_season: ts_df},
+    ))
     roster = [{"name": "WR Guy", "position": "WR"}]
 
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
-        flags = await agent._handle_departures("LAR", roster)
+    flags = await agent._handle_departures("LAR", roster)
 
     assert len(flags) == 0
 
@@ -1220,7 +1272,6 @@ async def test_handle_departures_ignores_qb():
 @pytest.mark.asyncio
 async def test_handle_departures_skips_low_production():
     """Depth WRs with <50 targets do not generate BENEFICIARY flags."""
-    agent = RosterChangesAgent()
     prev_df = _make_prev_roster_df([
         ("Cooper Kupp", "WR", "LAR", "pid-1"),
         ("Depth Guy", "WR", "LAR", "pid-2"),
@@ -1230,11 +1281,13 @@ async def test_handle_departures_skips_low_production():
         ("pid-1", "C.Kupp", "LAR", 120, 0),   # significant
         ("pid-2", "D.Guy", "LAR", 10, 0),      # depth — below 50 threshold
     ])
+    prev_season = get_current_season() - 1
+    agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=prev_df, target_share={prev_season: ts_df},
+    ))
     roster = [{"name": "Puka Nacua", "position": "WR"}]
 
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=prev_df), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=ts_df):
-        flags = await agent._handle_departures("LAR", roster)
+    flags = await agent._handle_departures("LAR", roster)
 
     # Only Kupp departure generates flags, not Depth Guy
     assert len(flags) == 1
@@ -1244,24 +1297,25 @@ async def test_handle_departures_skips_low_production():
 @pytest.mark.asyncio
 async def test_handle_departures_impact_by_position():
     """WR departure → 0.35 impact; RB departure → 0.25 impact."""
-    agent = RosterChangesAgent()
+    prev_season = get_current_season() - 1
 
     # WR scenario
     wr_prev = _make_prev_roster_df([("WR Star", "WR", "LAR", "pid-1"), ("WR2", "WR", "LAR", "pid-2")])
     wr_ts = _make_target_share_df([("pid-1", "W.Star", "LAR", 100, 0)])
     wr_roster = [{"name": "WR2", "position": "WR"}]
+    wr_agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=wr_prev, target_share={prev_season: wr_ts},
+    ))
+    wr_flags = await wr_agent._handle_departures("LAR", wr_roster)
 
     # RB scenario
     rb_prev = _make_prev_roster_df([("RB Star", "RB", "NYG", "pid-3"), ("RB2", "RB", "NYG", "pid-4")])
     rb_ts = _make_target_share_df([("pid-3", "R.Star", "NYG", 0, 200)])
     rb_roster = [{"name": "RB2", "position": "RB"}]
-
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=wr_prev), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=wr_ts):
-        wr_flags = await agent._handle_departures("LAR", wr_roster)
-    with patch("backend.integrations.nfl_data.fetch_rosters", return_value=rb_prev), \
-         patch("backend.integrations.nfl_data.compute_target_share", return_value=rb_ts):
-        rb_flags = await agent._handle_departures("NYG", rb_roster)
+    rb_agent = RosterChangesAgent(warehouse=_make_warehouse(
+        prev_rosters=rb_prev, target_share={prev_season: rb_ts},
+    ))
+    rb_flags = await rb_agent._handle_departures("NYG", rb_roster)
 
     assert wr_flags[0]["value_impact_pct"] == 0.35
     assert rb_flags[0]["value_impact_pct"] == 0.25
@@ -1345,7 +1399,7 @@ def test_committee_converted_to_displaced_for_wr():
 @pytest.mark.asyncio
 async def test_enforce_called_before_write_in_run_for_team():
     """enforce_flag_mutual_exclusivity is called before _write_flags in run_for_team."""
-    agent = RosterChangesAgent()
+    agent = RosterChangesAgent(warehouse=_make_warehouse())
 
     # Model returns both committee and displaced for same RB+trigger
     model_output = json.dumps([

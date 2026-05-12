@@ -12,7 +12,51 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pandas as pd
+
 from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS
+
+
+# ---------------------------------------------------------------------------
+# Mock warehouse (replaces old _data_cache direct injection)
+# ---------------------------------------------------------------------------
+
+class _MockWarehouse:
+    """Minimal warehouse substitute for tests."""
+    def __init__(self, **kwargs):
+        self._data = kwargs
+        self.rosters = kwargs.get("rosters", pd.DataFrame())
+        self.seasonal_rosters = kwargs.get("seasonal_rosters", pd.DataFrame())
+        self.prev_rosters = kwargs.get("prev_rosters", pd.DataFrame())
+        self.schedule = kwargs.get("schedule", pd.DataFrame())
+        self.schedule_year = kwargs.get("schedule_year", 2026)
+
+    def get_seasonal_stats(self, season):
+        return self._data.get("seasonal_stats", {}).get(season, pd.DataFrame())
+    def get_target_share(self, season):
+        return self._data.get("target_share", {}).get(season, pd.DataFrame())
+    def get_qb_stats(self, season):
+        return self._data.get("qb_stats", {}).get(season, pd.DataFrame())
+    def get_oline_stats(self, season):
+        return self._data.get("oline_stats", {}).get(season, pd.DataFrame())
+    def get_def_grades(self, season):
+        return self._data.get("def_grades", {}).get(season, pd.DataFrame())
+    def get_injuries(self, season):
+        return self._data.get("injuries", {}).get(season, pd.DataFrame())
+    def get_most_recent_def_grades(self):
+        return self._data.get("most_recent_def_grades", pd.DataFrame())
+    def get_snap_pct(self, season):
+        return self._data.get("snap_pct", {}).get(season, pd.DataFrame())
+    def get_ngs_receiving(self, season):
+        return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
+    def get_ngs_rushing(self, season):
+        return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+    def summary(self):
+        return {}
+
+
+def _make_warehouse(**kwargs):
+    return _MockWarehouse(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -340,15 +384,13 @@ async def test_sack_rate_passed_to_upsert():
 # Two-source QB identification tests
 # ---------------------------------------------------------------------------
 
-def _mock_seasonal_roster(entries: list[dict]) -> "pd.DataFrame":
+def _mock_seasonal_roster(entries: list[dict]) -> pd.DataFrame:
     """Build a minimal seasonal roster DataFrame."""
-    import pandas as pd
     return pd.DataFrame(entries)
 
 
-def _mock_weekly_qb_rows(rows: list[dict]) -> "pd.DataFrame":
+def _mock_weekly_qb_rows(rows: list[dict]) -> pd.DataFrame:
     """Build a weekly stats DataFrame with QB rows and required columns."""
-    import pandas as pd
     defaults = {
         "position": "QB", "completions": 0, "attempts": 0,
         "passing_yards": 0, "passing_tds": 0, "interceptions": 0,
@@ -377,8 +419,10 @@ async def test_qb_from_seasonal_roster_not_stats_leader():
 
     from backend.utils.seasons import get_current_season
     current = get_current_season()
-    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
-    agent._data_cache[f"weekly_{current}"] = weekly
+    agent._warehouse = _make_warehouse(
+        seasonal_rosters=seasonal,
+        qb_stats={current: weekly},
+    )
 
     result = await agent._get_qb_data("SEA", current)
 
@@ -401,8 +445,10 @@ async def test_qb_stats_pulled_from_previous_team():
 
     from backend.utils.seasons import get_current_season
     current = get_current_season()
-    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
-    agent._data_cache[f"weekly_{current}"] = weekly
+    agent._warehouse = _make_warehouse(
+        seasonal_rosters=seasonal,
+        qb_stats={current: weekly},
+    )
 
     result = await agent._get_qb_data("SEA", current)
 
@@ -424,9 +470,10 @@ async def test_qb_fallback_when_no_seasonal_roster():
 
     from backend.utils.seasons import get_current_season
     current = get_current_season()
-    # Ensure no seasonal roster in cache (ClassVar shared across tests)
-    agent._data_cache.pop(f"seasonal_rosters_{current}", None)
-    agent._data_cache[f"weekly_{current}"] = weekly
+    # No seasonal roster — should fall back to stats leader
+    agent._warehouse = _make_warehouse(
+        qb_stats={current: weekly},
+    )
 
     result = await agent._get_qb_data("SEA", current)
 
@@ -449,8 +496,10 @@ async def test_qb_roster_only_no_stats():
 
     from backend.utils.seasons import get_current_season
     current = get_current_season()
-    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
-    agent._data_cache[f"weekly_{current}"] = weekly
+    agent._warehouse = _make_warehouse(
+        seasonal_rosters=seasonal,
+        qb_stats={current: weekly},
+    )
 
     result = await agent._get_qb_data("NE", current)
 
@@ -475,8 +524,10 @@ async def test_qb_mismatch_logged(caplog):
 
     from backend.utils.seasons import get_current_season
     current = get_current_season()
-    agent._data_cache[f"seasonal_rosters_{current}"] = seasonal
-    agent._data_cache[f"weekly_{current}"] = weekly
+    agent._warehouse = _make_warehouse(
+        seasonal_rosters=seasonal,
+        qb_stats={current: weekly},
+    )
 
     with caplog.at_level(logging.INFO, logger="backend.agents.team_systems"):
         await agent._get_qb_data("SEA", current)

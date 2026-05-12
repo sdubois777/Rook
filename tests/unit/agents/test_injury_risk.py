@@ -75,6 +75,43 @@ def _make_profile(
     }
 
 
+class _MockWarehouse:
+    """Minimal warehouse substitute for tests."""
+    def __init__(self, **kwargs):
+        self._data = kwargs
+        self.rosters = kwargs.get("rosters", pd.DataFrame())
+        self.seasonal_rosters = kwargs.get("seasonal_rosters", pd.DataFrame())
+        self.prev_rosters = kwargs.get("prev_rosters", pd.DataFrame())
+        self.schedule = kwargs.get("schedule", pd.DataFrame())
+        self.schedule_year = kwargs.get("schedule_year", 2026)
+
+    def get_seasonal_stats(self, season):
+        return self._data.get("seasonal_stats", {}).get(season, pd.DataFrame())
+    def get_target_share(self, season):
+        return self._data.get("target_share", {}).get(season, pd.DataFrame())
+    def get_qb_stats(self, season):
+        return self._data.get("qb_stats", {}).get(season, pd.DataFrame())
+    def get_oline_stats(self, season):
+        return self._data.get("oline_stats", {}).get(season, pd.DataFrame())
+    def get_def_grades(self, season):
+        return self._data.get("def_grades", {}).get(season, pd.DataFrame())
+    def get_injuries(self, season):
+        return self._data.get("injuries", {}).get(season, pd.DataFrame())
+    def get_most_recent_def_grades(self):
+        return self._data.get("most_recent_def_grades", pd.DataFrame())
+    def get_snap_pct(self, season):
+        return self._data.get("snap_pct", {}).get(season, pd.DataFrame())
+    def get_ngs_receiving(self, season):
+        return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
+    def get_ngs_rushing(self, season):
+        return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+    def summary(self):
+        return {}
+
+def _make_warehouse(**kwargs):
+    return _MockWarehouse(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Required test cases — Stage 6 spec
 # ---------------------------------------------------------------------------
@@ -299,7 +336,7 @@ def test_no_hardcoded_years():
 async def test_single_api_call_per_team():
     """run_for_team() must make exactly ONE call to call_once()."""
     agent = InjuryRiskAgent(dry_run=False)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
 
     mock_context = {
         "team":          "LAC",
@@ -478,9 +515,9 @@ def test_recurring_soft_tissue_different_areas_not_flagged():
 # ---- InjuryRiskAgent helpers -----------------------------------------------
 
 def test_get_team_roster_no_cache():
-    """Returns empty list when cache is missing."""
+    """Returns empty list when warehouse has no roster data."""
     agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_team_roster("LAC", 2024) == []
 
 
@@ -492,7 +529,7 @@ def test_get_team_roster_filters_to_team_and_skill_positions():
         {"team": "LAC", "full_name": "Zack Martin",       "position": "G",  "week": 17},
         {"team": "KC",  "full_name": "Patrick Mahomes",   "position": "QB", "week": 17},
     ])
-    agent._data_cache["rosters_2025"] = df
+    agent._warehouse = _make_warehouse(rosters=df)
     result = agent._get_team_roster("LAC", 2025)
     names = [r["name"] for r in result]
     assert "Ladd McConkey" in names
@@ -503,7 +540,7 @@ def test_get_team_roster_filters_to_team_and_skill_positions():
 
 def test_get_player_injury_season_no_cache():
     agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     result = agent._get_player_injury_season("Justin Jefferson", "MIN", 2024)
     assert result["injuries"] == []
     assert result["games_missed"] == 0
@@ -520,7 +557,7 @@ def test_get_player_injury_season_finds_injury():
          "report_primary_injury": "Hamstring", "report_status": "Out"},
         # Second week with same hamstring should deduplicate
     ])
-    agent._data_cache["injuries_2024"] = df
+    agent._warehouse = _make_warehouse(injuries={2024: df})
     result = agent._get_player_injury_season("Justin Jefferson", "MIN", 2024)
     # Should deduplicate — only 1 unique hamstring injury
     assert len(result["injuries"]) == 1
@@ -536,14 +573,14 @@ def test_get_player_injury_season_filters_postseason():
          "game_type": "POST", "week": 18, "position": "WR",
          "report_primary_injury": "Hamstring", "report_status": "Out"},
     ])
-    agent._data_cache["injuries_2024"] = df
+    agent._warehouse = _make_warehouse(injuries={2024: df})
     result = agent._get_player_injury_season("Davante Adams", "NYJ", 2024)
     assert result["injuries"] == []
 
 
 def test_get_player_carries_no_cache():
     agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     assert agent._get_player_carries("Saquon Barkley", "PHI", 2024) == 0
 
 
@@ -553,48 +590,9 @@ def test_get_player_carries_returns_value():
         {"player_name": "Saquon Barkley", "recent_team": "PHI",
          "position": "RB", "total_carries": 345},
     ])
-    agent._data_cache["carries_2024"] = df
+    agent._warehouse = _make_warehouse(target_share={2024: df})
     carries = agent._get_player_carries("Saquon Barkley", "PHI", 2024)
     assert carries == 345
-
-
-# ---- ensure_cache_loaded ---------------------------------------------------
-
-def test_ensure_cache_loaded_skips_already_loaded():
-    """Already-loaded keys are not re-fetched."""
-    agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {
-        "injuries_2024": pd.DataFrame({"col": [1]}),
-        "carries_2024":  pd.DataFrame({"col": [1]}),
-        "rosters_2025":  pd.DataFrame({"col": [1]}),
-    }
-    with patch("backend.agents.injury_risk.nfl_data") as mock_nd:
-        agent._ensure_cache_loaded([2024], 2025)
-        mock_nd.fetch_injuries.assert_not_called()
-        mock_nd.compute_target_share.assert_not_called()
-        mock_nd.fetch_rosters.assert_not_called()
-
-
-def test_ensure_cache_loaded_fetches_missing():
-    """Missing keys are fetched from nfl_data."""
-    agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
-
-    mock_inj_df     = pd.DataFrame({"col": [1]})
-    mock_ts_df      = pd.DataFrame({"player_name": ["A"], "recent_team": ["LAC"],
-                                     "position": ["WR"], "total_carries": [0]})
-    mock_roster_df  = pd.DataFrame({"col": [1]})
-
-    with patch("backend.agents.injury_risk.nfl_data") as mock_nd:
-        mock_nd.fetch_injuries.return_value       = mock_inj_df
-        mock_nd.compute_target_share.return_value = mock_ts_df
-        mock_nd.fetch_rosters.return_value        = mock_roster_df
-
-        agent._ensure_cache_loaded([2024], 2025)
-
-        mock_nd.fetch_injuries.assert_called_once_with(2024)
-        mock_nd.compute_target_share.assert_called_once_with(2024)
-        mock_nd.fetch_rosters.assert_called_once_with(2025)
 
 
 # ---- build_team_context ----------------------------------------------------
@@ -602,12 +600,11 @@ def test_ensure_cache_loaded_fetches_missing():
 @pytest.mark.asyncio
 async def test_build_team_context_returns_players():
     agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
 
     roster = [{"name": "Ladd McConkey", "position": "WR", "age": 23}]
 
     with (
-        patch.object(agent, "_ensure_cache_loaded"),
         patch.object(agent, "_get_team_roster", return_value=roster),
         patch.object(agent, "_get_player_injury_season", return_value={
             "season": 2024, "injuries": [], "games_missed": 0
@@ -653,22 +650,14 @@ async def test_run_for_team_exception_returns_zero():
 async def test_run_all_teams_runs_all_32_teams():
     """run_all_teams calls run_for_team for each of the 32 NFL teams."""
     agent = InjuryRiskAgent(dry_run=True)
-    agent._data_cache = {}
+    agent._warehouse = _make_warehouse()
     teams_run = []
 
     async def _fake_run_for_team(team):
         teams_run.append(team)
         return 0
 
-    with (
-        patch("backend.agents.injury_risk.nfl_data") as mock_nd,
-        patch.object(agent, "run_for_team", side_effect=_fake_run_for_team),
-    ):
-        mock_nd.fetch_injuries.return_value       = pd.DataFrame()
-        mock_nd.compute_target_share.return_value = pd.DataFrame(
-            columns=["player_name", "recent_team", "position", "total_carries"]
-        )
-        mock_nd.fetch_rosters.return_value = pd.DataFrame()
+    with patch.object(agent, "run_for_team", side_effect=_fake_run_for_team):
         await agent.run_all_teams()
 
     assert len(teams_run) == 32

@@ -35,14 +35,44 @@ from backend.agents.schedule import (
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixture: clear ClassVar cache between tests
+# Mock warehouse — replaces the old ClassVar _data_cache
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def clear_schedule_cache():
-    ScheduleAgent._data_cache.clear()
-    yield
-    ScheduleAgent._data_cache.clear()
+class _MockWarehouse:
+    """Minimal warehouse substitute for tests."""
+    def __init__(self, **kwargs):
+        self._data = kwargs
+        self.rosters = kwargs.get("rosters", pd.DataFrame())
+        self.seasonal_rosters = kwargs.get("seasonal_rosters", pd.DataFrame())
+        self.prev_rosters = kwargs.get("prev_rosters", pd.DataFrame())
+        self.schedule = kwargs.get("schedule", pd.DataFrame())
+        self.schedule_year = kwargs.get("schedule_year", 2026)
+
+    def get_seasonal_stats(self, season):
+        return self._data.get("seasonal_stats", {}).get(season, pd.DataFrame())
+    def get_target_share(self, season):
+        return self._data.get("target_share", {}).get(season, pd.DataFrame())
+    def get_qb_stats(self, season):
+        return self._data.get("qb_stats", {}).get(season, pd.DataFrame())
+    def get_oline_stats(self, season):
+        return self._data.get("oline_stats", {}).get(season, pd.DataFrame())
+    def get_def_grades(self, season):
+        return self._data.get("def_grades", {}).get(season, pd.DataFrame())
+    def get_injuries(self, season):
+        return self._data.get("injuries", {}).get(season, pd.DataFrame())
+    def get_most_recent_def_grades(self):
+        return self._data.get("most_recent_def_grades", pd.DataFrame())
+    def get_snap_pct(self, season):
+        return self._data.get("snap_pct", {}).get(season, pd.DataFrame())
+    def get_ngs_receiving(self, season):
+        return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
+    def get_ngs_rushing(self, season):
+        return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+    def summary(self):
+        return {}
+
+def _make_warehouse(**kwargs):
+    return _MockWarehouse(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +239,7 @@ def test_weather_flag_outdoor_cold_city_november():
 def test_bye_week_stored_correctly():
     """_get_bye_week identifies the missing week as the bye week."""
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"] = _lac_schedule_df()
+    agent._warehouse = _make_warehouse(schedule=_lac_schedule_df())
 
     assert agent._get_bye_week("LAC") == 9
 
@@ -273,12 +303,14 @@ async def test_single_api_call_per_team():
     """run_for_team must make exactly ONE call_once() call."""
     agent = ScheduleAgent(dry_run=False)
 
-    agent._data_cache["schedule_df"] = _lac_schedule_df()
-    agent._data_cache["def_grades"]  = pd.DataFrame(
-        columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
-    )
-    agent._data_cache["rosters_2025"] = pd.DataFrame(
-        {"full_name": ["Justin Herbert"], "team": ["LAC"], "position": ["QB"]}
+    agent._warehouse = _make_warehouse(
+        schedule=_lac_schedule_df(),
+        most_recent_def_grades=pd.DataFrame(
+            columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+        ),
+        rosters=pd.DataFrame(
+            {"full_name": ["Justin Herbert"], "team": ["LAC"], "position": ["QB"]}
+        ),
     )
 
     with patch.object(agent, "call_once", new_callable=AsyncMock,
@@ -425,7 +457,7 @@ def test_lookup_def_grade_not_found_returns_neutral():
 
 def test_get_bye_week_no_schedule_returns_none():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"] = pd.DataFrame()
+    agent._warehouse = _make_warehouse(schedule=pd.DataFrame())
     assert agent._get_bye_week("LAC") is None
 
 
@@ -436,7 +468,7 @@ def test_get_bye_week_finds_week_7():
          "week": wk, "game_type": "REG"}
         for wk in range(1, 18) if wk != 7
     ]
-    agent._data_cache["schedule_df"] = _make_schedule_df(rows)
+    agent._warehouse = _make_warehouse(schedule=_make_schedule_df(rows))
     assert agent._get_bye_week("KC") == 7
 
 
@@ -446,11 +478,11 @@ def test_get_bye_week_finds_week_7():
 
 def test_get_team_roster_returns_skill_positions_only():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["rosters_2025"] = pd.DataFrame({
+    agent._warehouse = _make_warehouse(rosters=pd.DataFrame({
         "full_name": ["Justin Jefferson", "Dalvin Cook", "John Sullivan"],
         "team":      ["MIN",              "MIN",         "MIN"],
         "position":  ["WR",               "RB",          "OL"],
-    })
+    }))
     roster = agent._get_team_roster("MIN", 2025)
     names = [p["name"] for p in roster]
     assert "Justin Jefferson" in names
@@ -460,17 +492,18 @@ def test_get_team_roster_returns_skill_positions_only():
 
 def test_get_team_roster_no_cache_returns_empty():
     agent = ScheduleAgent(dry_run=True)
-    # No rosters key in cache
+    # Warehouse with empty rosters
+    agent._warehouse = _make_warehouse()
     assert agent._get_team_roster("LAC", 2025) == []
 
 
 def test_get_team_roster_filters_by_team():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["rosters_2025"] = pd.DataFrame({
+    agent._warehouse = _make_warehouse(rosters=pd.DataFrame({
         "full_name": ["Justin Jefferson", "Davante Adams"],
         "team":      ["MIN",              "LV"],
         "position":  ["WR",               "WR"],
-    })
+    }))
     roster = agent._get_team_roster("MIN", 2025)
     assert len(roster) == 1
     assert roster[0]["name"] == "Justin Jefferson"
@@ -482,12 +515,14 @@ def test_get_team_roster_filters_by_team():
 
 def test_get_team_schedule_weeks_sorted():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"] = _make_schedule_df([
-        {"home_team": "BUF", "away_team": "MIA", "week": 3},
-        {"home_team": "NE",  "away_team": "BUF", "week": 1},
-    ])
-    agent._data_cache["def_grades"] = pd.DataFrame(
-        columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+    agent._warehouse = _make_warehouse(
+        schedule=_make_schedule_df([
+            {"home_team": "BUF", "away_team": "MIA", "week": 3},
+            {"home_team": "NE",  "away_team": "BUF", "week": 1},
+        ]),
+        most_recent_def_grades=pd.DataFrame(
+            columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+        ),
     )
     weeks = agent._get_team_schedule_weeks("BUF")
     assert [w["week"] for w in weeks] == [1, 3]
@@ -495,17 +530,20 @@ def test_get_team_schedule_weeks_sorted():
 
 def test_get_team_schedule_weeks_empty_cache_returns_empty():
     agent = ScheduleAgent(dry_run=True)
+    agent._warehouse = _make_warehouse()
     assert agent._get_team_schedule_weeks("BUF") == []
 
 
 def test_get_team_schedule_weeks_weather_risk_flag():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"] = _make_schedule_df([
-        {"home_team": "BUF", "away_team": "MIA", "week": 12, "roof": "outdoors"},
-        {"home_team": "MIA", "away_team": "BUF", "week": 3,  "roof": "outdoors"},
-    ])
-    agent._data_cache["def_grades"] = pd.DataFrame(
-        columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+    agent._warehouse = _make_warehouse(
+        schedule=_make_schedule_df([
+            {"home_team": "BUF", "away_team": "MIA", "week": 12, "roof": "outdoors"},
+            {"home_team": "MIA", "away_team": "BUF", "week": 3,  "roof": "outdoors"},
+        ]),
+        most_recent_def_grades=pd.DataFrame(
+            columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+        ),
     )
     weeks  = agent._get_team_schedule_weeks("BUF")
     w12    = next(w for w in weeks if w["week"] == 12)
@@ -516,126 +554,20 @@ def test_get_team_schedule_weeks_weather_risk_flag():
 
 def test_get_team_schedule_weeks_divisional_flag():
     agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"] = _make_schedule_df([
-        {"home_team": "BUF", "away_team": "MIA", "week": 2, "div_game": 1},
-        {"home_team": "BUF", "away_team": "TEN", "week": 4, "div_game": 0},
-    ])
-    agent._data_cache["def_grades"] = pd.DataFrame(
-        columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+    agent._warehouse = _make_warehouse(
+        schedule=_make_schedule_df([
+            {"home_team": "BUF", "away_team": "MIA", "week": 2, "div_game": 1},
+            {"home_team": "BUF", "away_team": "TEN", "week": 4, "div_game": 0},
+        ]),
+        most_recent_def_grades=pd.DataFrame(
+            columns=["defense_team", "position", "ppr_per_game", "rank", "grade"]
+        ),
     )
     weeks = agent._get_team_schedule_weeks("BUF")
     w2 = next(w for w in weeks if w["week"] == 2)
     w4 = next(w for w in weeks if w["week"] == 4)
     assert w2["divisional"] is True
     assert w4["divisional"] is False
-
-
-# ---------------------------------------------------------------------------
-# _ensure_cache_loaded
-# ---------------------------------------------------------------------------
-
-def test_ensure_cache_loaded_skips_if_already_loaded():
-    agent = ScheduleAgent(dry_run=True)
-    agent._data_cache["schedule_df"]  = pd.DataFrame({"x": [1]})
-    agent._data_cache["def_grades"]   = pd.DataFrame()
-    agent._data_cache["rosters_2025"] = pd.DataFrame()
-
-    with patch.object(agent, "_load_schedule")    as mock_load, \
-         patch.object(agent, "_load_def_grades")  as mock_def:
-        agent._ensure_cache_loaded(2025, 2026)
-
-    mock_load.assert_not_called()
-    mock_def.assert_not_called()
-
-
-def test_ensure_cache_loaded_fetches_when_missing():
-    agent = ScheduleAgent(dry_run=True)
-
-    with patch.object(agent, "_load_schedule")   as mock_load, \
-         patch.object(agent, "_load_def_grades") as mock_def, \
-         patch("backend.agents.schedule.nfl_data.fetch_rosters", return_value=pd.DataFrame()):
-        agent._ensure_cache_loaded(2025, 2026)
-
-    mock_load.assert_called_once_with(2026, 2025)
-    mock_def.assert_called_once_with(2025)
-
-
-# ---------------------------------------------------------------------------
-# _load_schedule
-# ---------------------------------------------------------------------------
-
-def test_load_schedule_uses_analysis_year_when_available():
-    agent    = ScheduleAgent(dry_run=True)
-    mock_df  = _make_schedule_df([{"home_team": "KC", "away_team": "BUF", "week": 1}])
-
-    with patch("backend.agents.schedule.nfl_data.fetch_schedules", return_value=mock_df) as mock_fetch:
-        agent._load_schedule(2026, 2025)
-
-    mock_fetch.assert_called_once_with(2026)
-    assert agent._data_cache.get("schedule_year") == 2026
-
-
-def test_load_schedule_falls_back_to_current_season():
-    agent      = ScheduleAgent(dry_run=True)
-    empty_df   = pd.DataFrame()
-    current_df = _make_schedule_df([{"home_team": "KC", "away_team": "BUF", "week": 1}])
-
-    with patch("backend.agents.schedule.nfl_data.fetch_schedules",
-               side_effect=[empty_df, current_df]) as mock_fetch:
-        agent._load_schedule(2026, 2025)
-
-    assert mock_fetch.call_count == 2
-    assert agent._data_cache.get("schedule_year") == 2025
-
-
-def test_load_schedule_logs_warning_on_fallback():
-    agent      = ScheduleAgent(dry_run=True)
-    empty_df   = pd.DataFrame()
-    fallback_df = _make_schedule_df([{"home_team": "MIN", "away_team": "GB", "week": 1}])
-
-    with patch("backend.agents.schedule.nfl_data.fetch_schedules",
-               side_effect=[empty_df, fallback_df]), \
-         patch("backend.agents.schedule.logger") as mock_log:
-        agent._load_schedule(2026, 2025)
-
-    mock_log.warning.assert_called()
-
-
-def test_load_schedule_sets_empty_when_both_fail():
-    agent = ScheduleAgent(dry_run=True)
-
-    with patch("backend.agents.schedule.nfl_data.fetch_schedules",
-               side_effect=Exception("network error")):
-        agent._load_schedule(2026, 2025)
-
-    assert "schedule_df" in agent._data_cache
-    assert agent._data_cache["schedule_df"].empty
-
-
-# ---------------------------------------------------------------------------
-# _load_def_grades
-# ---------------------------------------------------------------------------
-
-def test_load_def_grades_stores_grades():
-    agent      = ScheduleAgent(dry_run=True)
-    weekly_df  = _make_weekly_df([("REG", "WR", "MIN", 1, 30.0)])
-
-    with patch("backend.agents.schedule.nfl_data.fetch_weekly_stats", return_value=weekly_df):
-        agent._load_def_grades(2025)
-
-    assert "def_grades" in agent._data_cache
-    assert not agent._data_cache["def_grades"].empty
-
-
-def test_load_def_grades_stores_empty_on_failure():
-    agent = ScheduleAgent(dry_run=True)
-
-    with patch("backend.agents.schedule.nfl_data.fetch_weekly_stats",
-               side_effect=Exception("no data")):
-        agent._load_def_grades(2025)
-
-    assert "def_grades" in agent._data_cache
-    assert agent._data_cache["def_grades"].empty
 
 
 # ---------------------------------------------------------------------------
@@ -865,15 +797,13 @@ async def test_run_for_team_dry_run_returns_zero():
 async def test_run_all_teams_runs_all_32_teams():
     from backend.agents.team_systems import NFL_TEAMS
 
+    warehouse = _make_warehouse()
     agent = ScheduleAgent(dry_run=False)
 
-    with patch.object(agent, "_load_schedule"), \
-         patch.object(agent, "_load_def_grades"), \
-         patch("backend.agents.schedule.nfl_data.fetch_rosters", return_value=pd.DataFrame()), \
-         patch.object(agent, "run_for_team", new_callable=AsyncMock, return_value=3) as mock_run, \
+    with patch.object(agent, "run_for_team", new_callable=AsyncMock, return_value=3) as mock_run, \
          patch("backend.agents.schedule.get_current_season", return_value=2025), \
          patch("backend.agents.schedule.get_analysis_year",  return_value=2026):
-        results = await agent.run_all_teams(concurrency=8)
+        results = await agent.run_all_teams(warehouse=warehouse, concurrency=8)
 
     assert mock_run.call_count == 32
     called_teams = {call.args[0] for call in mock_run.call_args_list}
