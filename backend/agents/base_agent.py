@@ -23,9 +23,11 @@ Usage:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -67,7 +69,10 @@ _client: anthropic.AsyncAnthropic | None = None
 def get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        _client = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            max_retries=0,  # We handle retries via _call_with_backoff
+        )
     return _client
 
 
@@ -166,12 +171,12 @@ class BaseAgent:
             )
             return ""
 
-        # 3. Real API call
-        response = await self._client.messages.create(
+        # 3. Real API call (with exponential backoff for 529 / rate limits)
+        response = await self._call_with_backoff(
             model=effective_model,
             max_tokens=effective_max,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            user=user,
         )
 
         raw = response.content[0].text
@@ -187,6 +192,56 @@ class BaseAgent:
         await self._write_cache(input_hash, raw, entity_id)
 
         return raw
+
+    # ------------------------------------------------------------------
+    # API call with exponential backoff
+    # ------------------------------------------------------------------
+
+    async def _call_with_backoff(
+        self,
+        model: str,
+        max_tokens: int,
+        system: str,
+        user: str,
+        max_retries: int = 6,
+    ) -> anthropic.types.Message:
+        """Call messages.create() with exponential backoff for 529 / rate limits.
+
+        Retry schedule (base * 2^attempt + jitter):
+          429 RateLimitError:  5s, 10s, 20s, 40s, 80s, 160s
+          529 Overloaded:     10s, 20s, 40s, 80s, 160s, 320s
+        """
+        for attempt in range(max_retries):
+            try:
+                return await self._client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                )
+
+            except anthropic.RateLimitError:
+                if attempt == max_retries - 1:
+                    raise
+                wait = (2 ** attempt) * 5 + random.uniform(0, 2)
+                logger.warning(
+                    "Rate limited (attempt %d/%d) — waiting %.1fs",
+                    attempt + 1, max_retries, wait,
+                )
+                await asyncio.sleep(wait)
+
+            except anthropic.APIStatusError as e:
+                if e.status_code == 529:
+                    if attempt == max_retries - 1:
+                        raise
+                    wait = (2 ** attempt) * 10 + random.uniform(0, 5)
+                    logger.warning(
+                        "API overloaded 529 (attempt %d/%d) — waiting %.1fs",
+                        attempt + 1, max_retries, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    raise
 
     # ------------------------------------------------------------------
     # Cache helpers

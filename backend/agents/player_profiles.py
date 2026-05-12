@@ -25,6 +25,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import ClassVar
 import pandas as pd
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -338,6 +339,59 @@ class PlayerProfilesAgent(BaseAgent):
     AGENT_NAME       = "player_profiles"
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 4000
+
+    # Limit concurrent Sonnet calls across all teams to avoid 529 bursts.
+    # 4 teams × 3+ Sonnet players each = 12+ simultaneous requests → 529.
+    _sonnet_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(2)
+
+    # ------------------------------------------------------------------
+    # Sonnet rate-limited wrapper
+    # ------------------------------------------------------------------
+
+    async def _call_sonnet_with_limit(
+        self,
+        system: str,
+        user: str,
+        entity_id: str,
+        input_data: dict,
+        max_tokens: int = 800,
+    ) -> str:
+        """Call Sonnet through the shared semaphore (max 2 concurrent)."""
+        async with self._sonnet_semaphore:
+            return await self.call_once(
+                system=system,
+                user=user,
+                input_data=input_data,
+                entity_id=entity_id,
+                model=SONNET,
+                max_tokens=max_tokens,
+            )
+
+    # ------------------------------------------------------------------
+    # Sonnet health check
+    # ------------------------------------------------------------------
+
+    async def _check_sonnet_available(self) -> bool:
+        """Quick Sonnet ping before the full run.
+
+        If Sonnet is down, complex players fall back to Haiku instead of
+        being skipped entirely. Better a Haiku profile than no profile.
+        """
+        try:
+            await self._client.messages.create(
+                model=SONNET,
+                max_tokens=10,
+                system="Respond with OK",
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            logger.info("Sonnet health check: OK")
+            return True
+        except Exception as e:
+            logger.warning(
+                "Sonnet health check failed: %s — complex players will use Haiku fallback",
+                e,
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Sync data helpers — read from warehouse (no network calls)
@@ -1264,17 +1318,20 @@ class PlayerProfilesAgent(BaseAgent):
                     return 0
 
             # Split players: Haiku batch vs Sonnet individual
+            # When Sonnet is unavailable, all players go through Haiku.
+            sonnet_ok = getattr(self, "_sonnet_available", True)
             haiku_players = []
             sonnet_players = []
             for p in context["players"]:
-                if needs_sonnet_reasoning(p):
+                if sonnet_ok and needs_sonnet_reasoning(p):
                     sonnet_players.append(p)
                 else:
                     haiku_players.append(p)
 
             logger.info(
-                "%s: %d haiku batch, %d sonnet individual",
+                "%s: %d haiku batch, %d sonnet individual%s",
                 team, len(haiku_players), len(sonnet_players),
+                " (Sonnet unavailable — all via Haiku)" if not sonnet_ok else "",
             )
 
             all_profiles: list[dict] = []
@@ -1314,23 +1371,27 @@ class PlayerProfilesAgent(BaseAgent):
                     "team_system": context["team_system"],
                     "player": player,
                 }
-                raw = await self.call_once(
-                    system=SONNET_SYSTEM_PROMPT,
-                    user=(
-                        f"Project PPR for {player['name']} ({team}):\n\n"
-                        f"{json.dumps(player_context, default=str)}"
-                    ),
-                    input_data=player_context,
-                    entity_id=f"{team}_{player['name']}",
-                    model=SONNET,
-                    max_tokens=800,
-                )
-                if raw:
-                    prof = parse_json_output(raw)
-                    if isinstance(prof, list) and prof:
-                        prof = prof[0]
-                    if isinstance(prof, dict):
-                        all_profiles.append(prof)
+                try:
+                    raw = await self._call_sonnet_with_limit(
+                        system=SONNET_SYSTEM_PROMPT,
+                        user=(
+                            f"Project PPR for {player['name']} ({team}):\n\n"
+                            f"{json.dumps(player_context, default=str)}"
+                        ),
+                        input_data=player_context,
+                        entity_id=f"{team}_{player['name']}",
+                    )
+                    if raw:
+                        prof = parse_json_output(raw)
+                        if isinstance(prof, list) and prof:
+                            prof = prof[0]
+                        if isinstance(prof, dict):
+                            all_profiles.append(prof)
+                except Exception as exc:
+                    logger.warning(
+                        "%s: Sonnet call failed for %s (%s), skipping player",
+                        team, player["name"], exc,
+                    )
 
             written = await _write_profiles(
                 all_profiles, context, team,
@@ -1349,17 +1410,25 @@ class PlayerProfilesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run_all_teams(
-        self, warehouse=None, concurrency: int = 4, force: bool = False,
+        self, warehouse=None, concurrency: int = 2, force: bool = False,
     ) -> dict[str, int]:
         """
         Run all 32 teams. Warehouse provides all NFL data — no pre-loading needed.
         Returns {team_abbr: profiles_written}.
+
+        Default concurrency=2 (not 4) to limit Sonnet burst pressure.
+        Combined with _sonnet_semaphore(2), this caps peak Sonnet calls to 2.
         """
         if warehouse is not None:
             self._warehouse = warehouse
 
+        # Pre-flight: check if Sonnet is reachable
+        sonnet_ok = await self._check_sonnet_available()
+        self._sonnet_available = sonnet_ok
+
         logger.info(
-            "Starting Player Profiles pipeline (concurrency=%d)", concurrency
+            "Starting Player Profiles pipeline (concurrency=%d, sonnet=%s)",
+            concurrency, "available" if sonnet_ok else "UNAVAILABLE — Haiku fallback",
         )
         semaphore = asyncio.Semaphore(concurrency)
         results: dict[str, int] = {}
@@ -1372,6 +1441,11 @@ class PlayerProfilesAgent(BaseAgent):
 
         total = sum(results.values())
         logger.info("Player Profiles pipeline complete: %d total profiles written", total)
+        if not sonnet_ok:
+            logger.warning(
+                "Sonnet was unavailable — complex players used Haiku fallback. "
+                "Re-run when Sonnet is back for full-quality profiles."
+            )
         return results
 
 
