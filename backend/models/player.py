@@ -21,6 +21,7 @@ class Player(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     yahoo_player_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True)
+    gsis_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     team_abbr: Mapped[Optional[str]] = mapped_column(String(5))
     position: Mapped[Optional[str]] = mapped_column(String(5))  # QB, RB, WR, TE, K, DEF

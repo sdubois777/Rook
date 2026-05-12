@@ -175,6 +175,56 @@ def fetch_ngs_data(stat_type: str, season: int) -> pd.DataFrame:
     )
 
 
+def fetch_depth_charts(season: int) -> pd.DataFrame:
+    """
+    Fetch NFL depth charts for a season, filtered to latest week, offense only.
+    Normalizes column names across 2024 vs 2025+ schema differences.
+    Returns DataFrame with columns: team, position, full_name, gsis_id, depth_rank.
+    """
+    cache_name = f"depth_charts_{season}"
+    path = _cache_path(cache_name)
+    if path.exists():
+        return pd.read_parquet(path)
+
+    logger.info("Downloading depth charts for %d", season)
+    try:
+        raw = nfl.import_depth_charts([season])
+    except Exception as exc:
+        logger.warning("Depth charts unavailable for %d: %s", season, exc)
+        return pd.DataFrame()
+
+    if raw.empty:
+        return pd.DataFrame()
+
+    # Normalize column names: 2024 uses club_code/depth_position,
+    # 2025+ uses team/pos_abb
+    if "club_code" in raw.columns and "team" not in raw.columns:
+        raw = raw.rename(columns={"club_code": "team"})
+    if "depth_position" in raw.columns and "position" not in raw.columns:
+        raw = raw.rename(columns={"depth_position": "position"})
+
+    # Filter to offense only
+    if "depth_team" in raw.columns:
+        raw = raw[raw["depth_team"].str.lower() == "offense"].copy()
+
+    # Filter to latest week per team
+    if "week" in raw.columns:
+        max_week = raw.groupby("team")["week"].transform("max")
+        raw = raw[raw["week"] == max_week].copy()
+
+    # Keep only skill positions
+    if "position" in raw.columns:
+        raw = raw[raw["position"].isin(SKILL_POSITIONS)].copy()
+
+    # Compute depth rank within (team, position) — nfl_data_py returns
+    # rows in depth chart order, so cumcount gives the correct ranking.
+    raw = raw.sort_values(["team", "position"]).copy()
+    raw["depth_rank"] = raw.groupby(["team", "position"]).cumcount() + 1
+
+    raw.to_parquet(path, index=False)
+    return raw
+
+
 def _compute_target_share_from_pbp(season: int) -> pd.DataFrame:
     """
     Fallback: compute target share stats from PBP data when weekly stats
@@ -976,6 +1026,9 @@ class NflDataWarehouse:
         self.ngs_rushing: dict[int, pd.DataFrame] = {}
         self.snap_pct: dict[int, pd.DataFrame] = {}
 
+        # Depth chart data (current season)
+        self.depth_charts: dict[int, pd.DataFrame] = {}
+
     @classmethod
     def build(cls) -> "NflDataWarehouse":
         """
@@ -1074,6 +1127,15 @@ class NflDataWarehouse:
         except Exception as e:
             logger.warning("Previous rosters %d failed: %s", prev, e)
 
+        # Depth charts for current season
+        try:
+            dc = fetch_depth_charts(self.current_season)
+            if not dc.empty:
+                self.depth_charts[self.current_season] = dc
+                logger.info("Depth charts %d: %d entries", self.current_season, len(dc))
+        except Exception as e:
+            logger.warning("Depth charts %d failed: %s", self.current_season, e)
+
     def _load_schedule(self) -> None:
         """Schedule for upcoming season."""
         for yr in (self.analysis_year, self.current_season, self.current_season - 1):
@@ -1157,6 +1219,91 @@ class NflDataWarehouse:
 
     def get_snap_pct(self, season: int) -> pd.DataFrame:
         return self.snap_pct.get(season, pd.DataFrame())
+
+    def get_depth_chart(self, season: int) -> pd.DataFrame:
+        """Return depth chart DataFrame for a season, or empty DataFrame."""
+        return self.depth_charts.get(season, pd.DataFrame())
+
+    def get_starter(self, team: str, position: str, season: int | None = None) -> dict | None:
+        """
+        Return the depth chart starter (rank=1) at a position for a team.
+        Returns dict with keys: name, gsis_id, depth_rank.
+        Returns None if no depth chart data or no starter found.
+        """
+        s = season or self.current_season
+        dc = self.depth_charts.get(s, pd.DataFrame())
+        if dc.empty:
+            return None
+
+        team_upper = team.upper()
+        pos_upper = position.upper()
+
+        mask = (
+            (dc["team"].str.upper() == team_upper)
+            & (dc["position"].str.upper() == pos_upper)
+            & (dc["depth_rank"] == 1)
+        )
+        starters = dc[mask]
+        if starters.empty:
+            return None
+
+        row = starters.iloc[0]
+        name_col = next(
+            (c for c in ("full_name", "player_name") if c in dc.columns),
+            None,
+        )
+        return {
+            "name": str(row[name_col]) if name_col else "",
+            "gsis_id": str(row["gsis_id"]) if "gsis_id" in dc.columns and pd.notna(row.get("gsis_id")) else None,
+            "depth_rank": 1,
+        }
+
+    def get_player_depth_rank(self, gsis_id: str, season: int | None = None) -> int | None:
+        """
+        Return depth chart rank for a player by gsis_id.
+        1=starter, 2=backup, etc. Returns None if not found.
+        """
+        if not gsis_id:
+            return None
+        s = season or self.current_season
+        dc = self.depth_charts.get(s, pd.DataFrame())
+        if dc.empty or "gsis_id" not in dc.columns:
+            return None
+
+        matches = dc[dc["gsis_id"] == gsis_id]
+        if matches.empty:
+            return None
+        return int(matches.iloc[0]["depth_rank"])
+
+    def get_team_depth_context(self, team: str, season: int | None = None) -> dict[str, list[dict]]:
+        """
+        Return full depth context for a team: position -> [{name, gsis_id, rank}].
+        """
+        s = season or self.current_season
+        dc = self.depth_charts.get(s, pd.DataFrame())
+        if dc.empty:
+            return {}
+
+        team_upper = team.upper()
+        team_dc = dc[dc["team"].str.upper() == team_upper].sort_values(
+            ["position", "depth_rank"]
+        )
+
+        name_col = next(
+            (c for c in ("full_name", "player_name") if c in dc.columns),
+            None,
+        )
+
+        result: dict[str, list[dict]] = {}
+        for _, row in team_dc.iterrows():
+            pos = str(row["position"]).upper()
+            entry = {
+                "name": str(row[name_col]) if name_col else "",
+                "gsis_id": str(row["gsis_id"]) if "gsis_id" in dc.columns and pd.notna(row.get("gsis_id")) else None,
+                "rank": int(row["depth_rank"]),
+            }
+            result.setdefault(pos, []).append(entry)
+        return result
 
     def summary(self) -> dict:
         return {
