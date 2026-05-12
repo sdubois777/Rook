@@ -638,14 +638,24 @@ def compute_qb_season_stats(season: int) -> pd.DataFrame:
     Per-QB season aggregates from weekly stats + NGS passing data.
 
     Returns one row per QB with passing, rushing, and efficiency metrics.
-    Cached as parquet.
+    Cached as parquet.  Falls back to PBP when nflverse weekly stats
+    unavailable (e.g. 2025).
     """
     cache_name = f"qb_season_{season}"
     path = _cache_path(cache_name)
     if path.exists():
         return pd.read_parquet(path)
 
-    weekly = fetch_weekly_stats(season)
+    try:
+        weekly = fetch_weekly_stats(season)
+        if weekly is None or len(weekly) == 0:
+            raise ValueError(f"No weekly stats for {season}")
+    except Exception as exc:
+        logger.warning(
+            "compute_qb_season_stats(%d) weekly stats failed: %s — falling back to PBP",
+            season, exc,
+        )
+        return _compute_qb_stats_from_pbp(season)
 
     # QB rows, regular season only
     qbs = weekly[weekly["position"] == "QB"].copy()
@@ -714,6 +724,52 @@ def compute_qb_season_stats(season: int) -> pd.DataFrame:
 
     agg.to_parquet(path, index=False)
     return agg
+
+
+def _compute_qb_stats_from_pbp(season: int) -> pd.DataFrame:
+    """
+    Compute QB season stats from PBP data.
+
+    Used when nflverse hasn't published weekly stats (e.g. 2025).
+    Returns DataFrame with columns matching compute_qb_season_stats()
+    output so downstream code needs no changes.
+    """
+    all_stats = compute_seasonal_stats_from_pbp(season, scoring="ppr")
+
+    if all_stats is None or len(all_stats) == 0:
+        return pd.DataFrame()
+
+    # Filter to QBs: players with >500 passing yards are QBs
+    # (filters out WR/RB trick-play passes).
+    # compute_seasonal_stats_from_pbp already merges position from rosters.
+    qbs = all_stats[all_stats["passing_yards"] > 500].copy()
+
+    # Rename columns to match compute_qb_season_stats() output
+    col_map = {
+        "player_display_name": "player_name",
+        "rush_attempts": "carries",
+    }
+    qbs = qbs.rename(columns={k: v for k, v in col_map.items() if k in qbs.columns})
+
+    # Derive columns that PBP doesn't have natively
+    qbs["ppr_per_game"] = (
+        qbs["fantasy_points_ppr"].astype(float) / qbs["games"].replace(0, float("nan"))
+    ).round(1)
+    qbs["rushing_yards_per_game"] = (
+        qbs["rushing_yards"].astype(float) / qbs["games"].replace(0, float("nan"))
+    ).round(1)
+
+    # PBP doesn't track completions/attempts/sacks separately for passers;
+    # set to NA so downstream code doesn't crash on missing columns
+    for col in ("completions", "attempts", "completion_pct", "sacks",
+                "cpoe", "avg_time_to_throw", "aggressiveness"):
+        if col not in qbs.columns:
+            qbs[col] = pd.NA
+
+    logger.info(
+        "Computed QB stats from PBP for %d QBs in season %d", len(qbs), season
+    )
+    return qbs
 
 
 def compute_team_oline_stats(season: int) -> pd.DataFrame:

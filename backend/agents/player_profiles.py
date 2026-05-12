@@ -415,19 +415,32 @@ class PlayerProfilesAgent(BaseAgent):
 
     def _get_player_season_stats(
         self, player_name: str, team: str, season: int,
+        position: str,
         nfl_player_id: str | None = None,
     ) -> dict | None:
         """Return compact season stats for one player from the cached target_share df.
 
+        Position is REQUIRED to prevent cross-position name collisions
+        (e.g. "B.Taylor" WR on IND must NOT match "J.Taylor" RB on IND).
+
         Match priority:
           1. player_id column (gsis id) — 100% reliable, no name ambiguity
-          2. last-name + team filter — handles most veterans reliably
-          3. last-name + first-initial cross-team fallback — ONLY when exactly ONE
-             unique player_id has that initial+last combo to avoid wrong-player stats
+          2. last-name + team + SAME POSITION — handles most veterans reliably
+          3. last-name + first-initial cross-team + SAME POSITION fallback —
+             ONLY when exactly ONE unique player_id at this position
         """
         ts_df = self._data_cache.get(f"target_share_{season}")
         if ts_df is None:
             return None
+
+        pos_upper = position.upper()
+        has_position_col = "position" in ts_df.columns
+
+        def _pos_filter(df: pd.DataFrame) -> pd.DataFrame:
+            """Filter to same position. Critical to prevent cross-position collisions."""
+            if has_position_col:
+                return df[df["position"].str.upper() == pos_upper]
+            return df
 
         def _extract(row: pd.Series) -> dict | None:
             games = int(row.get("games", 0) or 0)
@@ -519,15 +532,15 @@ class PlayerProfilesAgent(BaseAgent):
                 # Multiple rows = multi-team season — aggregate across splits
                 return _extract_combined(id_rows)
 
-        # --- Path 2: last-name + team filter ---
+        # --- Path 2: last-name + team + SAME POSITION ---
         last = player_name.split()[-1]
         mask = (
             ts_df["player_name"].str.contains(last, case=False, na=False) &
             (ts_df["recent_team"] == team)
         )
-        rows = ts_df[mask].sort_values("games", ascending=False)
+        rows = _pos_filter(ts_df[mask]).sort_values("games", ascending=False)
 
-        # Disambiguate same-last-name same-team players by first initial
+        # Disambiguate same-last-name same-team same-position players by first initial
         if len(rows) > 1:
             first_initial = player_name.split()[0][0].upper()
             initial_rows = rows[rows["player_name"].str.startswith(f"{first_initial}.")]
@@ -537,12 +550,13 @@ class PlayerProfilesAgent(BaseAgent):
         if not rows.empty:
             return _extract(rows.iloc[0])
 
-        # --- Path 3: cross-team fallback (pre-trade history) ---
+        # --- Path 3: cross-team fallback (pre-trade history) + SAME POSITION ---
         # Only use when there is exactly ONE unique player_id with this initial+last
-        # across all teams to prevent wrong-player attribution (e.g. "JaQuae Jackson"
-        # getting another team's J.Jackson stats).
+        # at this position across all teams.
         first_initial = player_name.split()[0][0].upper()
-        all_last = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+        all_last = _pos_filter(
+            ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+        )
         initial_fallback = all_last[all_last["player_name"].str.startswith(f"{first_initial}.")]
         candidates = initial_fallback if not initial_fallback.empty else all_last
 
@@ -585,7 +599,8 @@ class PlayerProfilesAgent(BaseAgent):
             return None
 
         row = match.iloc[0]
-        games = int(row.get("games", 0) or 0)
+        _g = row.get("games", 0)
+        games = 0 if _g is None or (hasattr(_g, '__class__') and pd.isna(_g)) else int(_g)
         if games == 0:
             return None
 
@@ -596,21 +611,30 @@ class PlayerProfilesAgent(BaseAgent):
             except (TypeError, ValueError):
                 return None
 
+        def _safe_int(col: str, default: int = 0) -> int:
+            v = row.get(col, default)
+            if v is None or (hasattr(v, '__class__') and pd.isna(v)):
+                return default
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return default
+
         return {
             "games":              games,
             "recent_team":        str(row.get("recent_team", team)),
-            "completions":        int(row.get("completions", 0) or 0),
-            "attempts":           int(row.get("attempts", 0) or 0),
+            "completions":        _safe_int("completions"),
+            "attempts":           _safe_int("attempts"),
             "completion_pct":     _safe_float("completion_pct", 3),
-            "passing_yards":      int(row.get("passing_yards", 0) or 0),
-            "passing_tds":        int(row.get("passing_tds", 0) or 0),
-            "interceptions":      int(row.get("interceptions", 0) or 0),
-            "sacks":              int(row.get("sacks", 0) or 0),
+            "passing_yards":      _safe_int("passing_yards"),
+            "passing_tds":        _safe_int("passing_tds"),
+            "interceptions":      _safe_int("interceptions"),
+            "sacks":              _safe_int("sacks"),
             "cpoe":               _safe_float("cpoe", 2),
             "avg_time_to_throw":  _safe_float("avg_time_to_throw", 3),
-            "rushing_yards":      int(row.get("rushing_yards", 0) or 0),
-            "rushing_tds":        int(row.get("rushing_tds", 0) or 0),
-            "carries":            int(row.get("carries", 0) or 0),
+            "rushing_yards":      _safe_int("rushing_yards"),
+            "rushing_tds":        _safe_int("rushing_tds"),
+            "carries":            _safe_int("carries"),
             "fantasy_points_ppr": _safe_float("fantasy_points_ppr", 1),
             "ppr_per_game":       _safe_float("ppr_per_game", 1),
         }
@@ -1027,6 +1051,7 @@ class PlayerProfilesAgent(BaseAgent):
 
         seen:    set[str]   = set()
         players: list[dict] = []
+        depth_players: list[dict] = []  # fringe players with no stats → depth profile only
 
         for info in roster:
             pname = info["name"]
@@ -1050,7 +1075,7 @@ class PlayerProfilesAgent(BaseAgent):
             else:
                 # WR/RB/TE branch: use target_share data
                 for season in analysis_seasons:
-                    stats = self._get_player_season_stats(pname, team, season, nfl_player_id=nfl_pid)
+                    stats = self._get_player_season_stats(pname, team, season, position=pos, nfl_player_id=nfl_pid)
                     if stats:
                         stats["year"]             = season
                         # Only apply backup_qb flag to WRs/TEs whose production is
@@ -1089,6 +1114,19 @@ class PlayerProfilesAgent(BaseAgent):
             is_rookie_player = pname in rookie_fields
             has_market_value = pname in market_values
             if not has_any_data and not has_flags and not is_rookie_player and not has_market_value:
+                continue
+
+            # Guard: non-rookie with zero game data in ALL seasons should NOT be
+            # sent to the AI model — it will hallucinate stats.  Instead, mark
+            # for depth-only profiling (written to DB in a separate pass).
+            # Exception: players with market_value are fantasy-relevant (e.g.
+            # returning from injury/suspension) and should go to the AI.
+            if not has_any_data and not is_rookie_player and not has_market_value:
+                depth_players.append({
+                    "name":           pname,
+                    "position":       pos,
+                    "nfl_player_id":  nfl_pid,
+                })
                 continue
 
             # Detect team change: compare most recent season's team to current
@@ -1139,6 +1177,7 @@ class PlayerProfilesAgent(BaseAgent):
             "analysis_year": analysis_year,
             "team_system":   team_system,
             "players":       players,
+            "depth_players": depth_players,
         }
 
     # ------------------------------------------------------------------
@@ -1337,7 +1376,11 @@ class PlayerProfilesAgent(BaseAgent):
                     if isinstance(prof, dict):
                         all_profiles.append(prof)
 
-            written = await _write_profiles(all_profiles, context, team, stale_names=stale_names)
+            written = await _write_profiles(
+                all_profiles, context, team,
+                stale_names=stale_names,
+                depth_players=context.get("depth_players", []),
+            )
             logger.info("%s: %d profiles written", team, written)
             return written
 
@@ -1484,13 +1527,14 @@ async def _bulk_resolve_player_ids(
 async def _write_profiles(
     profiles: list[dict], context: dict, team: str,
     stale_names: set[str] | None = None,
+    depth_players: list[dict] | None = None,
 ) -> int:
     """Write player_profiles for one team.
 
     When stale_names is provided, only deletes profiles for those players (selective refresh).
     When stale_names is None, deletes all team profiles before re-inserting (force/first run).
     """
-    if not profiles:
+    if not profiles and not depth_players:
         return 0
 
     analysis_year = get_analysis_year()
@@ -1717,6 +1761,35 @@ async def _write_profiles(
             written_ids.add(player_id)
             written += 1
             logger.debug("QB Python-only profile: %s (%s)", pname, team)
+
+        # --- Third pass: depth players with no stats in any season ---
+        for dp in (depth_players or []):
+            pname = dp["name"]
+            nfl_pid = dp.get("nfl_player_id")
+
+            player_id: str | None = None
+            if nfl_pid:
+                player_id = nfl_id_to_db.get(nfl_pid)
+            if not player_id:
+                player_id = name_to_db.get(normalize_player_name(pname))
+            if not player_id or player_id in written_ids:
+                continue
+
+            depth = _build_depth_profile(dp["position"])
+            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
+            session.add(record)
+            record.role_classification = depth["role_classification"]
+            record.clean_season_baseline = {"prompt_version": PLAYER_PROFILES_PROMPT_VERSION}
+            record.anomalous_seasons_excluded = []
+            record.is_rookie = False
+            record.profile_source = "nfl_history"
+            record.confidence = depth["confidence"]
+            record.efficiency_signal = depth["efficiency_signal"]
+            record.positional_scarcity_tier = depth["positional_scarcity_tier"]
+
+            written_ids.add(player_id)
+            written += 1
+            logger.debug("Depth profile: %s (%s)", pname, team)
 
         await session.commit()
 
@@ -2034,6 +2107,29 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     if is_declining:
         result["declining"] = True
     return result
+
+
+def _build_depth_profile(position: str) -> dict:
+    """
+    Build a minimal profile for fringe/depth players with no stats in any
+    analysis season.  Returns the same shape as model output so the DB write
+    path works unchanged.
+
+    These players had zero games across all analysis seasons *after* the
+    position-aware name collision fix, meaning they genuinely have no NFL
+    production.  Rather than sending empty data to the AI model (which
+    produces hallucinated profiles), we assign conservative depth defaults.
+    """
+    return {
+        "role_classification": "depth",
+        "efficiency_signal": "below_average",
+        "age_curve_position": "unknown",
+        "career_trajectory": "unknown",
+        "breakout_flag": False,
+        "positional_scarcity_tier": 5,
+        "confidence": "low",
+        "clean_season_baseline": {},  # no baseline — no stats
+    }
 
 
 # ---------------------------------------------------------------------------

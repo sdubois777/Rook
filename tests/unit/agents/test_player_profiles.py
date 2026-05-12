@@ -20,6 +20,7 @@ from backend.agents.player_profiles import (
     PLAYER_PROFILES_PROMPT_VERSION,
     PROFILE_STALENESS_DAYS,
     PlayerProfilesAgent,
+    _build_depth_profile,
     _bulk_resolve_player_ids,
     _build_rookie_profile,
     _compute_clean_baseline,
@@ -596,7 +597,8 @@ def test_to_decimal_float():
 async def test_zero_history_player_included_in_context():
     """
     A player with games=0 in every analysis season who has dependency flags
-    must still appear in the context sent to the model (not silently skipped).
+    must NOT be sent to the AI model (prevents hallucinated stats) but should
+    appear in depth_players for a Python-only depth profile.
     """
     from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_current_season
 
@@ -629,7 +631,7 @@ async def test_zero_history_player_included_in_context():
             columns=["recent_team", "position", "player_name", "week"]
         )
 
-    # Beneficiary flag — player should be included
+    # Beneficiary flag — player should not be completely skipped
     dep_flags = {"Mecole Hardman": [
         {"type": "beneficiary", "trigger": "JuJu Smith-Schuster",
          "effect": "positive", "confidence": "medium"}
@@ -640,12 +642,16 @@ async def test_zero_history_player_included_in_context():
                       new_callable=AsyncMock, return_value=dep_flags):
         context = await agent._build_team_context("KC")
 
+    # Zero-history player should NOT be in players (sent to AI)
     players_in_context = context["players"]
-    assert any("Hardman" in p["name"] for p in players_in_context), (
-        "Zero-history player with dep flags must be included in context"
+    assert not any("Hardman" in p["name"] for p in players_in_context), (
+        "Zero-history player must not be sent to AI model (hallucination risk)"
     )
-    hardman = next(p for p in players_in_context if "Hardman" in p["name"])
-    assert hardman["dependency_flags"], "Dependency flags must be attached"
+    # Should be in depth_players instead
+    depth = context["depth_players"]
+    assert any("Hardman" in p["name"] for p in depth), (
+        "Zero-history player with dep flags must be in depth_players"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -886,7 +892,7 @@ def test_aggregate_ngs_missing_col_returns_empty():
 def test_get_player_season_stats_none_when_no_cache():
     agent = PlayerProfilesAgent()
     agent._data_cache = {}
-    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024) is None
+    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
 def test_get_player_season_stats_none_when_no_match():
@@ -894,7 +900,7 @@ def test_get_player_season_stats_none_when_no_match():
     agent._data_cache["target_share_2024"] = pd.DataFrame(
         columns=["player_name", "recent_team", "games"]
     )
-    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024) is None
+    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
 def test_get_player_season_stats_none_when_zero_games():
@@ -906,7 +912,7 @@ def test_get_player_season_stats_none_when_zero_games():
         "total_rec_tds": 0, "total_carries": 0, "total_rush_yards": 0,
         "total_rush_tds": 0, "ppr_per_game": None,
     }])
-    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024) is None
+    assert agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR") is None
 
 
 # ---------------------------------------------------------------------------
@@ -916,13 +922,13 @@ def test_get_player_season_stats_none_when_zero_games():
 def _make_ts_row(player_id, player_name, team, games, rec, rec_yards, rec_tds,
                  carries=0, rush_yards=0, rush_tds=0,
                  target_share=0.2, air_yards_share=0.2, ppr_per_game=10.0,
-                 total_fantasy_points=None):
+                 total_fantasy_points=None, position="WR"):
     """Helper to build a target_share DataFrame row."""
     if total_fantasy_points is None:
         total_fantasy_points = rec * 1.0 + (rec_yards + rush_yards) * 0.1 + (rec_tds + rush_tds) * 6.0
     return {
         "player_id": player_id, "player_name": player_name,
-        "recent_team": team, "games": games,
+        "recent_team": team, "games": games, "position": position,
         "avg_target_share": target_share, "avg_air_yards_share": air_yards_share,
         "total_targets": int(rec * 1.2), "total_receptions": rec,
         "total_rec_yards": rec_yards, "total_rec_tds": rec_tds,
@@ -936,10 +942,10 @@ def test_cross_team_stats_combined():
     """Multi-team season rows are aggregated — stats summed across splits."""
     agent = PlayerProfilesAgent()
     agent._data_cache["target_share_2022"] = pd.DataFrame([
-        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 50, 600, 3, 100, 500, 3),
-        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 80, 1000, 5, 120, 700, 5),
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 50, 600, 3, 100, 500, 3, position="RB"),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 80, 1000, 5, 120, 700, 5, position="RB"),
     ])
-    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
     assert result["games"] == 17
     assert result["receptions"] == 130
@@ -956,7 +962,7 @@ def test_single_team_stats_unchanged():
     agent._data_cache["target_share_2024"] = pd.DataFrame([
         _make_ts_row("00-002", "L.McConkey", "LAC", 17, 82, 1149, 7),
     ])
-    result = agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, nfl_player_id="00-002")
+    result = agent._get_player_season_stats("Ladd McConkey", "LAC", 2024, position="WR", nfl_player_id="00-002")
     assert result is not None
     assert result["games"] == 17
     assert result["receptions"] == 82
@@ -982,10 +988,10 @@ def test_mccaffrey_scenario():
     agent = PlayerProfilesAgent()
     # Approximate real stats
     agent._data_cache["target_share_2022"] = pd.DataFrame([
-        _make_ts_row("00-0034844", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5),
-        _make_ts_row("00-0034844", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3),
+        _make_ts_row("00-0034844", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5, position="RB"),
+        _make_ts_row("00-0034844", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3, position="RB"),
     ])
-    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-0034844")
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-0034844")
     assert result is not None
     assert result["games"] == 17
     # Total: 85 rec + (864+1024)*0.1 + (6+8)*6 = 85 + 188.8 + 84 ≈ 357.8
@@ -997,10 +1003,10 @@ def test_backup_qb_flag_only_current_team():
     """backup_qb_season flag only applies when stat_team matches current team."""
     agent = PlayerProfilesAgent()
     agent._data_cache["target_share_2022"] = pd.DataFrame([
-        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5),
-        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3),
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 6, 27, 277, 1, 85, 470, 5, position="RB"),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  11, 58, 587, 5, 119, 554, 3, position="RB"),
     ])
-    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
     # Primary team should be SF (more games)
     assert result["recent_team"] == "SF"
@@ -1016,7 +1022,7 @@ def test_cross_team_weighted_averages():
         _make_ts_row("00-003", "S.Diggs", "BUF", 4, 20, 250, 2, target_share=0.30, ppr_per_game=18.0),
         _make_ts_row("00-003", "S.Diggs", "HOU", 13, 60, 800, 5, target_share=0.22, ppr_per_game=14.0),
     ])
-    result = agent._get_player_season_stats("Stefon Diggs", "HOU", 2024, nfl_player_id="00-003")
+    result = agent._get_player_season_stats("Stefon Diggs", "HOU", 2024, position="WR", nfl_player_id="00-003")
     assert result is not None
     # Weighted avg: (0.30*4 + 0.22*13) / 17 ≈ 0.239
     assert abs(result["target_share"] - 0.239) < 0.01, f"Expected ~0.239, got {result['target_share']}"
@@ -1028,11 +1034,11 @@ def test_no_team_preference_in_player_id_path():
     """Player_id path aggregates ALL teams, doesn't prefer current team."""
     agent = PlayerProfilesAgent()
     agent._data_cache["target_share_2022"] = pd.DataFrame([
-        _make_ts_row("00-001", "C.McCaffrey", "CAR", 10, 50, 600, 3, 100, 500, 3),
-        _make_ts_row("00-001", "C.McCaffrey", "SF",  7, 40, 500, 2, 80, 400, 2),
+        _make_ts_row("00-001", "C.McCaffrey", "CAR", 10, 50, 600, 3, 100, 500, 3, position="RB"),
+        _make_ts_row("00-001", "C.McCaffrey", "SF",  7, 40, 500, 2, 80, 400, 2, position="RB"),
     ])
     # Current team is SF but CAR has more games
-    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, nfl_player_id="00-001")
+    result = agent._get_player_season_stats("Christian McCaffrey", "SF", 2022, position="RB", nfl_player_id="00-001")
     assert result is not None
     assert result["games"] == 17  # Both teams combined
     assert result["receptions"] == 90  # 50 + 40
@@ -2526,3 +2532,75 @@ def test_weighted_baseline_handles_missing_seasons():
     stats = {2025: 250.0}
     baseline = _compute_weighted_baseline(stats, set())
     assert baseline == 250.0
+
+
+# ---------------------------------------------------------------------------
+# Position verification in _get_player_season_stats
+# ---------------------------------------------------------------------------
+
+def test_position_required_for_stat_match():
+    """Position filter prevents cross-position name collisions (Taylor WR vs RB on IND)."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-RB1", "J.Taylor", "IND", 17, 40, 350, 2,
+                     carries=270, rush_yards=1200, rush_tds=10, position="RB"),
+    ])
+    # Looking up a WR named "Taylor" on IND must NOT match the RB
+    result = agent._get_player_season_stats("Blayne Taylor", "IND", 2024, position="WR")
+    assert result is None, "WR Taylor must not get RB Taylor's stats"
+
+
+def test_exact_name_match_wins():
+    """Exact player_name match with correct position returns correct stats."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-WR1", "L.McConkey", "LAC", 17, 82, 1149, 7, position="WR"),
+        _make_ts_row("00-RB1", "J.McCaffrey", "LAC", 5, 3, 20, 0,
+                     carries=10, rush_yards=40, rush_tds=0, position="RB"),
+    ])
+    result = agent._get_player_season_stats(
+        "Ladd McConkey", "LAC", 2024, position="WR", nfl_player_id="00-WR1"
+    )
+    assert result is not None
+    assert result["receptions"] == 82
+    assert result["rec_yards"] == 1149
+
+
+def test_no_stats_returns_empty_not_wrong_player():
+    """Fringe player with same last name as a star gets None, not star's stats."""
+    agent = PlayerProfilesAgent()
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-RB1", "K.Williams", "LA", 17, 30, 250, 2,
+                     carries=250, rush_yards=1200, rush_tds=12, position="RB"),
+    ])
+    # Mario Williams (WR) on LA must not get Kyren Williams (RB) stats
+    result = agent._get_player_season_stats("Mario Williams", "LA", 2024, position="WR")
+    assert result is None, "WR Williams must not get RB Williams stats"
+
+
+def test_fringe_player_gets_depth_profile():
+    """_build_depth_profile returns conservative depth defaults."""
+    depth = _build_depth_profile("WR")
+    assert depth["role_classification"] == "depth"
+    assert depth["confidence"] == "low"
+    assert depth["efficiency_signal"] == "below_average"
+    assert depth["positional_scarcity_tier"] == 5
+    assert depth["clean_season_baseline"] == {}
+
+
+def test_nfl_player_id_match_takes_priority():
+    """When nfl_player_id matches, position filter is not needed (Path 1)."""
+    agent = PlayerProfilesAgent()
+    # Two players named "Jones" on MIN — one RB, one WR
+    agent._data_cache["target_share_2024"] = pd.DataFrame([
+        _make_ts_row("00-RB9", "A.Jones", "MIN", 17, 40, 350, 3,
+                     carries=200, rush_yards=1000, rush_tds=8, position="RB"),
+        _make_ts_row("00-WR9", "J.Jones", "MIN", 8, 15, 120, 1, position="WR"),
+    ])
+    # Path 1: nfl_player_id match gets RB Jones regardless of position arg
+    result = agent._get_player_season_stats(
+        "Aaron Jones", "MIN", 2024, position="RB", nfl_player_id="00-RB9"
+    )
+    assert result is not None
+    assert result["carries"] == 200
+    assert result["rush_yards"] == 1000
