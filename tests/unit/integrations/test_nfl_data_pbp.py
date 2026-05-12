@@ -9,7 +9,9 @@ import pandas as pd
 import pytest
 
 from backend.integrations.nfl_data import (
+    _compute_target_share_from_pbp,
     compute_seasonal_stats_from_pbp,
+    compute_target_share,
     get_seasonal_stats,
 )
 
@@ -231,3 +233,90 @@ def test_fumble_lost_deduction(mock_nfl):
     # 50 yards * 0.1 = 5.0, minus fumble = 3.0
     assert cmc["fantasy_points_ppr"] == 3.0
     assert cmc["fumbles_lost"] == 1
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: compute_target_share PBP fallback tests
+# ---------------------------------------------------------------------------
+
+
+@patch("backend.integrations.nfl_data.compute_seasonal_stats_from_pbp")
+@patch("backend.integrations.nfl_data.nfl")
+def test_compute_target_share_falls_back_to_pbp(mock_nfl, mock_pbp_fn, tmp_path):
+    """When fetch_weekly_stats fails, compute_target_share falls back to PBP."""
+    mock_nfl.import_weekly_data.side_effect = Exception("HTTP Error 404")
+
+    mock_result = pd.DataFrame({
+        "player_id": ["00-001", "00-002"],
+        "player_display_name": ["C.McCaffrey", "D.Samuel"],
+        "position": ["RB", "WR"],
+        "recent_team": ["SF", "SF"],
+        "games": [17, 16],
+        "targets": [80, 120],
+        "receptions": [65, 95],
+        "receiving_yards": [550, 1100],
+        "receiving_tds": [3, 7],
+        "rush_attempts": [270, 15],
+        "rushing_yards": [1200, 80],
+        "rushing_tds": [10, 0],
+        "fantasy_points_ppr": [414.6, 310.0],
+        "season": [2025, 2025],
+        "passing_yards": [0, 0],
+        "passing_tds": [0, 0],
+        "interceptions": [0, 0],
+        "fumbles_lost": [0, 0],
+    })
+    mock_pbp_fn.return_value = mock_result
+
+    with patch("backend.integrations.nfl_data.CACHE_DIR", tmp_path):
+        result = compute_target_share(2025)
+
+    assert len(result) == 2
+    # Columns must match standard target_share output schema
+    assert "player_name" in result.columns
+    assert "total_targets" in result.columns
+    assert "avg_target_share" in result.columns
+    assert "total_carries" in result.columns
+    assert "ppr_per_game" in result.columns
+
+    cmc = result[result["player_id"] == "00-001"].iloc[0]
+    assert cmc["total_targets"] == 80
+    assert cmc["total_carries"] == 270
+    assert abs(cmc["ppr_per_game"] - 414.6 / 17) < 0.1
+
+
+@patch("backend.integrations.nfl_data.compute_seasonal_stats_from_pbp")
+@patch("backend.integrations.nfl_data.nfl")
+def test_target_share_pbp_fallback_computes_share(mock_nfl, mock_pbp_fn):
+    """PBP fallback correctly computes target share as player_targets / team_targets."""
+    mock_nfl.import_weekly_data.side_effect = Exception("HTTP Error 404")
+
+    mock_result = pd.DataFrame({
+        "player_id": ["00-001", "00-002"],
+        "player_display_name": ["Player A", "Player B"],
+        "position": ["WR", "WR"],
+        "recent_team": ["SF", "SF"],
+        "games": [17, 17],
+        "targets": [150, 50],
+        "receptions": [100, 30],
+        "receiving_yards": [1200, 400],
+        "receiving_tds": [10, 2],
+        "rush_attempts": [0, 0],
+        "rushing_yards": [0, 0],
+        "rushing_tds": [0, 0],
+        "fantasy_points_ppr": [300, 100],
+        "season": [2025, 2025],
+        "passing_yards": [0, 0],
+        "passing_tds": [0, 0],
+        "interceptions": [0, 0],
+        "fumbles_lost": [0, 0],
+    })
+    mock_pbp_fn.return_value = mock_result
+
+    result = _compute_target_share_from_pbp(2025)
+
+    a = result[result["player_id"] == "00-001"].iloc[0]
+    b = result[result["player_id"] == "00-002"].iloc[0]
+    # Team total targets = 150 + 50 = 200
+    assert abs(a["avg_target_share"] - 0.75) < 0.01
+    assert abs(b["avg_target_share"] - 0.25) < 0.01

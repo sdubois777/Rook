@@ -647,6 +647,16 @@ class RosterChangesAgent(BaseAgent):
                 )
 
             from decimal import Decimal
+
+            # Veteran guard: if player has NFL history, do NOT mark as rookie.
+            # This prevents loose name matching from overwriting veteran status.
+            if player.nfl_seasons_played is not None and player.nfl_seasons_played >= 1:
+                logger.debug(
+                    "Skipping rookie eval for %s — %d NFL seasons played (veteran)",
+                    player.name, player.nfl_seasons_played,
+                )
+                return
+
             player.is_rookie             = True
             player.college_profile_grade = fields.get("college_profile_grade")
             player.draft_capital_signal  = fields.get("draft_capital_signal")
@@ -1480,12 +1490,14 @@ async def _write_flags(flags: list[dict]) -> int:
             if pid:
                 player_ids_in_batch.add(pid)
 
-        # Delete existing flags for these players / season to prevent duplicates on re-run
+        # Delete ALL existing flags for these players to prevent duplicates on re-run.
+        # Previously scoped to season_year == analysis_year, but the model sometimes
+        # outputs flags with different season_year values (e.g. 2027), leaving stale
+        # duplicates behind. Deleting by player_id alone ensures a clean slate.
         if player_ids_in_batch:
             await session.execute(
                 sa_delete(PlayerDependency).where(
                     PlayerDependency.player_id.in_(player_ids_in_batch),
-                    PlayerDependency.season_year == analysis_year,
                 )
             )
 

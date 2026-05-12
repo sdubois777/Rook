@@ -57,14 +57,18 @@ def get_current_season() -> int:
 
 def get_analysis_year() -> int:
     """
-    Returns the upcoming season year we're building the draft bible for.
-    This is always one year ahead of the current season.
+    Returns the season year we're building the draft bible for.
+
+    This equals get_current_season() — the new league year begins in March,
+    and get_current_season() already advances to the new year at that point.
+    From March onward we're preparing for THIS season's draft.
 
     Examples:
-      - Called in July 2026  → 2027  (preparing for 2027 draft)
-      - Called in March 2026 → 2026  (preparing for 2026 draft)
+      - Called in May 2026    → 2026  (preparing for 2026 draft)
+      - Called in August 2026 → 2026  (draft prep / training camp)
+      - Called in January 2026 → 2025 (still in 2025 season)
     """
-    return get_current_season() + 1
+    return get_current_season()
 
 
 def get_analysis_seasons(lookback: int = 3) -> list[int]:

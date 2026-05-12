@@ -56,8 +56,27 @@ def test_current_season_december():
 # get_analysis_year()
 # ---------------------------------------------------------------------------
 
-def test_analysis_year_is_current_plus_one():
-    assert get_analysis_year() == get_current_season() + 1
+def test_analysis_year_equals_current_season():
+    """analysis_year == current_season (we draft FOR the current season)."""
+    assert get_analysis_year() == get_current_season()
+
+
+def test_analysis_year_may_2026():
+    """In May 2026, analysis_year should be 2026 (not 2027)."""
+    with freeze_time("2026-05-11"):
+        assert get_analysis_year() == 2026
+
+
+def test_analysis_year_january_2026():
+    """In January 2026, still in 2025 season, analysis_year = 2025."""
+    with freeze_time("2026-01-15"):
+        assert get_analysis_year() == 2025
+
+
+def test_analysis_year_august_2026():
+    """In August 2026, analysis_year = 2026 (draft month)."""
+    with freeze_time("2026-08-15"):
+        assert get_analysis_year() == 2026
 
 
 # ---------------------------------------------------------------------------

@@ -97,6 +97,18 @@ def show_dry_run():
 # Download / cache
 # ---------------------------------------------------------------------------
 
+def _try_fetch(label: str, fn, *args) -> bool:
+    """Attempt a data fetch; return True on success, False on 404/error."""
+    print(f"    {label:14s}...", end="", flush=True)
+    try:
+        fn(*args)
+        print(" done")
+        return True
+    except Exception:
+        print(" skipped (not available)")
+        return False
+
+
 def download_all():
     print("=" * 60)
     print("Downloading NFL data (first run may take several minutes)")
@@ -105,44 +117,22 @@ def download_all():
     for season in SEASONS:
         print(f"\n  [{season}]")
 
-        print("    weekly stats ...", end="", flush=True)
-        nfl_data.fetch_weekly_stats(season)
-        print(" done")
-
-        print("    seasonal data ...", end="", flush=True)
-        nfl_data.fetch_seasonal_data(season)
-        print(" done")
-
-        print("    snap counts   ...", end="", flush=True)
-        nfl_data.fetch_snap_counts(season)
-        print(" done")
-
-        print("    schedules     ...", end="", flush=True)
-        nfl_data.fetch_schedules(season)
-        print(" done")
-
-        print("    target share  ...", end="", flush=True)
-        nfl_data.compute_target_share(season)
-        print(" done")
-
-        print("    snap pct      ...", end="", flush=True)
-        nfl_data.compute_snap_pct(season)
-        print(" done")
-
-        print("    injuries      ...", end="", flush=True)
-        nfl_data.fetch_injuries(season)
-        print(" done")
+        _try_fetch("weekly stats", nfl_data.fetch_weekly_stats, season)
+        _try_fetch("seasonal data", nfl_data.fetch_seasonal_data, season)
+        _try_fetch("snap counts", nfl_data.fetch_snap_counts, season)
+        _try_fetch("schedules", nfl_data.fetch_schedules, season)
+        _try_fetch("target share", nfl_data.compute_target_share, season)
+        _try_fetch("snap pct", nfl_data.compute_snap_pct, season)
+        _try_fetch("injuries", nfl_data.fetch_injuries, season)
 
     print("\n  [roster / player info]")
 
-    print("    players       ...", end="", flush=True)
-    nfl_data.fetch_players()
-    print(" done")
+    _try_fetch("players", nfl_data.fetch_players)
 
     current = get_current_season()
-    print(f"    rosters {current}  ...", end="", flush=True)
-    nfl_data.fetch_rosters(current)
-    print(" done")
+    if not _try_fetch(f"rosters {current}", nfl_data.fetch_rosters, current):
+        fallback = current - 1
+        _try_fetch(f"rosters {fallback}", nfl_data.fetch_rosters, fallback)
 
     print("\nAll data cached to data/cache/")
 

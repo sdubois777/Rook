@@ -218,15 +218,19 @@ role_classification MUST match the player's actual position — never cross-assi
     "workhorse" — 65%+ of team rushing attempts, OR 20+ carries/game avg, OR clear lead back
       with backup used only to spell. Most NFL teams have a lead back — this is the most common role.
       Examples: Derrick Henry, Saquon Barkley, Jonathan Taylor, Bijan Robinson.
+    "featured_back" — 50-65% of carries AND catches passes (target share 8%+). Three-down role
+      but not dominant enough for workhorse. Gets the bulk of work but shares with a change-of-pace back.
     "early_down_thumper" — 50-65% of carries but leaves field on 3rd down. Heavy run-game role,
-      minimal receiving (target share under 10%).
+      minimal receiving (target share under 8%).
     "pass_catching_specialist" — High snap share but under 40% of carries. Primary role is
       receiving out of backfield. Target share 12%+. Examples: Alvin Kamara, Austin Ekeler.
     "committee_back" — ONLY when no single back has 50%+ of carries. True split: two backs
       with 35-50% each, neither is clearly "the guy". Examples: true 50/50 timeshares.
       DO NOT use just because a backup exists — every team has a backup.
+    "backup" — Under 35% of carries, no special receiving role. Handcuff or depth piece.
+      Only gets meaningful work if the starter is injured.
   CRITICAL: If uncertain between workhorse and committee_back, choose workhorse.
-  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse or early_down_thumper.
+  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse, featured_back, or early_down_thumper.
 
 Rules:
 - anomalous_seasons_excluded: include year integers where data shows games < 10 OR backup_qb_season=true
@@ -301,15 +305,19 @@ role_classification MUST match the player's actual position — never cross-assi
     "workhorse" — 65%+ of team rushing attempts, OR 20+ carries/game avg, OR clear lead back
       with backup used only to spell. Most NFL teams have a lead back — this is the most common role.
       Examples: Derrick Henry, Saquon Barkley, Jonathan Taylor, Bijan Robinson.
+    "featured_back" — 50-65% of carries AND catches passes (target share 8%+). Three-down role
+      but not dominant enough for workhorse. Gets the bulk of work but shares with a change-of-pace back.
     "early_down_thumper" — 50-65% of carries but leaves field on 3rd down. Heavy run-game role,
-      minimal receiving (target share under 10%).
+      minimal receiving (target share under 8%).
     "pass_catching_specialist" — High snap share but under 40% of carries. Primary role is
       receiving out of backfield. Target share 12%+. Examples: Alvin Kamara, Austin Ekeler.
     "committee_back" — ONLY when no single back has 50%+ of carries. True split: two backs
       with 35-50% each, neither is clearly "the guy". Examples: true 50/50 timeshares.
       DO NOT use just because a backup exists — every team has a backup.
+    "backup" — Under 35% of carries, no special receiving role. Handcuff or depth piece.
+      Only gets meaningful work if the starter is injured.
   CRITICAL: If uncertain between workhorse and committee_back, choose workhorse.
-  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse or early_down_thumper.
+  True committees are uncommon. Does one back get 55%+ of carries? Yes → workhorse, featured_back, or early_down_thumper.
 
 Rules:
 - projected_ppr_points is a season TOTAL for 17 games.

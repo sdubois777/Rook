@@ -2482,6 +2482,8 @@ def test_haiku_prompt_contains_rb_role_definitions():
     assert "65%+" in HAIKU_SYSTEM_PROMPT
     assert "committee_back" in HAIKU_SYSTEM_PROMPT
     assert "workhorse" in HAIKU_SYSTEM_PROMPT
+    assert "featured_back" in HAIKU_SYSTEM_PROMPT
+    assert '"backup"' in HAIKU_SYSTEM_PROMPT
     assert "DO NOT use just because a backup exists" in HAIKU_SYSTEM_PROMPT
 
 
@@ -2492,6 +2494,8 @@ def test_sonnet_prompt_contains_rb_role_definitions():
     assert "65%+" in SONNET_SYSTEM_PROMPT
     assert "committee_back" in SONNET_SYSTEM_PROMPT
     assert "workhorse" in SONNET_SYSTEM_PROMPT
+    assert "featured_back" in SONNET_SYSTEM_PROMPT
+    assert '"backup"' in SONNET_SYSTEM_PROMPT
     assert "DO NOT use just because a backup exists" in SONNET_SYSTEM_PROMPT
 
 

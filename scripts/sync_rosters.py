@@ -36,7 +36,13 @@ async def sync_rosters(dry_run: bool = False) -> int:
     season = get_current_season()
     print(f"Loading rosters for {season} from nfl_data_py...")
 
-    rosters = fetch_rosters(season)
+    try:
+        rosters = fetch_rosters(season)
+    except Exception:
+        # Current season rosters may not be published yet (nflverse lag)
+        fallback = season - 1
+        print(f"  {season} rosters not available, falling back to {fallback}...")
+        rosters = fetch_rosters(fallback)
 
     # Detect column names (nfl_data_py varies by version)
     name_col = next((c for c in ("full_name", "player_name") if c in rosters.columns), None)

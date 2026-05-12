@@ -333,8 +333,10 @@ class ScheduleAgent(BaseAgent):
                 logger.warning("Could not load rosters %d: %s", current_season, exc)
 
     def _load_schedule(self, analysis_year: int, current_season: int) -> None:
-        """Load schedule for analysis_year; fall back to current_season if unavailable."""
-        for yr in (analysis_year, current_season):
+        """Load schedule for analysis_year; fall back through recent seasons."""
+        # Try analysis_year first, then current, then last completed season
+        candidates = list(dict.fromkeys([analysis_year, current_season, current_season - 1]))
+        for yr in candidates:
             try:
                 df = nfl_data.fetch_schedules(yr)
                 reg = df[df["game_type"] == "REG"] if "game_type" in df.columns else df
@@ -351,13 +353,13 @@ class ScheduleAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Could not load schedule %d: %s", yr, exc)
 
-        logger.error("No schedule data available for %d or %d", analysis_year, current_season)
+        logger.error("No schedule data available for %s", candidates)
         self._data_cache["schedule_df"] = pd.DataFrame()
 
     def _load_def_grades(self, current_season: int) -> None:
         """Compute defensive grades from the most recently completed season's weekly data.
-        Falls back to current_season - 1 if current_season data is unavailable."""
-        for yr in (current_season, current_season - 1):
+        Falls back through recent seasons until weekly data is found."""
+        for yr in (current_season, current_season - 1, current_season - 2):
             try:
                 weekly = nfl_data.fetch_weekly_stats(yr)
                 grades = compute_def_grades(weekly)
@@ -373,7 +375,7 @@ class ScheduleAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Could not compute defensive grades from %d: %s", yr, exc)
 
-        logger.error("No weekly data available for %d or %d", current_season, current_season - 1)
+        logger.error("No weekly data available for %d through %d", current_season, current_season - 2)
         self._data_cache["def_grades"] = pd.DataFrame()
 
     # ------------------------------------------------------------------

@@ -552,6 +552,53 @@ async def test_bulk_db_write_single_transaction_per_team():
         session.commit.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_write_flags_deletes_by_player_id_only():
+    """
+    _write_flags() must delete ALL existing flags for a player (not scoped
+    to season_year), to prevent duplicates when the model outputs flags
+    with unexpected season_year values.
+    """
+    from backend.agents.roster_changes import _write_flags
+    import uuid
+
+    pid1 = uuid.uuid4()
+    pid2 = uuid.uuid4()
+
+    flags = [
+        _make_flag("WR A", "LAC", "WR", "displaced", "WR B", "LAC",
+                   "active_and_healthy", "negative", -20, season_year=2026),
+    ]
+
+    # id_map is keyed by (name, team) tuples → (player_id, team) tuples
+    mock_player_map = {
+        ("WR A", "LAC"): (str(pid1), "LAC"),
+        ("WR B", "LAC"): (str(pid2), "LAC"),
+    }
+
+    with patch("backend.agents.roster_changes._bulk_resolve_player_ids",
+               new=AsyncMock(return_value=mock_player_map)):
+        with patch("backend.agents.roster_changes.AsyncSessionLocal") as mock_factory:
+            session = AsyncMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            session.execute = AsyncMock()
+            session.add = MagicMock()
+            session.commit = AsyncMock()
+            mock_factory.return_value = session
+
+            await _write_flags(flags)
+
+            # The first execute call is the DELETE statement
+            assert session.execute.call_count >= 1
+            delete_call = session.execute.call_args_list[0]
+            delete_stmt = delete_call[0][0]
+            # Compile without literal_binds (UUID can't render as literal)
+            compiled = str(delete_stmt.compile())
+            assert "player_id" in compiled.lower()
+            assert "season_year" not in compiled.lower()
+
+
 # ===========================================================================
 # Rookie / draft pick tests (stage-04 spec — 12 required cases)
 # ===========================================================================
@@ -905,6 +952,112 @@ async def test_sync_player_teams_sets_updated_at():
 
     assert mock_player.updated_at is not None
     assert mock_player.team_abbr == "NYJ"
+
+
+# ===========================================================================
+# Veteran guard — _write_rookie_evaluation must NOT mark veterans as rookies
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_write_rookie_eval_skips_veteran():
+    """_write_rookie_evaluation must NOT set is_rookie=True when nfl_seasons_played >= 1."""
+    agent = _make_agent()
+
+    mock_player = MagicMock()
+    mock_player.name = "Amon-Ra St. Brown"
+    mock_player.nfl_seasons_played = 4  # 4-year veteran
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fields = {
+        "player_name": "Amon-Ra St. Brown",
+        "college_profile_grade": "elite",
+        "draft_capital_signal": "high",
+    }
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        await agent._write_rookie_evaluation(fields)
+
+    # Veteran guard should prevent is_rookie from being set
+    assert not hasattr(mock_player, "is_rookie") or mock_player.is_rookie is not True
+    mock_session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_write_rookie_eval_allows_true_rookie():
+    """_write_rookie_evaluation SHOULD set is_rookie=True for players with 0 or None seasons."""
+    agent = _make_agent()
+
+    mock_player = MagicMock()
+    mock_player.name = "Actual Rookie"
+    mock_player.nfl_seasons_played = None  # not in roster data = true rookie
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_player
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fields = {
+        "player_name": "Actual Rookie",
+        "college_profile_grade": "strong",
+        "draft_capital_signal": "high",
+        "draft_capital_value": 85.0,
+    }
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        await agent._write_rookie_evaluation(fields)
+
+    assert mock_player.is_rookie is True
+    mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_write_rookie_eval_loose_match_blocked_for_veteran():
+    """Loose last-name fallback should NOT mark veteran as rookie."""
+    agent = _make_agent()
+
+    # Simulate: exact match fails, loose match finds veteran "Allen Lazard"
+    mock_player_veteran = MagicMock()
+    mock_player_veteran.name = "Allen Lazard"
+    mock_player_veteran.nfl_seasons_played = 8
+
+    mock_exact_result = MagicMock()
+    mock_exact_result.scalar_one_or_none.return_value = None  # exact match fails
+
+    mock_fuzzy_scalars = MagicMock()
+    mock_fuzzy_scalars.all.return_value = [mock_player_veteran]
+    mock_fuzzy_result = MagicMock()
+    mock_fuzzy_result.scalars.return_value = mock_fuzzy_scalars
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=[mock_exact_result, mock_fuzzy_result])
+    mock_session.commit = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fields = {"player_name": "Josh Allen-Lazard"}  # hypothetical draft pick
+
+    with patch("backend.agents.roster_changes.AsyncSessionLocal", return_value=mock_ctx):
+        await agent._write_rookie_evaluation(fields)
+
+    # Veteran guard should block
+    assert not hasattr(mock_player_veteran, "is_rookie") or mock_player_veteran.is_rookie is not True
+    mock_session.commit.assert_not_called()
 
 
 @pytest.mark.asyncio

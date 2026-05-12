@@ -137,10 +137,19 @@ def fetch_players() -> pd.DataFrame:
 
 
 def fetch_rosters(season: int) -> pd.DataFrame:
-    return _load_or_fetch(
-        f"rosters_{season}",
-        lambda: nfl.import_weekly_rosters([season]),
-    )
+    try:
+        return _load_or_fetch(
+            f"rosters_{season}",
+            lambda: nfl.import_weekly_rosters([season]),
+        )
+    except Exception:
+        # Current season rosters may not be published yet — fall back
+        fallback = season - 1
+        logger.warning("Rosters %d not available, falling back to %d", season, fallback)
+        return _load_or_fetch(
+            f"rosters_{fallback}",
+            lambda: nfl.import_weekly_rosters([fallback]),
+        )
 
 
 def fetch_seasonal_rosters(season: int) -> pd.DataFrame:
@@ -166,17 +175,88 @@ def fetch_ngs_data(stat_type: str, season: int) -> pd.DataFrame:
     )
 
 
+def _compute_target_share_from_pbp(season: int) -> pd.DataFrame:
+    """
+    Fallback: compute target share stats from PBP data when weekly stats
+    are unavailable (e.g. 2025 nflverse hasn't published player_stats yet).
+
+    Uses compute_seasonal_stats_from_pbp() which is verified accurate,
+    then transforms to match the compute_target_share() output schema.
+    """
+    logger.info("Computing target share from PBP fallback for %d", season)
+    pbp = compute_seasonal_stats_from_pbp(season)
+
+    # Filter to skill positions
+    pbp = pbp[pbp["position"].isin(SKILL_POSITIONS)].copy()
+
+    if pbp.empty:
+        return pd.DataFrame()
+
+    # Compute team-level targets for target share calculation
+    team_targets = (
+        pbp.groupby("recent_team")["targets"]
+        .sum()
+        .reset_index()
+        .rename(columns={"targets": "team_targets"})
+    )
+    pbp = pbp.merge(team_targets, on="recent_team", how="left")
+    pbp["target_share"] = pbp["targets"] / pbp["team_targets"].replace(0, pd.NA)
+
+    # Rename columns to match compute_target_share() output schema
+    agg = pbp.rename(columns={
+        "player_display_name": "player_name",
+        "targets": "total_targets",
+        "receptions": "total_receptions",
+        "receiving_yards": "total_rec_yards",
+        "receiving_tds": "total_rec_tds",
+        "rush_attempts": "total_carries",
+        "rushing_yards": "total_rush_yards",
+        "rushing_tds": "total_rush_tds",
+        "fantasy_points_ppr": "total_fantasy_points",
+        "target_share": "avg_target_share",
+    })
+
+    # Air yards not available in PBP fallback — set to 0
+    agg["total_air_yards"] = 0.0
+    agg["avg_air_yards_share"] = 0.0
+
+    # PPR per game
+    agg["ppr_per_game"] = agg["total_fantasy_points"] / agg["games"].replace(0, pd.NA)
+
+    # Keep only the columns that compute_target_share() returns
+    keep = [
+        "player_id", "player_name", "recent_team", "position",
+        "games", "total_targets", "total_receptions", "total_rec_yards",
+        "total_rec_tds", "avg_target_share", "total_air_yards",
+        "avg_air_yards_share", "total_carries", "total_rush_yards",
+        "total_rush_tds", "total_fantasy_points", "season", "ppr_per_game",
+    ]
+    return agg[[c for c in keep if c in agg.columns]]
+
+
 def compute_target_share(season: int) -> pd.DataFrame:
     """
     Derive per-player target share and air yards share from weekly data.
     Returns one row per player with season-level averages.
+
+    Falls back to PBP-derived stats when weekly data is unavailable
+    (e.g. 2025 where nflverse hasn't published player_stats yet).
     """
     cache_name = f"target_share_{season}"
     path = _cache_path(cache_name)
     if path.exists():
         return pd.read_parquet(path)
 
-    weekly = fetch_weekly_stats(season)
+    try:
+        weekly = fetch_weekly_stats(season)
+    except Exception:
+        logger.warning(
+            "Weekly stats unavailable for %d — falling back to PBP", season,
+        )
+        agg = _compute_target_share_from_pbp(season)
+        if not agg.empty:
+            agg.to_parquet(path, index=False)
+        return agg
 
     # Skill positions only
     weekly = weekly[weekly["position"].isin(SKILL_POSITIONS)].copy()
