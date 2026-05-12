@@ -44,7 +44,7 @@ def load_actual_season(season: int) -> pd.DataFrame:
 async def run_backtest(actual_season: int | None = None) -> pd.DataFrame:
     """Run the full backtest and return player-level results DataFrame."""
     if actual_season is None:
-        actual_season = get_current_season()
+        actual_season = get_current_season() - 1
 
     # ── Load actual results ──────────────────────────────
     print(f"Loading {actual_season} actual season data...")
@@ -55,15 +55,18 @@ async def run_backtest(actual_season: int | None = None) -> pd.DataFrame:
     # Build lookup: gsis_id -> actual stats
     actual_by_id: dict[str, dict] = {}
     actual_by_name: dict[str, dict] = {}
+    # PBP-computed stats use "player_name"; nflverse parquet uses "player_display_name"
+    name_col = "player_display_name" if "player_display_name" in actuals.columns else "player_name"
+
     for _, row in actuals.iterrows():
         entry = {
             "actual_ppr": float(row["fantasy_points_ppr"] or 0),
             "actual_games": int(row["games"] or 0),
-            "actual_name": row["player_display_name"],
+            "actual_name": row[name_col],
         }
         actual_by_id[str(row["player_id"])] = entry
         # Also index by lowercase display name for fallback
-        actual_by_name[str(row["player_display_name"]).lower()] = entry
+        actual_by_name[str(row[name_col]).lower()] = entry
 
     # ── Load system data from DB ─────────────────────────
     async with AsyncSessionLocal() as db:
