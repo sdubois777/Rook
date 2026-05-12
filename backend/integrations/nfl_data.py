@@ -588,7 +588,16 @@ def compute_seasonal_stats_from_pbp(
 
     logger.info("Computing %d stats from PBP data...", season)
 
-    pbp = nfl.import_pbp_data([season])
+    try:
+        pbp = nfl.import_pbp_data([season])
+    except Exception as exc:
+        logger.warning("PBP data unavailable for %d: %s", season, exc)
+        return pd.DataFrame()
+
+    if pbp.empty or "season_type" not in pbp.columns:
+        logger.warning("PBP data for %d is empty or missing season_type", season)
+        return pd.DataFrame()
+
     pbp = pbp[pbp["season_type"] == "REG"].copy()
 
     SCORING_MAP = {"ppr": 1.0, "half_ppr": 0.5, "standard": 0.0}

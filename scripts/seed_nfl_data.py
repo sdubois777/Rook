@@ -244,7 +244,20 @@ def verify_data():
     print(f"Verification — {current} target share for sample players")
     print("=" * 60)
 
-    ts = nfl_data.compute_target_share(current)
+    try:
+        ts = nfl_data.compute_target_share(current)
+        if ts.empty:
+            raise ValueError("empty result")
+    except Exception as e:
+        print(f"Data not available for {current}: {e}")
+        # Fall back to previous season for verification
+        current = current - 1
+        print(f"Falling back to {current} for verification")
+        ts = nfl_data.compute_target_share(current)
+
+    if ts.empty:
+        print("No target share data available for verification.")
+        return
 
     print(f"\n{'Player':<28} {'Team':<5} {'Tgts':>5} {'Tgt%':>7} {'AY%':>7} {'PPR/G':>7}")
     print("-" * 60)
@@ -268,7 +281,11 @@ def verify_data():
 
     # Snap count check
     print(f"\n--- Snap % sample ({current}) ---")
-    snaps = nfl_data.compute_snap_pct(current)
+    try:
+        snaps = nfl_data.compute_snap_pct(current)
+    except Exception:
+        print(f"  Snap data unavailable for {current}")
+        return
     snap_check = ["Hill", "Lamb", "Jefferson", "Barkley"]
     for last in snap_check:
         mask = snaps["player"].str.contains(last, case=False, na=False)
