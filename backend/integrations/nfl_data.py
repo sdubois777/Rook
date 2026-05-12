@@ -790,6 +790,9 @@ def _compute_oline_from_pbp(season: int) -> pd.DataFrame:
                 "pass_attempt", "sack",
             ],
         )
+        if pbp.empty or "season_type" not in pbp.columns:
+            logger.warning("PBP oline: no data for %d", season)
+            return pd.DataFrame()
         pbp = pbp[pbp["season_type"] == "REG"]
 
         team_stats = pbp.groupby("posteam").agg(
