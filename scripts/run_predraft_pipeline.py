@@ -205,7 +205,7 @@ def run_seed() -> None:
 # Agent dispatch
 # ---------------------------------------------------------------------------
 
-async def run_agent(name: str, teams: list[str] | None, force: bool = False) -> None:
+async def run_agent(name: str, teams: list[str] | None, force: bool = False, warehouse=None) -> None:
     spec = AGENT_SPECS[name]
     if spec["status"] == "not_built":
         print(f"[{name}] SKIPPED — not built yet.")
@@ -216,50 +216,48 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False) -> 
 
     if name == "team_systems":
         from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS
-        agent = TeamSystemsAgent(dry_run=False)
+        agent = TeamSystemsAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "roster_changes":
         from backend.agents.roster_changes import RosterChangesAgent
-        from backend.agents.team_systems import NFL_TEAMS
-        agent = RosterChangesAgent(dry_run=False)
+        agent = RosterChangesAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()  # pre-loads OTC transactions before team loop
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "player_profiles":
         from backend.agents.player_profiles import PlayerProfilesAgent
-        from backend.agents.team_systems import NFL_TEAMS
-        agent = PlayerProfilesAgent(dry_run=False)
+        agent = PlayerProfilesAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team, force=force)
         else:
-            await agent.run_all_teams(force=force)
+            await agent.run_all_teams(warehouse=warehouse, force=force)
 
     elif name == "injury_risk":
         from backend.agents.injury_risk import InjuryRiskAgent
-        agent = InjuryRiskAgent(dry_run=False)
+        agent = InjuryRiskAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "schedule":
         from backend.agents.schedule import ScheduleAgent
-        agent = ScheduleAgent(dry_run=False)
+        agent = ScheduleAgent(dry_run=False, warehouse=warehouse)
         if teams:
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams()
+            await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "beat_reporter":
         from backend.agents.beat_reporter import BeatReporterAgent
@@ -345,9 +343,18 @@ async def main() -> None:
     if not args.skip_seed:
         run_seed()
 
+    # Build warehouse once — all agents read from this shared data store
+    from backend.integrations.nfl_data import NflDataWarehouse
+    print("[warehouse] Building NflDataWarehouse (one-time data load)...")
+    t0 = time.monotonic()
+    warehouse = NflDataWarehouse.build()
+    summary = warehouse.summary()
+    print(f"[warehouse] Built in {time.monotonic() - t0:.1f}s — {summary}")
+    print()
+
     teams = [team_filter] if team_filter else None
     for name in agents:
-        await run_agent(name, teams, force=args.force)
+        await run_agent(name, teams, force=args.force, warehouse=warehouse)
 
     print("=== Pipeline complete ===\n")
 
