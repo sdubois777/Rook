@@ -193,7 +193,21 @@ class TeamSystemsAgent(BaseAgent):
                 & (roster["status"] == "ACT")
             ]
             if not team_qbs.empty:
-                starter_name = team_qbs.iloc[0]["player_name"]
+                if len(team_qbs) == 1:
+                    starter_name = team_qbs.iloc[0]["player_name"]
+                else:
+                    # Multiple active QBs — cross-reference with stats to find starter
+                    qb_stats_df = self._warehouse.get_qb_stats(season)
+                    if not qb_stats_df.empty:
+                        team_col = "recent_team" if "recent_team" in qb_stats_df.columns else "team"
+                        name_col_qs = "player_name" if "player_name" in qb_stats_df.columns else "player_display_name"
+                        team_qb_stats = qb_stats_df[qb_stats_df[team_col] == team]
+                        if not team_qb_stats.empty:
+                            starter_name = team_qb_stats.sort_values(
+                                "passing_yards", ascending=False, na_position="last"
+                            ).iloc[0][name_col_qs]
+                    if starter_name is None:
+                        starter_name = team_qbs.iloc[0]["player_name"]
 
         # --- Source 2: QB stats from warehouse ---
         qb_stats = self._warehouse.get_qb_stats(season)
@@ -246,9 +260,15 @@ class TeamSystemsAgent(BaseAgent):
             row = team_qb_data.sort_values("passing_yards", ascending=False).iloc[0]
             starter_name = row[name_col]
 
-        total_att = int(row.get("attempts", 0) or 0)
-        completions = int(row.get("completions", 0) or 0)
-        games = int(row.get("games", 0) or 0)
+        def _safe_int(val):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return 0
+
+        total_att = _safe_int(row.get("attempts", 0))
+        completions = _safe_int(row.get("completions", 0))
+        games = _safe_int(row.get("games", 0))
 
         return {
             "team": team,
@@ -258,11 +278,11 @@ class TeamSystemsAgent(BaseAgent):
             "games_played": games,
             "total_attempts": total_att,
             "completion_pct": round(completions / total_att, 3) if total_att > 0 else None,
-            "passing_yards": int(row.get("passing_yards", 0) or 0),
-            "passing_tds": int(row.get("passing_tds", 0) or 0),
-            "interceptions": int(row.get("interceptions", 0) or 0),
-            "rushing_yards": int(row.get("rushing_yards", 0) or 0),
-            "rushing_tds": int(row.get("rushing_tds", 0) or 0),
+            "passing_yards": _safe_int(row.get("passing_yards", 0)),
+            "passing_tds": _safe_int(row.get("passing_tds", 0)),
+            "interceptions": _safe_int(row.get("interceptions", 0)),
+            "rushing_yards": _safe_int(row.get("rushing_yards", 0)),
+            "rushing_tds": _safe_int(row.get("rushing_tds", 0)),
             "note": "Supplement with your knowledge of this QB's performance under pressure and CPOE.",
         }
 

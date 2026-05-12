@@ -398,14 +398,19 @@ class RosterChangesAgent(BaseAgent):
                         weekly["recent_team"].isin(qb_teams)
                     ]
                     if not shared.empty:
+                        # Compute target share from target_share data
+                        ts = self._warehouse.get_target_share(season)
+                        rec_ts = 0.0
+                        if not ts.empty and "avg_target_share" in ts.columns:
+                            rec_rows = ts[ts["player_name"].str.contains(rec_last, case=False, na=False)]
+                            if not rec_rows.empty:
+                                rec_ts = float(rec_rows["avg_target_share"].iloc[0])
                         histories.append({
                             "qb": qb["name"],
                             "receiver": rec["name"],
                             "season": season,
                             "games_together": int(len(shared)),
-                            "receiver_target_share": round(
-                                float(shared["target_share"].mean()), 3
-                            ),
+                            "receiver_target_share": round(rec_ts, 3),
                         })
 
         return histories

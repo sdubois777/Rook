@@ -208,3 +208,37 @@ def test_oline_pbp_fallback_returns_dataframe():
     assert not result.empty
     assert "sack_rate" in result.columns
     assert "team" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# Test: no columns= kwarg in import_pbp_data calls
+# ---------------------------------------------------------------------------
+
+def test_no_columns_kwarg_in_pbp_calls():
+    """
+    import_pbp_data() must never be called with a columns= argument —
+    triggers game_id KeyError in nfl_data_py for 2025 data.
+    Load full PBP, slice afterward.
+    """
+    import pathlib
+
+    source = pathlib.Path("backend/integrations/nfl_data.py").read_text()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.attr if isinstance(func, ast.Attribute)
+            else func.id if isinstance(func, ast.Name)
+            else ""
+        )
+        if name != "import_pbp_data":
+            continue
+        for kw in node.keywords:
+            assert kw.arg != "columns", (
+                f"import_pbp_data() called with columns= at line {node.lineno} "
+                "— this triggers KeyError in nfl_data_py for 2025. "
+                "Load full PBP and slice afterward."
+            )

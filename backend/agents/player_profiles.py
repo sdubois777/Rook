@@ -44,7 +44,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v2"
+PLAYER_PROFILES_PROMPT_VERSION = "v3"
 
 
 # ---------------------------------------------------------------------------
@@ -400,11 +400,21 @@ class PlayerProfilesAgent(BaseAgent):
         ]
         if qbs.empty:
             return False
-        qb_games = (
-            qbs.groupby("player_name")["week"]
-            .count()
-            .sort_values(ascending=False)
-        )
+        # seasonal_stats is already aggregated — "games" column has per-player counts
+        name_col = "player_name" if "player_name" in qbs.columns else "player_display_name"
+        if "games" in qbs.columns:
+            qb_games = (
+                qbs.groupby(name_col)["games"]
+                .sum()
+                .sort_values(ascending=False)
+            )
+        else:
+            # fallback for weekly-level data
+            qb_games = (
+                qbs.groupby(name_col)[qbs.columns[0]]
+                .count()
+                .sort_values(ascending=False)
+            )
         return len(qb_games) >= 2 and int(qb_games.iloc[1]) >= 4
 
     def _get_player_season_stats(

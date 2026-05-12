@@ -617,11 +617,17 @@ def get_seasonal_stats(season: int, scoring: str = "ppr") -> pd.DataFrame:
                 )
                 .reset_index()
             )
-            return seasonal.sort_values("games", ascending=False).drop_duplicates("player_id")
+            seasonal = seasonal.sort_values("games", ascending=False).drop_duplicates("player_id")
+            if "player_display_name" in seasonal.columns:
+                seasonal = seasonal.rename(columns={"player_display_name": "player_name"})
+            return seasonal
         raise ValueError("Empty dataframe from import_weekly_data")
     except Exception as exc:
         logger.info("import_weekly_data(%d) failed: %s — falling back to PBP", season, exc)
-        return compute_seasonal_stats_from_pbp(season, scoring)
+        result = compute_seasonal_stats_from_pbp(season, scoring)
+        if "player_display_name" in result.columns:
+            result = result.rename(columns={"player_display_name": "player_name"})
+        return result
 
 
 # ---------------------------------------------------------------------------
