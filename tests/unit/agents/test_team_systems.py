@@ -51,6 +51,14 @@ class _MockWarehouse:
         return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
     def get_ngs_rushing(self, season):
         return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+    def get_depth_chart(self, season):
+        return self._data.get("depth_charts", {}).get(season, pd.DataFrame())
+    def get_starter(self, team, position, season=None):
+        return self._data.get("starters", {}).get((team, position))
+    def get_player_depth_rank(self, gsis_id, season=None):
+        return self._data.get("depth_ranks", {}).get(gsis_id)
+    def get_team_depth_context(self, team, season=None):
+        return self._data.get("depth_context", {}).get(team, {})
     def summary(self):
         return {}
 
@@ -533,3 +541,32 @@ async def test_qb_mismatch_logged(caplog):
         await agent._get_qb_data("SEA", current)
 
     assert any("QB CHANGE" in msg and "Sam Darnold" in msg and "Geno Smith" in msg for msg in caplog.messages)
+
+
+@pytest.mark.asyncio
+async def test_qb_lookup_uses_depth_chart_first():
+    """Depth chart QB1 should be used before seasonal_rosters when available."""
+    agent = TeamSystemsAgent(dry_run=False)
+    from backend.utils.seasons import get_current_season
+    current = get_current_season()
+
+    # Depth chart says Josh Allen, seasonal roster says Kyle Allen (alphabetic first)
+    seasonal = _mock_seasonal_roster([
+        {"team": "BUF", "position": "QB", "status": "ACT", "player_name": "Kyle Allen"},
+        {"team": "BUF", "position": "QB", "status": "ACT", "player_name": "Josh Allen"},
+    ])
+    qb_stats = _mock_weekly_qb_rows([
+        {"player_name": "Josh Allen", "recent_team": "BUF",
+         "attempts": 550, "completions": 370, "passing_yards": 4200},
+        {"player_name": "Kyle Allen", "recent_team": "BUF",
+         "attempts": 20, "completions": 10, "passing_yards": 150},
+    ])
+
+    agent._warehouse = _make_warehouse(
+        seasonal_rosters=seasonal,
+        qb_stats={current: qb_stats},
+        starters={("BUF", "QB"): {"name": "Josh Allen", "gsis_id": "00-0034857", "depth_rank": 1}},
+    )
+
+    result = await agent._get_qb_data("BUF", current)
+    assert "Josh Allen" in result.get("starter_name", "")

@@ -71,6 +71,18 @@ class _MockWarehouse:
     def get_ngs_rushing(self, season):
         return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
 
+    def get_depth_chart(self, season):
+        return self._data.get("depth_charts", {}).get(season, pd.DataFrame())
+
+    def get_starter(self, team, position, season=None):
+        return self._data.get("starters", {}).get((team, position))
+
+    def get_player_depth_rank(self, gsis_id, season=None):
+        return self._data.get("depth_ranks", {}).get(gsis_id)
+
+    def get_team_depth_context(self, team, season=None):
+        return self._data.get("depth_context", {}).get(team, {})
+
     def summary(self):
         return {}
 
@@ -1655,3 +1667,95 @@ def test_non_rb_committee_not_affected_by_downgrade():
     result = downgrade_specialist_committee_flags(flags, backfield)
     # WR committee should NOT be touched by this function (enforce_flag_mutual_exclusivity handles it)
     assert result[0]["flag_type"] == "committee"
+
+
+# ---------------------------------------------------------------------------
+# Depth chart rank filtering in _handle_arrivals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_displaced_skips_deep_depth_incumbents():
+    """Rank 3+ incumbents should NOT get DISPLACED flags (depth chart noise)."""
+    from backend.agents.roster_changes import RosterChangesAgent
+    from backend.utils.seasons import get_current_season
+
+    current = get_current_season()
+    prev = current - 1
+
+    agent = RosterChangesAgent(dry_run=True)
+
+    # Arrival: big-name WR with 120 targets
+    # Incumbents: WR1 (rank 1), WR3 (rank 3)
+    prev_rosters = pd.DataFrame([
+        {"full_name": "Big Arrival", "team": "NYG", "position": "WR", "player_id": "00-0099901"},
+        {"full_name": "Incumbent WR1", "team": "LAC", "position": "WR", "player_id": "00-0099902"},
+        {"full_name": "Deep Bench WR", "team": "LAC", "position": "WR", "player_id": "00-0099903"},
+    ])
+    target_share = pd.DataFrame([
+        {"player_id": "00-0099901", "player_name": "B.Arrival", "recent_team": "NYG",
+         "position": "WR", "total_targets": 120, "total_carries": 0, "games": 17},
+    ])
+
+    otc_roster = [
+        {"name": "Big Arrival", "position": "WR"},
+        {"name": "Incumbent WR1", "position": "WR"},
+        {"name": "Deep Bench WR", "position": "WR"},
+    ]
+
+    agent._warehouse = _make_warehouse(
+        prev_rosters=prev_rosters,
+        target_share={prev: target_share},
+        depth_ranks={
+            "00-0099902": 1,   # WR1
+            "00-0099903": 3,   # WR3 — should be skipped
+        },
+    )
+
+    flags = await agent._handle_arrivals("LAC", otc_roster)
+
+    # Should only flag WR1, NOT WR3
+    displaced_names = [f["player_name"] for f in flags if f["flag_type"] == "displaced"]
+    assert "Incumbent WR1" in displaced_names
+    assert "Deep Bench WR" not in displaced_names
+
+
+@pytest.mark.asyncio
+async def test_displaced_confidence_from_depth_rank():
+    """Arrival depth_rank=2 should produce confidence='medium'."""
+    from backend.agents.roster_changes import RosterChangesAgent
+    from backend.utils.seasons import get_current_season
+
+    current = get_current_season()
+    prev = current - 1
+
+    agent = RosterChangesAgent(dry_run=True)
+
+    prev_rosters = pd.DataFrame([
+        {"full_name": "Backup Arrival", "team": "NYJ", "position": "WR", "player_id": "00-0088801"},
+        {"full_name": "Incumbent WR1", "team": "LAC", "position": "WR", "player_id": "00-0088802"},
+    ])
+    target_share = pd.DataFrame([
+        {"player_id": "00-0088801", "player_name": "B.Arrival", "recent_team": "NYJ",
+         "position": "WR", "total_targets": 100, "total_carries": 0, "games": 17},
+    ])
+
+    otc_roster = [
+        {"name": "Backup Arrival", "position": "WR"},
+        {"name": "Incumbent WR1", "position": "WR"},
+    ]
+
+    agent._warehouse = _make_warehouse(
+        prev_rosters=prev_rosters,
+        target_share={prev: target_share},
+        depth_ranks={
+            "00-0088801": 2,   # arrival is backup
+            "00-0088802": 1,   # incumbent is starter
+        },
+    )
+
+    flags = await agent._handle_arrivals("LAC", otc_roster)
+
+    displaced_flags = [f for f in flags if f["flag_type"] == "displaced"]
+    assert len(displaced_flags) == 1
+    assert displaced_flags[0]["confidence"] == "medium"

@@ -556,17 +556,26 @@ async def _bulk_resolve_player_ids(
     session: AsyncSession,
     names_and_teams: list[tuple[str, str]],
 ) -> dict[tuple, str | None]:
-    """Resolve player IDs from (name, team) pairs in a single query."""
+    """Resolve player IDs from (name, team) pairs in a single query.
+
+    Uses team-based fetch for efficiency and builds gsis_id lookup map
+    alongside name-based matching for future gsis_id-first support.
+    """
     results: dict[tuple, str | None] = {}
-    unique_lasts = {n.split()[-1] for n, _ in names_and_teams if n}
-    if not unique_lasts:
+    if not names_and_teams:
         return results
 
-    conditions  = [Player.name.ilike(f"%{last}%") for last in unique_lasts]
+    unique_teams = {t for _, t in names_and_teams if t}
+    if not unique_teams:
+        return results
+
+    # Fetch all players for relevant teams (single efficient query)
+    team_conditions = [Player.team_abbr == t for t in unique_teams]
     all_players = (
-        await session.execute(select(Player).where(or_(*conditions)))
+        await session.execute(select(Player).where(or_(*team_conditions)))
     ).scalars().all()
 
+    # Build lookup maps
     player_map: dict[str, list[Player]] = {}
     for p in all_players:
         last = p.name.split()[-1].lower()

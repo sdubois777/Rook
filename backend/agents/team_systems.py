@@ -174,7 +174,8 @@ class TeamSystemsAgent(BaseAgent):
 
     async def _get_qb_data(self, team: str, season: int) -> dict:
         """
-        Two-source QB identification:
+        Three-source QB identification:
+        0. Depth chart QB1 (most authoritative for current season)
         1. Seasonal roster (current_season) → who IS the QB
         2. QB stats from warehouse → pull that QB's stats
         3. Fallback: most passing yards on this team
@@ -183,10 +184,17 @@ class TeamSystemsAgent(BaseAgent):
 
         current_season = get_current_season()
 
-        # --- Source 1: Identify current QB from seasonal roster ---
-        roster = self._warehouse.seasonal_rosters
+        # --- Source 0: Depth chart QB1 (most authoritative) ---
         starter_name = None
-        if not roster.empty:
+        if hasattr(self._warehouse, "get_starter"):
+            dc_starter = self._warehouse.get_starter(team, "QB")
+            if dc_starter:
+                starter_name = dc_starter["name"]
+                logger.debug("%s: QB1 from depth chart: %s", team, starter_name)
+
+        # --- Source 1: Identify current QB from seasonal roster (fallback) ---
+        roster = self._warehouse.seasonal_rosters
+        if not starter_name and not roster.empty:
             team_qbs = roster[
                 (roster["team"] == team)
                 & (roster["position"] == "QB")

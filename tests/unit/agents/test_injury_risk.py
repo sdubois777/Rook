@@ -105,6 +105,14 @@ class _MockWarehouse:
         return self._data.get("ngs_receiving", {}).get(season, pd.DataFrame())
     def get_ngs_rushing(self, season):
         return self._data.get("ngs_rushing", {}).get(season, pd.DataFrame())
+    def get_depth_chart(self, season):
+        return self._data.get("depth_charts", {}).get(season, pd.DataFrame())
+    def get_starter(self, team, position, season=None):
+        return self._data.get("starters", {}).get((team, position))
+    def get_player_depth_rank(self, gsis_id, season=None):
+        return self._data.get("depth_ranks", {}).get(gsis_id)
+    def get_team_depth_context(self, team, season=None):
+        return self._data.get("depth_context", {}).get(team, {})
     def summary(self):
         return {}
 

@@ -1108,6 +1108,11 @@ class RosterChangesAgent(BaseAgent):
                 team, arrival_name, arrival_pos, tgts, carries,
             )
 
+            # Look up arrival's depth rank from depth chart
+            arrival_depth_rank = None
+            if hasattr(self._warehouse, "get_player_depth_rank") and arrival_pid:
+                arrival_depth_rank = self._warehouse.get_player_depth_rank(arrival_pid)
+
             # Generate displaced + contingent for same-position incumbents
             same_pos = [
                 inc for inc in current_skill
@@ -1119,6 +1124,25 @@ class RosterChangesAgent(BaseAgent):
 
             for inc in same_pos:
                 inc_name = inc.get("name", "")
+
+                # Skip deep depth chart noise: don't flag rank 3+ incumbents
+                if hasattr(self._warehouse, "get_player_depth_rank"):
+                    inc_rows_prev = prev_rosters[prev_rosters[name_col] == inc_name]
+                    if not inc_rows_prev.empty and "player_id" in inc_rows_prev.columns:
+                        inc_gsis = str(inc_rows_prev.iloc[0].get("player_id", "")).strip()
+                        if inc_gsis:
+                            inc_rank = self._warehouse.get_player_depth_rank(inc_gsis)
+                            if inc_rank is not None and inc_rank >= 3:
+                                continue
+
+                # Set confidence based on arrival depth rank
+                if arrival_depth_rank == 1:
+                    confidence = "high"
+                elif arrival_depth_rank == 2:
+                    confidence = "medium"
+                else:
+                    confidence = "high"  # default for significant arrivals without DC data
+
                 flags.append({
                     "player_name": inc_name,
                     "player_team": team,
@@ -1129,7 +1153,7 @@ class RosterChangesAgent(BaseAgent):
                     "trigger_condition": "active_and_healthy",
                     "effect_on_value": "negative",
                     "value_impact_pct": impact_pct,
-                    "confidence": "high",
+                    "confidence": confidence,
                     "reasoning": (
                         f"{arrival_name} arrived on {team} with "
                         f"{tgts} targets / {carries} carries last season "
@@ -1147,7 +1171,7 @@ class RosterChangesAgent(BaseAgent):
                     "trigger_condition": "injured_or_absent",
                     "effect_on_value": "positive",
                     "value_impact_pct": abs(impact_pct) * 0.8,
-                    "confidence": "high",
+                    "confidence": confidence,
                     "reasoning": (
                         f"{inc_name} value recovers if "
                         f"{arrival_name} misses time."
