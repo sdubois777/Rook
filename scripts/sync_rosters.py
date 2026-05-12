@@ -1,8 +1,14 @@
 """
 scripts/sync_rosters.py
 
-Quick-fix roster sync: pull current rosters from nfl_data_py (sourced from OTC)
-and update all player team assignments in the database.
+Sync player roster data from Sleeper API.
+Updates team assignments, IDs (sportradar_id, sleeper_id, gsis_id),
+and inserts new players not yet in the database.
+
+Matching priority (most to least reliable):
+  1. sportradar_id  (100% coverage in Sleeper)
+  2. gsis_id        (29% coverage)
+  3. full_name + position (fallback)
 
 Usage:
     uv run python scripts/sync_rosters.py
@@ -12,91 +18,137 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
+
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+logger = logging.getLogger(__name__)
 
-async def sync_rosters(dry_run: bool = False) -> int:
+
+async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
     """
-    Load current rosters from nfl_data_py and update player team_abbr
-    for any mismatches found in the database.
-    Returns count of players updated.
+    Sync players table from Sleeper API.
+
+    Updates: team_abbr, sleeper_id, sportradar_id, gsis_id, age, years_exp
+    Inserts: new skill-position players not yet in DB
+
+    Returns dict with counts: updated, inserted, skipped.
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, func
 
     from backend.database import AsyncSessionLocal
-    from backend.integrations.nfl_data import fetch_rosters
+    from backend.integrations.sleeper import fetch_sleeper_players
     from backend.models.player import Player
-    from backend.utils.seasons import get_current_season
 
-    season = get_current_season()
-    print(f"Loading rosters for {season} from nfl_data_py...")
+    players_df = fetch_sleeper_players()
+    print(f"Loaded {len(players_df)} active skill players from Sleeper.\n")
 
-    try:
-        rosters = fetch_rosters(season)
-    except Exception:
-        # Current season rosters may not be published yet (nflverse lag)
-        fallback = season - 1
-        print(f"  {season} rosters not available, falling back to {fallback}...")
-        rosters = fetch_rosters(fallback)
+    updated = inserted = skipped = 0
 
-    # Detect column names (nfl_data_py varies by version)
-    name_col = next((c for c in ("full_name", "player_name") if c in rosters.columns), None)
-    team_col = next((c for c in ("team", "team_abbr") if c in rosters.columns), None)
-
-    if not name_col or not team_col:
-        print(f"ERROR: Missing expected columns. Available: {list(rosters.columns)}")
-        return 0
-
-    # Deduplicate: latest week entry per player
-    if "week" in rosters.columns:
-        rosters = rosters.sort_values("week", ascending=False).drop_duplicates(subset=[name_col])
-
-    # Build name ->current team map
-    roster_teams: dict[str, str] = {}
-    for _, row in rosters.iterrows():
-        name = str(row[name_col]).strip()
-        team = str(row[team_col]).strip().upper()
-        if name and team:
-            roster_teams[name] = team
-
-    print(f"Loaded {len(roster_teams)} players from nfl_data_py rosters.\n")
-
-    updated = 0
     async with AsyncSessionLocal() as session:
+        # Pre-load all existing players for batch matching
         all_players = (await session.execute(select(Player))).scalars().all()
 
-        for player in all_players:
-            if not player.name:
+        # Build lookup maps for efficient matching
+        by_sportradar = {p.sportradar_id: p for p in all_players if p.sportradar_id}
+        by_gsis = {p.gsis_id: p for p in all_players if p.gsis_id}
+        by_name_pos = {}
+        for p in all_players:
+            if p.name and p.position:
+                by_name_pos[(p.name.lower(), p.position.upper())] = p
+
+        for _, row in players_df.iterrows():
+            sleeper_id = str(row["player_id"])
+            full_name = row.get("full_name", "")
+            position = row.get("position", "")
+            team = row.get("team")  # None for free agents
+            sportradar = (
+                str(row["sportradar_id"])
+                if pd.notna(row.get("sportradar_id"))
+                else None
+            )
+            gsis = (
+                str(row["gsis_id"])
+                if pd.notna(row.get("gsis_id"))
+                else None
+            )
+            age = int(row["age"]) if pd.notna(row.get("age")) else None
+            years_exp = int(row["years_exp"]) if pd.notna(row.get("years_exp")) else None
+
+            if not full_name or not position:
+                skipped += 1
                 continue
 
-            new_team = roster_teams.get(player.name)
-            if not new_team:
-                continue
+            # Find existing player: sportradar_id > gsis_id > name+position
+            existing = None
+            if sportradar:
+                existing = by_sportradar.get(sportradar)
+            if not existing and gsis:
+                existing = by_gsis.get(gsis)
+            if not existing:
+                existing = by_name_pos.get((full_name.lower(), position.upper()))
 
-            if player.team_abbr != new_team:
-                old_team = player.team_abbr or "???"
-                if dry_run:
-                    print(f"  [DRY-RUN] {player.name}: {old_team} ->{new_team}")
-                else:
-                    player.team_abbr = new_team
-                    player.team_updated_at = datetime.now(timezone.utc)
-                    print(f"  Updated: {player.name}: {old_team} ->{new_team}")
+            if existing:
+                old_team = existing.team_abbr
+                changed = False
+
+                # Update team if changed
+                if existing.team_abbr != team:
+                    if dry_run:
+                        print(f"  [DRY-RUN] {full_name}: {old_team or '???'} -> {team or 'FA'}")
+                    else:
+                        existing.team_abbr = team
+                        existing.team_updated_at = datetime.now(timezone.utc)
+                    changed = True
+
+                # Populate IDs if missing
+                if not dry_run:
+                    if not existing.sleeper_id:
+                        existing.sleeper_id = sleeper_id
+                    if sportradar and not existing.sportradar_id:
+                        existing.sportradar_id = sportradar
+                    if gsis and not existing.gsis_id:
+                        existing.gsis_id = gsis
+                    if age is not None:
+                        existing.age = age
+
                 updated += 1
+            else:
+                # Insert new player
+                if dry_run:
+                    print(f"  [DRY-RUN] NEW: {full_name} ({position}, {team or 'FA'})")
+                else:
+                    new_player = Player(
+                        name=full_name,
+                        position=position,
+                        team_abbr=team,
+                        sleeper_id=sleeper_id,
+                        sportradar_id=sportradar,
+                        gsis_id=gsis,
+                        age=age,
+                    )
+                    session.add(new_player)
+                inserted += 1
 
-        if not dry_run and updated > 0:
+        if not dry_run:
             await session.commit()
 
-    return updated
+    logger.info(
+        "Sleeper sync: %d updated, %d inserted, %d skipped",
+        updated, inserted, skipped,
+    )
+    return {"updated": updated, "inserted": inserted, "skipped": skipped}
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sync player team assignments from nfl_data_py rosters"
+        description="Sync player roster data from Sleeper API"
     )
     parser.add_argument(
         "--dry-run",
@@ -105,10 +157,11 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    updated = await sync_rosters(dry_run=args.dry_run)
+    result = await sync_players_from_sleeper(dry_run=args.dry_run)
     mode = "DRY-RUN" if args.dry_run else "DONE"
-    verb = "would be updated" if args.dry_run else "updated"
-    print(f"\n[{mode}] {updated} player(s) {verb}.")
+    print(f"\n[{mode}] {result['updated']} updated, "
+          f"{result['inserted']} inserted, "
+          f"{result['skipped']} skipped.")
 
 
 if __name__ == "__main__":
