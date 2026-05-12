@@ -783,16 +783,14 @@ def _compute_oline_from_pbp(season: int) -> pd.DataFrame:
         return pd.read_parquet(path)
 
     try:
-        pbp = nfl.import_pbp_data(
-            [season],
-            columns=[
-                "season_type", "posteam",
-                "pass_attempt", "sack",
-            ],
-        )
+        # Load full PBP — do NOT pass columns= kwarg, it triggers a
+        # KeyError in nfl_data_py for some seasons (e.g. 2025).
+        pbp = nfl.import_pbp_data([season])
         if pbp.empty or "season_type" not in pbp.columns:
             logger.warning("PBP oline: no data for %d", season)
             return pd.DataFrame()
+        needed = ["season_type", "posteam", "pass_attempt", "sack"]
+        pbp = pbp[needed]
         pbp = pbp[pbp["season_type"] == "REG"]
 
         team_stats = pbp.groupby("posteam").agg(
