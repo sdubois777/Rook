@@ -772,6 +772,54 @@ def _compute_qb_stats_from_pbp(season: int) -> pd.DataFrame:
     return qbs
 
 
+def _compute_oline_from_pbp(season: int) -> pd.DataFrame:
+    """
+    Compute team sack rate from PBP data.
+    Used when nflverse weekly stats unavailable (e.g. 2025).
+    """
+    cache_name = f"oline_stats_{season}_pbp"
+    path = _cache_path(cache_name)
+    if path.exists():
+        return pd.read_parquet(path)
+
+    try:
+        pbp = nfl.import_pbp_data(
+            [season],
+            columns=[
+                "season_type", "posteam",
+                "pass_attempt", "sack",
+            ],
+        )
+        pbp = pbp[pbp["season_type"] == "REG"]
+
+        team_stats = pbp.groupby("posteam").agg(
+            total_attempts=("pass_attempt", "sum"),
+            total_sacks=("sack", "sum"),
+        ).reset_index().rename(columns={"posteam": "team"})
+
+        team_stats["total_dropbacks"] = (
+            team_stats["total_attempts"] + team_stats["total_sacks"]
+        )
+        team_stats["sack_rate"] = (
+            team_stats["total_sacks"].astype(float)
+            / team_stats["total_dropbacks"].replace(0, float("nan"))
+        ).round(4)
+        team_stats["season"] = season
+        # NGS time_to_throw not available in PBP
+        team_stats["avg_time_to_throw"] = pd.NA
+
+        team_stats.to_parquet(path, index=False)
+        logger.info(
+            "Computed oline stats from PBP for %d teams in season %d",
+            len(team_stats), season,
+        )
+        return team_stats
+
+    except Exception as e:
+        logger.error("PBP oline fallback failed for %d: %s", season, e)
+        return pd.DataFrame()
+
+
 def compute_team_oline_stats(season: int) -> pd.DataFrame:
     """
     Per-team O-line metrics: sack_rate and avg_time_to_throw.
@@ -785,7 +833,16 @@ def compute_team_oline_stats(season: int) -> pd.DataFrame:
     if path.exists():
         return pd.read_parquet(path)
 
-    weekly = fetch_weekly_stats(season)
+    try:
+        weekly = fetch_weekly_stats(season)
+        if weekly is None or len(weekly) == 0:
+            raise ValueError(f"No weekly stats for {season}")
+    except Exception as exc:
+        logger.warning(
+            "compute_team_oline_stats(%d) weekly stats failed: %s — falling back to PBP",
+            season, exc,
+        )
+        return _compute_oline_from_pbp(season)
 
     # QB rows, regular season only
     qbs = weekly[weekly["position"] == "QB"].copy()
@@ -856,6 +913,262 @@ async def get_qb_season_stats(season: int) -> pd.DataFrame:
 async def get_team_oline_stats(season: int) -> pd.DataFrame:
     """Async wrapper for compute_team_oline_stats."""
     return await asyncio.to_thread(compute_team_oline_stats, season)
+
+
+# ---------------------------------------------------------------------------
+# NflDataWarehouse — single source of truth for all pipeline data
+# ---------------------------------------------------------------------------
+
+
+class NflDataWarehouse:
+    """
+    All NFL data needed by the pipeline, built once before any agents run.
+
+    In May 2026 with analysis_seasons=[2023,2024,2025]:
+      - 2023: nflverse parquet
+      - 2024: nflverse parquet
+      - 2025: PBP fallback (handled transparently by each underlying function)
+
+    All agents receive this object and read from it.
+    No agent fetches data independently.
+    """
+
+    def __init__(
+        self,
+        analysis_seasons: list[int],
+        current_season: int,
+        analysis_year: int,
+    ):
+        self.analysis_seasons = analysis_seasons
+        self.current_season = current_season
+        self.analysis_year = analysis_year
+
+        # Player stats by season
+        self.seasonal_stats: dict[int, pd.DataFrame] = {}
+        self.target_share: dict[int, pd.DataFrame] = {}
+        self.qb_stats: dict[int, pd.DataFrame] = {}
+
+        # Team stats by season
+        self.oline_stats: dict[int, pd.DataFrame] = {}
+        self.def_grades: dict[int, pd.DataFrame] = {}
+
+        # Injury data by season
+        self.injuries: dict[int, pd.DataFrame] = {}
+
+        # Current season infrastructure
+        self.rosters: pd.DataFrame = pd.DataFrame()
+        self.seasonal_rosters: pd.DataFrame = pd.DataFrame()
+        self.prev_rosters: pd.DataFrame = pd.DataFrame()
+
+        # Upcoming season schedule
+        self.schedule: pd.DataFrame = pd.DataFrame()
+        self.schedule_year: int = analysis_year
+
+        # Supplementary data (player_profiles agent)
+        self.ngs_receiving: dict[int, pd.DataFrame] = {}
+        self.ngs_rushing: dict[int, pd.DataFrame] = {}
+        self.snap_pct: dict[int, pd.DataFrame] = {}
+
+    @classmethod
+    def build(cls) -> "NflDataWarehouse":
+        """
+        Build the warehouse. Called once at the start of the pipeline.
+        Logs clearly what loaded and what failed.
+        """
+        from backend.utils.seasons import (
+            get_analysis_seasons,
+            get_current_season,
+            get_analysis_year,
+        )
+
+        wh = cls(
+            analysis_seasons=get_analysis_seasons(3),
+            current_season=get_current_season(),
+            analysis_year=get_analysis_year(),
+        )
+
+        logger.info(
+            "Building NflDataWarehouse | analysis=%s current=%d year=%d",
+            wh.analysis_seasons, wh.current_season, wh.analysis_year,
+        )
+
+        for season in wh.analysis_seasons:
+            wh._load_season(season)
+
+        wh._load_infrastructure()
+        wh._load_schedule()
+        wh._load_supplements()
+
+        logger.info("NflDataWarehouse ready.")
+        return wh
+
+    def _load_season(self, season: int) -> None:
+        """Load all data for one completed season. Each function handles its own fallback."""
+        logger.info("Loading season %d...", season)
+
+        self.seasonal_stats[season] = get_seasonal_stats(season)
+        logger.info("  %d seasonal_stats: %d players", season, len(self.seasonal_stats[season]))
+
+        self.target_share[season] = compute_target_share(season)
+        logger.info("  %d target_share: %d players", season, len(self.target_share[season]))
+
+        self.qb_stats[season] = compute_qb_season_stats(season)
+        logger.info("  %d qb_stats: %d QBs", season, len(self.qb_stats[season]))
+
+        self.oline_stats[season] = compute_team_oline_stats(season)
+        logger.info("  %d oline_stats: %d teams", season, len(self.oline_stats[season]))
+
+        # Defensive grades — fall back through seasons
+        from backend.agents.schedule import compute_def_grades
+        for yr in (season, season - 1):
+            try:
+                weekly = fetch_weekly_stats(yr)
+                grades = compute_def_grades(weekly)
+                if not grades.empty:
+                    self.def_grades[season] = grades
+                    if yr != season:
+                        logger.warning("  %d def_grades: using %d as proxy", season, yr)
+                    else:
+                        logger.info("  %d def_grades: %d teams", season, len(grades))
+                    break
+            except Exception:
+                pass
+        else:
+            self.def_grades[season] = pd.DataFrame()
+            logger.warning("  %d def_grades: unavailable", season)
+
+        # Injury reports
+        try:
+            self.injuries[season] = fetch_injuries(season)
+            logger.info("  %d injuries: %d rows", season, len(self.injuries[season]))
+        except Exception as e:
+            self.injuries[season] = pd.DataFrame()
+            logger.warning("  %d injuries unavailable: %s", season, e)
+
+    def _load_infrastructure(self) -> None:
+        """Rosters for current and previous season."""
+        try:
+            self.rosters = fetch_rosters(self.current_season)
+            logger.info("Rosters %d: %d rows", self.current_season, len(self.rosters))
+        except Exception as e:
+            logger.warning("Rosters %d failed: %s", self.current_season, e)
+
+        try:
+            self.seasonal_rosters = fetch_seasonal_rosters(self.current_season)
+            logger.info("Seasonal rosters %d: %d rows", self.current_season, len(self.seasonal_rosters))
+        except Exception as e:
+            logger.warning("Seasonal rosters %d failed: %s", self.current_season, e)
+
+        # Previous season rosters — needed by roster_changes for departure/arrival detection
+        prev = self.current_season - 1
+        try:
+            self.prev_rosters = fetch_rosters(prev)
+            logger.info("Previous rosters %d: %d rows", prev, len(self.prev_rosters))
+        except Exception as e:
+            logger.warning("Previous rosters %d failed: %s", prev, e)
+
+    def _load_schedule(self) -> None:
+        """Schedule for upcoming season."""
+        for yr in (self.analysis_year, self.current_season, self.current_season - 1):
+            try:
+                df = fetch_schedules(yr)
+                reg = df[df["game_type"] == "REG"] if "game_type" in df.columns else df
+                if not reg.empty:
+                    self.schedule = reg.copy()
+                    self.schedule_year = yr
+                    logger.info("Schedule %d loaded", yr)
+                    return
+            except Exception:
+                pass
+        logger.error("No schedule data available")
+
+    def _load_supplements(self) -> None:
+        """NGS and snap pct — used by player_profiles agent only."""
+        from backend.agents.player_profiles import PlayerProfilesAgent
+
+        for season in self.analysis_seasons:
+            # NGS receiving
+            try:
+                raw = fetch_ngs_data("receiving", season)
+                self.ngs_receiving[season] = PlayerProfilesAgent._aggregate_ngs(
+                    raw, ["avg_separation", "avg_yac_above_expectation"]
+                )
+                logger.info("  %d ngs_receiving: %d players", season, len(self.ngs_receiving[season]))
+            except Exception as exc:
+                logger.warning("  %d ngs_receiving unavailable: %s", season, exc)
+
+            # NGS rushing
+            try:
+                raw = fetch_ngs_data("rushing", season)
+                self.ngs_rushing[season] = PlayerProfilesAgent._aggregate_ngs(
+                    raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
+                )
+                logger.info("  %d ngs_rushing: %d players", season, len(self.ngs_rushing[season]))
+            except Exception as exc:
+                logger.warning("  %d ngs_rushing unavailable: %s", season, exc)
+
+        # Snap pct for current season
+        try:
+            self.snap_pct[self.current_season] = compute_snap_pct(self.current_season)
+            logger.info("Snap pct %d: %d players", self.current_season, len(self.snap_pct[self.current_season]))
+        except Exception as exc:
+            logger.warning("Snap pct %d failed: %s", self.current_season, exc)
+
+    # ----------------------------------------------------------
+    # Clean accessors — return empty df, never raise
+    # ----------------------------------------------------------
+
+    def get_seasonal_stats(self, season: int) -> pd.DataFrame:
+        return self.seasonal_stats.get(season, pd.DataFrame())
+
+    def get_target_share(self, season: int) -> pd.DataFrame:
+        return self.target_share.get(season, pd.DataFrame())
+
+    def get_qb_stats(self, season: int) -> pd.DataFrame:
+        return self.qb_stats.get(season, pd.DataFrame())
+
+    def get_oline_stats(self, season: int) -> pd.DataFrame:
+        return self.oline_stats.get(season, pd.DataFrame())
+
+    def get_def_grades(self, season: int) -> pd.DataFrame:
+        return self.def_grades.get(season, pd.DataFrame())
+
+    def get_injuries(self, season: int) -> pd.DataFrame:
+        return self.injuries.get(season, pd.DataFrame())
+
+    def get_most_recent_def_grades(self) -> pd.DataFrame:
+        for season in sorted(self.def_grades.keys(), reverse=True):
+            if not self.def_grades[season].empty:
+                return self.def_grades[season]
+        return pd.DataFrame()
+
+    def get_ngs_receiving(self, season: int) -> pd.DataFrame:
+        return self.ngs_receiving.get(season, pd.DataFrame())
+
+    def get_ngs_rushing(self, season: int) -> pd.DataFrame:
+        return self.ngs_rushing.get(season, pd.DataFrame())
+
+    def get_snap_pct(self, season: int) -> pd.DataFrame:
+        return self.snap_pct.get(season, pd.DataFrame())
+
+    def summary(self) -> dict:
+        return {
+            "analysis_seasons": self.analysis_seasons,
+            "current_season": self.current_season,
+            "analysis_year": self.analysis_year,
+            "data": {
+                season: {
+                    "seasonal_stats": len(self.seasonal_stats.get(season, [])),
+                    "target_share": len(self.target_share.get(season, [])),
+                    "qb_stats": len(self.qb_stats.get(season, [])),
+                    "oline_stats": len(self.oline_stats.get(season, [])),
+                    "injuries": len(self.injuries.get(season, [])),
+                }
+                for season in self.analysis_seasons
+            },
+            "rosters": len(self.rosters),
+            "schedule_year": self.schedule_year,
+        }
 
 
 # ---------------------------------------------------------------------------
