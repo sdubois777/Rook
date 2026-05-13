@@ -2112,7 +2112,7 @@ def _build_depth_profile(position: str) -> dict:
         "age_curve_position": "unknown",
         "career_trajectory": "unknown",
         "breakout_flag": False,
-        "positional_scarcity_tier": 5,
+        "positional_scarcity_tier": "deep",
         "confidence": "low",
         "clean_season_baseline": {},  # no baseline — no stats
     }

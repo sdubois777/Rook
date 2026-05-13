@@ -2671,7 +2671,7 @@ def test_fringe_player_gets_depth_profile():
     assert depth["role_classification"] == "depth"
     assert depth["confidence"] == "low"
     assert depth["efficiency_signal"] == "below_average"
-    assert depth["positional_scarcity_tier"] == 5
+    assert depth["positional_scarcity_tier"] == "deep"
     assert depth["clean_season_baseline"] == {}
 
 

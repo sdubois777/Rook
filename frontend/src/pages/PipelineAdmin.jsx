@@ -307,7 +307,7 @@ function BacktestSection() {
 
       {!data && !isLoading && !error && (
         <p className="text-sm text-slate-500">
-          Run a backtest to compare system projections against actual 2024 season results.
+          Run a backtest to compare system projections against actual 2025 season results.
         </p>
       )}
 
