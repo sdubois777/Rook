@@ -1,11 +1,9 @@
 [build]
-builder = "nixpacks"
+builder = "railpack"
+buildCommand = "cd frontend && npm ci && npm run build"
 
-[build.nixpacksPlan.phases.setup]
-nixPkgs = ["python311", "nodejs_20", "npm-9_x"]
-
-[build.nixpacksPlan.phases.build]
-cmds = ["cd frontend && npm ci && npm run build"]
+[build.env]
+RAILPACK_PACKAGES = "node"
 
 [deploy]
 startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"
