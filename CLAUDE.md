@@ -386,8 +386,9 @@ fantasy-football-ai/
   - Missing: GET /admin/cost-report/weekly endpoint
 - [ ] Stage 23: Deployment + testing
 - [ ] Stage 24: Gameday Monitoring
-- [ ] Stage 25: SaaS Foundation — see docs/stages/stage-25-saas-foundation.md
-  LeagueConfig, DB split (central/per-user), credit system, row-level security
+- [x] Stage 25: SaaS Foundation
+  LeagueConfig, users table, credit system, feature gating, enterprise architecture
+  SecurityHeaders + RequestLogging middleware, /account/* endpoints, 868 tests
 - [ ] Stage 26: User Auth — see docs/stages/stage-26-user-auth.md
   Clerk auth, 3 tiers (intro $5/standard $9/pro $18), Stripe billing
   Credits: intro=25 signup, standard=75 signup+20/mo, pro=200 signup+50/mo

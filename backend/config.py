@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/fantasy_football"
 
     # App
-    secret_key: str = "dev-secret-key-change-in-production"
+    secret_key: str
     environment: str = "development"
 
     # Optional

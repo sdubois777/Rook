@@ -42,20 +42,20 @@ from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile
+from backend.models.league_config import LeagueConfig, DEFAULT_LEAGUE_CONFIG
 from backend.utils.seasons import get_analysis_year
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# League defaults — matches docs/rules/LEAGUE_RULES.md
+# League defaults — derived from LeagueConfig
 # ---------------------------------------------------------------------------
 
-# SKILL_STARTER_BUDGET ($185) × 12 teams = $2,220 total skill position pool
-# This is the CORRECT calibration pool per LEAGUE_RULES.md Rule #3.
-# NOT $200×12=$2,400 (full auction budget — wrong) and NOT $183×12=$2,196 (wrong).
-LEAGUE_SKILL_BUDGET = 185   # skill starter budget per team
-LEAGUE_TEAMS        = 12
-LEAGUE_SKILL_DOLLAR_POOL = LEAGUE_SKILL_BUDGET * LEAGUE_TEAMS  # = 2220
+# These module-level constants preserved for backward compatibility with
+# functions that accept them as kwargs. All new code should use LeagueConfig.
+LEAGUE_SKILL_BUDGET = int(DEFAULT_LEAGUE_CONFIG.budget * DEFAULT_LEAGUE_CONFIG.skill_budget_pct)
+LEAGUE_TEAMS        = DEFAULT_LEAGUE_CONFIG.team_count
+LEAGUE_SKILL_DOLLAR_POOL = DEFAULT_LEAGUE_CONFIG.total_skill_pool
 
 # Positional budget allocation targets (% of LEAGUE_SKILL_DOLLAR_POOL)
 # From LEAGUE_RULES.md: RB=38%, WR=32%, QB=10%, TE=10%
@@ -365,7 +365,7 @@ def _to_dec(value: float | Decimal) -> Decimal:
 
 
 def get_draftable_pool_sizes(
-    teams: int = LEAGUE_TEAMS,
+    teams: int = DEFAULT_LEAGUE_CONFIG.team_count,
     roster_slots: dict | None = None,
 ) -> dict[str, int]:
     """
@@ -427,7 +427,7 @@ def calculate_replacement_level(
 
 def sanity_check_valuations(
     valued_players: list,
-    league_pool: float = LEAGUE_SKILL_DOLLAR_POOL,
+    league_pool: float = DEFAULT_LEAGUE_CONFIG.total_skill_pool,
 ) -> list[str]:
     """
     Post-valuation sanity checks. Returns list of warning strings.
@@ -495,24 +495,24 @@ def sanity_check_valuations(
 
 
 async def run_valuation_pass(
-    skill_budget: int = LEAGUE_SKILL_BUDGET,
-    league_teams: int = LEAGUE_TEAMS,
+    config: LeagueConfig = DEFAULT_LEAGUE_CONFIG,
 ) -> dict:
     """
     Load all players with profiles, compute valuations, write back to DB.
 
-    Uses LEAGUE_SKILL_DOLLAR_POOL = skill_budget × league_teams = $185 × 12 = $2,220
-    as the total calibration pool per docs/rules/LEAGUE_RULES.md Rule #3.
+    Uses config.total_skill_pool as the total calibration pool
+    per docs/rules/LEAGUE_RULES.md Rule #3.
 
     Args:
-        skill_budget:  Skill starter budget per team (default 185).
-        league_teams:  Number of teams in league (default 12).
+        config: LeagueConfig with team_count, budget, scoring etc.
+                Defaults to DEFAULT_LEAGUE_CONFIG (12 teams, $200, PPR).
 
     Returns:
         Summary dict: {processed, updated, skipped, analysis_year}.
     """
     analysis_year = get_analysis_year()
-    total_budget = float(skill_budget * league_teams)  # = 185 × 12 = 2220
+    total_budget = config.total_skill_pool
+    league_teams = config.team_count
 
     async with AsyncSessionLocal() as session:
         # Eager-load profiles and injury profiles — one query, no N+1

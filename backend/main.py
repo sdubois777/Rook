@@ -4,11 +4,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
+from backend.core.exceptions import AppError
+from backend.middleware.security_headers import SecurityHeadersMiddleware
+from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, assistant, auth, draft, draftboard, league, news, pipeline, players, preferences, teams
+from backend.routers import account
 from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -18,6 +22,10 @@ app = FastAPI(
     version="0.1.0",
     description="AI-powered fantasy football management system",
 )
+
+# Middleware — order matters (outermost first, innermost last)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +40,22 @@ app.add_middleware(
 )
 
 
+# ── Exception handlers ─────────────────────────────────────
+
+@app.exception_handler(AppError)
+async def app_error_handler(request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.error_code,
+            "message": exc.message,
+            **exc.detail,
+        },
+    )
+
+
+# ── Routers ─────────────────────────────────────────────────
+
 app.include_router(admin.router)
 app.include_router(assistant.router)
 app.include_router(auth.router)
@@ -43,6 +67,7 @@ app.include_router(pipeline.router)
 app.include_router(players.router)
 app.include_router(preferences.router)
 app.include_router(teams.router)
+app.include_router(account.router)
 
 _scheduler = None
 
@@ -72,8 +97,21 @@ async def startup_checks():
     # Start Beat Reporter daily scheduler (7am cron)
     from backend.agents.beat_reporter import setup_scheduler
     _scheduler = setup_scheduler()
+
+    # Monthly credit reset — 1st of each month at midnight
+    _scheduler.add_job(
+        _monthly_credit_reset,
+        "cron",
+        day=1,
+        hour=0,
+        minute=0,
+        id="monthly_credit_reset",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Beat Reporter scheduler started (daily at 7am)")
+    logger.info("Monthly credit reset job registered (1st of month)")
 
 
 @app.on_event("shutdown")
@@ -82,6 +120,31 @@ async def shutdown_checks():
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Beat Reporter scheduler stopped")
+
+
+async def _monthly_credit_reset():
+    """
+    Add monthly credits for Standard and Pro users.
+    Credits ADD to balance — never reset to cap.
+    Intro users: no monthly credits, skipped.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.repositories.user_repo import UserRepository
+    from backend.models.user import TIER_LIMITS
+
+    async with AsyncSessionLocal() as db:
+        repo = UserRepository(db)
+        for tier in ("standard", "pro"):
+            monthly = TIER_LIMITS[tier]["credits_monthly"]
+            count = await repo.add_monthly_credits(
+                tier=tier,
+                monthly_amount=monthly,
+            )
+            logger.info(
+                "Monthly credits: +%d to %d %s users",
+                monthly, count, tier,
+            )
+        await db.commit()
 
 
 @app.get("/health")
@@ -132,7 +195,7 @@ if FRONTEND_DIST.exists():
         "admin", "assistant", "auth", "draft", "draftboard",
         "league", "news", "pipeline", "players", "preferences",
         "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/",
+        "ws/", "api/", "account",
     )
 
     @app.get("/{full_path:path}")
