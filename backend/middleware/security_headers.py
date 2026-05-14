@@ -46,7 +46,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "https://clerk.accounts.dev "
                 "https://challenges.cloudflare.com; "
                 "style-src 'self' 'unsafe-inline' "
-                "https://*.clerk.accounts.dev; "
+                "https://*.clerk.accounts.dev "
+                "https://fonts.googleapis.com; "
                 "img-src 'self' data: https: blob:; "
                 "connect-src 'self' "
                 "https://*.clerk.accounts.dev "
@@ -58,7 +59,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "https://challenges.cloudflare.com; "
                 "worker-src 'self' blob:; "
                 "font-src 'self' data: "
-                "https://*.clerk.accounts.dev;"
+                "https://*.clerk.accounts.dev "
+                "https://fonts.gstatic.com;"
             )
 
         return response
