@@ -42,13 +42,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline' "
+                "https://*.clerk.accounts.dev "
                 "https://clerk.accounts.dev "
                 "https://challenges.cloudflare.com; "
-                "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data: https:; "
-                "connect-src 'self' https://api.clerk.dev "
-                "wss:; "
-                "frame-src https://clerk.accounts.dev;"
+                "style-src 'self' 'unsafe-inline' "
+                "https://*.clerk.accounts.dev; "
+                "img-src 'self' data: https: blob:; "
+                "connect-src 'self' "
+                "https://*.clerk.accounts.dev "
+                "https://api.clerk.dev "
+                "https://clerk.dev "
+                "wss: ws:; "
+                "frame-src "
+                "https://*.clerk.accounts.dev "
+                "https://challenges.cloudflare.com;"
             )
 
         return response
