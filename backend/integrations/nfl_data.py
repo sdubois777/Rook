@@ -1143,6 +1143,10 @@ class NflDataWarehouse:
         """
         Build the warehouse. Called once at the start of the pipeline.
         Logs clearly what loaded and what failed.
+
+        Loads 6 seasons by default. Agents that only need 3 seasons
+        use the 3 most recent. Per-player baseline computation uses
+        however many seasons the player's career allows.
         """
         from backend.utils.seasons import (
             get_analysis_seasons,
@@ -1151,7 +1155,7 @@ class NflDataWarehouse:
         )
 
         wh = cls(
-            analysis_seasons=get_analysis_seasons(3),
+            analysis_seasons=get_analysis_seasons(6),
             current_season=get_current_season(),
             analysis_year=get_analysis_year(),
         )

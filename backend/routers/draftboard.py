@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
@@ -106,6 +107,7 @@ async def get_draftboard(
     position: Optional[str] = None,
     tier: Optional[int] = None,
     strategy: Optional[str] = None,
+    _user=Depends(get_current_user),
 ):
     """Ranked players grouped by tier with optional strategy highlighting."""
     async with AsyncSessionLocal() as session:

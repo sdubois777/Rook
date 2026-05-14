@@ -27,6 +27,7 @@ def _make_user(tier="intro", credits=0, external_id="ext-001"):
 async def test_get_or_create_creates_new_user():
     repo = _make_repo()
     repo.get_by_external_id.return_value = None
+    repo.get_by_email.return_value = None
     new_user = _make_user()
     repo.create.return_value = new_user
 
@@ -60,6 +61,7 @@ async def test_get_or_create_returns_existing():
 async def test_new_user_starts_on_intro_tier():
     repo = _make_repo()
     repo.get_by_external_id.return_value = None
+    repo.get_by_email.return_value = None
     new_user = _make_user(tier="intro")
     repo.create.return_value = new_user
 
@@ -77,6 +79,7 @@ async def test_new_user_starts_on_intro_tier():
 async def test_new_intro_user_gets_signup_bonus():
     repo = _make_repo()
     repo.get_by_external_id.return_value = None
+    repo.get_by_email.return_value = None
     new_user = _make_user(credits=25)
     repo.create.return_value = new_user
 

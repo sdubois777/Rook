@@ -7,7 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.core.dependencies import get_current_user
 from backend.main import app
+
+
+def _mock_user():
+    m = MagicMock()
+    m.id = uuid.uuid4()
+    m.external_id = "test-user"
+    m.email = "test@test.com"
+    m.tier = "intro"
+    m.credits_remaining = 25
+    return m
 
 
 def _make_player(**overrides):
@@ -72,9 +83,13 @@ async def test_list_players():
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players")
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/players")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 200
     data = resp.json()

@@ -36,7 +36,12 @@ from backend.database import AsyncSessionLocal
 from backend.integrations.nfl_data import normalize_player_name, build_player_lookup
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
-from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
+from backend.utils.seasons import (
+    get_current_season,
+    get_analysis_seasons,
+    get_analysis_year,
+    get_player_seasons_for_baseline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -825,6 +830,8 @@ class PlayerProfilesAgent(BaseAgent):
                 entry["sleeper_id"] = p.sleeper_id
             if p.sportradar_id:
                 entry["sportradar_id"] = p.sportradar_id
+            if p.nfl_seasons_played is not None:
+                entry["nfl_seasons_played"] = p.nfl_seasons_played
             result.append(entry)
         return result
 
@@ -1048,6 +1055,11 @@ class PlayerProfilesAgent(BaseAgent):
         # and players with zero prior-season data like redshirt rookies.
         db_team_players = await self._get_db_team_players(team)
         roster_names = {r["name"] for r in roster}
+        # Build nfl_seasons_played lookup from DB for per-player lookback
+        nfl_seasons_lookup: dict[str, int | None] = {
+            dbp["name"]: dbp.get("nfl_seasons_played")
+            for dbp in db_team_players
+        }
         for dbp in db_team_players:
             if dbp["name"] not in roster_names:
                 roster.append(dbp)
@@ -1072,9 +1084,15 @@ class PlayerProfilesAgent(BaseAgent):
 
             seasons_data: list[dict] = []
 
+            # Dynamic per-player lookback: load enough seasons to get
+            # 4 clean ones after injury exclusion, capped by career length
+            player_seasons = get_player_seasons_for_baseline(
+                nfl_seasons_lookup.get(pname)
+            )
+
             if pos == "QB":
                 # QB branch: use QB-specific passing stats
-                for season in analysis_seasons:
+                for season in player_seasons:
                     stats = self._get_qb_season(pname, team, season, nfl_player_id=nfl_pid)
                     if stats:
                         stats["year"] = season
@@ -1083,7 +1101,7 @@ class PlayerProfilesAgent(BaseAgent):
                         seasons_data.append({"year": season, "games": 0, "note": "no data"})
             else:
                 # WR/RB/TE branch: use target_share data
-                for season in analysis_seasons:
+                for season in player_seasons:
                     stats = self._get_player_season_stats(pname, team, season, position=pos, nfl_player_id=nfl_pid)
                     if stats:
                         stats["year"]             = season

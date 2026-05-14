@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { UserButton } from '@clerk/clerk-react'
 import {
   LayoutDashboard,
   Users,
@@ -10,17 +11,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Swords,
+  UserCircle,
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { fetchPipelineStatus } from '../../api/admin'
 
 const navItems = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/players', label: 'Players', icon: Users },
   { to: '/teams', label: 'Teams', icon: Shield },
   { to: '/news', label: 'News', icon: Newspaper },
   { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
   { to: '/admin', label: 'Pipeline', icon: Settings },
+  { to: '/account', label: 'Account', icon: UserCircle },
 ]
 
 function usePipelineFreshness() {
@@ -113,15 +116,23 @@ export default function Sidebar() {
         </NavLink>
       </nav>
 
-      {/* Footer — pipeline freshness */}
-      <div className="p-4 border-t border-[#2d3148] flex items-center gap-2">
-        <span
-          className={`w-2 h-2 rounded-full shrink-0 ${freshnessColors[freshness]}`}
-          title={freshnessLabels[freshness]}
-        />
-        {!collapsed && (
-          <span className="text-xs text-slate-500">{freshnessLabels[freshness]}</span>
-        )}
+      {/* Footer — user + pipeline freshness */}
+      <div className="p-4 border-t border-[#2d3148] space-y-3">
+        <div className="flex items-center gap-2">
+          <UserButton afterSignOutUrl="/sign-in" />
+          {!collapsed && (
+            <span className="text-xs text-slate-400 truncate">My Account</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`w-2 h-2 rounded-full shrink-0 ${freshnessColors[freshness]}`}
+            title={freshnessLabels[freshness]}
+          />
+          {!collapsed && (
+            <span className="text-xs text-slate-500">{freshnessLabels[freshness]}</span>
+          )}
+        </div>
       </div>
     </aside>
   )

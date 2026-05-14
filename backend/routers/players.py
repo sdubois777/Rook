@@ -13,12 +13,13 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
+from backend.core.dependencies import get_current_user
 from backend.engines.valuation import get_market_context
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
@@ -454,6 +455,7 @@ async def list_players(
     order: str = "desc",
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
+    _user=Depends(get_current_user),
 ):
     """Paginated, filterable player list."""
     async with AsyncSessionLocal() as session:

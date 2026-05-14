@@ -25,5 +25,15 @@ class Settings(BaseSettings):
     # Optional
     rapidapi_key: Optional[str] = None
 
+    # Clerk authentication
+    clerk_secret_key: Optional[str] = None
+    vite_clerk_publishable_key: Optional[str] = None
+    clerk_webhook_secret: Optional[str] = None
+
+    @property
+    def clerk_enabled(self) -> bool:
+        """True when Clerk is configured."""
+        return bool(self.clerk_secret_key)
+
 
 settings = Settings()

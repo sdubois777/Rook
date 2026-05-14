@@ -30,7 +30,21 @@ class UserService:
             external_id
         )
         if user:
+            # Update email if we now have a real one
+            if email and "@placeholder." not in email and user.email != email:
+                user.email = email
+                await self._repo.commit()
             return user, False
+
+        # Check if email already exists (e.g. dev stub user)
+        existing = await self._repo.get_by_email(email)
+        if existing:
+            # Adopt the existing record — link it to the real Clerk ID
+            existing.external_id = external_id
+            if display_name:
+                existing.display_name = display_name
+            await self._repo.commit()
+            return existing, False
 
         initial_tier = "intro"
         signup_bonus = TIER_LIMITS[initial_tier].get(

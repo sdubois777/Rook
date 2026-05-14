@@ -174,6 +174,51 @@ async def get_best_available_auction_year(
     return values, fallback_year, False
 
 
+def get_player_seasons_for_baseline(
+    nfl_seasons_played: int | None,
+    target_clean: int = 4,
+) -> list[int]:
+    """
+    Returns candidate seasons to load for a player's historical baseline.
+    Loads enough seasons to yield target_clean clean seasons after injury
+    exclusion, capped by career length.
+
+    Always returns seasons in ascending order.
+    The caller loads stats for all returned seasons and passes them to
+    _compute_weighted_baseline() which handles injury exclusion and weighting.
+
+    Args:
+        nfl_seasons_played: career length from DB. None treated as 1 (rookie).
+        target_clean: target number of clean seasons. Default 4.
+
+    Examples (called May 2026, current=2026):
+      CMC (9 seasons): returns [2020, 2021, 2022, 2023, 2024, 2025]
+      2-year player:   returns [2024, 2025]
+      Rookie (1):      returns [2025]
+    """
+    current = get_current_season()
+    most_recent_completed = current - 1
+
+    career = max(1, nfl_seasons_played or 1)
+
+    # Target clean seasons, capped by career
+    target = min(career, target_clean)
+
+    # Load target + 2 extra as buffer for injury exclusions
+    # A player with 2 injury years still gets target clean
+    buffer = 2
+    max_load = min(career, target + buffer)
+
+    # Build candidate list from most recent going back
+    candidates = [
+        most_recent_completed - i
+        for i in range(max_load)
+    ]
+
+    # Return ascending order (oldest first)
+    return sorted(candidates)
+
+
 def get_draft_prep_window() -> dict[str, int]:
     """
     Returns a dict with all season year constants needed by pipeline agents.

@@ -19,6 +19,7 @@ from backend.utils.seasons import (
     get_analysis_year,
     get_current_season,
     get_draft_prep_window,
+    get_player_seasons_for_baseline,
     get_previous_season,
 )
 
@@ -206,3 +207,53 @@ def test_get_analysis_seasons_returns_3_consecutive_seasons():
         assert len(seasons) == 3
         assert seasons[1] - seasons[0] == 1
         assert seasons[2] - seasons[1] == 1
+
+
+# ---------------------------------------------------------------------------
+# get_player_seasons_for_baseline()
+# ---------------------------------------------------------------------------
+
+def test_veteran_gets_extended_lookback():
+    """9-season player gets up to 6 seasons to load."""
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(9)
+        assert len(seasons) == 6  # 4 target + 2 buffer
+        assert max(seasons) == 2025  # most recent completed
+        assert min(seasons) == 2020  # 6 back from 2025
+
+
+def test_young_player_capped_by_career():
+    """2-season player only gets 2 seasons (career caps max_load)."""
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(2)
+        assert len(seasons) == 2  # min(2, min(2,4)+2) = min(2,4) = 2
+        assert seasons == [2024, 2025]
+
+
+def test_rookie_gets_one_season():
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(1)
+        assert len(seasons) == 1
+        assert seasons[0] == 2025
+
+
+def test_none_seasons_played_treated_as_rookie():
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(None)
+        assert len(seasons) == 1
+        assert seasons[0] == 2025
+
+
+def test_four_season_player_gets_full_career():
+    """4-season player: target=4, buffer=2, career=4.
+    max_load = min(4, 4+2) = 4 (capped by career)."""
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(4)
+        assert len(seasons) == 4
+        assert seasons == [2022, 2023, 2024, 2025]
+
+
+def test_player_seasons_in_ascending_order():
+    with freeze_time("2026-05-14"):
+        seasons = get_player_seasons_for_baseline(9)
+        assert seasons == sorted(seasons)
