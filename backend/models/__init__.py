@@ -9,6 +9,8 @@ from backend.models.league_settings import LeagueSettings
 from backend.models.user_preference import UserPreference
 from backend.models.market_value_metadata import MarketValueMetadata
 from backend.models.league_auction_history import LeagueAuctionHistory
+from backend.models.user import User, CreditUsageLog
+from backend.models.user_league import UserLeague
 
 __all__ = [
     "Player",
@@ -27,4 +29,7 @@ __all__ = [
     "UserPreference",
     "MarketValueMetadata",
     "LeagueAuctionHistory",
+    "User",
+    "CreditUsageLog",
+    "UserLeague",
 ]
