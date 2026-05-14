@@ -3,6 +3,8 @@ import { useEffect } from 'react'
 import { SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react'
 import { usePreferencesStore } from './stores/preferences'
 import Layout from './components/layout/Layout'
+import Landing from './pages/Landing'
+import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
 import Players from './pages/Players'
 import Teams from './pages/Teams'
@@ -17,6 +19,9 @@ import AccountPage from './pages/Account'
 
 // Routes that render full-screen without the sidebar layout
 const FULL_SCREEN_ROUTES = ['/draft-room']
+
+// Public routes — no sidebar, no auth required
+const PUBLIC_ROUTES = ['/', '/pricing', '/sign-in', '/sign-up']
 
 function ProtectedRoute({ children }) {
   return (
@@ -37,10 +42,16 @@ function App() {
     loadStrategy().catch(() => {})
   }, [loadWatchlist, loadStrategy])
 
-  // Public routes — no layout, no auth
-  if (location.pathname.startsWith('/sign-in') || location.pathname.startsWith('/sign-up')) {
+  const isPublic = PUBLIC_ROUTES.some(
+    (r) => location.pathname === r || location.pathname.startsWith(r + '/')
+  )
+
+  // Public routes — different layout, no sidebar
+  if (isPublic) {
     return (
       <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/pricing" element={<Pricing />} />
         <Route path="/sign-in/*" element={<SignInPage />} />
         <Route path="/sign-up/*" element={<SignUpPage />} />
       </Routes>
@@ -51,7 +62,6 @@ function App() {
 
   const routes = (
     <Routes>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/players" element={<ProtectedRoute><Players /></ProtectedRoute>} />
       <Route path="/teams" element={<ProtectedRoute><Teams /></ProtectedRoute>} />

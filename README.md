@@ -123,7 +123,7 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 
 ## Project Status
 
-883 tests passing.
+883 backend tests + 29 frontend tests passing.
 
 ### Completed
 
@@ -150,7 +150,7 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 - [ ] **Stage 14:** Season Roster Store (post-draft sync via Yahoo API)
 - [ ] **Stages 15-21:** In-season features (Roster Monitor, Trade Analyzer, Trade Proposals, Lineup Optimizer, Waiver Wire, Opponent Analyzer)
 - [ ] **Stage 23:** Deployment + testing (Railway, GitHub Actions CI/CD)
-- [ ] **Stage 27:** Landing Page
+- [x] **Stage 27: Landing Page** — DraftMind marketing site with hero, validation stats, pricing, FAQ
 - [ ] **Stage 28:** League Sync (Yahoo multi-user OAuth, Sleeper leagues, ESPN)
 - [ ] **Stage 29:** Snake Draft support
 - [ ] **Stage 30:** Half PPR scoring
