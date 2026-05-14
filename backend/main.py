@@ -12,7 +12,7 @@ from backend.core.exceptions import AppError
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, assistant, auth, draft, draftboard, league, news, pipeline, players, preferences, teams
-from backend.routers import account
+from backend.routers import account, webhooks
 from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ app.include_router(players.router)
 app.include_router(preferences.router)
 app.include_router(teams.router)
 app.include_router(account.router)
+app.include_router(webhooks.router)
 
 _scheduler = None
 
@@ -195,7 +196,7 @@ if FRONTEND_DIST.exists():
         "admin", "assistant", "auth", "draft", "draftboard",
         "league", "news", "pipeline", "players", "preferences",
         "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/", "account",
+        "ws/", "api/", "account", "webhooks",
     )
 
     @app.get("/{full_path:path}")
