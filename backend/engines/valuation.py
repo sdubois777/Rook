@@ -122,7 +122,7 @@ DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
 # Different positions have different tier cutoffs because PPR scoring
 # compresses QB/TE ranges relative to RB/WR.
 _PAR_RATIO_THRESHOLDS = {
-    "QB": {"T1": Decimal("1.07"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
+    "QB": {"T1": Decimal("1.15"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
     "RB": {"T1": Decimal("2.5"), "T2": Decimal("1.8"), "T3": Decimal("1.3")},
     "WR": {"T1": Decimal("2.0"), "T2": Decimal("1.5"), "T3": Decimal("1.2")},
     "TE": {"T1": Decimal("2.2"), "T2": Decimal("1.6"), "T3": Decimal("1.2")},

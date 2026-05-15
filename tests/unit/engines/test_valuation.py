@@ -50,10 +50,10 @@ def test_assign_tier_te_elite_par_is_tier1():
 
 
 def test_assign_tier_qb_elite_par_is_tier1():
-    """QB PAR ratio >= 1.07 → T1 (1-QB league, highly compressed scoring)."""
+    """QB PAR ratio >= 1.15 → T1 (only truly elite QBs)."""
     assert assign_tier(1.30, "QB") == 1
-    assert assign_tier(1.07, "QB") == 1
-    assert assign_tier(1.06, "QB") == 2
+    assert assign_tier(1.15, "QB") == 1
+    assert assign_tier(1.14, "QB") == 2
 
 
 def test_assign_tier_rb_strong_par_is_tier2():
