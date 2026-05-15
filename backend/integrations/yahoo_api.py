@@ -63,12 +63,14 @@ def _basic_auth_header() -> str:
 # OAuth helpers
 # ---------------------------------------------------------------------------
 
-def get_authorization_url() -> str:
+def get_authorization_url(state: str | None = None) -> str:
     """
     Return Yahoo OAuth2 authorization URL.
 
     Redirect the user's browser here. After granting access, Yahoo sends
     them back to YAHOO_REDIRECT_URI with ?code=... appended.
+
+    Optional state parameter for CSRF protection (encodes user_id).
     """
     params = {
         "client_id": settings.yahoo_client_id,
@@ -76,6 +78,8 @@ def get_authorization_url() -> str:
         "response_type": "code",
         "language": "en-us",
     }
+    if state:
+        params["state"] = state
     query = "&".join(f"{k}={v}" for k, v in params.items())
     return f"{_YAHOO_AUTH_URL}?{query}"
 

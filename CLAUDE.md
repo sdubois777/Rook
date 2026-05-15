@@ -280,7 +280,7 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-883 tests passing (backend). 29 frontend tests passing.
+929 tests passing (backend). 29 frontend tests passing.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -398,9 +398,11 @@ fantasy-football-ai/
   Public landing at /, pricing at /pricing, 9 components, dark theme
   Hero, social proof, how-it-works, validation stats, feature comparison,
   3-tier pricing table, FAQ accordion, footer CTA, SEO meta tags
-- [ ] Stage 28: League Sync — see docs/stages/stage-28-league-sync.md
-  Yahoo multi-user OAuth, Sleeper leagues, ESPN cookie API
-  NOTE: Sleeper player API already built — Stage 28 adds multi-user league sync
+- [x] Stage 28: League Sync — Yahoo/ESPN/Sleeper multi-user
+  Fernet token encryption, PlatformCredential model, LeaguePlatformAPI abstraction
+  Yahoo multi-user OAuth (state=user_id CSRF), ESPN bookmarklet + cookie API
+  Sleeper public API, LeagueSyncService (4yr history), league setup wizard
+  46 new tests, 929 total
 - [ ] Stage 29: Snake Draft — see docs/stages/stage-29-snake-draft.md
   SnakeValuationEngine, VOE metric, SnakeDraftAgent
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md

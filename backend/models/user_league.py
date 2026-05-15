@@ -12,7 +12,7 @@ from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from backend.database import Base
 
@@ -61,6 +61,11 @@ class UserLeague(Base):
     # auction only — null for snake
     season_year: Mapped[int] = mapped_column(
         Integer, nullable=False
+    )
+
+    # Manager name mapping {platform_team_id: manager_name}
+    manager_map: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
     )
 
     # Status

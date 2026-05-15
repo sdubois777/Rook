@@ -1,83 +1,112 @@
 """
-Auth router — Yahoo OAuth 2.0 flow.
+Auth router — Yahoo OAuth 2.0 multi-user flow.
 
-GET /auth/yahoo          → redirect user to Yahoo authorization page
-GET /auth/yahoo/callback → exchange code for access + refresh tokens
-
-After the callback, copy YAHOO_REFRESH_TOKEN from server logs to .env.
-The app auto-refreshes the token on every subsequent API call.
+GET  /auth/yahoo/connect    → redirect user to Yahoo authorization page (auth required)
+GET  /auth/yahoo/callback   → exchange code for tokens, store encrypted per user
+DELETE /auth/yahoo/disconnect → remove Yahoo credentials for current user
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
 
 from backend.config import settings
+from backend.core.dependencies import get_current_user, get_db
+from backend.core.exceptions import ValidationError
 from backend.integrations.yahoo_api import (
     exchange_code_for_tokens,
     get_authorization_url,
 )
+from backend.repositories.credential_repo import CredentialRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/yahoo", summary="Redirect to Yahoo OAuth authorization page")
-async def yahoo_login():
+@router.get("/yahoo/connect", summary="Redirect to Yahoo OAuth (requires login)")
+async def yahoo_connect(user=Depends(get_current_user)):
     """
-    Initiate Yahoo OAuth flow.
-    Opens Yahoo's authorization page where the user grants Fantasy Sports access.
+    Initiate Yahoo OAuth for current user.
+    Encodes user_id in state parameter (CSRF protection).
     """
     if not settings.yahoo_client_id:
-        raise HTTPException(
-            status_code=500,
-            detail="YAHOO_CLIENT_ID not configured — add it to .env and restart",
-        )
-    url = get_authorization_url()
-    logger.info("Redirecting to Yahoo OAuth: %s", url[:60] + "...")
+        from backend.core.exceptions import AppError
+        raise AppError("YAHOO_CLIENT_ID not configured")
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    url = get_authorization_url(state=state)
+    logger.info("Yahoo OAuth redirect for user %s", user.id)
     return RedirectResponse(url=url)
 
 
-@router.get("/yahoo/callback", summary="Yahoo OAuth callback — exchange code for tokens")
-async def yahoo_callback(code: str):
+@router.get("/yahoo/callback", summary="Yahoo OAuth callback")
+async def yahoo_callback(
+    code: str,
+    state: str = "",
+    db=Depends(get_db),
+):
     """
     Yahoo redirects here after the user authorizes the app.
-    Exchanges the authorization code for access + refresh tokens.
-
-    Copy the YAHOO_REFRESH_TOKEN printed in server logs to your .env file.
+    Exchanges code for tokens, stores encrypted per user.
+    Redirects to /account?connected=yahoo.
     """
     if not code:
-        raise HTTPException(status_code=400, detail="Missing authorization code")
+        raise ValidationError("Missing authorization code")
+
+    # Decode user_id from state
+    user_id = None
+    if state:
+        try:
+            state_data = json.loads(
+                base64.urlsafe_b64decode(state).decode()
+            )
+            user_id = state_data.get("user_id")
+        except Exception:
+            raise ValidationError("Invalid OAuth state parameter")
+
+    if not user_id:
+        raise ValidationError("Missing user_id in OAuth state")
 
     try:
         tokens = await exchange_code_for_tokens(code)
     except Exception as exc:
         logger.error("Yahoo OAuth token exchange failed: %s", exc)
-        raise HTTPException(
-            status_code=400, detail=f"Token exchange failed: {exc}"
-        ) from exc
+        raise ValidationError(f"Token exchange failed: {exc}")
 
-    refresh_token = tokens.get("refresh_token", "")
-    access_token = tokens.get("access_token", "")
+    # Compute expiry
+    expires_in = int(tokens.get("expires_in", 3600))
+    expires_at = datetime.now(timezone.utc).replace(
+        microsecond=0
+    )
+    from datetime import timedelta
+    expires_at = expires_at + timedelta(seconds=expires_in)
 
-    if refresh_token:
-        # Log at INFO so the user can copy it — do not expose in HTTP response body
-        logger.info(
-            "Yahoo OAuth complete. Add to .env:\n  YAHOO_REFRESH_TOKEN=%s",
-            refresh_token,
-        )
-    else:
-        logger.warning("Yahoo did not return a refresh token — check app scope settings")
+    repo = CredentialRepository(db)
+    await repo.upsert_yahoo(
+        user_id=user_id,
+        access_token=tokens.get("access_token", ""),
+        refresh_token=tokens.get("refresh_token", ""),
+        expires_at=expires_at,
+    )
 
-    return {
-        "status": "ok",
-        "message": (
-            "OAuth complete. Copy YAHOO_REFRESH_TOKEN below to .env, "
-            "then restart the app."
-        ),
-        "has_access_token": bool(access_token),
-        "has_refresh_token": bool(refresh_token),
-        # Never return tokens in the response body
-    }
+    logger.info("Yahoo OAuth complete for user %s", user_id)
+    return RedirectResponse(url="/account?connected=yahoo", status_code=302)
+
+
+@router.delete("/yahoo/disconnect", summary="Remove Yahoo credentials")
+async def yahoo_disconnect(
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Remove Yahoo credentials for current user."""
+    repo = CredentialRepository(db)
+    await repo.disconnect(user.id, "yahoo")
+    return {"status": "disconnected", "platform": "yahoo"}
