@@ -614,8 +614,13 @@ class PlayerProfilesAgent(BaseAgent):
             return _extract(rows.iloc[0])
 
         # --- Path 3: cross-team fallback (pre-trade history) + SAME POSITION ---
-        # Only use when there is exactly ONE unique player_id with this initial+last
-        # at this position across all teams.
+        # Only use when the caller has a known nfl_player_id that matches
+        # the candidate's player_id. Without an ID to verify, cross-team
+        # fallback risks attributing stats from a different player who
+        # shares the same initial+last name (e.g. J'Mari Taylor ≠ Jonathan Taylor).
+        if not nfl_player_id:
+            return None  # No ID to verify — refuse cross-team attribution
+
         first_initial = player_name.split()[0][0].upper()
         all_last = _pos_filter(
             ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
@@ -624,9 +629,12 @@ class PlayerProfilesAgent(BaseAgent):
         candidates = initial_fallback if not initial_fallback.empty else all_last
 
         if "player_id" in candidates.columns:
-            unique_ids = candidates["player_id"].nunique()
-            if unique_ids != 1:
-                return None  # Ambiguous — refuse to attribute wrong player's stats
+            # Verify the candidate's player_id matches the caller's ID
+            id_match = candidates[candidates["player_id"] == nfl_player_id]
+            if not id_match.empty:
+                return _extract(id_match.sort_values("games", ascending=False).iloc[0])
+            # ID mismatch — different player with same name
+            return None
         elif len(candidates["player_name"].unique()) != 1:
             return None  # No player_id column but multiple name variants
 
