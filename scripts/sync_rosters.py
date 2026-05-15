@@ -67,7 +67,7 @@ async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
             sleeper_id = str(row["player_id"])
             full_name = row.get("full_name", "")
             position = row.get("position", "")
-            team = row.get("team")  # None for free agents
+            team = row.get("team") if pd.notna(row.get("team")) else None
             sportradar = (
                 str(row["sportradar_id"])
                 if pd.notna(row.get("sportradar_id"))
