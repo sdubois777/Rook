@@ -230,6 +230,8 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 {(() => {
                   const baseline = player.profile.clean_season_baseline
                   const projectedPPR = baseline.projected_ppr_season ?? baseline.ppr_points
+                  const isSonnet = player.profile.profile_source === 'sonnet_projection'
+                  const isCollegeComps = player.profile.profile_source === 'college_comps'
                   const projCeiling = player.profile.ceiling_value_ppr
                     ?? baseline.upside_ppr
                     ?? projectedPPR * 1.25
@@ -244,11 +246,13 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   }
                   return (
                     <div className="bg-[#1c1f2e] rounded p-3 mb-3">
-                      <div className="text-[10px] text-slate-500 mb-1">Projected PPR (17 games)</div>
+                      <div className="text-[10px] text-slate-500 mb-1">
+                        {isSonnet ? 'Projected PPR (17 games)' : 'Baseline PPR (17 games)'}
+                      </div>
                       <div className="text-xl font-mono font-semibold text-blue-400">
                         {projectedPPR?.toFixed(1)}
                       </div>
-                      {projCeiling > 0 && (
+                      {(isSonnet || isCollegeComps) && projCeiling > 0 && (
                         <div className="mt-2">
                           <div className="flex justify-between text-[10px] text-slate-500 mb-1">
                             <span>Floor: {projFloor?.toFixed(0)}</span>
@@ -273,25 +277,27 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   )
                 })()}
 
-                {/* Reasoning */}
-                {player.profile.projection_reasoning && (
+                {/* Reasoning — only for AI projections */}
+                {player.profile.profile_source === 'sonnet_projection' && player.profile.projection_reasoning && (
                   <p className="text-xs text-slate-400 leading-relaxed mb-3">
                     {player.profile.projection_reasoning}
                   </p>
                 )}
 
-                {/* Career trajectory + key metrics */}
-                <div className="grid grid-cols-2 gap-2">
-                  {player.profile.career_trajectory && (
-                    <Stat label="Trajectory" value={player.profile.career_trajectory} />
-                  )}
-                  {player.profile.separation_score && (
-                    <Stat label="Separation" value={player.profile.separation_score} />
-                  )}
-                  {player.profile.yards_after_catch_score && (
-                    <Stat label="YAC" value={player.profile.yards_after_catch_score} />
-                  )}
-                </div>
+                {/* Career trajectory + key metrics — only for AI projections */}
+                {player.profile.profile_source === 'sonnet_projection' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {player.profile.career_trajectory && (
+                      <Stat label="Trajectory" value={player.profile.career_trajectory} />
+                    )}
+                    {player.profile.separation_score && (
+                      <Stat label="Separation" value={player.profile.separation_score} />
+                    )}
+                    {player.profile.yards_after_catch_score && (
+                      <Stat label="YAC" value={player.profile.yards_after_catch_score} />
+                    )}
+                  </div>
+                )}
               </Section>
             )}
 

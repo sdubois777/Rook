@@ -1,5 +1,6 @@
 import { useUser, useClerk } from '@clerk/clerk-react'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
 
 async function fetchAccountData() {
@@ -155,9 +156,9 @@ export default function AccountPage() {
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">My Leagues</h2>
-            <button className="text-sm text-blue-400 hover:text-blue-300">
+            <Link to="/league-setup" className="text-sm text-blue-400 hover:text-blue-300">
               + Add League
-            </button>
+            </Link>
           </div>
 
           {leagues.length === 0 ? (

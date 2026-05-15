@@ -29,6 +29,9 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "svix>=1.21.0",
 
+    # Encryption (platform credentials)
+    "cryptography>=42.0.0",
+
     # Scheduling
     "apscheduler>=3.10.4",
 

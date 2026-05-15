@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.core.exceptions import AppError
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
-from backend.routers import admin, assistant, auth, draft, draftboard, league, news, pipeline, players, preferences, teams
+from backend.routers import admin, assistant, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
 from backend.routers import account, webhooks
 from backend.websocket.manager import news_ws_manager
 
@@ -69,6 +69,7 @@ app.include_router(preferences.router)
 app.include_router(teams.router)
 app.include_router(account.router)
 app.include_router(webhooks.router)
+app.include_router(league_connect.router)
 
 _scheduler = None
 
@@ -194,7 +195,7 @@ if FRONTEND_DIST.exists():
     # (React Router handles client-side routing)
     _API_PREFIXES = (
         "admin", "assistant", "auth", "draft", "draftboard",
-        "league", "news", "pipeline", "players", "preferences",
+        "league", "leagues", "news", "pipeline", "players", "preferences",
         "teams", "health", "docs", "openapi.json", "redoc",
         "ws/", "api/", "account", "webhooks",
     )

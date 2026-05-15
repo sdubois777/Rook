@@ -160,9 +160,13 @@ async def get_draftboard(
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
             ppr_points=(
-                float(p.profile.clean_season_baseline.get("ppr_points"))
+                float(
+                    p.profile.clean_season_baseline.get("projected_ppr_season")
+                    or p.profile.clean_season_baseline.get("ppr_points")
+                )
                 if p.profile and p.profile.clean_season_baseline
-                and p.profile.clean_season_baseline.get("ppr_points") is not None
+                and (p.profile.clean_season_baseline.get("projected_ppr_season") is not None
+                     or p.profile.clean_season_baseline.get("ppr_points") is not None)
                 else None
             ),
             breakout_flag=p.breakout_flag or False,

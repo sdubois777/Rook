@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     # Optional
     rapidapi_key: Optional[str] = None
 
+    # Platform token encryption
+    platform_token_encryption_key: str = ""
+
+    # App URL (for ESPN bookmarklet redirect)
+    app_url: str = "http://localhost:8000"
+
+    # In-season data APIs (Stage 20+)
+    the_odds_api_key: Optional[str] = None
+    openweathermap_api_key: Optional[str] = None
+
     # Clerk authentication
     clerk_secret_key: Optional[str] = None
     vite_clerk_publishable_key: Optional[str] = None

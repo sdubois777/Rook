@@ -332,6 +332,9 @@ Rules:
 - upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
 - Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
 - Contract year (contract_year=true) → slight upward trajectory bias.
+- Do NOT invent specific injury events. If the injury data shows "no significant history",
+  say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
+  Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
 Your entire response must be parseable by json.loads()."""
 
@@ -347,7 +350,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     # Limit concurrent Sonnet calls across all teams to avoid 529 bursts.
     # 4 teams × 3+ Sonnet players each = 12+ simultaneous requests → 529.
-    _sonnet_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(2)
+    _sonnet_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(6)
 
     # ------------------------------------------------------------------
     # Sonnet rate-limited wrapper
@@ -603,19 +606,39 @@ class PlayerProfilesAgent(BaseAgent):
         )
         rows = _pos_filter(ts_df[mask]).sort_values("games", ascending=False)
 
-        # Disambiguate same-last-name same-team same-position players by first initial
-        if len(rows) > 1:
+        # Always disambiguate by first initial — even with one match,
+        # a different initial means a different player (e.g. Isaiah Jacobs
+        # vs Josh Jacobs on GB).  Handles both abbreviated ("D.Samuel")
+        # and full name ("Deebo Samuel") formats.
+        if not rows.empty:
             first_initial = player_name.split()[0][0].upper()
-            initial_rows = rows[rows["player_name"].str.startswith(f"{first_initial}.")]
+            initial_rows = rows[
+                rows["player_name"].str[0].str.upper() == first_initial
+            ]
             if not initial_rows.empty:
                 rows = initial_rows
+            elif nfl_player_id and "player_id" in rows.columns:
+                # Initial mismatch — verify by ID before attributing
+                id_rows = rows[rows["player_id"] == nfl_player_id]
+                if not id_rows.empty:
+                    rows = id_rows
+                else:
+                    rows = rows.iloc[0:0]  # ID mismatch — wrong player
+            elif len(rows) == 1:
+                # Single match, wrong initial, no ID to verify — refuse
+                rows = rows.iloc[0:0]
 
         if not rows.empty:
             return _extract(rows.iloc[0])
 
         # --- Path 3: cross-team fallback (pre-trade history) + SAME POSITION ---
-        # Only use when there is exactly ONE unique player_id with this initial+last
-        # at this position across all teams.
+        # Only use when the caller has a known nfl_player_id that matches
+        # the candidate's player_id. Without an ID to verify, cross-team
+        # fallback risks attributing stats from a different player who
+        # shares the same initial+last name (e.g. J'Mari Taylor ≠ Jonathan Taylor).
+        if not nfl_player_id:
+            return None  # No ID to verify — refuse cross-team attribution
+
         first_initial = player_name.split()[0][0].upper()
         all_last = _pos_filter(
             ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
@@ -624,9 +647,12 @@ class PlayerProfilesAgent(BaseAgent):
         candidates = initial_fallback if not initial_fallback.empty else all_last
 
         if "player_id" in candidates.columns:
-            unique_ids = candidates["player_id"].nunique()
-            if unique_ids != 1:
-                return None  # Ambiguous — refuse to attribute wrong player's stats
+            # Verify the candidate's player_id matches the caller's ID
+            id_match = candidates[candidates["player_id"] == nfl_player_id]
+            if not id_match.empty:
+                return _extract(id_match.sort_values("games", ascending=False).iloc[0])
+            # ID mismatch — different player with same name
+            return None
         elif len(candidates["player_name"].unique()) != 1:
             return None  # No player_id column but multiple name variants
 
@@ -1432,13 +1458,13 @@ class PlayerProfilesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run_all_teams(
-        self, warehouse=None, concurrency: int = 2, force: bool = False,
+        self, warehouse=None, concurrency: int = 10, force: bool = False,
     ) -> dict[str, int]:
         """
         Run all 32 teams. Warehouse provides all NFL data — no pre-loading needed.
         Returns {team_abbr: profiles_written}.
 
-        Default concurrency=2 (not 4) to limit Sonnet burst pressure.
+        Default concurrency=10 with _sonnet_semaphore=6 limiting Sonnet burst.
         Combined with _sonnet_semaphore(2), this caps peak Sonnet calls to 2.
         """
         if warehouse is not None:
@@ -2267,7 +2293,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False, force: bool = Fals
 
 
 async def run_all_teams(
-    concurrency: int = 4, dry_run: bool = False, force: bool = False, warehouse=None,
+    concurrency: int = 10, dry_run: bool = False, force: bool = False, warehouse=None,
 ) -> dict[str, int]:
     return await _get_agent(dry_run, warehouse=warehouse).run_all_teams(
         warehouse=warehouse, concurrency=concurrency, force=force,

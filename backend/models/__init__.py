@@ -11,6 +11,7 @@ from backend.models.market_value_metadata import MarketValueMetadata
 from backend.models.league_auction_history import LeagueAuctionHistory
 from backend.models.user import User, CreditUsageLog
 from backend.models.user_league import UserLeague
+from backend.models.platform_credential import PlatformCredential
 
 __all__ = [
     "Player",
@@ -32,4 +33,5 @@ __all__ = [
     "User",
     "CreditUsageLog",
     "UserLeague",
+    "PlatformCredential",
 ]

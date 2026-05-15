@@ -358,8 +358,29 @@ async def main() -> None:
     print()
 
     teams = [team_filter] if team_filter else None
-    for name in agents:
-        await run_agent(name, teams, force=args.force, warehouse=warehouse)
+
+    # Pipeline dependency phases — independent agents run in parallel
+    _PHASES = [
+        ["team_systems"],                              # Phase 1: no deps
+        ["roster_changes"],                            # Phase 2: needs team_systems
+        ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
+        ["player_profiles"],                           # Phase 4: needs all above
+        ["valuation"],                                 # Phase 5: needs profiles
+        ["valuation_agent"],                           # Phase 6: needs valuation
+    ]
+
+    for phase in _PHASES:
+        phase_agents = [a for a in phase if a in agents]
+        if not phase_agents:
+            continue
+        if len(phase_agents) == 1:
+            await run_agent(phase_agents[0], teams, force=args.force, warehouse=warehouse)
+        else:
+            # Run independent agents in parallel
+            await asyncio.gather(*(
+                run_agent(a, teams, force=args.force, warehouse=warehouse)
+                for a in phase_agents
+            ))
 
     print("=== Pipeline complete ===\n")
 

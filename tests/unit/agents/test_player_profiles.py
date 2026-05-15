@@ -2706,3 +2706,62 @@ def test_nfl_player_id_match_takes_priority():
     assert result is not None
     assert result["carries"] == 200
     assert result["rush_yards"] == 1000
+
+
+def test_cross_team_fallback_refuses_without_id():
+    """J'Mari Taylor (JAX, no gsis_id) must NOT get Jonathan Taylor's (IND) stats.
+
+    Path 3 cross-team fallback should refuse attribution when the caller
+    has no nfl_player_id to verify against, even if the initial+last name
+    matches a single player in the dataset.
+    """
+    agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse(target_share={2025: pd.DataFrame([
+        _make_ts_row("00-0036223", "J.Taylor", "IND", 17, 40, 350, 3,
+                     carries=270, rush_yards=1350, rush_tds=12, position="RB"),
+    ])})
+    # J'Mari Taylor on JAX has no gsis_id → nfl_player_id=None
+    result = agent._get_player_season_stats(
+        "J'Mari Taylor", "JAX", 2025, position="RB", nfl_player_id=None
+    )
+    assert result is None, (
+        "J'Mari Taylor (no ID) must not get Jonathan Taylor's stats via cross-team fallback"
+    )
+
+
+def test_cross_team_fallback_works_with_matching_id():
+    """Jonathan Taylor traded mid-season: cross-team fallback WITH matching ID succeeds."""
+    agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse(target_share={2025: pd.DataFrame([
+        _make_ts_row("00-0036223", "J.Taylor", "IND", 10, 25, 200, 2,
+                     carries=150, rush_yards=700, rush_tds=6, position="RB"),
+        _make_ts_row("00-0036223", "J.Taylor", "NYG", 7, 15, 150, 1,
+                     carries=120, rush_yards=650, rush_tds=6, position="RB"),
+    ])})
+    # Jonathan Taylor traded to NYG — lookup from NYG with his real ID should find him
+    result = agent._get_player_season_stats(
+        "Jonathan Taylor", "NYG", 2025, position="RB", nfl_player_id="00-0036223"
+    )
+    assert result is not None, "Cross-team fallback should work when ID matches"
+    assert result["games"] == 17
+    assert result["rush_yards"] == 1350
+
+
+def test_same_team_initial_mismatch_refuses():
+    """Isaiah Jacobs (GB) must NOT get Josh Jacobs' (GB) stats.
+
+    Path 2 same-team match should check first initial even with
+    a single result — I.Jacobs != J.Jacobs.
+    """
+    agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse(target_share={2025: pd.DataFrame([
+        _make_ts_row("00-0035700", "J.Jacobs", "GB", 17, 40, 350, 3,
+                     carries=250, rush_yards=1200, rush_tds=10, position="RB"),
+    ])})
+    # Isaiah Jacobs on GB has no gsis_id, initial "I" doesn't match "J"
+    result = agent._get_player_season_stats(
+        "Isaiah Jacobs", "GB", 2025, position="RB", nfl_player_id=None
+    )
+    assert result is None, (
+        "Isaiah Jacobs (I.) must not get Josh Jacobs (J.) stats even on same team"
+    )

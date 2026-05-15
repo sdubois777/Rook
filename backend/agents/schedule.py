@@ -412,7 +412,7 @@ class ScheduleAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run_all_teams(
-        self, warehouse=None, concurrency: int = 4
+        self, warehouse=None, concurrency: int = 10
     ) -> dict[str, int]:
         """
         Reads all data from the warehouse — no independent data fetching.
@@ -591,6 +591,6 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> int:
 
 
 async def run_all_teams(
-    concurrency: int = 4, dry_run: bool = False, warehouse=None
+    concurrency: int = 10, dry_run: bool = False, warehouse=None
 ) -> dict[str, int]:
     return await _get_agent(dry_run).run_all_teams(warehouse=warehouse, concurrency=concurrency)
