@@ -97,6 +97,13 @@ def fetch_sleeper_players() -> pd.DataFrame:
     # Normalize: empty string team → None (FA)
     skill["team"] = skill["team"].replace("", None)
 
+    # Normalize team abbreviations to match pipeline conventions
+    # Sleeper uses "LA" for Rams; our pipeline uses "LAR"
+    _SLEEPER_TEAM_ALIASES = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
+    skill["team"] = skill["team"].map(
+        lambda t: _SLEEPER_TEAM_ALIASES.get(t, t) if pd.notna(t) else t
+    )
+
     # depth_chart_order as nullable int
     if "depth_chart_order" in skill.columns:
         skill["depth_chart_order"] = pd.to_numeric(
