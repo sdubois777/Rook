@@ -37,6 +37,9 @@ from backend.utils.seasons import get_analysis_seasons, get_analysis_year, get_c
 
 logger = logging.getLogger(__name__)
 
+# Smart-skip: if the last analysis for a team is within this many days, skip re-analysis
+ROSTER_CHANGES_STALENESS_DAYS = 7
+
 # ---------------------------------------------------------------------------
 # System prompt — dynamic year, no hardcoded integers
 # ---------------------------------------------------------------------------
@@ -1187,14 +1190,47 @@ class RosterChangesAgent(BaseAgent):
         return flags
 
     # ------------------------------------------------------------------
+    # Smart skip — avoid re-running Sonnet for stable teams
+    # ------------------------------------------------------------------
+
+    async def _should_skip_team(self, team_abbr: str) -> bool:
+        """Return True if this team's roster_changes analysis is fresh enough to skip."""
+        if self.dry_run:
+            return False
+        try:
+            from backend.models.agent_cache import AgentCache
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(AgentCache.created_at)
+                    .where(
+                        AgentCache.agent_name == self.AGENT_NAME,
+                        AgentCache.entity_id == team_abbr.upper(),
+                    )
+                    .order_by(AgentCache.created_at.desc())
+                    .limit(1)
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return False
+                age_days = (datetime.now(timezone.utc) - row).total_seconds() / 86400
+                return age_days < ROSTER_CHANGES_STALENESS_DAYS
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
     # Per-team runner — exactly ONE call_once()
     # ------------------------------------------------------------------
 
-    async def run_for_team(self, team_abbr: str) -> list[dict]:
+    async def run_for_team(self, team_abbr: str, *, skip_if_fresh: bool = False) -> list[dict]:
         """Run for one team. One Sonnet call. Returns list of flag dicts."""
         if self._warehouse is None:
             from backend.integrations.nfl_data import NflDataWarehouse
             self._warehouse = NflDataWarehouse.build()
+
+        if skip_if_fresh and await self._should_skip_team(team_abbr):
+            logger.info("Skipping %s — analysis fresh (< %d days)", team_abbr, ROSTER_CHANGES_STALENESS_DAYS)
+            return []
         logger.info("Building context for %s", team_abbr)
 
         try:
@@ -1294,7 +1330,7 @@ class RosterChangesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, warehouse=None, concurrency: int = 2) -> dict[str, int]:
+    async def run_all_teams(self, warehouse=None, concurrency: int = 10) -> dict[str, int]:
         """
         Run all 32 teams. NFL data from warehouse, college/comp data loaded here.
         Returns {team_abbr: flag_count}.
@@ -1347,7 +1383,7 @@ class RosterChangesAgent(BaseAgent):
 
         async def _run_one(team: str) -> None:
             async with semaphore:
-                flags = await self.run_for_team(team)
+                flags = await self.run_for_team(team, skip_if_fresh=True)
                 results[team] = len(flags)
 
         await asyncio.gather(*[_run_one(t) for t in NFL_TEAMS])
@@ -1566,7 +1602,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False) -> list[dict]:
 
 
 async def run_all_teams(
-    concurrency: int = 4, dry_run: bool = False, warehouse=None,
+    concurrency: int = 10, dry_run: bool = False, warehouse=None,
 ) -> dict[str, int]:
     return await _get_agent(dry_run, warehouse=warehouse).run_all_teams(
         warehouse=warehouse, concurrency=concurrency,

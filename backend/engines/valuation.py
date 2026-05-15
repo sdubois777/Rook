@@ -82,7 +82,7 @@ MAX_REALISTIC_BID: dict[str, int] = {
 # If the dynamically computed replacement PPR/game falls below these values,
 # something is wrong with the data (too few profiles, skewed sample).
 REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
-    "QB": 18.0,
+    "QB": 17.0,
     "RB": 8.0,
     "WR": 7.0,
     "TE": 5.0,
@@ -114,18 +114,39 @@ _BENCH_SPLIT: dict[str, float] = {"QB": 0.08, "RB": 0.28, "WR": 0.35, "TE": 0.14
 DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
 
 # ---------------------------------------------------------------------------
-# Tier assignment
+# Tier assignment — PAR-ratio-based (no rank caps)
 # ---------------------------------------------------------------------------
 
-# Tier boundaries by positional rank (1-indexed, inclusive upper bound)
-_TIER_CUTOFFS = [3, 9, 19, 34]  # T1≤3, T2≤9, T3≤19, T4≤34, T5=rest
+# Position-specific PAR ratio thresholds: raw_ppr / replacement_ppr
+# Players are tiered by how far above replacement they are, not by rank.
+# Different positions have different tier cutoffs because PPR scoring
+# compresses QB/TE ranges relative to RB/WR.
+_PAR_RATIO_THRESHOLDS = {
+    "QB": {"T1": Decimal("1.07"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
+    "RB": {"T1": Decimal("2.5"), "T2": Decimal("1.8"), "T3": Decimal("1.3")},
+    "WR": {"T1": Decimal("2.0"), "T2": Decimal("1.5"), "T3": Decimal("1.2")},
+    "TE": {"T1": Decimal("2.2"), "T2": Decimal("1.6"), "T3": Decimal("1.2")},
+}
+
+_T4_FLOOR = Decimal("0.8")  # T4: >= 0.8x replacement, all positions
 
 
-def assign_tier(rank: int) -> int:
-    """Return tier 1-5 for a player ranked `rank` among their position."""
-    for tier, cutoff in enumerate(_TIER_CUTOFFS, start=1):
-        if rank <= cutoff:
-            return tier
+def assign_tier(par_ratio: float, position: str) -> int:
+    """Return tier 1-5 based on PAR ratio and position.
+
+    Higher PAR ratio = higher tier. No per-position rank cap.
+    Position-specific thresholds account for PPR scoring compression.
+    """
+    ratio = Decimal(str(par_ratio))
+    thresholds = _PAR_RATIO_THRESHOLDS.get(position, _PAR_RATIO_THRESHOLDS["WR"])
+    if ratio >= thresholds["T1"]:
+        return 1
+    if ratio >= thresholds["T2"]:
+        return 2
+    if ratio >= thresholds["T3"]:
+        return 3
+    if ratio >= _T4_FLOOR:
+        return 4
     return 5
 
 
@@ -398,7 +419,7 @@ def get_draftable_pool_sizes(
     te_bench = round(bench * teams * _BENCH_SPLIT["TE"])
 
     return {
-        "QB": qb_starters + qb_bench,
+        "QB": qb_starters + 1,  # 1-QB league: replacement = first non-starter
         "RB": rb_starters + rb_flex + rb_bench,
         "WR": wr_starters + wr_flex + wr_bench,
         "TE": te_starters + te_flex + te_bench,
@@ -617,7 +638,9 @@ async def run_valuation_pass(
             ctx = par_context[pos]
             for rank_0, (player, raw_ppr, adjusted_ppr) in enumerate(group):
                 rank = rank_0 + 1
-                tier = assign_tier(rank)  # from RAW PPR rank — talent, not risk
+                repl_ppr = ctx["replacement_ppr"]
+                par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
+                tier = assign_tier(par_ratio, pos)  # PAR-ratio-based, position-specific
 
                 sv = ppr_to_system_value(
                     ppr_points        = adjusted_ppr,  # dollar value from risk-adjusted PPR

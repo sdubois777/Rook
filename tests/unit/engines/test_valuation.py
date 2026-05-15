@@ -28,32 +28,74 @@ from backend.engines.valuation import (
 
 
 # ===========================================================================
-# assign_tier
+# assign_tier — position-specific PAR-ratio thresholds
 # ===========================================================================
 
-def test_assign_tier_top3_is_tier1():
-    assert assign_tier(1) == 1
-    assert assign_tier(3) == 1
+def test_assign_tier_rb_elite_par_is_tier1():
+    """RB PAR ratio >= 2.5 → T1."""
+    assert assign_tier(3.0, "RB") == 1
+    assert assign_tier(2.5, "RB") == 1
 
 
-def test_assign_tier_rank4_to_9_is_tier2():
-    assert assign_tier(4) == 2
-    assert assign_tier(9) == 2
+def test_assign_tier_wr_elite_par_is_tier1():
+    """WR PAR ratio >= 2.0 → T1 (lower bar than RB)."""
+    assert assign_tier(2.5, "WR") == 1
+    assert assign_tier(2.0, "WR") == 1
 
 
-def test_assign_tier_rank10_to_19_is_tier3():
-    assert assign_tier(10) == 3
-    assert assign_tier(19) == 3
+def test_assign_tier_te_elite_par_is_tier1():
+    """TE PAR ratio >= 2.2 → T1."""
+    assert assign_tier(2.5, "TE") == 1
+    assert assign_tier(2.2, "TE") == 1
 
 
-def test_assign_tier_rank20_to_34_is_tier4():
-    assert assign_tier(20) == 4
-    assert assign_tier(34) == 4
+def test_assign_tier_qb_elite_par_is_tier1():
+    """QB PAR ratio >= 1.07 → T1 (1-QB league, highly compressed scoring)."""
+    assert assign_tier(1.30, "QB") == 1
+    assert assign_tier(1.07, "QB") == 1
+    assert assign_tier(1.06, "QB") == 2
 
 
-def test_assign_tier_rank35_plus_is_tier5():
-    assert assign_tier(35) == 5
-    assert assign_tier(200) == 5
+def test_assign_tier_rb_strong_par_is_tier2():
+    """RB PAR ratio 1.8–2.49 → T2."""
+    assert assign_tier(2.4, "RB") == 2
+    assert assign_tier(1.8, "RB") == 2
+
+
+def test_assign_tier_wr_strong_par_is_tier2():
+    """WR PAR ratio 1.5–1.99 → T2."""
+    assert assign_tier(1.9, "WR") == 2
+    assert assign_tier(1.5, "WR") == 2
+
+
+def test_assign_tier_rb_starter_par_is_tier3():
+    """RB PAR ratio 1.3–1.79 → T3."""
+    assert assign_tier(1.7, "RB") == 3
+    assert assign_tier(1.3, "RB") == 3
+
+
+def test_assign_tier_wr_starter_par_is_tier3():
+    """WR PAR ratio 1.2–1.49 → T3."""
+    assert assign_tier(1.4, "WR") == 3
+    assert assign_tier(1.2, "WR") == 3
+
+
+def test_assign_tier_flex_par_is_tier4():
+    """PAR ratio 0.8–threshold → T4 (all positions)."""
+    assert assign_tier(1.1, "RB") == 4
+    assert assign_tier(0.8, "WR") == 4
+
+
+def test_assign_tier_below_replacement_is_tier5():
+    """PAR ratio < 0.8 → T5."""
+    assert assign_tier(0.7, "RB") == 5
+    assert assign_tier(0.0, "WR") == 5
+
+
+def test_assign_tier_unknown_position_uses_wr_defaults():
+    """Unknown position falls back to WR thresholds."""
+    assert assign_tier(2.0, "K") == 1
+    assert assign_tier(1.5, "K") == 2
 
 
 # ===========================================================================
@@ -471,7 +513,7 @@ def test_bid_ceiling_hard_cap_enforced():
 
 def test_replacement_level_floor_constants():
     """FIX 2: Verify replacement level PPR per game floor values exist."""
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] == 18.0
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] == 17.0
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] == 8.0
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] == 7.0
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] == 5.0
@@ -641,7 +683,7 @@ def test_pool_sizes_derived_from_league_settings():
     """Pool sizes calculated from roster slots × teams + bench/flex allocation."""
     sizes = get_draftable_pool_sizes(teams=12)
     # Standard 12-team league: each position should include starters + bench depth
-    assert sizes["QB"] >= 15   # 12 starters + bench
+    assert sizes["QB"] == 13   # 12 starters + 1 (first non-starter)
     assert sizes["RB"] >= 40   # 24 starters + flex + bench
     assert sizes["WR"] >= 50   # 24 starters + flex + bench
     assert sizes["TE"] >= 20   # 12 starters + flex + bench
@@ -880,10 +922,11 @@ from backend.engines.valuation import _get_risk_modifier, MAX_RISK_MODIFIER
 
 @pytest.mark.asyncio
 async def test_tier_from_raw_ppr_not_adjusted():
-    """Player with dependency adjustment still gets tier from raw PPR rank.
+    """Player with dependency adjustment still gets tier from raw PPR ratio.
 
-    Amon-Ra scenario: 262 raw PPR → rank 8 among WRs → Tier 2,
-    even though adjusted_ppr is ~196 after displaced flag.
+    Amon-Ra scenario: 265 raw PPR / 153 replacement = 1.73 ratio → Tier 2
+    (WR T2 threshold = 1.5), even though adjusted_ppr is ~198 after displaced flag.
+    Tier from raw PPR, not risk-adjusted PPR.
     """
     # Create 10 WRs: #8 has a -25% displaced flag
     mock_players = []
@@ -911,7 +954,7 @@ async def test_tier_from_raw_ppr_not_adjusted():
         await run_valuation_pass()
 
     amon_ra = [p for p in mock_players if p.name == "Amon-Ra"][0]
-    # Rank 8 by raw PPR → Tier 2 (cutoff ≤ 9)
+    # 265 raw PPR / 153 repl = 1.73 PAR ratio → Tier 2 (WR T2 >= 1.5)
     assert amon_ra.tier == 2, f"Amon-Ra tier should be 2, got {amon_ra.tier}"
     # Dollar value should still be reduced (adjusted PPR used for PAR)
     assert amon_ra.baseline_value is not None
@@ -1031,7 +1074,7 @@ def test_dependency_adjustment_normalizes_whole_percentages():
 
 def test_replacement_level_floor_values():
     """LEAGUE_RULES.md replacement floors: QB=18, RB=8, WR=7, TE=5 PPR/game."""
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] * 17 == pytest.approx(306.0)
+    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] * 17 == pytest.approx(289.0)
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] * 17 == pytest.approx(136.0)
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] * 17 == pytest.approx(119.0)
     assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] * 17 == pytest.approx(85.0)

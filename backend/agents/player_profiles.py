@@ -332,6 +332,9 @@ Rules:
 - upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
 - Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
 - Contract year (contract_year=true) → slight upward trajectory bias.
+- Do NOT invent specific injury events. If the injury data shows "no significant history",
+  say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
+  Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
 Your entire response must be parseable by json.loads()."""
 
@@ -347,7 +350,7 @@ class PlayerProfilesAgent(BaseAgent):
 
     # Limit concurrent Sonnet calls across all teams to avoid 529 bursts.
     # 4 teams × 3+ Sonnet players each = 12+ simultaneous requests → 529.
-    _sonnet_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(2)
+    _sonnet_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(6)
 
     # ------------------------------------------------------------------
     # Sonnet rate-limited wrapper
@@ -1455,13 +1458,13 @@ class PlayerProfilesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def run_all_teams(
-        self, warehouse=None, concurrency: int = 2, force: bool = False,
+        self, warehouse=None, concurrency: int = 10, force: bool = False,
     ) -> dict[str, int]:
         """
         Run all 32 teams. Warehouse provides all NFL data — no pre-loading needed.
         Returns {team_abbr: profiles_written}.
 
-        Default concurrency=2 (not 4) to limit Sonnet burst pressure.
+        Default concurrency=10 with _sonnet_semaphore=6 limiting Sonnet burst.
         Combined with _sonnet_semaphore(2), this caps peak Sonnet calls to 2.
         """
         if warehouse is not None:
@@ -2290,7 +2293,7 @@ async def run_for_team(team_abbr: str, dry_run: bool = False, force: bool = Fals
 
 
 async def run_all_teams(
-    concurrency: int = 4, dry_run: bool = False, force: bool = False, warehouse=None,
+    concurrency: int = 10, dry_run: bool = False, force: bool = False, warehouse=None,
 ) -> dict[str, int]:
     return await _get_agent(dry_run, warehouse=warehouse).run_all_teams(
         warehouse=warehouse, concurrency=concurrency, force=force,
