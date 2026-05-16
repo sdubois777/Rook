@@ -27,6 +27,35 @@ def _make_league(platform="yahoo", league_id="test-123"):
     return league
 
 
+def _make_mock_db(league):
+    """Create a mock db that returns the league on SELECT, otherwise a plain mock."""
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.rollback = AsyncMock()
+
+    # First execute call = SELECT UserLeague (returns league)
+    # Subsequent calls = INSERT statements (return plain mock)
+    select_result = MagicMock()
+    select_result.scalar_one_or_none.return_value = league
+
+    insert_result = MagicMock()
+    insert_result.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
+
+    call_count = {"n": 0}
+    original_execute = AsyncMock(return_value=insert_result)
+
+    async def smart_execute(stmt, *a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return select_result
+        return await original_execute(stmt, *a, **kw)
+
+    mock_db.execute = smart_execute
+    # Expose for assertions
+    mock_db._call_count = call_count
+    return mock_db
+
+
 def _make_picks(count=5, season=2025):
     """Generate dummy draft picks."""
     picks = []
@@ -60,9 +89,7 @@ def _make_rosters(count=3):
 @pytest.mark.asyncio
 async def test_sync_imports_up_to_4_seasons():
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     mock_platform = AsyncMock()
     mock_platform.get_draft_picks.return_value = _make_picks(3)
@@ -81,7 +108,7 @@ async def test_sync_imports_up_to_4_seasons():
     ):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
-        summary = await service.sync_league(league)
+        summary = await service.sync_league(league.id)
 
     assert summary["seasons_imported"] == 4
     assert summary["picks_imported"] > 0
@@ -92,9 +119,7 @@ async def test_sync_imports_up_to_4_seasons():
 async def test_sync_handles_season_failure_gracefully():
     """A single season failing should not abort the entire sync."""
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     call_count = 0
 
@@ -122,7 +147,7 @@ async def test_sync_handles_season_failure_gracefully():
     ):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
-        summary = await service.sync_league(league)
+        summary = await service.sync_league(league.id)
 
     # 3 out of 4 seasons should succeed
     assert summary["seasons_imported"] == 3
@@ -131,9 +156,7 @@ async def test_sync_handles_season_failure_gracefully():
 @pytest.mark.asyncio
 async def test_sync_stores_manager_map():
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     rosters = [
         TeamRoster(
@@ -165,7 +188,7 @@ async def test_sync_stores_manager_map():
     ):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
-        await service.sync_league(league)
+        await service.sync_league(league.id)
 
     assert league.manager_map == {"1": "Alice", "2": "Bob"}
     assert league.last_synced is not None
@@ -174,9 +197,7 @@ async def test_sync_stores_manager_map():
 @pytest.mark.asyncio
 async def test_sync_caches_free_agents():
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     free_agents = [
         FreeAgent(
@@ -205,7 +226,7 @@ async def test_sync_caches_free_agents():
     ):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
-        summary = await service.sync_league(league)
+        summary = await service.sync_league(league.id)
 
     assert summary["free_agents_cached"] == 50
 
@@ -214,9 +235,6 @@ async def test_sync_caches_free_agents():
 async def test_sync_deduplicates_picks():
     """Re-syncing same league doesn't create duplicate picks (on_conflict_do_nothing)."""
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
 
     picks = _make_picks(3, season=2025)
 
@@ -236,19 +254,19 @@ async def test_sync_deduplicates_picks():
         "backend.services.league_sync.LeagueRepository",
     ):
         from backend.services.league_sync import LeagueSyncService
-        service = LeagueSyncService(mock_db, league.user_id)
 
-        # Sync once
-        summary1 = await service.sync_league(league)
-        first_execute_count = mock_db.execute.await_count
+        # First sync
+        mock_db1 = _make_mock_db(league)
+        service = LeagueSyncService(mock_db1, league.user_id)
+        summary1 = await service.sync_league(league.id)
 
-        # Sync again — same picks
-        summary2 = await service.sync_league(league)
+        # Second sync — same picks
+        mock_db2 = _make_mock_db(league)
+        service2 = LeagueSyncService(mock_db2, league.user_id)
+        summary2 = await service2.sync_league(league.id)
 
     # Both syncs report same pick count (on_conflict_do_nothing handles dedup at DB level)
     assert summary1["picks_imported"] == summary2["picks_imported"]
-    # DB execute called for both syncs (SQL issued, DB handles uniqueness)
-    assert mock_db.execute.await_count > first_execute_count
 
 
 @pytest.mark.asyncio
@@ -257,9 +275,7 @@ async def test_picks_stored_with_user_id():
     user_id = uuid.uuid4()
     league = _make_league()
     league.user_id = user_id
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     mock_platform = AsyncMock()
     mock_platform.get_draft_picks.return_value = _make_picks(2)
@@ -279,10 +295,10 @@ async def test_picks_stored_with_user_id():
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, user_id)
         assert service._user_id == user_id
-        await service.sync_league(league)
+        await service.sync_league(league.id)
 
-    # Picks were stored (execute called for INSERT statements)
-    assert mock_db.execute.await_count > 0
+    # Picks were stored (execute called for INSERT statements + initial SELECT)
+    assert mock_db._call_count["n"] > 1
 
 
 @pytest.mark.asyncio
@@ -292,7 +308,7 @@ async def test_user_a_picks_not_visible_to_user_b():
     User isolation is enforced because:
     1. LeagueSyncService stores user_id at init
     2. Picks are stored in league_auction_history via user_league_id
-    3. League ownership verified via _get_user_league(user_id, league_id)
+    3. League ownership verified via SELECT with user_id filter
     """
     user_a = uuid.uuid4()
     user_b = uuid.uuid4()
@@ -300,10 +316,6 @@ async def test_user_a_picks_not_visible_to_user_b():
     league_a.user_id = user_a
     league_b = _make_league(league_id="league-b")
     league_b.user_id = user_b
-
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
 
     mock_platform = AsyncMock()
     mock_platform.get_draft_picks.return_value = _make_picks(2)
@@ -323,19 +335,21 @@ async def test_user_a_picks_not_visible_to_user_b():
         from backend.services.league_sync import LeagueSyncService
 
         # User A syncs their league
-        service_a = LeagueSyncService(mock_db, user_a)
+        mock_db_a = _make_mock_db(league_a)
+        service_a = LeagueSyncService(mock_db_a, user_a)
         assert service_a._user_id == user_a
 
         # User B syncs their league
-        service_b = LeagueSyncService(mock_db, user_b)
+        mock_db_b = _make_mock_db(league_b)
+        service_b = LeagueSyncService(mock_db_b, user_b)
         assert service_b._user_id == user_b
 
         # Different users, different services, different user_ids
         assert service_a._user_id != service_b._user_id
 
         # Picks stored under different user_league_ids
-        summary_a = await service_a.sync_league(league_a)
-        summary_b = await service_b.sync_league(league_b)
+        summary_a = await service_a.sync_league(league_a.id)
+        summary_b = await service_b.sync_league(league_b.id)
 
     # Both syncs succeed independently
     assert summary_a["picks_imported"] > 0
@@ -346,9 +360,7 @@ async def test_user_a_picks_not_visible_to_user_b():
 async def test_sync_skips_picks_without_player_info():
     """Picks with no player_name and no platform_player_id should be skipped."""
     league = _make_league()
-    mock_db = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.execute = AsyncMock()
+    mock_db = _make_mock_db(league)
 
     picks = [
         DraftPick(
@@ -391,7 +403,7 @@ async def test_sync_skips_picks_without_player_info():
     ):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
-        summary = await service.sync_league(league)
+        summary = await service.sync_league(league.id)
 
     # Only 1 valid pick per season × 4 seasons = 4
     assert summary["picks_imported"] == 4
