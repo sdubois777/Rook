@@ -113,7 +113,9 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
     ) -> list[FreeAgent]:
         return []
 
-    async def get_draft_picks(self) -> list[DraftPick]:
+    async def get_draft_picks(
+        self, *, league_key: str | None = None,
+    ) -> list[DraftPick]:
         data = await self._get("mDraftDetail")
         picks_raw = data.get("draftDetail", {}).get("picks", [])
         result: list[DraftPick] = []

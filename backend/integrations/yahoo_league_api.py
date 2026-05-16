@@ -127,7 +127,10 @@ class YahooLeagueAPI(LeaguePlatformAPI):
             return resp.json()
 
     def _league_key(self) -> str:
-        return f"nfl.l.{self._league.league_id}"
+        from backend.integrations.yahoo_api import yahoo_league_key
+        return yahoo_league_key(
+            self._league.league_id, self._league.season_year
+        )
 
     async def get_rosters(self) -> list[TeamRoster]:
         data = await self._api_get(
@@ -188,9 +191,12 @@ class YahooLeagueAPI(LeaguePlatformAPI):
         # Yahoo free agent endpoint requires active league
         return []
 
-    async def get_draft_picks(self) -> list[DraftPick]:
+    async def get_draft_picks(
+        self, *, league_key: str | None = None,
+    ) -> list[DraftPick]:
+        key = league_key or self._league_key()
         data = await self._api_get(
-            f"league/{self._league_key()}/draftresults"
+            f"league/{key}/draftresults"
         )
         content = data.get("fantasy_content", {}).get("league", [{}, {}])
         results_raw = content[1].get("draft_results", {}) if len(content) > 1 else {}

@@ -74,7 +74,9 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
         # Derive: all NFL players NOT on any roster.
         return []
 
-    async def get_draft_picks(self) -> list[DraftPick]:
+    async def get_draft_picks(
+        self, *, league_key: str | None = None,
+    ) -> list[DraftPick]:
         drafts = await self._get(
             f"/league/{self._league.league_id}/drafts"
         )

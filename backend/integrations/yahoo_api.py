@@ -706,6 +706,60 @@ async def get_user_leagues(access_token: str) -> list[dict[str, Any]]:
     return leagues
 
 
+async def _detect_draft_type(
+    access_token: str,
+    league_key: str,
+) -> tuple[str, int | None]:
+    """
+    Detect auction vs snake by checking draft results for cost data.
+
+    Yahoo's draft_type field returns "live" for both auction and snake.
+    The only reliable signal is whether picks have cost > 0.
+
+    Returns:
+        ("auction", budget) if any pick has cost > 0
+        ("snake", None) if no costs found or detection fails
+    """
+    try:
+        data = await _api_get_with_token(
+            f"league/{league_key}/draftresults", access_token
+        )
+        content = data.get("fantasy_content", {}).get("league", [{}, {}])
+        results_raw = (
+            content[1].get("draft_results", {})
+            if len(content) > 1
+            else {}
+        )
+
+        has_costs = False
+        for key, val in results_raw.items():
+            if key == "count":
+                continue
+            pick = val.get("draft_result", {})
+            cost = pick.get("cost")
+            if cost is not None and int(cost) > 0:
+                has_costs = True
+                break
+
+        if has_costs:
+            logger.info(
+                "Auction detected for %s (picks have cost data)",
+                league_key,
+            )
+            return "auction", 200  # Yahoo default budget
+        logger.info(
+            "Snake detected for %s (no cost data in picks)",
+            league_key,
+        )
+        return "snake", None
+    except Exception as exc:
+        logger.warning(
+            "Draft type detection failed for %s: %s — defaulting to snake",
+            league_key, exc,
+        )
+        return "snake", None
+
+
 async def get_league_settings(
     access_token: str,
     league_key: str,
@@ -783,14 +837,11 @@ async def get_league_settings(
     else:
         scoring_type = "standard"
 
-    # Draft type
-    raw_draft = str(league_meta.get("draft_type", "")).lower()
-    if raw_draft == "auction":
-        draft_type = "auction"
-    elif raw_draft in ("live", "offline"):
-        draft_type = "snake"
-    else:
-        draft_type = raw_draft or "snake"
+    # Draft type — detect from actual draft pick costs, not raw metadata
+    # Yahoo returns "live" for both auction and snake drafts
+    draft_type, auction_budget = await _detect_draft_type(
+        access_token, league_key
+    )
 
     # Waiver type
     waiver_rule = str(settings_data.get("waiver_type", "")).lower()
@@ -801,11 +852,7 @@ async def get_league_settings(
         "num_teams": int(league_meta.get("num_teams", 12)),
         "draft_type": draft_type,
         "scoring_type": scoring_type,
-        "auction_budget": (
-            int(settings_data.get("max_adds", 200))
-            if draft_type == "auction"
-            else None
-        ),
+        "auction_budget": auction_budget,
         "trade_deadline": settings_data.get("trade_end_date", ""),
         "waiver_type": "faab" if uses_faab else waiver_rule,
         "playoff_start_week": int(

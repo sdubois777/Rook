@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
@@ -20,7 +20,10 @@ from backend.database import Base
 class UserLeague(Base):
     __tablename__ = "user_leagues"
     __table_args__ = (
-        # One league config per user/platform/league/season
+        UniqueConstraint(
+            "user_id", "platform", "league_id",
+            name="uq_user_leagues_user_platform_league",
+        ),
         {"extend_existing": True},
     )
 

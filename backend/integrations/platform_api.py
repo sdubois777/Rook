@@ -48,10 +48,15 @@ class LeaguePlatformAPI(ABC):
         """
 
     @abstractmethod
-    async def get_draft_picks(self) -> list[DraftPick]:
+    async def get_draft_picks(
+        self, *, league_key: str | None = None,
+    ) -> list[DraftPick]:
         """
         All picks from the completed draft.
         Includes auction prices (if auction format).
+
+        Optional league_key overrides the default key — used by
+        sync to fetch historical seasons with season-specific keys.
         """
 
     @abstractmethod

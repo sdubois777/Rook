@@ -77,12 +77,19 @@ function LeagueCard({ league }) {
 
   const scoringLabel = SCORING_LABELS[league.scoring] || league.scoring?.toUpperCase() || '—'
 
+  const isFinished = !league.is_active
+
   return (
-    <div className="bg-gray-800 rounded-lg p-4">
+    <div className={`bg-gray-800 rounded-lg p-4 ${isFinished ? 'opacity-75' : ''}`}>
       <div className="flex items-center justify-between">
         <div>
-          <div className="font-medium">
+          <div className="font-medium flex items-center gap-2">
             {league.league_name || league.league_id}
+            {isFinished && (
+              <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">
+                Finished
+              </span>
+            )}
           </div>
           <div className="text-sm text-gray-400">
             {league.platform} &middot; {league.team_count}-team &middot;{' '}

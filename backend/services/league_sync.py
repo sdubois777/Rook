@@ -60,19 +60,43 @@ class LeagueSyncService:
         }
 
         # 1. Import draft history — up to HISTORY_SEASONS
+        # Each historical season needs its own league_key (Yahoo uses
+        # season-specific game keys: "461.l.78512" for 2025, etc.)
+        from backend.integrations.yahoo_api import yahoo_league_key
+
         picks_total = 0
         seasons_ok = 0
         for offset in range(HISTORY_SEASONS):
             season = current_season - offset - 1  # completed seasons only
             if season < 2020:
                 break
-            try:
-                picks = await platform.get_draft_picks()
-                stored = await self._store_picks(
-                    picks, user_league.id, season
+
+            # Build season-specific league key for Yahoo
+            season_key = None
+            if user_league.platform == "yahoo":
+                season_key = yahoo_league_key(
+                    user_league.league_id, season
                 )
-                picks_total += stored
-                seasons_ok += 1
+
+            try:
+                logger.info(
+                    "Fetching draft picks: platform=%s key=%s season=%d",
+                    user_league.platform,
+                    season_key or user_league.league_id,
+                    season,
+                )
+                picks = await platform.get_draft_picks(
+                    league_key=season_key
+                )
+                logger.info(
+                    "Got %d picks for season %d", len(picks), season
+                )
+                if picks:
+                    stored = await self._store_picks(
+                        picks, user_league.id, season
+                    )
+                    picks_total += stored
+                    seasons_ok += 1
             except Exception as exc:
                 logger.warning(
                     "Could not import %s season %d: %s",

@@ -130,14 +130,10 @@ async def connect_yahoo_league(
 ):
     """Connect a Yahoo league. Requires Yahoo OAuth to be complete."""
     from backend.services.feature_service import FeatureService
-    from backend.services.league_service import LeagueService
     from backend.services.league_sync import LeagueSyncService
     from backend.utils.seasons import get_current_season
 
-    # Check tier limits
     league_repo = LeagueRepository(db)
-    current_count = await league_repo.count_active(user.id)
-    FeatureService.can_add_league(user, current_count)
 
     # Determine is_active
     target_season = body.season or get_current_season()
@@ -146,9 +142,16 @@ async def connect_yahoo_league(
         and not body.is_finished
     )
 
-    # Create league record
-    service = LeagueService(league_repo)
-    league = await service.add_league(
+    # Check tier limits (only for new leagues, not re-imports)
+    existing = await league_repo.find_by_identity(
+        user.id, "yahoo", body.league_id
+    )
+    if not existing:
+        current_count = await league_repo.count_active(user.id)
+        FeatureService.can_add_league(user, current_count)
+
+    # Upsert league record (idempotent — re-importing updates existing)
+    league = await league_repo.upsert(
         user_id=user.id,
         platform="yahoo",
         league_id=body.league_id,
@@ -159,6 +162,7 @@ async def connect_yahoo_league(
         budget=200,
         is_active=is_active,
     )
+    await db.commit()
 
     # Sync — pass league_key so Yahoo settings can be fetched
     sync_service = LeagueSyncService(db, user.id)

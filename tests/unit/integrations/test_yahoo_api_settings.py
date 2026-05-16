@@ -1,11 +1,15 @@
-"""Tests for get_league_settings() — Yahoo league settings parsing."""
+"""Tests for get_league_settings() and _detect_draft_type() — Yahoo league settings parsing."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.integrations.yahoo_api import get_league_settings, yahoo_league_key
+from backend.integrations.yahoo_api import (
+    _detect_draft_type,
+    get_league_settings,
+    yahoo_league_key,
+)
 
 
 def _mock_yahoo_response(
@@ -31,7 +35,7 @@ def _mock_yahoo_response(
         "fantasy_content": {
             "league": [
                 {
-                    "league_key": f"470.l.12345",
+                    "league_key": "470.l.12345",
                     "league_id": "12345",
                     "name": name,
                     "num_teams": num_teams,
@@ -57,6 +61,29 @@ def _mock_yahoo_response(
     }
 
 
+def _mock_draft_results(picks=None):
+    """Build a mock Yahoo /league/draftresults response."""
+    if picks is None:
+        picks = []
+    results = {"count": len(picks)}
+    for i, pick in enumerate(picks):
+        results[str(i)] = {"draft_result": pick}
+    return {
+        "fantasy_content": {
+            "league": [
+                {"league_key": "470.l.12345"},
+                {"draft_results": results},
+            ]
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# get_league_settings() — scoring and metadata tests
+# Mock _detect_draft_type so these tests focus on scoring/name parsing
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_get_league_settings_parses_name():
     """Name and num_teams are extracted from league metadata."""
@@ -66,6 +93,10 @@ async def test_get_league_settings_parses_name():
         return_value=_mock_yahoo_response(
             name="My Fantasy League", num_teams=10
         ),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
@@ -81,6 +112,10 @@ async def test_get_league_settings_ppr_from_stat_modifiers():
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(stat_mods=mods),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
@@ -95,6 +130,10 @@ async def test_get_league_settings_half_ppr():
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(stat_mods=mods),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
@@ -109,6 +148,10 @@ async def test_get_league_settings_standard_scoring():
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(stat_mods=mods),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
@@ -123,38 +166,14 @@ async def test_get_league_settings_no_reception_stat():
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(stat_mods=mods),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
     assert result["scoring_type"] == "standard"
-
-
-@pytest.mark.asyncio
-async def test_get_league_settings_auction_draft():
-    """draft_type 'auction' → auction."""
-    with patch(
-        "backend.integrations.yahoo_api._api_get_with_token",
-        new_callable=AsyncMock,
-        return_value=_mock_yahoo_response(draft_type="auction"),
-    ):
-        result = await get_league_settings("tok", "470.l.12345")
-
-    assert result["draft_type"] == "auction"
-    assert result["auction_budget"] is not None
-
-
-@pytest.mark.asyncio
-async def test_get_league_settings_snake_draft():
-    """draft_type 'live' → snake, no auction budget."""
-    with patch(
-        "backend.integrations.yahoo_api._api_get_with_token",
-        new_callable=AsyncMock,
-        return_value=_mock_yahoo_response(draft_type="live"),
-    ):
-        result = await get_league_settings("tok", "470.l.12345")
-
-    assert result["draft_type"] == "snake"
-    assert result["auction_budget"] is None
 
 
 @pytest.mark.asyncio
@@ -164,6 +183,10 @@ async def test_get_league_settings_playoff_week():
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(playoff_start_week=14),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
@@ -180,34 +203,143 @@ async def test_get_league_settings_returns_ppr_not_head():
         return_value=_mock_yahoo_response(
             scoring_type="head", stat_mods=mods
         ),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("auction", 200),
     ):
         result = await get_league_settings("tok", "470.l.12345")
 
-    # Confirm screen should show 'ppr', not the raw Yahoo 'head' value
     assert result["scoring_type"] == "ppr"
     assert result["scoring_type"] != "head"
 
 
+# ---------------------------------------------------------------------------
+# _detect_draft_type() — auction vs snake from draft pick costs
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_get_league_settings_auction_shows_budget():
-    """Auction draft includes budget; snake does not."""
+async def test_auction_detected_from_pick_costs():
+    """Picks with cost > 0 → auction."""
+    picks = [
+        {"pick": "1", "round": "1", "cost": "45", "player_key": "470.p.1"},
+        {"pick": "2", "round": "1", "cost": "30", "player_key": "470.p.2"},
+    ]
     with patch(
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
-        return_value=_mock_yahoo_response(draft_type="auction"),
+        return_value=_mock_draft_results(picks),
     ):
-        auction = await get_league_settings("tok", "470.l.12345")
+        draft_type, budget = await _detect_draft_type("tok", "470.l.12345")
 
+    assert draft_type == "auction"
+    assert budget == 200
+
+
+@pytest.mark.asyncio
+async def test_snake_detected_from_no_costs():
+    """Picks without cost data → snake."""
+    picks = [
+        {"pick": "1", "round": "1", "player_key": "470.p.1"},
+        {"pick": "2", "round": "1", "player_key": "470.p.2"},
+    ]
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_draft_results(picks),
+    ):
+        draft_type, budget = await _detect_draft_type("tok", "470.l.12345")
+
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_snake_detected_from_zero_costs():
+    """Picks with cost=0 → snake (not auction)."""
+    picks = [
+        {"pick": "1", "round": "1", "cost": "0", "player_key": "470.p.1"},
+    ]
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_draft_results(picks),
+    ):
+        draft_type, budget = await _detect_draft_type("tok", "470.l.12345")
+
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_snake_detected_from_empty_draft():
+    """No draft results → snake (e.g., league hasn't drafted yet)."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_draft_results([]),
+    ):
+        draft_type, budget = await _detect_draft_type("tok", "470.l.12345")
+
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_detect_draft_type_fallback_on_error():
+    """API failure → defaults to snake."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        side_effect=Exception("Yahoo API down"),
+    ):
+        draft_type, budget = await _detect_draft_type("tok", "470.l.12345")
+
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_get_league_settings_uses_detect_for_draft_type():
+    """get_league_settings() returns detected auction type, not raw metadata."""
     with patch(
         "backend.integrations.yahoo_api._api_get_with_token",
         new_callable=AsyncMock,
         return_value=_mock_yahoo_response(draft_type="live"),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("auction", 200),
     ):
-        snake = await get_league_settings("tok", "470.l.12345")
+        result = await get_league_settings("tok", "470.l.12345")
 
-    assert auction["auction_budget"] is not None
-    assert snake["auction_budget"] is None
-    assert snake["draft_type"] == "snake"
+    # Even though raw draft_type is "live", detection found auction
+    assert result["draft_type"] == "auction"
+    assert result["auction_budget"] == 200
+
+
+@pytest.mark.asyncio
+async def test_get_league_settings_snake_from_detection():
+    """get_league_settings() returns snake with None budget when detected."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="live"),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),
+    ):
+        result = await get_league_settings("tok", "470.l.12345")
+
+    assert result["draft_type"] == "snake"
+    assert result["auction_budget"] is None
+
+
+# ---------------------------------------------------------------------------
+# yahoo_league_key() — league key construction
+# ---------------------------------------------------------------------------
 
 
 def test_yahoo_league_key_construction():
