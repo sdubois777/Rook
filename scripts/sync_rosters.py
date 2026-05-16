@@ -113,10 +113,10 @@ async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
                 old_team = existing.team_abbr
                 changed = False
 
-                # Update team if changed
+                # Update team if changed (includes setting to None for FAs)
                 if existing.team_abbr != team:
                     if dry_run:
-                        print(f"  [DRY-RUN] {full_name}: {old_team or '???'} -> {team or 'FA'}")
+                        print(f"  [DRY-RUN] {full_name}: {old_team or '???'} -> {team}")
                     else:
                         existing.team_abbr = team
                         existing.team_updated_at = datetime.now(timezone.utc)
