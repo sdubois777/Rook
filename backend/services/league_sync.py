@@ -30,19 +30,33 @@ class LeagueSyncService:
         self._league_repo = LeagueRepository(db)
 
     async def sync_league(
-        self, user_league: UserLeague,
+        self,
+        user_league_id: uuid.UUID,
         league_key: str | None = None,
     ) -> dict:
         """
         Full sync for a connected league.
-        0. Fetch league settings from platform (Yahoo only)
-        1. Verify credentials via platform API
-        2. Import historical draft data (up to 4 seasons)
-        3. Import current season rosters
-        4. Store manager map
-        5. Cache free agent count
-        Returns sync summary.
+
+        Accepts UUID, reloads the ORM object using the service's
+        own session to avoid detached/expired instance errors.
         """
+        from sqlalchemy import select
+        from backend.integrations.yahoo_api import yahoo_league_key
+
+        # Reload within THIS session — not the router's
+        result = await self._db.execute(
+            select(UserLeague).where(
+                UserLeague.id == user_league_id,
+                UserLeague.user_id == self._user_id,
+            )
+        )
+        user_league = result.scalar_one_or_none()
+        if not user_league:
+            from backend.core.exceptions import NotFoundError
+            raise NotFoundError(
+                f"League {user_league_id} not found"
+            )
+
         platform = await get_platform_api(user_league, self._db)
         current_season = get_current_season()
 
@@ -60,10 +74,6 @@ class LeagueSyncService:
         }
 
         # 1. Import draft history — up to HISTORY_SEASONS
-        # Each historical season needs its own league_key (Yahoo uses
-        # season-specific game keys: "461.l.78512" for 2025, etc.)
-        from backend.integrations.yahoo_api import yahoo_league_key
-
         picks_total = 0
         seasons_ok = 0
         for offset in range(HISTORY_SEASONS):

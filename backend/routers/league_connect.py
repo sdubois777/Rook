@@ -166,7 +166,7 @@ async def connect_yahoo_league(
 
     # Sync — pass league_key so Yahoo settings can be fetched
     sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league, league_key=body.league_key)
+    summary = await sync_service.sync_league(league.id, league_key=body.league_key)
 
     return {
         "status": "connected",
@@ -226,7 +226,7 @@ async def connect_sleeper_league(
 
     # Sync
     sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league)
+    summary = await sync_service.sync_league(league.id)
 
     return {"status": "connected", "league_id": str(league.id), **summary}
 
@@ -290,7 +290,7 @@ async def connect_espn_league(
 
     # Sync
     sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league)
+    summary = await sync_service.sync_league(league.id)
 
     return {"status": "connected", "league_id": str(league.id), **summary}
 
@@ -308,9 +308,9 @@ async def resync_league(
     """Re-sync a connected league (free — no credits)."""
     from backend.services.league_sync import LeagueSyncService
 
-    league = await _get_user_league(league_id, user, db)
+    await _get_user_league(league_id, user, db)  # verify ownership
     sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league)
+    summary = await sync_service.sync_league(league_id)
     return {"status": "synced", **summary}
 
 
