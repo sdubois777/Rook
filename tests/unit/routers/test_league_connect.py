@@ -208,35 +208,130 @@ async def test_league_status_returns_info():
 
 
 @pytest.mark.asyncio
-async def test_disconnect_league():
+async def test_delete_league_hard_deletes_row():
+    """DELETE /leagues/{id} returns 200 with status=deleted."""
     user = _make_user()
-    league_id = uuid.uuid4()
+    league = _make_league(user.id)
 
     from backend.core.dependencies import get_current_user, get_db
+
     mock_db = AsyncMock()
+    # _get_user_league calls repo.get_user_league
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = league
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = lambda: mock_db
 
-    with patch(
-        "backend.services.league_service.LeagueService"
-    ) as MockService:
-        mock_service = AsyncMock()
-        MockService.return_value = mock_service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            resp = await ac.delete(f"/leagues/{league.id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        # Verify db.delete was called with the league
+        mock_db.delete.assert_awaited_once_with(league)
+        mock_db.commit.assert_awaited_once()
+    finally:
+        app.dependency_overrides.clear()
 
-        # Also need to patch the lazy import inside the endpoint
-        with patch.dict(
-            "sys.modules",
-            {"backend.services.league_service": MagicMock(
-                LeagueService=MockService
-            )},
-        ):
-            try:
-                async with AsyncClient(
-                    transport=ASGITransport(app=app),
-                    base_url="http://test",
-                ) as ac:
-                    resp = await ac.delete(f"/leagues/{league_id}")
-                assert resp.status_code == 200
-                assert resp.json()["status"] == "disconnected"
-            finally:
-                app.dependency_overrides.clear()
+
+@pytest.mark.asyncio
+async def test_delete_cascades_auction_history():
+    """DELETE /leagues/{id} deletes auction history before the league row."""
+    user = _make_user()
+    league = _make_league(user.id)
+
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = league
+    executed_stmts = []
+
+    async def capture_execute(stmt, *a, **kw):
+        executed_stmts.append(str(stmt))
+        return mock_result
+
+    mock_db.execute = capture_execute
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            resp = await ac.delete(f"/leagues/{league.id}")
+        assert resp.status_code == 200
+        # At least one DELETE statement for auction history
+        delete_stmts = [s for s in executed_stmts if "DELETE" in s.upper()]
+        assert len(delete_stmts) >= 1, "Should DELETE auction history rows"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_requires_ownership():
+    """DELETE /leagues/{id} returns 404 for non-existent league."""
+    user = _make_user()
+    fake_id = uuid.uuid4()
+
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None  # not found
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            resp = await ac.delete(f"/leagues/{fake_id}")
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_finished_league_still_deletable():
+    """DELETE works on is_active=False leagues too."""
+    user = _make_user()
+    league = _make_league(user.id)
+    league.is_active = False  # finished season
+
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = league
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            resp = await ac.delete(f"/leagues/{league.id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+    finally:
+        app.dependency_overrides.clear()

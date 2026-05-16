@@ -49,11 +49,17 @@ class LeagueService:
         await self._repo.commit()
         return league
 
-    async def remove_league(
+    async def delete_league(
         self,
         user_id: uuid.UUID,
         league_id: uuid.UUID,
     ) -> None:
+        """Hard delete league and all child data."""
+        from sqlalchemy import delete as sa_delete
+        from backend.models.league_auction_history import (
+            LeagueAuctionHistory,
+        )
+
         league = await self._repo.get_user_league(
             user_id, league_id
         )
@@ -61,8 +67,17 @@ class LeagueService:
             raise NotFoundError(
                 f"League {league_id} not found"
             )
-        # Soft delete
-        league.is_active = False
+
+        # Delete child data explicitly
+        await self._repo._session.execute(
+            sa_delete(LeagueAuctionHistory).where(
+                LeagueAuctionHistory.user_league_id == league_id,
+                LeagueAuctionHistory.user_id == user_id,
+            )
+        )
+
+        # Delete the league row
+        await self._repo._session.delete(league)
         await self._repo.commit()
 
     async def get_league_config(

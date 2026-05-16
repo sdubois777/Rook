@@ -171,8 +171,8 @@ async def remove_league(
     user: User = Depends(get_current_user),
     service=Depends(get_league_service),
 ):
-    """Remove a league (soft delete)."""
-    await service.remove_league(user.id, league_id)
+    """Hard delete a league and all related data."""
+    await service.delete_league(user.id, league_id)
 
 
 # ---------------------------------------------------------------------------

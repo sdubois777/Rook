@@ -175,14 +175,14 @@ async def test_add_league_respects_tier_limit():
 
 
 @pytest.mark.asyncio
-async def test_remove_league_soft_deletes():
+async def test_delete_league_hard_deletes():
     user = _make_user(tier="standard")
     league = _make_league(user_id=user.id)
 
     from backend.core.dependencies import get_current_user, get_league_service
 
     mock_service = AsyncMock()
-    mock_service.remove_league.return_value = None
+    mock_service.delete_league.return_value = None
 
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_league_service] = lambda: mock_service
@@ -196,11 +196,11 @@ async def test_remove_league_soft_deletes():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 204
-    mock_service.remove_league.assert_awaited_once_with(user.id, league.id)
+    mock_service.delete_league.assert_awaited_once_with(user.id, league.id)
 
 
 @pytest.mark.asyncio
-async def test_user_cannot_remove_other_users_league():
+async def test_user_cannot_delete_other_users_league():
     """When league doesn't belong to user, service raises NotFoundError."""
     user = _make_user(tier="standard")
     other_league_id = uuid.uuid4()
@@ -209,7 +209,7 @@ async def test_user_cannot_remove_other_users_league():
     from backend.core.exceptions import NotFoundError
 
     mock_service = AsyncMock()
-    mock_service.remove_league.side_effect = NotFoundError(
+    mock_service.delete_league.side_effect = NotFoundError(
         f"League {other_league_id} not found"
     )
 
