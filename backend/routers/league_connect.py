@@ -7,7 +7,7 @@ POST   /leagues/connect/sleeper         — connect Sleeper league
 GET    /leagues/connect/espn/callback   — ESPN bookmarklet callback
 POST   /leagues/{id}/sync              — re-sync a connected league
 GET    /leagues/{id}/status            — sync status
-DELETE /leagues/{id}                   — soft delete league
+DELETE /leagues/{id}                   — hard delete league + all data
 """
 from __future__ import annotations
 
@@ -207,17 +207,21 @@ async def connect_sleeper_league(
     current_count = await league_repo.count_active(user.id)
     FeatureService.can_add_league(user, current_count)
 
+    # Sleeper leagues are always current season
+    target_season = get_current_season()
+
     # Create league record
     service = LeagueService(league_repo)
     league = await service.add_league(
         user_id=user.id,
         platform="sleeper",
         league_id=body.league_id,
-        season_year=get_current_season(),
+        season_year=target_season,
         team_count=12,
         draft_type="auction",
         scoring="ppr",
         budget=200,
+        is_active=True,
     )
 
     # Sync
@@ -270,6 +274,7 @@ async def connect_espn_league(
     FeatureService.can_add_league(user, current_count)
 
     # Create league record
+    is_active = target_season == get_current_season()
     service = LeagueService(league_repo)
     league = await service.add_league(
         user_id=user.id,
@@ -280,6 +285,7 @@ async def connect_espn_league(
         draft_type="auction",
         scoring="ppr",
         budget=200,
+        is_active=is_active,
     )
 
     # Sync
@@ -333,9 +339,25 @@ async def disconnect_league(
     user=Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Remove a league (soft delete)."""
-    from backend.services.league_service import LeagueService
+    """
+    Hard delete a league and ALL related data.
+    Cannot be undone. User can re-import later.
+    """
+    from sqlalchemy import delete as sa_delete
+    from backend.models.league_auction_history import LeagueAuctionHistory
 
-    service = LeagueService(LeagueRepository(db))
-    await service.remove_league(user.id, league_id)
-    return {"status": "disconnected"}
+    league = await _get_user_league(league_id, user, db)
+
+    # Delete all child data explicitly
+    await db.execute(
+        sa_delete(LeagueAuctionHistory).where(
+            LeagueAuctionHistory.user_league_id == league_id,
+            LeagueAuctionHistory.user_id == user.id,
+        )
+    )
+
+    # Delete the league itself
+    await db.delete(league)
+    await db.commit()
+
+    return {"status": "deleted", "league_id": str(league_id)}

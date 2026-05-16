@@ -63,12 +63,17 @@ function LeagueCard({ league }) {
   }
 
   const handleRemove = async () => {
-    if (!window.confirm(`Remove "${league.league_name || league.league_id}"? This cannot be undone.`)) return
+    if (!window.confirm(
+      `Remove "${league.league_name || league.league_id}"?\n\n` +
+      `This will permanently delete all draft history and sync data for this league. ` +
+      `You can re-import it later from ${league.platform}.\n\n` +
+      `This cannot be undone.`
+    )) return
     setError('')
     setRemoving(true)
     try {
       await apiClient.delete(`/leagues/${league.id}`)
-      // Remove from cache immediately (soft delete still returns from API)
+      // Remove from cache immediately
       queryClient.setQueryData(['account'], (old) =>
         old ? { ...old, leagues: old.leagues.filter((l) => l.id !== league.id) } : old
       )
@@ -90,7 +95,7 @@ function LeagueCard({ league }) {
             {league.league_name || league.league_id}
             {isFinished && (
               <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">
-                Finished
+                {league.season_year} Season &middot; Finished
               </span>
             )}
           </div>

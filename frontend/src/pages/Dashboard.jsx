@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, BarChart3 } from 'lucide-react'
+import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, BarChart3, Plus } from 'lucide-react'
 import { DRAFT_DATE } from '../lib/theme'
 import { fetchPlayers } from '../api/players'
 import { fetchNews } from '../api/news'
@@ -35,9 +35,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchUserLeagues().then((data) => {
-      setLeagues(data)
-      const active = data.find((l) => l.is_active) || data[0]
-      if (active) setSelectedLeagueId(active.id)
+      const active = data.filter((l) => l.is_active)
+      setLeagues(active)
+      if (active.length > 0) setSelectedLeagueId(active[0].id)
     }).catch(() => {})
   }, [])
 
@@ -96,7 +96,7 @@ export default function Dashboard() {
       </div>
 
       {/* League selector */}
-      {leagues.length > 0 && (
+      {leagues.length > 0 ? (
         <div className="flex items-center gap-3 mb-4">
           <label className="text-sm text-slate-400">League:</label>
           <select
@@ -107,10 +107,19 @@ export default function Dashboard() {
             {leagues.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.league_name || l.league_id}
-                {!l.is_active ? ' (Finished)' : ''}
               </option>
             ))}
           </select>
+        </div>
+      ) : (
+        <div className="bg-[#161822] border border-[#2d3148] rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+          <span className="text-sm text-slate-400">No active leagues connected.</span>
+          <button
+            onClick={() => navigate('/league-setup')}
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+          >
+            <Plus size={14} /> Add League
+          </button>
         </div>
       )}
 

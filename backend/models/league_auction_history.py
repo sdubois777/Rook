@@ -37,7 +37,7 @@ class LeagueAuctionHistory(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True,
     )
     user_league_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user_leagues.id", ondelete="SET NULL"), nullable=True,
+        UUID(as_uuid=True), ForeignKey("user_leagues.id", ondelete="CASCADE"), nullable=True,
     )
 
     # Added for multi-year Yahoo sync
