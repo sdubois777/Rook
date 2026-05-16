@@ -1041,6 +1041,42 @@ def test_single_team_stats_unchanged():
     assert result["rec_tds"] == 7
 
 
+def test_sleeper_id_match_takes_priority():
+    """sleeper_id match is used before player_id or name fallback."""
+    agent = PlayerProfilesAgent()
+    # DataFrame has sleeper_id column — match should use it even if name is abbreviated
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([{
+        **_make_ts_row("00-002", "L.McConkey", "LAC", 17, 82, 1149, 7),
+        "sleeper_id": "9509",
+        "sportradar_id": "sr-12345",
+    }])})
+    # Call with sleeper_id — should match despite abbreviated name
+    result = agent._get_player_season_stats(
+        "Ladd McConkey", "LAC", 2024, position="WR",
+        nfl_player_id=None,  # no gsis_id
+        sleeper_id="9509",
+    )
+    assert result is not None
+    assert result["games"] == 17
+    assert result["receptions"] == 82
+
+
+def test_sportradar_id_match_fallback():
+    """sportradar_id match is used when sleeper_id is absent."""
+    agent = PlayerProfilesAgent()
+    agent._warehouse = _make_warehouse(target_share={2024: pd.DataFrame([{
+        **_make_ts_row("00-002", "L.McConkey", "LAC", 17, 82, 1149, 7),
+        "sportradar_id": "sr-12345",
+    }])})
+    result = agent._get_player_season_stats(
+        "Ladd McConkey", "LAC", 2024, position="WR",
+        nfl_player_id=None,
+        sportradar_id="sr-12345",
+    )
+    assert result is not None
+    assert result["receptions"] == 82
+
+
 def test_games_filter_uses_combined_total():
     """Combined games across teams pass the >=10 clean season filter."""
     # 6 + 5 = 11 games total — should be clean season

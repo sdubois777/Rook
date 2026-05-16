@@ -23,10 +23,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import re
+
 import pandas as pd
 
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Strip suffixes for fuzzy name matching (III, Jr, Sr, II, IV, V)
+_SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +67,10 @@ async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
         for p in all_players:
             if p.name and p.position:
                 by_name_pos[(p.name.lower(), p.position.upper())] = p
+                # Also index by stripped suffix (e.g., "Kenneth Walker III" → "kenneth walker")
+                stripped = _SUFFIX_RE.sub("", p.name).strip().lower()
+                if stripped != p.name.lower():
+                    by_name_pos.setdefault((stripped, p.position.upper()), p)
 
         for _, row in players_df.iterrows():
             sleeper_id = str(row["player_id"])
@@ -86,11 +95,17 @@ async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
                 continue
 
             # Find existing player: sportradar_id > gsis_id > name+position
+            # Position must match to prevent cross-position collisions
+            # (e.g., WR Kenneth Walker vs RB Kenneth Walker)
             existing = None
             if sportradar:
-                existing = by_sportradar.get(sportradar)
+                cand = by_sportradar.get(sportradar)
+                if cand and cand.position == position:
+                    existing = cand
             if not existing and gsis:
-                existing = by_gsis.get(gsis)
+                cand = by_gsis.get(gsis)
+                if cand and cand.position == position:
+                    existing = cand
             if not existing:
                 existing = by_name_pos.get((full_name.lower(), position.upper()))
 
@@ -107,16 +122,17 @@ async def sync_players_from_sleeper(dry_run: bool = False) -> dict:
                         existing.team_updated_at = datetime.now(timezone.utc)
                     changed = True
 
-                # Populate IDs if missing
+                # Always update IDs — prevents stale cross-player collisions
                 if not dry_run:
-                    if not existing.sleeper_id:
-                        existing.sleeper_id = sleeper_id
-                    if sportradar and not existing.sportradar_id:
+                    existing.sleeper_id = sleeper_id
+                    if sportradar:
                         existing.sportradar_id = sportradar
-                    if gsis and not existing.gsis_id:
+                    if gsis:
                         existing.gsis_id = gsis
                     if age is not None:
                         existing.age = age
+                    if years_exp is not None:
+                        existing.nfl_seasons_played = years_exp
 
                 updated += 1
             else:
