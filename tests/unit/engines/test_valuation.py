@@ -32,39 +32,43 @@ from backend.engines.valuation import (
 # ===========================================================================
 
 def test_assign_tier_rb_elite_par_is_tier1():
-    """RB PAR ratio >= 2.5 → T1."""
+    """RB PAR ratio >= 2.3 → T1."""
     assert assign_tier(3.0, "RB") == 1
-    assert assign_tier(2.5, "RB") == 1
+    assert assign_tier(2.3, "RB") == 1
+    assert assign_tier(2.29, "RB") == 2
 
 
 def test_assign_tier_wr_elite_par_is_tier1():
-    """WR PAR ratio >= 2.0 → T1 (lower bar than RB)."""
+    """WR PAR ratio >= 2.2 → T1 (top ~5 WRs)."""
     assert assign_tier(2.5, "WR") == 1
-    assert assign_tier(2.0, "WR") == 1
+    assert assign_tier(2.2, "WR") == 1
+    assert assign_tier(2.19, "WR") == 2
 
 
 def test_assign_tier_te_elite_par_is_tier1():
-    """TE PAR ratio >= 2.2 → T1."""
+    """TE PAR ratio >= 1.85 → T1 (McBride/Bowers clear gap above field)."""
     assert assign_tier(2.5, "TE") == 1
-    assert assign_tier(2.2, "TE") == 1
+    assert assign_tier(2.05, "TE") == 1
+    assert assign_tier(1.85, "TE") == 1
+    assert assign_tier(1.84, "TE") == 2
 
 
 def test_assign_tier_qb_elite_par_is_tier1():
-    """QB PAR ratio >= 1.07 → T1 (1-QB league, highly compressed scoring)."""
+    """QB PAR ratio >= 1.15 → T1 (only truly elite QBs)."""
     assert assign_tier(1.30, "QB") == 1
-    assert assign_tier(1.07, "QB") == 1
-    assert assign_tier(1.06, "QB") == 2
+    assert assign_tier(1.15, "QB") == 1
+    assert assign_tier(1.14, "QB") == 2
 
 
 def test_assign_tier_rb_strong_par_is_tier2():
-    """RB PAR ratio 1.8–2.49 → T2."""
-    assert assign_tier(2.4, "RB") == 2
+    """RB PAR ratio 1.8–2.29 → T2."""
+    assert assign_tier(2.2, "RB") == 2
     assert assign_tier(1.8, "RB") == 2
 
 
 def test_assign_tier_wr_strong_par_is_tier2():
-    """WR PAR ratio 1.5–1.99 → T2."""
-    assert assign_tier(1.9, "WR") == 2
+    """WR PAR ratio 1.5–2.19 → T2."""
+    assert assign_tier(2.1, "WR") == 2
     assert assign_tier(1.5, "WR") == 2
 
 
@@ -94,7 +98,7 @@ def test_assign_tier_below_replacement_is_tier5():
 
 def test_assign_tier_unknown_position_uses_wr_defaults():
     """Unknown position falls back to WR thresholds."""
-    assert assign_tier(2.0, "K") == 1
+    assert assign_tier(2.2, "K") == 1
     assert assign_tier(1.5, "K") == 2
 
 

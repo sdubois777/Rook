@@ -338,10 +338,10 @@ fantasy-football-ai/
   - 35 tests, no-polling AST verification passing
 - [x] Stage 11.5: Backtest & Validation (operator tool — NOT user-facing)
   - Default season: get_current_season() - 1 (never current year — no results yet)
-  - Latest results (2025 season, post-Sleeper integration):
-    74.1% signal accuracy, 93% buy accuracy, 29.6 MAE, 0.882 correlation
-  - CMC correctly appears as VALUE: $50 paid / $62 ceiling / 416 actual PPR
-  - Avoid signals remain calibration gap (25% accuracy) — known limitation
+  - Latest results (2025 season, post-tier calibration):
+    79.6% signal accuracy, 97% buy accuracy, 33.4 MAE, 0.850 correlation
+  - CMC correctly appears as VALUE: $50 paid / $72 ceiling / 415 actual PPR
+  - Avoid signals improving (38% accuracy) — calibration ongoing
 - [x] Stage 12: Live draft agent
   - DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
   - Historical tendencies wired into threat analysis
@@ -410,30 +410,30 @@ fantasy-football-ai/
 
 ---
 
-## Backtest Results (2025 Season — post Sleeper integration)
+## Backtest Results (2025 Season — post tier calibration)
 
 | Metric | Value | Grade |
 |--------|-------|-------|
-| Signal accuracy | 74.1% | STRONG |
-| Projection MAE | 29.6 PPR | Excellent (<30) |
-| Correlation | 0.882 | Strong |
-| Buy accuracy | 93% (42 players) | Excellent |
-| Avoid accuracy | 25% (16 players) | Weak — calibration gap |
+| Signal accuracy | 79.6% | STRONG |
+| Projection MAE | 33.4 PPR | Good (30-50) |
+| Correlation | 0.850 | Strong |
+| Buy accuracy | 97% (38 players) | Excellent |
+| Avoid accuracy | 38% (16 players) | Improving — calibration ongoing |
 | Top opportunities | 13/15 (87%) | Strong |
 
-Key validated calls: CMC VALUE at $50→416 PPR ✓, JSN buy→359 PPR ✓,
-Olave buy at $9→268 PPR ✓, Barkley strong_avoid→230 PPR at $61 ✓,
-BTJ strong_avoid→138 PPR at $51 ✓
+Key validated calls: CMC VALUE at $50→415 PPR ✓, JSN buy→360 PPR ✓,
+Kyle Pitts buy at $3→211 PPR ✓, Barkley strong_avoid→230 PPR at $61 ✓,
+BTJ strong_avoid→139 PPR at $51 ✓
 
-Lamar Jackson QB bias (+42.6) — injury-shortened 2025 inflating QB error.
-Avoid signal accuracy 25% — ceiling calibration ongoing, known limitation.
+Lamar Jackson QB bias (+155) — injury-shortened 2025 inflating QB error.
+Avoid signal accuracy 38% — ceiling calibration ongoing, known limitation.
 
 ---
 
 ## Known Issues / Backlog
 
 - FULL_SEASON_ABSENCE detection not implemented in injury agent
-- Avoid signal accuracy 25% — ceiling calibration ongoing
+- Avoid signal accuracy 38% — ceiling calibration ongoing
 - Lamar Jackson QB bias (+42.6 PPR) — injury year inflating QB error
 - Pipeline admin freshness thresholds uniform 7d (should be per-agent)
 - Frontend test coverage sparse (4 files for 43 JSX/JS source files)

@@ -287,6 +287,24 @@ class RosterChangesAgent(BaseAgent):
 
         transactions   = await self._fetch_transactions(team, analysis_year)
         roster         = await self._fetch_skill_roster(team)
+
+        # Enrich roster with player IDs for reliable target share matching
+        try:
+            async with AsyncSessionLocal() as session:
+                db_players = (await session.execute(
+                    select(Player).where(
+                        Player.team_abbr == team,
+                        Player.position.in_({"QB", "RB", "WR", "TE"}),
+                    )
+                )).scalars().all()
+            id_lookup = {p.name: p for p in db_players}
+            for r in roster:
+                if p := id_lookup.get(r.get("name")):
+                    r.setdefault("sleeper_id", p.sleeper_id)
+                    r.setdefault("sportradar_id", p.sportradar_id)
+        except Exception as exc:
+            logger.debug("Could not enrich roster IDs for %s: %s", team, exc)
+
         target_shares  = await self._fetch_target_shares(roster)
         backfield      = await self._fetch_backfield(team)
         qb_histories   = await self._fetch_qb_histories(team, roster)
@@ -336,11 +354,22 @@ class RosterChangesAgent(BaseAgent):
 
             for player in roster:
                 name = player.get("name", "")
-                last = name.split()[-1] if name else ""
-                if not last:
+                if not name:
                     continue
 
-                match = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+                # ID-first matching (sleeper_id → sportradar_id → name fallback)
+                sid = player.get("sleeper_id")
+                srid = player.get("sportradar_id")
+                if sid and "sleeper_id" in ts_df.columns:
+                    match = ts_df[ts_df["sleeper_id"] == sid]
+                elif srid and "sportradar_id" in ts_df.columns:
+                    match = ts_df[ts_df["sportradar_id"] == srid]
+                else:
+                    last = name.split()[-1] if name else ""
+                    if not last:
+                        continue
+                    match = ts_df[ts_df["player_name"].str.contains(last, case=False, na=False)]
+
                 if match.empty:
                     continue
 

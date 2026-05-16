@@ -182,6 +182,19 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     if team_sys.get("compound_risk_flag"):
         return True
 
+    # --- Elite producers ---
+    # High-PPR players are high-stakes draft decisions; even "stable" ones
+    # benefit from Sonnet reasoning about ceiling/floor and game-script nuance.
+    _ELITE_PPR_PER_GAME = {"RB": 14.0, "WR": 14.0, "TE": 10.0}
+    seasons = player.get("seasons", [])
+    if seasons:
+        best_ppg = max(
+            (float(s.get("ppr_per_game") or 0) for s in seasons),
+            default=0,
+        )
+        if best_ppg >= _ELITE_PPR_PER_GAME.get(position, 14.0):
+            return True
+
     # Default: Haiku is sufficient — stable, same team, not aging out
     return False
 
@@ -483,6 +496,8 @@ class PlayerProfilesAgent(BaseAgent):
         self, player_name: str, team: str, season: int,
         position: str,
         nfl_player_id: str | None = None,
+        sleeper_id: str | None = None,
+        sportradar_id: str | None = None,
     ) -> dict | None:
         """Return compact season stats for one player from the cached target_share df.
 
@@ -589,7 +604,23 @@ class PlayerProfilesAgent(BaseAgent):
                 "ppr_per_game":    _weighted_avg("ppr_per_game", 1),
             }
 
-        # --- Path 1: player_id match (most reliable) ---
+        # --- Path 0a: sleeper_id match (best — 100% coverage from Sleeper) ---
+        if sleeper_id and "sleeper_id" in ts_df.columns:
+            id_rows = ts_df[ts_df["sleeper_id"] == sleeper_id]
+            if not id_rows.empty:
+                if len(id_rows) == 1:
+                    return _extract(id_rows.iloc[0])
+                return _extract_combined(id_rows)
+
+        # --- Path 0b: sportradar_id match (98% coverage) ---
+        if sportradar_id and "sportradar_id" in ts_df.columns:
+            id_rows = ts_df[ts_df["sportradar_id"] == sportradar_id]
+            if not id_rows.empty:
+                if len(id_rows) == 1:
+                    return _extract(id_rows.iloc[0])
+                return _extract_combined(id_rows)
+
+        # --- Path 1: player_id match (gsis_id — 29% coverage) ---
         if nfl_player_id and "player_id" in ts_df.columns:
             id_rows = ts_df[ts_df["player_id"] == nfl_player_id]
             if not id_rows.empty:
@@ -1128,7 +1159,12 @@ class PlayerProfilesAgent(BaseAgent):
             else:
                 # WR/RB/TE branch: use target_share data
                 for season in player_seasons:
-                    stats = self._get_player_season_stats(pname, team, season, position=pos, nfl_player_id=nfl_pid)
+                    stats = self._get_player_season_stats(
+                        pname, team, season, position=pos,
+                        nfl_player_id=nfl_pid,
+                        sleeper_id=info.get("sleeper_id"),
+                        sportradar_id=info.get("sportradar_id"),
+                    )
                     if stats:
                         stats["year"]             = season
                         # Only apply backup_qb flag to WRs/TEs whose production is

@@ -35,14 +35,36 @@ def _cache_path(name: str) -> Path:
     return CACHE_DIR / f"{name}.parquet"
 
 
+_MIN_CACHE_ROWS = {
+    "players_current": 1000,   # ~3940 active skill players
+    "stats_":          500,    # ~2900 per season
+    "target_share_":   200,    # ~600 per season
+}
+
+
 def _cache_valid(path: Path, ttl_hours: float | None) -> bool:
-    """True if cache file exists and is within TTL."""
+    """True if cache file exists, within TTL, and has enough rows."""
     if not path.exists():
         return False
-    if ttl_hours is None:
-        return True  # historical — never expires
-    age = (time.time() - path.stat().st_mtime) / 3600
-    return age < ttl_hours
+    if ttl_hours is not None:
+        age = (time.time() - path.stat().st_mtime) / 3600
+        if age >= ttl_hours:
+            return False
+    # Sanity check: reject suspiciously small caches (stale test data)
+    for prefix, min_rows in _MIN_CACHE_ROWS.items():
+        if prefix in path.stem:
+            try:
+                df = pd.read_parquet(path)
+                if len(df) < min_rows:
+                    logger.warning(
+                        "Cache %s has only %d rows (min %d) — re-fetching",
+                        path.name, len(df), min_rows,
+                    )
+                    return False
+            except Exception:
+                return False
+            break
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -97,9 +119,9 @@ def fetch_sleeper_players() -> pd.DataFrame:
     # Normalize: empty string team → None (FA)
     skill["team"] = skill["team"].replace("", None)
 
-    # Normalize team abbreviations to match pipeline conventions
-    # Sleeper uses "LA" for Rams; our pipeline uses "LAR"
-    _SLEEPER_TEAM_ALIASES = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
+    # Normalize team abbreviations to match pipeline conventions (NFL_TEAMS)
+    # Sleeper uses "LAR" for Rams; our pipeline uses "LA"
+    _SLEEPER_TEAM_ALIASES = {"LAR": "LA", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
     skill["team"] = skill["team"].map(
         lambda t: _SLEEPER_TEAM_ALIASES.get(t, t) if pd.notna(t) else t
     )
@@ -232,6 +254,122 @@ def get_sleeper_seasonal_stats(season: int) -> pd.DataFrame:
         merged = merged[merged["position"].isin(SKILL_POSITIONS)]
 
     return merged
+
+
+def compute_sleeper_target_share(season: int) -> pd.DataFrame:
+    """
+    Compute per-player target share from Sleeper seasonal stats.
+
+    Primary source for target_share — replaces nfl_data_py weekly aggregation
+    with full Sleeper player coverage and ID-first matching.
+
+    Returns DataFrame matching compute_target_share() schema plus sleeper_id
+    and sportradar_id columns for downstream ID matching.
+    """
+    cache_name = f"target_share_{season}"
+    path = _cache_path(cache_name)
+
+    from backend.utils.seasons import get_current_season
+    is_historical = season < get_current_season()
+    ttl = None if is_historical else CACHE_TTL_HOURS
+
+    if _cache_valid(path, ttl):
+        return pd.read_parquet(path)
+
+    stats = get_sleeper_seasonal_stats(season)
+    if stats.empty:
+        return pd.DataFrame()
+
+    # Need targets column to compute share
+    if "targets" not in stats.columns:
+        logger.warning("Sleeper stats %d: no targets column", season)
+        return pd.DataFrame()
+
+    df = stats.copy()
+
+    # Fill NaN targets/games with 0
+    df["targets"] = pd.to_numeric(df["targets"], errors="coerce").fillna(0).astype(int)
+    df["games"] = pd.to_numeric(df["games"], errors="coerce").fillna(0).astype(int)
+
+    # Filter to players with games played
+    df = df[df["games"] > 0].copy()
+
+    # Sleeper player endpoint only has *current* team — FAs/retired show None.
+    # For historical seasons, supplement missing teams from nfl_data_py weekly data.
+    team_col = "team" if "team" in df.columns else "recent_team"
+    missing_team = df[team_col].isna() & (df["games"] > 0)
+    if missing_team.any() and "gsis_id" in df.columns:
+        try:
+            from backend.integrations.nfl_data import compute_target_share
+            nfl_ts = compute_target_share(season)
+            if not nfl_ts.empty and "player_id" in nfl_ts.columns:
+                team_map = dict(
+                    nfl_ts[["player_id", "recent_team"]]
+                    .dropna(subset=["player_id", "recent_team"])
+                    .drop_duplicates("player_id")
+                    .values
+                )
+                mask = missing_team & df["gsis_id"].notna()
+                df.loc[mask, team_col] = df.loc[mask, "gsis_id"].map(team_map)
+                filled = mask.sum() - df.loc[mask, team_col].isna().sum()
+                logger.info(
+                    "Sleeper target share %d: filled %d/%d missing teams from nfl_data_py",
+                    season, filled, missing_team.sum(),
+                )
+        except Exception as exc:
+            logger.debug("Could not supplement teams from nfl_data_py: %s", exc)
+
+    # Team-level total targets (denominator)
+    team_totals = df.groupby(team_col)["targets"].transform("sum")
+    df["avg_target_share"] = (df["targets"] / team_totals.replace(0, pd.NA)).fillna(0.0)
+
+    # Build numeric columns safely
+    for col in ("receptions", "receiving_yards", "receiving_tds",
+                "rush_attempts", "rushing_yards", "rushing_tds",
+                "fantasy_points_ppr"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Rename to match compute_target_share() output schema
+    rename_map = {
+        team_col: "recent_team",
+        "receptions": "total_receptions",
+        "receiving_yards": "total_rec_yards",
+        "receiving_tds": "total_rec_tds",
+        "targets": "total_targets",
+        "rush_attempts": "total_carries",
+        "rushing_yards": "total_rush_yards",
+        "rushing_tds": "total_rush_tds",
+        "fantasy_points_ppr": "total_fantasy_points",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    # Air yards not available from Sleeper — set NaN for overlay
+    df["total_air_yards"] = pd.NA
+    df["avg_air_yards_share"] = pd.NA
+
+    df["season"] = season
+    df["ppr_per_game"] = df["total_fantasy_points"] / df["games"].replace(0, pd.NA)
+
+    # Map gsis_id to player_id for backward compat with nfl_data_py schema
+    if "gsis_id" in df.columns:
+        df["player_id"] = df["gsis_id"]
+
+    # Select output columns (matching compute_target_share schema + extra IDs)
+    out_cols = [
+        "player_id", "player_name", "recent_team", "position", "games",
+        "total_targets", "total_receptions", "total_rec_yards", "total_rec_tds",
+        "avg_target_share", "total_air_yards", "avg_air_yards_share",
+        "total_carries", "total_rush_yards", "total_rush_tds",
+        "total_fantasy_points", "season", "ppr_per_game",
+        "sleeper_id", "sportradar_id",
+    ]
+    out_cols = [c for c in out_cols if c in df.columns]
+    result = df[out_cols].copy()
+
+    result.to_parquet(path, index=False)
+    logger.info("Sleeper target_share %d: %d players", season, len(result))
+    return result
 
 
 # ---------------------------------------------------------------------------

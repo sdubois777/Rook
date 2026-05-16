@@ -428,6 +428,69 @@ class TestSleeperInjuries:
         assert henry.iloc[0]["injury_status"] == "Questionable"
 
 
+class TestComputeSleeperTargetShare:
+    """Tests for compute_sleeper_target_share()."""
+
+    def test_computes_target_share_correctly(self, mock_sleeper_api, tmp_path):
+        """Target share = player targets / team total targets."""
+        with patch("backend.integrations.sleeper.CACHE_DIR", tmp_path):
+            from backend.integrations.sleeper import compute_sleeper_target_share
+            df = compute_sleeper_target_share(2025)
+
+        assert not df.empty
+        # CMC (4034): 129 targets on SF
+        cmc = df[df["player_name"] == "Christian McCaffrey"]
+        assert len(cmc) == 1
+        # JT (6813) is on IND — different team, so SF total = CMC targets only (+ JJ Taylor)
+        # CMC target share should be > 0
+        ts = float(cmc.iloc[0]["avg_target_share"])
+        assert ts > 0.0
+        assert ts <= 1.0
+
+    def test_output_schema(self, mock_sleeper_api, tmp_path):
+        """Output has all expected columns."""
+        with patch("backend.integrations.sleeper.CACHE_DIR", tmp_path):
+            from backend.integrations.sleeper import compute_sleeper_target_share
+            df = compute_sleeper_target_share(2025)
+
+        expected = {
+            "player_name", "recent_team", "position", "games",
+            "total_targets", "total_receptions", "total_rec_yards", "total_rec_tds",
+            "avg_target_share", "total_air_yards", "avg_air_yards_share",
+            "total_carries", "total_rush_yards", "total_rush_tds",
+            "total_fantasy_points", "season", "ppr_per_game",
+            "sleeper_id", "sportradar_id",
+        }
+        assert expected.issubset(set(df.columns))
+
+    def test_air_yards_are_na(self, mock_sleeper_api, tmp_path):
+        """Sleeper has no air yards — columns should be NaN (not 0.0)."""
+        with patch("backend.integrations.sleeper.CACHE_DIR", tmp_path):
+            from backend.integrations.sleeper import compute_sleeper_target_share
+            df = compute_sleeper_target_share(2025)
+
+        assert df["avg_air_yards_share"].isna().all()
+        assert df["total_air_yards"].isna().all()
+
+    def test_skill_positions_only(self, mock_sleeper_api, tmp_path):
+        """Only QB, RB, WR, TE are included."""
+        with patch("backend.integrations.sleeper.CACHE_DIR", tmp_path):
+            from backend.integrations.sleeper import compute_sleeper_target_share
+            df = compute_sleeper_target_share(2025)
+
+        assert set(df["position"].unique()).issubset({"QB", "RB", "WR", "TE"})
+
+    def test_ppr_per_game(self, mock_sleeper_api, tmp_path):
+        """ppr_per_game = fantasy_points_ppr / games."""
+        with patch("backend.integrations.sleeper.CACHE_DIR", tmp_path):
+            from backend.integrations.sleeper import compute_sleeper_target_share
+            df = compute_sleeper_target_share(2025)
+
+        cmc = df[df["player_name"] == "Christian McCaffrey"].iloc[0]
+        expected_ppg = 416.6 / 17
+        assert abs(float(cmc["ppr_per_game"]) - expected_ppg) < 0.1
+
+
 class TestNoNflDataPyRosterCalls:
     def test_nfl_data_py_roster_functions_not_called(self):
         """Verify sleeper.py doesn't import or call nfl_data_py roster functions."""

@@ -1182,7 +1182,7 @@ class NflDataWarehouse:
         self.seasonal_stats[season] = get_seasonal_stats(season)
         logger.info("  %d seasonal_stats: %d players", season, len(self.seasonal_stats[season]))
 
-        self.target_share[season] = compute_target_share(season)
+        self.target_share[season] = self._load_target_share(season)
         logger.info("  %d target_share: %d players", season, len(self.target_share[season]))
 
         self.qb_stats[season] = compute_qb_season_stats(season)
@@ -1235,6 +1235,38 @@ class NflDataWarehouse:
             except Exception as e:
                 self.injuries[season] = pd.DataFrame()
                 logger.warning("  %d injuries unavailable: %s", season, e)
+
+    @staticmethod
+    def _load_target_share(season: int) -> pd.DataFrame:
+        """Load target share: Sleeper primary, nfl_data_py air yards overlay."""
+        from backend.integrations.sleeper import compute_sleeper_target_share
+
+        try:
+            sleeper_ts = compute_sleeper_target_share(season)
+        except Exception as exc:
+            logger.warning("Sleeper target_share %d failed: %s", season, exc)
+            sleeper_ts = pd.DataFrame()
+
+        nfl_ts = compute_target_share(season)
+
+        if sleeper_ts.empty:
+            return nfl_ts
+
+        # Overlay nfl_data_py air yards onto Sleeper base where gsis_id matches
+        if not nfl_ts.empty and "player_id" in sleeper_ts.columns and "player_id" in nfl_ts.columns:
+            air = nfl_ts[["player_id", "avg_air_yards_share", "total_air_yards"]].dropna(
+                subset=["player_id"]
+            )
+            if not air.empty:
+                merged = sleeper_ts.merge(air, on="player_id", how="left", suffixes=("", "_nfl"))
+                for col in ("avg_air_yards_share", "total_air_yards"):
+                    nfl_col = f"{col}_nfl"
+                    if nfl_col in merged.columns:
+                        merged[col] = merged[nfl_col].combine_first(merged[col])
+                        merged.drop(columns=[nfl_col], inplace=True)
+                return merged
+
+        return sleeper_ts
 
     def _load_infrastructure(self) -> None:
         """Rosters + depth charts + injuries for current season.

@@ -343,6 +343,16 @@ async def main() -> None:
     if not args.skip_seed:
         run_seed()
 
+    # Sync rosters from Sleeper — must run after seed to fix team assignments
+    # nfl_data_py seed data has stale teams; Sleeper has current rosters
+    print("[sync_rosters] Syncing player rosters from Sleeper...")
+    sync_result = subprocess.run(
+        [sys.executable, "scripts/sync_rosters.py"],
+    )
+    if sync_result.returncode != 0:
+        print("[sync_rosters] WARNING — sync failed, continuing with seed data.")
+    print()
+
     # Build warehouse once — all agents read from this shared data store
     from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
     print("[warehouse] Building NflDataWarehouse (one-time data load)...")
