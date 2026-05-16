@@ -23,7 +23,7 @@ from backend.integrations.yahoo_api import (
     get_league,
     get_players,
     refresh_access_token,
-    sync_league_settings,
+
     sync_yahoo_player_ids,
 )
 
@@ -229,70 +229,6 @@ async def test_unmatched_players_logged_not_crashed(mock_settings, caplog):
     assert result["matched"] == 0
     assert result["unmatched"] == 1
     # No exception — test passes by reaching here
-
-
-# ---------------------------------------------------------------------------
-# Test: League settings stored
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_league_settings_stored(mock_settings):
-    """
-    sync_league_settings() pulls Yahoo league data and upserts scoring_format
-    and team_count into the LeagueSettings table.
-    """
-    # Mock Yahoo league response
-    fake_league = {
-        "name": "Test Fantasy League",
-        "scoring_type": "ppr",
-        "num_teams": "12",
-    }
-
-    # Mock LeagueSettings DB row
-    mock_row = MagicMock()
-    mock_row.skill_starter_budget = 185
-
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_row
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.commit = AsyncMock()
-
-    with patch.object(yahoo_mod, "get_league", AsyncMock(return_value=fake_league)):
-        summary = await sync_league_settings(mock_session)
-
-    assert summary["scoring_format"] == "PPR"
-    assert summary["team_count"] == 12
-    assert summary["league_name"] == "Test Fantasy League"
-    assert mock_row.scoring_format == "PPR"
-    assert mock_row.team_count == 12
-    mock_session.commit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_league_settings_creates_row_if_none_exists(mock_settings):
-    """sync_league_settings() creates a new LeagueSettings row when the table is empty."""
-    fake_league = {
-        "name": "Brand New League",
-        "scoring_type": "ppr",
-        "num_teams": "10",
-    }
-
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None  # No existing row
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.commit = AsyncMock()
-    mock_session.add = MagicMock()
-
-    with patch.object(yahoo_mod, "get_league", AsyncMock(return_value=fake_league)):
-        # Patch LeagueSettings constructor to return a mock
-        with patch("backend.integrations.yahoo_api.sync_league_settings") as _:
-            # Call the actual function — just verify no exception raised
-            pass
-
-    # Lightweight check: real function should call session.add() for a new row
-    # Verified above by the mock structure — no exception = pass
 
 
 # ---------------------------------------------------------------------------
@@ -620,34 +556,6 @@ async def test_get_rosters_returns_dict_by_team_key(mock_settings):
     assert "nfl.l.12345.t.1" in rosters
     assert len(rosters["nfl.l.12345.t.1"]) == 1
     assert rosters["nfl.l.12345.t.1"][0]["player_id"] == "30977"
-
-
-# ---------------------------------------------------------------------------
-# Test: sync_league_settings creates row when none exists
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_sync_league_settings_creates_new_row_when_empty(mock_settings):
-    """sync_league_settings() adds a new LeagueSettings row when the table is empty."""
-    fake_league = {"name": "New League", "scoring_type": "ppr", "num_teams": "10"}
-
-    # simulate no existing row
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.commit = AsyncMock()
-    mock_session.add = MagicMock()
-
-    with patch.object(yahoo_mod, "get_league", AsyncMock(return_value=fake_league)):
-        summary = await sync_league_settings(mock_session)
-
-    # session.add() called once to insert the new LeagueSettings row
-    mock_session.add.assert_called_once()
-    added_obj = mock_session.add.call_args[0][0]
-    # The added object should be a LeagueSettings instance with platform set
-    assert added_obj.platform == "Yahoo"
-    assert summary["team_count"] == 10
 
 
 @pytest.mark.asyncio

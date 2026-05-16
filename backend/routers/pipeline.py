@@ -198,23 +198,7 @@ async def market_values_status():
     }
 
 
-@router.post("/sync-league-settings", response_model=PipelineResponse)
-async def sync_league_settings():
-    """
-    Pull league settings from Yahoo and upsert into league_settings table.
-    Requires YAHOO_REFRESH_TOKEN to be set in .env.
-    """
-    from backend.database import AsyncSessionLocal
-    from backend.integrations.yahoo_api import sync_league_settings as _sync
 
-    async with AsyncSessionLocal() as session:
-        result = await _sync(session)
-
-    return PipelineResponse(
-        status="complete",
-        message=f"League settings synced — {result['league_name']} ({result['scoring_format']}, {result['team_count']} teams)",
-        details=result,
-    )
 
 
 @router.post("/import-league-auction", response_model=PipelineResponse)

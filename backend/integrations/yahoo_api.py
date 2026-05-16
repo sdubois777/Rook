@@ -11,7 +11,7 @@ Access tokens are cached in memory (1-hour TTL minus 60-second buffer).
 File layout:
   OAuth helpers  — get_authorization_url, exchange_code_for_tokens, refresh_access_token
   API calls      — get_league, get_teams, get_players, get_draft_results, get_rosters
-  DB sync        — sync_yahoo_player_ids, sync_league_settings
+  DB sync        — sync_yahoo_player_ids
 """
 from __future__ import annotations
 
@@ -919,51 +919,3 @@ async def sync_yahoo_player_ids(db_session) -> dict[str, int]:
     return {"matched": matched, "unmatched": unmatched}
 
 
-async def sync_league_settings(db_session) -> dict[str, Any]:
-    """
-    Pull league metadata from Yahoo and upsert into the league_settings table.
-    Only updates fields that Yahoo provides — does not overwrite budget/valuation constants.
-
-    Returns a summary dict of what was synced.
-    """
-    from sqlalchemy import select
-    from backend.models.league_settings import LeagueSettings
-
-    league = await get_league()
-
-    scoring_type = str(league.get("scoring_type", "ppr")).lower()
-    scoring_format = {
-        "ppr": "PPR",
-        "0.5ppr": "Half-PPR",
-        "half": "Half-PPR",
-        "standard": "Standard",
-    }.get(scoring_type, "PPR")
-
-    team_count = int(league.get("num_teams", 12))
-
-    result = await db_session.execute(select(LeagueSettings).limit(1))
-    row = result.scalar_one_or_none()
-    if row is None:
-        row = LeagueSettings(platform="Yahoo")
-        db_session.add(row)
-
-    row.scoring_format = scoring_format
-    row.team_count = team_count
-    # skill_starter_budget may be None on a brand-new row (column default only applies on INSERT)
-    skill_budget = row.skill_starter_budget or 185
-    row.league_skill_dollar_pool = int(skill_budget * team_count)
-
-    await db_session.commit()
-    logger.info(
-        "League settings synced — name=%s, scoring=%s, teams=%d",
-        league.get("name"),
-        scoring_format,
-        team_count,
-    )
-
-    return {
-        "league_name": league.get("name"),
-        "scoring_format": scoring_format,
-        "team_count": team_count,
-        "league_skill_dollar_pool": row.league_skill_dollar_pool,
-    }

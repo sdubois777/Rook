@@ -28,33 +28,13 @@ class LeagueConfig:
 
     auction_budget: int = 200
     min_bid: int = 1
+    team_count: int = 12
     roster_slots: dict[str, int] = field(default_factory=lambda: dict(_DEFAULT_ROSTER_SLOTS))
 
     @property
     def total_roster_size(self) -> int:
         """Derived from roster_slots to avoid the seeded column bug (15 vs 16)."""
         return sum(self.roster_slots.values())
-
-    @classmethod
-    async def from_db(cls) -> LeagueConfig:
-        """Load from league_settings table, fall back to defaults."""
-        from sqlalchemy import select
-        from backend.database import AsyncSessionLocal
-        from backend.models.league_settings import LeagueSettings
-
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(LeagueSettings).limit(1))
-            row = result.scalar_one_or_none()
-
-        if row is None:
-            logger.warning("No league_settings row found — using defaults")
-            return cls()
-
-        return cls(
-            auction_budget=row.auction_budget,
-            min_bid=row.min_bid,
-            roster_slots=row.roster_slots or dict(_DEFAULT_ROSTER_SLOTS),
-        )
 
 
 @dataclass
@@ -76,6 +56,28 @@ class DraftStateManager:
     Pure Python — no API calls, no DB writes.
     All methods are O(1) or O(n) where n is the number of picks so far.
     """
+
+    @classmethod
+    def config_from_user_league(
+        cls,
+        league: "UserLeague | None",
+    ) -> LeagueConfig:
+        """Build draft LeagueConfig from a user's connected league.
+
+        Falls back to defaults if no league provided.
+        """
+        if league is None:
+            return LeagueConfig()
+
+        budget = league.budget or 200
+        draft_type = league.draft_type or "auction"
+        team_count = league.team_count or 12
+
+        return LeagueConfig(
+            auction_budget=budget if draft_type == "auction" else 0,
+            min_bid=1,
+            team_count=team_count,
+        )
 
     def __init__(self, league_config: LeagueConfig, your_team_id: str):
         self.league_config = league_config

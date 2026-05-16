@@ -57,6 +57,7 @@ class ConnectRequest(BaseModel):
 class StartDraftRequest(BaseModel):
     your_team_id: str
     draft_room_url: str | None = None
+    league_id: str | None = None  # user_leagues.id — loads budget/team_count
 
 
 class FrameRequest(BaseModel):
@@ -161,7 +162,7 @@ async def start_draft(req: StartDraftRequest):
     global _bridge, _engine, _state
 
     from backend.database import async_session
-    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+    from backend.engines.draft_state_manager import DraftStateManager
     from backend.engines.dependency_resolver import DependencyResolver
     from backend.engines.opponent_threat import OpponentThreatAnalyzer
     from backend.engines.live_draft import LiveDraftEngine
@@ -169,7 +170,28 @@ async def start_draft(req: StartDraftRequest):
     if _engine is not None:
         return {"status": "already_started", "your_team_id": req.your_team_id}
 
-    config = LeagueConfig()
+    # Load user's league settings if league_id provided
+    user_league = None
+    if req.league_id:
+        try:
+            import uuid as _uuid
+            from sqlalchemy import select
+            from backend.models.user_league import UserLeague
+
+            async with async_session() as session:
+                result = await session.execute(
+                    select(UserLeague).where(
+                        UserLeague.id == _uuid.UUID(req.league_id)
+                    )
+                )
+                user_league = result.scalar_one_or_none()
+        except Exception as exc:
+            logger.warning(
+                "Could not load league %s for draft config: %s",
+                req.league_id, exc,
+            )
+
+    config = DraftStateManager.config_from_user_league(user_league)
     _state = DraftStateManager(config, req.your_team_id)
 
     resolver = DependencyResolver()
