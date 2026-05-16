@@ -27,7 +27,7 @@ class LeagueAuctionHistory(Base):
     season_year: Mapped[int] = mapped_column(Integer, nullable=False)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     team_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    source: Mapped[str] = mapped_column(String(20), nullable=False)  # "yahoo" or "manual_csv"
+    source: Mapped[str] = mapped_column(String(50), nullable=False)  # "yahoo", "manual_csv", or "sync_{team_key}"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Added for multi-year Yahoo sync

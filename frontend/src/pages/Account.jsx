@@ -68,7 +68,10 @@ function LeagueCard({ league }) {
     setRemoving(true)
     try {
       await apiClient.delete(`/leagues/${league.id}`)
-      queryClient.invalidateQueries({ queryKey: ['account'] })
+      // Remove from cache immediately (soft delete still returns from API)
+      queryClient.setQueryData(['account'], (old) =>
+        old ? { ...old, leagues: old.leagues.filter((l) => l.id !== league.id) } : old
+      )
     } catch (err) {
       setError(err.response?.data?.message || 'Remove failed')
       setRemoving(false)

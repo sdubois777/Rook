@@ -102,7 +102,8 @@ class LeagueSyncService:
                     "Could not import %s season %d: %s",
                     user_league.platform, season, exc,
                 )
-                # Individual season failure does not abort sync
+                # Rollback so the transaction isn't permanently aborted
+                await self._db.rollback()
 
         summary["picks_imported"] = picks_total
         summary["seasons_imported"] = seasons_ok
