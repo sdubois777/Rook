@@ -35,6 +35,19 @@ _YAHOO_AUTH_URL = "https://api.login.yahoo.com/oauth2/request_auth"
 _YAHOO_TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 _YAHOO_API_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
 
+# NFL game_key → season mapping (verified from Yahoo API)
+YAHOO_NFL_GAME_KEYS: dict[int, str] = {
+    2026: "470", 2025: "461", 2024: "449", 2023: "423",
+    2022: "414", 2021: "406", 2020: "399", 2019: "390",
+    2018: "380", 2017: "371", 2016: "359",
+}
+
+
+def yahoo_league_key(league_id: str, season: int) -> str:
+    """Construct Yahoo league key from league_id and season year."""
+    game_key = YAHOO_NFL_GAME_KEYS.get(season, "470")
+    return f"{game_key}.l.{league_id}"
+
 # ---------------------------------------------------------------------------
 # In-memory token cache (refreshed automatically on expiry)
 # ---------------------------------------------------------------------------
@@ -401,19 +414,10 @@ async def get_all_user_leagues() -> list[dict[str, Any]]:
     if not league_id:
         return []
 
-    # Recent NFL game keys (season -> game_key) — used to find our starting point
-    # We try each until we find one that works with our league_id
-    # Verified from Yahoo API: game_key 423=2023, 449=2024, 461=2025, 470=2026
-    _GAME_KEYS = {
-        2026: "470", 2025: "461", 2024: "449", 2023: "423",
-        2022: "414", 2021: "406", 2020: "399", 2019: "390",
-        2018: "380", 2017: "371", 2016: "359",
-    }
-
     # Step 1: Find a valid starting league key
     start_key: str | None = None
-    for year in sorted(_GAME_KEYS.keys(), reverse=True):
-        gk = _GAME_KEYS[year]
+    for year in sorted(YAHOO_NFL_GAME_KEYS.keys(), reverse=True):
+        gk = YAHOO_NFL_GAME_KEYS[year]
         candidate = f"{gk}.l.{league_id}"
         try:
             data = await _api_get(f"league/{candidate}")
@@ -700,6 +704,115 @@ async def get_user_leagues(access_token: str) -> list[dict[str, Any]]:
     leagues.sort(key=lambda x: (-int(x["season"]), x["is_finished"]))
     logger.info("Found %d Yahoo leagues for user", len(leagues))
     return leagues
+
+
+async def get_league_settings(
+    access_token: str,
+    league_key: str,
+) -> dict[str, Any]:
+    """
+    Fetch full league settings from Yahoo Fantasy API.
+
+    Endpoint: GET /league/{league_key}/settings?format=json
+
+    Determines scoring format from stat modifiers:
+      stat_id "11" = receptions
+      weight 1.0 → ppr, 0.5 → half_ppr, 0.0 → standard
+
+    Returns dict with: name, num_teams, draft_type, scoring_type,
+    auction_budget, trade_deadline, waiver_type, playoff_start_week, uses_faab
+    """
+    data = await _api_get_with_token(
+        f"league/{league_key}/settings", access_token
+    )
+
+    # Navigate: fantasy_content.league = [league_info, {settings: ...}]
+    league_arr = data.get("fantasy_content", {}).get("league", [])
+
+    # League metadata is in element 0
+    league_meta: dict[str, Any] = {}
+    if league_arr:
+        first = league_arr[0]
+        if isinstance(first, list):
+            for item in first:
+                if isinstance(item, dict):
+                    league_meta.update(item)
+        elif isinstance(first, dict):
+            league_meta = first
+
+    # Settings sub-resource is in element 1
+    settings_data: dict[str, Any] = {}
+    if len(league_arr) > 1 and isinstance(league_arr[1], dict):
+        settings_data = league_arr[1].get("settings", [{}])
+        if isinstance(settings_data, list) and settings_data:
+            merged: dict[str, Any] = {}
+            for item in settings_data:
+                if isinstance(item, dict):
+                    merged.update(item)
+            settings_data = merged
+
+    logger.info(
+        "Yahoo league settings raw: meta=%s settings_keys=%s",
+        {k: league_meta.get(k) for k in ("name", "num_teams", "draft_type",
+         "scoring_type", "is_finished", "season")},
+        list(settings_data.keys()) if isinstance(settings_data, dict) else "N/A",
+    )
+
+    # Determine scoring from stat modifiers
+    stat_mods_raw = settings_data.get("stat_modifiers", {})
+    stat_list = stat_mods_raw.get("stats", []) if isinstance(stat_mods_raw, dict) else []
+    # Yahoo nests as: stat_modifiers.stats = [{stat: {stat_id, value}}, ...]
+    stat_mods: list[dict[str, Any]] = []
+    for entry in stat_list:
+        if isinstance(entry, dict):
+            stat = entry.get("stat", entry)
+            stat_mods.append(stat)
+
+    reception_mod = next(
+        (
+            float(m.get("value", 0))
+            for m in stat_mods
+            if str(m.get("stat_id")) == "11"
+        ),
+        0.0,
+    )
+    if reception_mod >= 1.0:
+        scoring_type = "ppr"
+    elif reception_mod >= 0.5:
+        scoring_type = "half_ppr"
+    else:
+        scoring_type = "standard"
+
+    # Draft type
+    raw_draft = str(league_meta.get("draft_type", "")).lower()
+    if raw_draft == "auction":
+        draft_type = "auction"
+    elif raw_draft in ("live", "offline"):
+        draft_type = "snake"
+    else:
+        draft_type = raw_draft or "snake"
+
+    # Waiver type
+    waiver_rule = str(settings_data.get("waiver_type", "")).lower()
+    uses_faab = "faab" in waiver_rule or waiver_rule == "2"
+
+    return {
+        "name": league_meta.get("name", ""),
+        "num_teams": int(league_meta.get("num_teams", 12)),
+        "draft_type": draft_type,
+        "scoring_type": scoring_type,
+        "auction_budget": (
+            int(settings_data.get("max_adds", 200))
+            if draft_type == "auction"
+            else None
+        ),
+        "trade_deadline": settings_data.get("trade_end_date", ""),
+        "waiver_type": "faab" if uses_faab else waiver_rule,
+        "playoff_start_week": int(
+            settings_data.get("playoff_start_week", 15)
+        ),
+        "uses_faab": uses_faab,
+    }
 
 
 # ---------------------------------------------------------------------------

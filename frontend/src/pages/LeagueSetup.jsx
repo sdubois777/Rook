@@ -211,10 +211,12 @@ function YahooConfirmStep({ league, onImport, onBack }) {
     try {
       const resp = await apiClient.post('/leagues/connect/yahoo', {
         league_id: league.league_id,
+        league_key: league.league_key,
         season: parseInt(league.season),
         num_teams: league.num_teams,
         draft_type: league.draft_type,
         scoring: league.scoring_type,
+        is_finished: league.is_finished || false,
       })
       onImport(resp.data)
     } catch (err) {

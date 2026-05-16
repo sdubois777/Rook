@@ -30,6 +30,7 @@ class LeagueService:
         scoring: str,
         budget: int | None,
         season_year: int,
+        is_active: bool = True,
     ) -> UserLeague:
         league = await self._repo.create(
             user_id=user_id,
@@ -40,7 +41,7 @@ class LeagueService:
             scoring=scoring,
             budget=budget,
             season_year=season_year,
-            is_active=True,
+            is_active=is_active,
         )
         await self._repo.commit()
         return league

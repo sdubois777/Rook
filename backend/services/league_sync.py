@@ -30,10 +30,12 @@ class LeagueSyncService:
         self._league_repo = LeagueRepository(db)
 
     async def sync_league(
-        self, user_league: UserLeague
+        self, user_league: UserLeague,
+        league_key: str | None = None,
     ) -> dict:
         """
         Full sync for a connected league.
+        0. Fetch league settings from platform (Yahoo only)
         1. Verify credentials via platform API
         2. Import historical draft data (up to 4 seasons)
         3. Import current season rosters
@@ -43,6 +45,10 @@ class LeagueSyncService:
         """
         platform = await get_platform_api(user_league, self._db)
         current_season = get_current_season()
+
+        # 0. Fetch and store Yahoo league settings
+        if user_league.platform == "yahoo":
+            await self._sync_yahoo_settings(user_league, league_key)
 
         summary = {
             "platform": user_league.platform,
@@ -101,6 +107,44 @@ class LeagueSyncService:
 
         await self._db.commit()
         return summary
+
+    async def _sync_yahoo_settings(
+        self, user_league: UserLeague, league_key: str | None = None,
+    ) -> None:
+        """Fetch Yahoo league settings and update user_league record."""
+        try:
+            from backend.integrations.yahoo_api import (
+                get_league_settings,
+                yahoo_league_key,
+            )
+            from backend.repositories.credential_repo import CredentialRepository
+
+            key = league_key or yahoo_league_key(
+                user_league.league_id, user_league.season_year
+            )
+            repo = CredentialRepository(self._db)
+            tokens = await repo.get_yahoo_tokens(self._user_id)
+            if not tokens:
+                logger.warning(
+                    "No Yahoo tokens for user %s — skipping settings sync",
+                    self._user_id,
+                )
+                return
+
+            settings = await get_league_settings(tokens[0], key)
+            user_league.league_name = settings["name"]
+            user_league.team_count = settings["num_teams"]
+            user_league.draft_type = settings["draft_type"]
+            user_league.scoring = settings["scoring_type"]
+            user_league.budget = settings.get("auction_budget")
+            await self._db.flush()
+            logger.info(
+                "Yahoo settings synced: name=%s teams=%d draft=%s scoring=%s",
+                settings["name"], settings["num_teams"],
+                settings["draft_type"], settings["scoring_type"],
+            )
+        except Exception as exc:
+            logger.warning("Could not fetch Yahoo league settings: %s", exc)
 
     async def _store_picks(
         self,

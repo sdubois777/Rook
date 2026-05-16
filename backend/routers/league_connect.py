@@ -33,10 +33,12 @@ router = APIRouter(prefix="/leagues", tags=["league-connect"])
 
 class ConnectYahooRequest(BaseModel):
     league_id: str
+    league_key: str | None = None  # "449.l.12345" — full Yahoo league key
     season: int | None = None
     num_teams: int | None = None
     draft_type: str | None = None
     scoring: str | None = None
+    is_finished: bool = False
 
 
 class ConnectSleeperRequest(BaseModel):
@@ -137,22 +139,30 @@ async def connect_yahoo_league(
     current_count = await league_repo.count_active(user.id)
     FeatureService.can_add_league(user, current_count)
 
+    # Determine is_active
+    target_season = body.season or get_current_season()
+    is_active = (
+        target_season == get_current_season()
+        and not body.is_finished
+    )
+
     # Create league record
     service = LeagueService(league_repo)
     league = await service.add_league(
         user_id=user.id,
         platform="yahoo",
         league_id=body.league_id,
-        season_year=body.season or get_current_season(),
+        season_year=target_season,
         team_count=body.num_teams or 12,
         draft_type=body.draft_type or "auction",
         scoring=body.scoring or "ppr",
         budget=200,
+        is_active=is_active,
     )
 
-    # Sync
+    # Sync — pass league_key so Yahoo settings can be fetched
     sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league)
+    summary = await sync_service.sync_league(league, league_key=body.league_key)
 
     return {
         "status": "connected",
