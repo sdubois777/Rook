@@ -280,7 +280,7 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-929 tests passing (backend). 29 frontend tests passing.
+955 tests passing (backend). 29 frontend tests passing.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -402,7 +402,7 @@ fantasy-football-ai/
   Fernet token encryption, PlatformCredential model, LeaguePlatformAPI abstraction
   Yahoo multi-user OAuth (state=user_id CSRF), ESPN bookmarklet + cookie API
   Sleeper public API, LeagueSyncService (4yr history), league setup wizard
-  46 new tests, 929 total
+  56 new tests, 955 total
 - [ ] Stage 29: Snake Draft — see docs/stages/stage-29-snake-draft.md
   SnakeValuationEngine, VOE metric, SnakeDraftAgent
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
