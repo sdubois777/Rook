@@ -107,6 +107,59 @@ async def test_callback_with_invalid_state_raises_error():
 
 
 @pytest.mark.asyncio
+async def test_state_param_decoded_on_callback():
+    """Yahoo callback correctly decodes user_id from state and stores tokens."""
+    user = _make_user()
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    # Encode state with user_id
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    mock_tokens = {
+        "access_token": "new_access_token",
+        "refresh_token": "new_refresh_token",
+        "expires_in": 3600,
+    }
+
+    with patch(
+        "backend.routers.auth.exchange_code_for_tokens",
+        new_callable=AsyncMock,
+        return_value=mock_tokens,
+    ), patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo:
+        mock_repo = AsyncMock()
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                follow_redirects=False,
+            ) as ac:
+                resp = await ac.get(
+                    f"/auth/yahoo/callback?code=test_code&state={state}"
+                )
+            # Should redirect to /account?connected=yahoo
+            assert resp.status_code == 302
+            assert "connected=yahoo" in resp.headers.get("location", "")
+
+            # Verify upsert_yahoo called with decoded user_id
+            mock_repo.upsert_yahoo.assert_called_once()
+            call_kwargs = mock_repo.upsert_yahoo.call_args
+            assert call_kwargs.kwargs.get("user_id") == str(user.id)
+            assert call_kwargs.kwargs.get("access_token") == "new_access_token"
+            assert call_kwargs.kwargs.get("refresh_token") == "new_refresh_token"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_yahoo_disconnect_removes_credentials():
     user = _make_user()
     from backend.core.dependencies import get_current_user, get_db

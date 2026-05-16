@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useAuth } from '@clerk/clerk-react'
 import { apiClient } from '../api/client'
 import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
@@ -76,12 +77,27 @@ function ConnectStep({ platform, onConnected, onBack }) {
 }
 
 function YahooConnect({ onBack }) {
+  const { getToken } = useAuth()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
   const handleConnect = async () => {
+    setError('')
+    setLoading(true)
     try {
-      const resp = await apiClient.get('/auth/yahoo/connect')
-      window.location.href = resp.data.auth_url
+      // Step 1: authenticated fetch to get the Yahoo OAuth URL
+      const token = await getToken()
+      const response = await fetch(`${API_URL}/auth/yahoo/connect-url`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error('Failed to get Yahoo OAuth URL')
+      const { url } = await response.json()
+
+      // Step 2: browser navigates to Yahoo (no CORS issue)
+      window.location.href = url
     } catch {
-      // Error handled by interceptor
+      setError('Failed to start Yahoo connection. Please try again.')
+      setLoading(false)
     }
   }
 
@@ -91,11 +107,13 @@ function YahooConnect({ onBack }) {
       <p className="text-gray-400 mb-8">
         You'll be redirected to Yahoo to authorize access to your leagues.
       </p>
+      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
       <button
         onClick={handleConnect}
-        className="bg-purple-600 hover:bg-purple-500 text-white font-medium px-6 py-3 rounded-lg transition-colors"
+        disabled={loading}
+        className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded-lg transition-colors"
       >
-        Connect with Yahoo
+        {loading ? 'Connecting...' : 'Connect with Yahoo'}
       </button>
       <BackButton onClick={onBack} />
     </div>

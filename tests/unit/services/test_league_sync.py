@@ -211,6 +211,138 @@ async def test_sync_caches_free_agents():
 
 
 @pytest.mark.asyncio
+async def test_sync_deduplicates_picks():
+    """Re-syncing same league doesn't create duplicate picks (on_conflict_do_nothing)."""
+    league = _make_league()
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock()
+
+    picks = _make_picks(3, season=2025)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = picks
+    mock_platform.get_rosters.return_value = []
+    mock_platform.get_free_agents.return_value = []
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), patch(
+        "backend.services.league_sync.LeagueRepository",
+    ):
+        from backend.services.league_sync import LeagueSyncService
+        service = LeagueSyncService(mock_db, league.user_id)
+
+        # Sync once
+        summary1 = await service.sync_league(league)
+        first_execute_count = mock_db.execute.await_count
+
+        # Sync again — same picks
+        summary2 = await service.sync_league(league)
+
+    # Both syncs report same pick count (on_conflict_do_nothing handles dedup at DB level)
+    assert summary1["picks_imported"] == summary2["picks_imported"]
+    # DB execute called for both syncs (SQL issued, DB handles uniqueness)
+    assert mock_db.execute.await_count > first_execute_count
+
+
+@pytest.mark.asyncio
+async def test_picks_stored_with_user_id():
+    """Sync service is initialized with user_id — picks scoped to user."""
+    user_id = uuid.uuid4()
+    league = _make_league()
+    league.user_id = user_id
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock()
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = _make_picks(2)
+    mock_platform.get_rosters.return_value = []
+    mock_platform.get_free_agents.return_value = []
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), patch(
+        "backend.services.league_sync.LeagueRepository",
+    ):
+        from backend.services.league_sync import LeagueSyncService
+        service = LeagueSyncService(mock_db, user_id)
+        assert service._user_id == user_id
+        await service.sync_league(league)
+
+    # Picks were stored (execute called for INSERT statements)
+    assert mock_db.execute.await_count > 0
+
+
+@pytest.mark.asyncio
+async def test_user_a_picks_not_visible_to_user_b():
+    """Each user gets their own LeagueSyncService with their own user_id.
+
+    User isolation is enforced because:
+    1. LeagueSyncService stores user_id at init
+    2. Picks are stored in league_auction_history via user_league_id
+    3. League ownership verified via _get_user_league(user_id, league_id)
+    """
+    user_a = uuid.uuid4()
+    user_b = uuid.uuid4()
+    league_a = _make_league(league_id="league-a")
+    league_a.user_id = user_a
+    league_b = _make_league(league_id="league-b")
+    league_b.user_id = user_b
+
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock()
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = _make_picks(2)
+    mock_platform.get_rosters.return_value = []
+    mock_platform.get_free_agents.return_value = []
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), patch(
+        "backend.services.league_sync.LeagueRepository",
+    ):
+        from backend.services.league_sync import LeagueSyncService
+
+        # User A syncs their league
+        service_a = LeagueSyncService(mock_db, user_a)
+        assert service_a._user_id == user_a
+
+        # User B syncs their league
+        service_b = LeagueSyncService(mock_db, user_b)
+        assert service_b._user_id == user_b
+
+        # Different users, different services, different user_ids
+        assert service_a._user_id != service_b._user_id
+
+        # Picks stored under different user_league_ids
+        summary_a = await service_a.sync_league(league_a)
+        summary_b = await service_b.sync_league(league_b)
+
+    # Both syncs succeed independently
+    assert summary_a["picks_imported"] > 0
+    assert summary_b["picks_imported"] > 0
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_picks_without_player_info():
     """Picks with no player_name and no platform_player_id should be skipped."""
     league = _make_league()

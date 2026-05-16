@@ -28,11 +28,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@router.get("/yahoo/connect-url", summary="Get Yahoo OAuth URL (authenticated)")
+async def yahoo_connect_url(user=Depends(get_current_user)):
+    """
+    Returns the Yahoo OAuth authorization URL as JSON.
+    Frontend fetches this with a Bearer token, then navigates
+    the browser to the returned URL. Separates auth from
+    navigation so the redirect doesn't need JWT headers.
+    """
+    if not settings.yahoo_client_id:
+        from backend.core.exceptions import AppError
+        raise AppError("YAHOO_CLIENT_ID not configured")
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    url = get_authorization_url(state=state)
+    logger.info("Yahoo OAuth URL generated for user %s", user.id)
+    return {"url": url}
+
+
 @router.get("/yahoo/connect", summary="Redirect to Yahoo OAuth (requires login)")
 async def yahoo_connect(user=Depends(get_current_user)):
     """
     Initiate Yahoo OAuth for current user.
     Encodes user_id in state parameter (CSRF protection).
+    Kept for direct-navigation fallback.
     """
     if not settings.yahoo_client_id:
         from backend.core.exceptions import AppError
@@ -50,30 +72,28 @@ async def yahoo_connect(user=Depends(get_current_user)):
 @router.get("/yahoo/callback", summary="Yahoo OAuth callback")
 async def yahoo_callback(
     code: str,
-    state: str = "",
+    state: str,
     db=Depends(get_db),
 ):
     """
-    Yahoo redirects here after the user authorizes the app.
-    Exchanges code for tokens, stores encrypted per user.
-    Redirects to /account?connected=yahoo.
+    Yahoo OAuth callback — no auth dependency.
+    User identity comes from the state parameter,
+    not from JWT headers. The browser navigates
+    here directly from Yahoo with no ability to
+    attach auth headers.
+
+    Security model: state was encoded server-side
+    in /yahoo/connect-url with the user's verified
+    Clerk ID. Yahoo returns it unchanged.
     """
-    if not code:
-        raise ValidationError("Missing authorization code")
-
-    # Decode user_id from state
-    user_id = None
-    if state:
-        try:
-            state_data = json.loads(
-                base64.urlsafe_b64decode(state).decode()
-            )
-            user_id = state_data.get("user_id")
-        except Exception:
-            raise ValidationError("Invalid OAuth state parameter")
-
-    if not user_id:
-        raise ValidationError("Missing user_id in OAuth state")
+    # Decode user_id from state (encoded server-side in connect-url)
+    try:
+        state_data = json.loads(
+            base64.urlsafe_b64decode(state).decode()
+        )
+        user_id = state_data["user_id"]
+    except Exception:
+        raise ValidationError("Invalid OAuth state")
 
     try:
         tokens = await exchange_code_for_tokens(code)

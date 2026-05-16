@@ -104,6 +104,76 @@ async def test_espn_callback_requires_cookies():
 
 
 @pytest.mark.asyncio
+async def test_espn_callback_requires_auth():
+    """ESPN bookmarklet callback requires authenticated user."""
+    from backend.core.dependencies import get_current_user
+
+    # Override auth to raise — simulates unauthenticated request
+    async def raise_unauth():
+        from backend.core.exceptions import UnauthorizedError
+        raise UnauthorizedError("Not authenticated")
+
+    app.dependency_overrides[get_current_user] = raise_unauth
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as ac:
+            resp = await ac.get(
+                "/leagues/connect/espn/callback"
+                "?espn_s2=test_cookie&swid=test_swid"
+            )
+        assert resp.status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_invalid_espn_cookies_raise_app_error():
+    """ESPN connect with invalid cookies returns error."""
+    user = _make_user()
+
+    from backend.core.dependencies import get_current_user, get_db
+    from backend.core.exceptions import AppError
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    # ESPNLeagueAPI is lazy-imported inside connect_espn_league endpoint
+    mock_api = AsyncMock()
+    mock_api.validate_cookies.side_effect = AppError(
+        "ESPN cookies expired — please reconnect"
+    )
+
+    mock_espn_cls = MagicMock(return_value=mock_api)
+
+    with patch(
+        "backend.integrations.espn_league_api.ESPNLeagueAPI",
+        mock_espn_cls,
+    ):
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/leagues/connect/espn",
+                    json={
+                        "league_id": "12345",
+                        "espn_s2": "bad_cookie",
+                        "swid": "bad_swid",
+                    },
+                )
+            # AppError returns 400 or custom status
+            assert resp.status_code in (400, 401, 422, 500)
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_league_status_returns_info():
     user = _make_user()
     league = _make_league(user.id)
