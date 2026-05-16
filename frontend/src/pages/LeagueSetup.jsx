@@ -46,7 +46,7 @@ function StepIndicator({ current }) {
   )
 }
 
-// Step 1 — Choose Platform
+// Step 0 — Choose Platform
 function PlatformStep({ onSelect }) {
   return (
     <div>
@@ -68,18 +68,33 @@ function PlatformStep({ onSelect }) {
   )
 }
 
-// Step 2 — Connect (platform-specific)
-function ConnectStep({ platform, onConnected, onBack }) {
-  if (platform === 'yahoo') return <YahooConnect onBack={onBack} />
+// Step 1 — Connect (platform-specific)
+function ConnectStep({ platform, onConnected, onYahooLeagues, onBack }) {
+  if (platform === 'yahoo') return <YahooConnect onYahooLeagues={onYahooLeagues} onBack={onBack} />
   if (platform === 'espn') return <EspnConnect onConnected={onConnected} onBack={onBack} />
   if (platform === 'sleeper') return <SleeperConnect onConnected={onConnected} onBack={onBack} />
   return null
 }
 
-function YahooConnect({ onBack }) {
+function YahooConnect({ onYahooLeagues, onBack }) {
   const { getToken } = useAuth()
+  const [checking, setChecking] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // On mount, check if Yahoo is already connected by fetching leagues
+  useEffect(() => {
+    const checkConnection = async () => {
+      try {
+        const resp = await apiClient.get('/auth/yahoo/leagues')
+        onYahooLeagues(resp.data.leagues)
+      } catch {
+        // Not connected — show the connect button
+        setChecking(false)
+      }
+    }
+    checkConnection()
+  }, [])
 
   const handleConnect = async () => {
     setError('')
@@ -101,6 +116,15 @@ function YahooConnect({ onBack }) {
     }
   }
 
+  if (checking) {
+    return (
+      <div>
+        <h2 className="text-2xl font-bold mb-2">Checking Yahoo Connection...</h2>
+        <p className="text-gray-400">Looking for your Yahoo Fantasy account...</p>
+      </div>
+    )
+  }
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-2">Connect Yahoo Fantasy</h2>
@@ -116,6 +140,119 @@ function YahooConnect({ onBack }) {
         {loading ? 'Connecting...' : 'Connect with Yahoo'}
       </button>
       <BackButton onClick={onBack} />
+    </div>
+  )
+}
+
+// Step 2 — Yahoo League Selection
+function YahooLeagueSelect({ leagues, onSelect, onBack }) {
+  const [selected, setSelected] = useState(null)
+
+  if (!leagues || leagues.length === 0) {
+    return (
+      <div>
+        <h2 className="text-2xl font-bold mb-2">No Leagues Found</h2>
+        <p className="text-gray-400 mb-6">
+          No Yahoo Fantasy Football leagues were found for your account.
+        </p>
+        <BackButton onClick={onBack} />
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-2">Select Your League</h2>
+      <p className="text-gray-400 mb-6">Choose the league you want to import.</p>
+
+      <div className="space-y-3 max-w-md mb-8">
+        {leagues.map((league) => (
+          <button
+            key={league.league_key}
+            onClick={() => setSelected(league)}
+            className={`w-full text-left rounded-xl p-4 border transition-colors ${
+              selected?.league_key === league.league_key
+                ? 'border-purple-500 bg-purple-900/30'
+                : 'border-gray-700 bg-gray-800 hover:border-gray-600'
+            }`}
+          >
+            <div className="font-semibold">{league.name}</div>
+            <div className="text-sm text-gray-400 mt-1">
+              {league.num_teams} teams
+              {league.scoring_type ? ` · ${league.scoring_type}` : ''}
+              {league.draft_type ? ` · ${league.draft_type}` : ''}
+              {` · ${league.season}`}
+              {league.is_finished ? ' (Finished)' : ''}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <button
+        onClick={() => onSelect(selected)}
+        disabled={!selected}
+        className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded-lg transition-colors"
+      >
+        Continue
+      </button>
+      <BackButton onClick={onBack} />
+    </div>
+  )
+}
+
+// Step 3 — Yahoo Confirm
+function YahooConfirmStep({ league, onImport, onBack }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleImport = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      const resp = await apiClient.post('/leagues/connect/yahoo', {
+        league_id: league.league_id,
+        season: parseInt(league.season),
+        num_teams: league.num_teams,
+        draft_type: league.draft_type,
+        scoring: league.scoring_type,
+      })
+      onImport(resp.data)
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to import league')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-2">Confirm League</h2>
+      <p className="text-gray-400 mb-6">Review your league details before importing.</p>
+
+      <div className="bg-gray-800 rounded-xl p-6 space-y-3 max-w-md mb-8">
+        <SummaryRow label="League" value={league.name} />
+        <SummaryRow label="Teams" value={league.num_teams} />
+        <SummaryRow label="Format" value={league.draft_type || '—'} />
+        <SummaryRow label="Scoring" value={league.scoring_type || '—'} />
+        <SummaryRow label="Season" value={league.season} />
+      </div>
+
+      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+
+      <div className="flex gap-4">
+        <button
+          onClick={onBack}
+          className="text-gray-400 hover:text-gray-300 font-medium px-6 py-3 transition-colors"
+        >
+          &larr; Back
+        </button>
+        <button
+          onClick={handleImport}
+          disabled={loading}
+          className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-medium px-6 py-3 rounded-lg transition-colors"
+        >
+          {loading ? 'Importing...' : 'Import League'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -293,7 +430,7 @@ function SleeperConnect({ onConnected, onBack }) {
   )
 }
 
-// Step 4 — Confirm settings (shown when direct connect returns data)
+// Step 4 — Import result (shared across platforms)
 function ConfirmStep({ result }) {
   const navigate = useNavigate()
 
@@ -345,8 +482,10 @@ export default function LeagueSetup() {
   const [step, setStep] = useState(0)
   const [platform, setPlatform] = useState(null)
   const [result, setResult] = useState(null)
+  const [yahooLeagues, setYahooLeagues] = useState(null)
+  const [selectedLeague, setSelectedLeague] = useState(null)
 
-  // Handle ESPN bookmarklet redirect (?platform=espn)
+  // Handle redirect params (?platform=espn or ?platform=yahoo after OAuth)
   useEffect(() => {
     const p = searchParams.get('platform')
     if (p) {
@@ -360,7 +499,26 @@ export default function LeagueSetup() {
     setStep(1)
   }
 
+  // ESPN/Sleeper direct connect → skip to results
   const handleConnected = (data) => {
+    setResult(data)
+    setStep(4)
+  }
+
+  // Yahoo OAuth complete → show league list
+  const handleYahooLeagues = (leagues) => {
+    setYahooLeagues(leagues)
+    setStep(2)
+  }
+
+  // Yahoo league selected → confirm
+  const handleLeagueSelected = (league) => {
+    setSelectedLeague(league)
+    setStep(3)
+  }
+
+  // Yahoo import complete → show results
+  const handleYahooImport = (data) => {
     setResult(data)
     setStep(4)
   }
@@ -369,6 +527,10 @@ export default function LeagueSetup() {
     if (step === 1) {
       setPlatform(null)
       setStep(0)
+    } else if (step === 2) {
+      setStep(1)
+    } else if (step === 3) {
+      setStep(2)
     }
   }
 
@@ -387,6 +549,21 @@ export default function LeagueSetup() {
           <ConnectStep
             platform={platform}
             onConnected={handleConnected}
+            onYahooLeagues={handleYahooLeagues}
+            onBack={handleBack}
+          />
+        )}
+        {step === 2 && platform === 'yahoo' && (
+          <YahooLeagueSelect
+            leagues={yahooLeagues}
+            onSelect={handleLeagueSelected}
+            onBack={handleBack}
+          />
+        )}
+        {step === 3 && platform === 'yahoo' && selectedLeague && (
+          <YahooConfirmStep
+            league={selectedLeague}
+            onImport={handleYahooImport}
             onBack={handleBack}
           />
         )}

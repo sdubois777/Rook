@@ -33,6 +33,10 @@ router = APIRouter(prefix="/leagues", tags=["league-connect"])
 
 class ConnectYahooRequest(BaseModel):
     league_id: str
+    season: int | None = None
+    num_teams: int | None = None
+    draft_type: str | None = None
+    scoring: str | None = None
 
 
 class ConnectSleeperRequest(BaseModel):
@@ -139,10 +143,10 @@ async def connect_yahoo_league(
         user_id=user.id,
         platform="yahoo",
         league_id=body.league_id,
-        season_year=get_current_season(),
-        team_count=12,
-        draft_type="auction",
-        scoring="ppr",
+        season_year=body.season or get_current_season(),
+        team_count=body.num_teams or 12,
+        draft_type=body.draft_type or "auction",
+        scoring=body.scoring or "ppr",
         budget=200,
     )
 
@@ -150,7 +154,12 @@ async def connect_yahoo_league(
     sync_service = LeagueSyncService(db, user.id)
     summary = await sync_service.sync_league(league)
 
-    return {"status": "connected", "league_id": str(league.id), **summary}
+    return {
+        "status": "connected",
+        "league_id": str(league.id),
+        "platform": "yahoo",
+        **summary,
+    }
 
 
 @router.post("/connect/sleeper")

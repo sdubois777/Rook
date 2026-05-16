@@ -145,9 +145,9 @@ async def test_state_param_decoded_on_callback():
                 resp = await ac.get(
                     f"/auth/yahoo/callback?code=test_code&state={state}"
                 )
-            # Should redirect to /account?connected=yahoo
+            # Should redirect to /league-setup?platform=yahoo
             assert resp.status_code == 302
-            assert "connected=yahoo" in resp.headers.get("location", "")
+            assert "platform=yahoo" in resp.headers.get("location", "")
 
             # Verify upsert_yahoo called with decoded user_id
             mock_repo.upsert_yahoo.assert_called_once()
@@ -155,6 +155,128 @@ async def test_state_param_decoded_on_callback():
             assert call_kwargs.kwargs.get("user_id") == str(user.id)
             assert call_kwargs.kwargs.get("access_token") == "new_access_token"
             assert call_kwargs.kwargs.get("refresh_token") == "new_refresh_token"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_yahoo_leagues_requires_connection():
+    """GET /auth/yahoo/leagues returns 400 when Yahoo not connected."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    with patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo:
+        mock_repo = AsyncMock()
+        mock_repo.get_yahoo_tokens.return_value = None
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.get("/auth/yahoo/leagues")
+            assert resp.status_code == 400
+            assert resp.json()["action"] == "connect"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_yahoo_leagues_returns_list():
+    """GET /auth/yahoo/leagues returns league list when connected."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    future_expiry = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    mock_leagues = [
+        {"league_key": "449.l.123", "league_id": "123", "name": "Test League",
+         "season": "2026", "num_teams": 12, "draft_type": "auction",
+         "scoring_type": "head", "is_finished": False, "logo_url": ""},
+    ]
+
+    with patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo, patch(
+        "backend.routers.auth.get_user_leagues",
+        new_callable=AsyncMock,
+        return_value=mock_leagues,
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_yahoo_tokens.return_value = (
+            "access_tok", "refresh_tok", future_expiry
+        )
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.get("/auth/yahoo/leagues")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data["leagues"]) == 1
+            assert data["leagues"][0]["name"] == "Test League"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_yahoo_leagues_auto_refreshes_expired_token():
+    """GET /auth/yahoo/leagues refreshes token when expired."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    # Token expired 10 minutes ago
+    expired_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    new_expiry = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+    with patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo, patch(
+        "backend.routers.auth.refresh_access_token_for_user",
+        new_callable=AsyncMock,
+        return_value=("new_access", "new_refresh", new_expiry),
+    ) as mock_refresh, patch(
+        "backend.routers.auth.get_user_leagues",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_yahoo_tokens.return_value = (
+            "old_access", "old_refresh", expired_at
+        )
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.get("/auth/yahoo/leagues")
+            assert resp.status_code == 200
+
+            # Refresh was called
+            mock_refresh.assert_awaited_once_with("old_refresh")
+            # New tokens stored
+            mock_repo.upsert_yahoo.assert_awaited_once_with(
+                user.id, "new_access", "new_refresh", new_expiry,
+            )
         finally:
             app.dependency_overrides.clear()
 

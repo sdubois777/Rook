@@ -143,6 +143,41 @@ async def refresh_access_token() -> str:
     return _cached_token
 
 
+async def refresh_access_token_for_user(
+    refresh_token: str,
+) -> tuple[str, str, "datetime"]:
+    """
+    Refresh an access token for a specific user's stored refresh_token.
+    Returns (new_access_token, new_refresh_token, expires_at).
+    Does NOT modify module-level token cache.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            _YAHOO_TOKEN_URL,
+            headers={
+                "Authorization": _basic_auth_header(),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    expires_in = int(data.get("expires_in", 3600))
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+    return (
+        data["access_token"],
+        data.get("refresh_token", refresh_token),
+        expires_at,
+    )
+
+
 async def _get_valid_token() -> str:
     """Return a valid access token, refreshing if expired or absent."""
     global _cached_token, _token_expires_at
@@ -154,6 +189,25 @@ async def _get_valid_token() -> str:
 # ---------------------------------------------------------------------------
 # Core API helper
 # ---------------------------------------------------------------------------
+
+async def _api_get_with_token(
+    path: str, access_token: str, **extra_params: str
+) -> dict[str, Any]:
+    """Authenticated GET using an explicit per-user access token."""
+    url = f"{_YAHOO_API_BASE}/{path.lstrip('/')}"
+    params: dict[str, str] = {"format": "json"}
+    params.update(extra_params)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
 
 async def _api_get(path: str, **extra_params: str) -> dict[str, Any]:
     """
@@ -562,6 +616,90 @@ async def get_teams_in_league(league_key: str) -> list[dict[str, Any]]:
         })
 
     return teams
+
+
+async def get_user_leagues(access_token: str) -> list[dict[str, Any]]:
+    """
+    Fetch all Fantasy Football leagues for the authenticated user.
+
+    Uses a per-user access token (from platform_credentials).
+    Yahoo API: GET /users;use_login=1/games;game_codes=nfl/leagues
+
+    Returns list of dicts:
+        league_key, league_id, name, season, num_teams,
+        draft_type, scoring_type, is_finished, logo_url
+    """
+    from backend.utils.seasons import get_current_season
+
+    data = await _api_get_with_token(
+        "users;use_login=1/games;game_codes=nfl/leagues",
+        access_token,
+    )
+
+    current = get_current_season()
+    min_season = current - 1
+    leagues: list[dict[str, Any]] = []
+
+    # Navigate Yahoo's nested structure:
+    #   fantasy_content.users.N.user = [user_info, {games: ...}]
+    #   games.N.game = [game_info, {leagues: ...}]
+    #   leagues.N.league = [league_info, ...]
+    users = data.get("fantasy_content", {}).get("users", {})
+    for ukey, uval in users.items():
+        if ukey == "count":
+            continue
+        user_data = uval.get("user", [])
+        if len(user_data) < 2 or not isinstance(user_data[1], dict):
+            continue
+
+        games = user_data[1].get("games", {})
+        for gkey, gval in games.items():
+            if gkey == "count":
+                continue
+            game_data = gval.get("game", [])
+            if len(game_data) < 2:
+                continue
+
+            # game_data[1] has the leagues sub-resource
+            league_container = game_data[1] if isinstance(game_data[1], dict) else {}
+            league_dict = league_container.get("leagues", {})
+
+            for lkey, lval in league_dict.items():
+                if lkey == "count":
+                    continue
+                league_arr = lval.get("league", [])
+                if not league_arr:
+                    continue
+
+                info = league_arr[0]
+                # Yahoo sometimes nests fields as list of single-key dicts
+                if isinstance(info, list):
+                    merged: dict[str, Any] = {}
+                    for item in info:
+                        if isinstance(item, dict):
+                            merged.update(item)
+                    info = merged
+
+                season = int(info.get("season", 0))
+                if season < min_season:
+                    continue
+
+                leagues.append({
+                    "league_key": info.get("league_key", ""),
+                    "league_id": info.get("league_id", ""),
+                    "name": info.get("name", ""),
+                    "season": str(season),
+                    "num_teams": int(info.get("num_teams", 0)),
+                    "draft_type": info.get("draft_type", ""),
+                    "scoring_type": info.get("scoring_type", ""),
+                    "is_finished": bool(int(info.get("is_finished", 0) or 0)),
+                    "logo_url": info.get("logo_url", ""),
+                })
+
+    # Unfinished current-season leagues first
+    leagues.sort(key=lambda x: (-int(x["season"]), x["is_finished"]))
+    logger.info("Found %d Yahoo leagues for user", len(leagues))
+    return leagues
 
 
 # ---------------------------------------------------------------------------
