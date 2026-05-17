@@ -85,6 +85,11 @@ export default function PlayerCardExpanded({ player, onClick }) {
               </span>
             )
           })()}
+          {player.is_rookie && (
+            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-cyan-500/15 text-cyan-400">
+              Rookie
+            </span>
+          )}
           {player.pay_up_flag && (
             <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-emerald-500/15 text-emerald-400">
               PAY UP

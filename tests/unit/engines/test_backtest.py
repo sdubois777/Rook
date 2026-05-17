@@ -36,12 +36,16 @@ def test_backtest_metrics_to_dict():
         avoid_accuracy=3.0,
         avoid_count=34,
         grade="MODERATE",
+        price_source="league_auction_history (2024, N=120)",
+        price_coverage=120,
     )
     d = m.to_dict()
     assert d["season"] == 2024
     assert d["projection"]["mae"] == 37.7
     assert d["signals"]["accuracy"] == 55.4
     assert d["grade"] == "MODERATE"
+    assert d["price_source"] == "league_auction_history (2024, N=120)"
+    assert d["price_coverage"] == 120
 
 
 def test_signal_accuracy_between_0_and_100():
@@ -72,15 +76,14 @@ def test_fair_value_threshold():
 
 
 # ---------------------------------------------------------------------------
-# Injury exclusion
+# Injury handling (included in evaluation, not excluded)
 # ---------------------------------------------------------------------------
 
 
-def test_injury_shortened_excluded():
-    """Players with < 10 games are marked injury_shortened."""
-    # Simulate: 7 games played → injury_shortened = True
-    actual_games = 7
-    assert actual_games < 10
+def test_injury_shortened_flag():
+    """Players with < 10 games are marked injury_shortened but still evaluated."""
+    # 7 games → injury_shortened = True (but still counted in accuracy)
+    assert 7 < 10
 
     # 12 games → not shortened
     assert not (12 < 10)
@@ -143,9 +146,32 @@ async def test_run_backtest_returns_metrics_and_df():
     profile1.clean_season_baseline = {"projected_ppr_season": 240.0}
 
     mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.fetchall.return_value = [(player1, profile1)]
-    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    # Track execute calls — first is SET READ ONLY, second is historical prices,
+    # third is player+profile SELECT.  We need to return appropriate results.
+    call_count = {"n": 0}
+
+    async def mock_execute(stmt, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # SET TRANSACTION READ ONLY
+            return MagicMock()
+        if call_count["n"] == 2:
+            # _load_historical_prices: auction history by name — empty
+            mock_r = MagicMock()
+            mock_r.fetchall.return_value = []
+            return mock_r
+        if call_count["n"] == 3:
+            # _load_historical_prices: auction history by player_id — empty
+            mock_r = MagicMock()
+            mock_r.fetchall.return_value = []
+            return mock_r
+        # Fallback player SELECT (market_value_league path)
+        mock_r = MagicMock()
+        mock_r.fetchall.return_value = [(player1, profile1)]
+        return mock_r
+
+    mock_session.execute = mock_execute
 
     with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_seasonal):
         metrics, df = await run_backtest(mock_session, 2024)

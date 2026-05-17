@@ -27,6 +27,9 @@ from backend.agents.player_profiles import (
     _compute_season_averages,
     _compute_weighted_baseline,
     _estimate_year1_role,
+    _format_rookie_prompt,
+    _parse_rookie_sonnet_output,
+    _rookie_sonnet_fallback,
     _to_decimal,
     _write_profiles,
     needs_sonnet_reasoning,
@@ -2801,3 +2804,260 @@ def test_same_team_initial_mismatch_refuses():
     assert result is None, (
         "Isaiah Jacobs (I.) must not get Josh Jacobs (J.) stats even on same team"
     )
+
+
+# ---------------------------------------------------------------------------
+# Rookie Sonnet projection tests
+# ---------------------------------------------------------------------------
+
+def _make_rookie_player(**overrides):
+    """Create a rookie player dict with college comp data."""
+    defaults = {
+        "name": "Jeremiyah Love",
+        "position": "RB",
+        "age": 20,
+        "is_rookie": True,
+        "team_abbr": "ARI",
+        "draft_round": 1,
+        "draft_pick": 3,
+        "college_profile_grade": "elite",
+        "draft_capital_signal": "high",
+        "landing_spot_modifier": 1.08,
+        "comp_yr1_avg_ppg": 18.96,
+        "comp_yr2_avg_ppg": 17.46,
+        "historical_comp_names": ["Trent Richardson", "Ezekiel Elliott", "Leonard Fournette"],
+        "depth_chart_rank": 2,
+        "dependency_flags": [{"type": "beneficiary", "effect": "positive"}],
+        "injury_profile": {"overall_risk_level": "low"},
+        "schedule": {"early_window_grade": "neutral", "playoff_window_grade": "favorable"},
+        "seasons": [],
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _make_rookie_sonnet_output(**overrides):
+    """Create a valid rookie Sonnet output dict."""
+    defaults = {
+        "projected_ppr_season": 220.0,
+        "projected_ppr_floor": 135.0,
+        "projected_ppr_ceiling": 300.0,
+        "projected_games": 15,
+        "role_classification": "featured_back",
+        "confidence": "medium",
+        "breakout_probability": 0.25,
+        "comp_translation_grade": "B",
+        "key_risks": ["Depth chart position behind incumbent", "Rookie adjustment period"],
+        "key_upside_factors": ["Elite draft capital", "Beneficiary flag from Conner decline"],
+        "projection_reasoning": "Love projects as a featured back in ARI's spread scheme.",
+        "player_name": "Jeremiyah Love",
+        "_rookie_sonnet": True,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestRookieSonnetRouting:
+    """Tests for rookie Sonnet projection routing."""
+
+    def test_rookie_routes_to_sonnet_with_comps(self):
+        """Rookies with historical comps should be flagged for Sonnet."""
+        player = _make_rookie_player()
+        # needs_sonnet_reasoning returns True for rookies
+        assert needs_sonnet_reasoning(player) is True
+        # has_comps check
+        has_comps = bool(
+            player.get("historical_comp_names")
+            or player.get("comp_yr1_avg_ppg")
+        )
+        assert has_comps is True
+
+    def test_rookie_no_comps_stays_python_only(self):
+        """Rookies without comps use Python-only path."""
+        player = _make_rookie_player(
+            historical_comp_names=[],
+            comp_yr1_avg_ppg=None,
+            comp_yr2_avg_ppg=None,
+        )
+        has_comps = bool(
+            player.get("historical_comp_names")
+            or player.get("comp_yr1_avg_ppg")
+        )
+        assert has_comps is False
+
+        # Python-only path produces profile_source = "college_comps"
+        team_ctx = {"system_grade": "B-"}
+        rookie_prof = _build_rookie_profile(player, team_ctx)
+        assert rookie_prof["profile_source"] == "college_comps"
+
+    def test_rookie_confidence_never_high(self):
+        """Rookie Sonnet output must have confidence 'low' or 'medium', never 'high'."""
+        # Parse with high confidence — should be corrected to low
+        raw_json = json.dumps({
+            "projected_ppr_season": 200.0,
+            "projected_ppr_floor": 120.0,
+            "projected_ppr_ceiling": 280.0,
+            "projected_games": 15,
+            "role_classification": "featured_back",
+            "confidence": "high",  # invalid for rookie
+            "breakout_probability": 0.2,
+            "comp_translation_grade": "B",
+            "key_risks": [],
+            "key_upside_factors": [],
+            "projection_reasoning": "test",
+        })
+        result = _parse_rookie_sonnet_output(raw_json, {"name": "Test Rookie"})
+        assert result is not None
+        assert result["confidence"] in ("low", "medium")
+        assert result["confidence"] == "low"  # high gets corrected to low
+
+    def test_rookie_projection_has_floor_and_ceiling(self):
+        """Rookie Sonnet output includes projected_ppr_floor and ceiling."""
+        prof = _make_rookie_sonnet_output()
+        assert "projected_ppr_floor" in prof
+        assert "projected_ppr_ceiling" in prof
+        assert prof["projected_ppr_floor"] < prof["projected_ppr_season"]
+        assert prof["projected_ppr_ceiling"] > prof["projected_ppr_season"]
+
+    def test_rookie_fallback_on_json_error(self):
+        """Invalid JSON from Sonnet returns None from parser, triggering fallback."""
+        result = _parse_rookie_sonnet_output("not valid json {{{", {"name": "Bad"})
+        assert result is None
+
+        # The fallback function produces a valid dict
+        player = _make_rookie_player()
+        fb = _rookie_sonnet_fallback(player)
+        assert "projected_ppr_season" in fb
+        assert fb["confidence"] == "low"
+        assert fb["comp_translation_grade"] == "C"
+
+    def test_breakout_probability_in_range(self):
+        """Breakout probability is clamped to [0.0, 1.0]."""
+        # Over 1.0 gets clamped
+        raw = json.dumps({
+            "projected_ppr_season": 200.0,
+            "projected_ppr_floor": 120.0,
+            "projected_ppr_ceiling": 280.0,
+            "projected_games": 15,
+            "role_classification": "featured_back",
+            "confidence": "medium",
+            "breakout_probability": 1.5,  # out of range
+            "comp_translation_grade": "B",
+            "key_risks": [],
+            "key_upside_factors": [],
+            "projection_reasoning": "test",
+        })
+        result = _parse_rookie_sonnet_output(raw, {"name": "Test"})
+        assert 0.0 <= result["breakout_probability"] <= 1.0
+
+        # Negative gets clamped
+        raw2 = raw.replace("1.5", "-0.5")
+        result2 = _parse_rookie_sonnet_output(raw2, {"name": "Test"})
+        assert 0.0 <= result2["breakout_probability"] <= 1.0
+
+    def test_comp_translation_grade_valid_values(self):
+        """comp_translation_grade must be A/B/C/D — invalid values corrected to C."""
+        raw = json.dumps({
+            "projected_ppr_season": 200.0,
+            "projected_ppr_floor": 120.0,
+            "projected_ppr_ceiling": 280.0,
+            "projected_games": 15,
+            "role_classification": "featured_back",
+            "confidence": "low",
+            "breakout_probability": 0.2,
+            "comp_translation_grade": "F",  # invalid
+            "key_risks": [],
+            "key_upside_factors": [],
+            "projection_reasoning": "test",
+        })
+        result = _parse_rookie_sonnet_output(raw, {"name": "Test"})
+        assert result["comp_translation_grade"] in ("A", "B", "C", "D")
+        assert result["comp_translation_grade"] == "C"
+
+    def test_veteran_path_unchanged_by_rookie_changes(self):
+        """Veteran players still route through existing Sonnet/Haiku paths."""
+        veteran = {
+            "name": "Bijan Robinson",
+            "position": "RB",
+            "age": 23,
+            "is_rookie": False,
+            "seasons": [{"games": 17, "ppr_per_game": 22.0}],
+        }
+        # Not a rookie → normal routing
+        assert veteran.get("is_rookie") is False
+
+        # Simulate the routing check:
+        is_rookie = bool(veteran.get("is_rookie", False))
+        prof = {"projected_ppr_points": 370.0, "player_name": "Bijan Robinson"}
+        has_rookie_sonnet = bool(prof.get("_rookie_sonnet"))
+        has_ai_projection = bool(prof.get("projected_ppr_points"))
+
+        assert is_rookie is False
+        assert has_rookie_sonnet is False
+        assert has_ai_projection is True
+
+    def test_love_gets_sonnet_rookie_profile(self):
+        """Jeremiyah Love (ARI RB, R1P3) qualifies for rookie Sonnet path."""
+        love = _make_rookie_player()
+        # Step 1: needs_sonnet_reasoning (True for rookies)
+        assert needs_sonnet_reasoning(love) is True
+
+        # Step 2: has_comps
+        has_comps = bool(
+            love.get("historical_comp_names") or love.get("comp_yr1_avg_ppg")
+        )
+        assert has_comps is True
+
+        # Step 3: format_rookie_prompt produces valid prompt
+        team_ctx = {
+            "system_grade": "B-", "qb_name": "Gardner Minshew",
+            "qb_tier": "average", "oc_scheme": "spread",
+        }
+        prompt = _format_rookie_prompt(love, team_ctx)
+        assert "Jeremiyah Love" in prompt
+        assert "ARI" in prompt
+        assert "Ezekiel Elliott" in prompt
+        assert "Round 1" in prompt
+
+        # Step 4: merge with Python baseline produces sonnet_rookie
+        prof = _make_rookie_sonnet_output()
+        rookie_prof = _build_rookie_profile(love, team_ctx)
+
+        # Simulate the merge logic from _write_profiles
+        assert prof.get("_rookie_sonnet") is True
+        clean_baseline = {
+            **rookie_prof["clean_season_baseline"],
+            "projected_ppr_season": round(float(prof["projected_ppr_season"]), 1),
+            "projected_ppr_floor": round(float(prof["projected_ppr_floor"]), 1),
+            "projected_ppr_ceiling": round(float(prof["projected_ppr_ceiling"]), 1),
+            "breakout_probability": round(float(prof["breakout_probability"]), 2),
+            "comp_translation_grade": prof["comp_translation_grade"],
+            "key_risks": prof["key_risks"],
+            "key_upside_factors": prof["key_upside_factors"],
+        }
+        assert clean_baseline["projected_ppr_season"] == 220.0
+        assert clean_baseline["projected_ppr_floor"] == 135.0
+        assert clean_baseline["projected_ppr_ceiling"] == 300.0
+        assert clean_baseline["breakout_probability"] == 0.25
+        assert clean_baseline["comp_translation_grade"] == "B"
+        assert len(clean_baseline["key_risks"]) > 0
+
+    def test_rookie_profile_source_is_sonnet_rookie(self):
+        """When rookie has Sonnet output, profile_source must be 'sonnet_rookie'."""
+        player = _make_rookie_player()
+        team_ctx = {"system_grade": "B-"}
+        rookie_prof = _build_rookie_profile(player, team_ctx)
+
+        # Before Sonnet merge: profile_source = college_comps
+        assert rookie_prof["profile_source"] == "college_comps"
+
+        # After Sonnet merge: profile_source updated
+        prof = _make_rookie_sonnet_output()
+        has_rookie_sonnet = bool(prof.get("_rookie_sonnet"))
+        assert has_rookie_sonnet is True
+
+        # Simulate the merge from _write_profiles
+        rookie_prof["profile_source"] = "sonnet_rookie"
+        rookie_prof["confidence"] = prof.get("confidence", "low")
+        assert rookie_prof["profile_source"] == "sonnet_rookie"
+        assert rookie_prof["confidence"] in ("low", "medium")

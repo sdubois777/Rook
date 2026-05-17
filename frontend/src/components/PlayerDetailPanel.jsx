@@ -201,17 +201,23 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
             {/* Projection */}
             {(player.profile?.clean_season_baseline?.projected_ppr_season || player.profile?.clean_season_baseline?.ppr_points) && (
               <Section title="Projection">
+                {(() => {
+                  const baseline = player.profile.clean_season_baseline || {}
+                  return (<>
                 {/* Source badge */}
                 <div className="flex items-center gap-2 mb-3">
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                     player.profile.profile_source === 'sonnet_projection'
                       ? 'bg-purple-500/15 text-purple-400'
-                      : player.profile.profile_source === 'college_comps'
-                        ? 'bg-amber-500/15 text-amber-400'
-                        : 'bg-slate-500/15 text-slate-400'
+                      : player.profile.profile_source === 'sonnet_rookie'
+                        ? 'bg-cyan-500/15 text-cyan-400'
+                        : player.profile.profile_source === 'college_comps'
+                          ? 'bg-amber-500/15 text-amber-400'
+                          : 'bg-slate-500/15 text-slate-400'
                   }`}>
                     {player.profile.profile_source === 'sonnet_projection' ? 'AI Projection'
-                      : player.profile.profile_source === 'college_comps' ? 'Rookie Comps'
+                      : player.profile.profile_source === 'sonnet_rookie' ? 'Rookie AI Projection'
+                      : player.profile.profile_source === 'college_comps' ? 'College Comp Profile'
                       : 'Historical'}
                   </span>
                   {player.ai_bid_ceiling != null && player.profile.profile_source === 'college_comps' && (
@@ -220,17 +226,19 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                     </span>
                   )}
                   {player.profile.confidence && (
-                    <span className="text-[10px] text-slate-500">
-                      {player.profile.confidence} confidence
+                    <span className={`text-[10px] ${
+                      player.profile.confidence === 'low' ? 'text-amber-400' : 'text-slate-500'
+                    }`}>
+                      {player.profile.confidence === 'low' ? 'Low' : player.profile.confidence === 'medium' ? 'Medium' : player.profile.confidence.charAt(0).toUpperCase() + player.profile.confidence.slice(1)} Confidence
                     </span>
                   )}
                 </div>
 
                 {/* PPR total */}
                 {(() => {
-                  const baseline = player.profile.clean_season_baseline
                   const projectedPPR = baseline.projected_ppr_season ?? baseline.ppr_points
                   const isSonnet = player.profile.profile_source === 'sonnet_projection'
+                  const isSonnetRookie = player.profile.profile_source === 'sonnet_rookie'
                   const isCollegeComps = player.profile.profile_source === 'college_comps'
                   const projCeiling = player.profile.ceiling_value_ppr
                     ?? baseline.upside_ppr
@@ -247,12 +255,12 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   return (
                     <div className="bg-[#1c1f2e] rounded p-3 mb-3">
                       <div className="text-[10px] text-slate-500 mb-1">
-                        {isSonnet ? 'Projected PPR (17 games)' : 'Baseline PPR (17 games)'}
+                        {(isSonnet || isSonnetRookie) ? 'Projected PPR (17 games)' : 'Baseline PPR (17 games)'}
                       </div>
                       <div className="text-xl font-mono font-semibold text-blue-400">
                         {projectedPPR?.toFixed(1)}
                       </div>
-                      {(isSonnet || isCollegeComps) && projCeiling > 0 && (
+                      {(isSonnet || isSonnetRookie || isCollegeComps) && projCeiling > 0 && (
                         <div className="mt-2">
                           <div className="flex justify-between text-[10px] text-slate-500 mb-1">
                             <span>Floor: {projFloor?.toFixed(0)}</span>
@@ -277,14 +285,55 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   )
                 })()}
 
-                {/* Reasoning — only for AI projections */}
-                {player.profile.profile_source === 'sonnet_projection' && player.profile.projection_reasoning && (
+                {/* Reasoning — for AI projections and rookie Sonnet */}
+                {(player.profile.profile_source === 'sonnet_projection' || player.profile.profile_source === 'sonnet_rookie') && player.profile.projection_reasoning && (
                   <p className="text-xs text-slate-400 leading-relaxed mb-3">
                     {player.profile.projection_reasoning}
                   </p>
                 )}
 
-                {/* Career trajectory + key metrics — only for AI projections */}
+                {/* College comps without Sonnet — show insufficient data note */}
+                {player.profile.profile_source === 'college_comps' && !baseline.projected_ppr_season && (
+                  <p className="text-xs text-slate-500 italic mb-3">
+                    Insufficient data for AI projection
+                  </p>
+                )}
+
+                {/* Rookie AI metrics — breakout probability, comp grade, risks/upside */}
+                {player.profile.profile_source === 'sonnet_rookie' && (
+                  <div className="space-y-2 mb-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      {baseline.breakout_probability != null && (
+                        <Stat label="Breakout Probability" value={`${Math.round(baseline.breakout_probability * 100)}%`} />
+                      )}
+                      {baseline.comp_translation_grade && (
+                        <Stat label="Comp Grade" value={baseline.comp_translation_grade} />
+                      )}
+                    </div>
+                    {baseline.key_risks?.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-slate-500 mb-1">Key Risks</div>
+                        <ul className="text-xs text-red-400/80 space-y-0.5">
+                          {baseline.key_risks.map((risk, i) => (
+                            <li key={i} className="flex gap-1"><span>-</span><span>{risk}</span></li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {baseline.key_upside_factors?.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-slate-500 mb-1">Upside Factors</div>
+                        <ul className="text-xs text-emerald-400/80 space-y-0.5">
+                          {baseline.key_upside_factors.map((factor, i) => (
+                            <li key={i} className="flex gap-1"><span>-</span><span>{factor}</span></li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Career trajectory + key metrics — for AI projections */}
                 {player.profile.profile_source === 'sonnet_projection' && (
                   <div className="grid grid-cols-2 gap-2">
                     {player.profile.career_trajectory && (
@@ -298,6 +347,8 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                     )}
                   </div>
                 )}
+                  </>)
+                })()}
               </Section>
             )}
 

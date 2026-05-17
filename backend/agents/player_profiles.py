@@ -276,6 +276,204 @@ Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
 Your entire response must be parseable by json.loads()."""
 
 
+ROOKIE_SONNET_SYSTEM = (
+    "You are projecting a FIRST-YEAR NFL player's fantasy football season. "
+    "Output ONLY valid JSON. No preamble. No markdown fences. "
+    "Your entire response must be parseable by json.loads()."
+)
+
+ROOKIE_PROJECTION_PROMPT = """You are projecting a FIRST-YEAR NFL player's fantasy football season.
+
+CRITICAL CONSTRAINTS — read before anything else:
+- This player has ZERO NFL performance data
+- Do NOT invent NFL statistics or reference NFL games this player has played
+- Your ONLY statistical anchor is the college comp data provided below
+- Confidence must be "low" or "medium" NEVER "high"
+- All projections must be expressed as ranges (floor/ceiling), not point estimates
+- Acknowledge uncertainty explicitly in reasoning
+
+===============================================
+PLAYER: {player_name}
+Position: {position}
+Team: {team} | Scheme: {scheme_type}
+Age: {age} | Draft: Round {draft_round}, Pick {draft_pick}
+===============================================
+
+COLLEGE PRODUCTION:
+{college_stats}
+
+HISTORICAL COMPS (players with similar profiles who translated to the NFL):
+{comp_data}
+--- Translation rate for this draft capital + position:
+    {translation_rate_summary}
+
+LANDING SPOT ANALYSIS:
+Team System Grade: {team_grade}
+Scheme: {scheme_description}
+QB Situation: {qb_name} ({qb_tier})
+
+DEPTH CHART POSITION: {depth_chart_order}
+
+DEPENDENCY FLAGS:
+{dependency_flags}
+
+INJURY RISK: {injury_risk_level}
+
+SCHEDULE:
+Early season (weeks 1-6): {early_schedule}
+Fantasy playoffs (weeks 15-17): {playoff_schedule}
+
+===============================================
+TASK: Reason through this rookie's likely fantasy impact in year 1.
+
+Structure your reasoning:
+1. College comp translation — how well do the comps translate? What's the hit rate for this draft capital + position combo?
+2. Landing spot — does the team situation accelerate or limit the comp projection?
+3. Competition — is this player the clear starter or fighting for snaps?
+4. Scheme fit — does the offensive system maximize or limit this player's skill set?
+5. Projection — given all above, what is a realistic year-1 PPR range?
+
+role_classification MUST match the player's position:
+  QB → qb_elite, qb_starter, qb_streamer, qb_backup
+  WR → wr1_alpha, slot_specialist, deep_threat, possession_wr2, gadget
+  TE → te1_inline, te1_pass_catcher, te2_blocker, te2_flex
+  RB → workhorse, featured_back, early_down_thumper, pass_catching_specialist, committee_back, backup
+
+OUTPUT only valid JSON:
+{{
+  "projected_ppr_season": <float, midpoint>,
+  "projected_ppr_floor": <float, pessimistic>,
+  "projected_ppr_ceiling": <float, optimistic>,
+  "projected_games": <int, 14-17>,
+  "role_classification": <string>,
+  "confidence": "low" | "medium",
+  "breakout_probability": <float 0.0-1.0>,
+  "comp_translation_grade": "A" | "B" | "C" | "D",
+  "key_risks": [<string>, ...],
+  "key_upside_factors": [<string>, ...],
+  "projection_reasoning": <string, 3-5 sentences>
+}}
+"""
+
+# Historical translation rates by position and round for the rookie prompt
+_TRANSLATION_RATES: dict[tuple[str, int], str] = {
+    ("RB", 1): "Top-10 RBs: 35% fantasy RB1 in year 1",
+    ("RB", 2): "Rd2 RBs: 20% fantasy RB1 in year 1",
+    ("WR", 1): "Top-10 WRs: 25% WR1 in year 1",
+    ("WR", 2): "Rd2 WRs: 12% WR1 in year 1",
+    ("TE", 1): "Top TE: 15% TE1 in year 1",
+    ("QB", 1): "Top QB: 40% start year 1",
+}
+
+
+def _format_rookie_prompt(player: dict, team_context: dict) -> str:
+    """Format the ROOKIE_PROJECTION_PROMPT with player-specific data."""
+    position = player.get("position", "WR")
+    draft_round = player.get("draft_round") or 2
+    draft_pick = player.get("draft_pick") or 0
+    comp_names = player.get("historical_comp_names", [])[:3]
+    comp_yr1 = player.get("comp_yr1_avg_ppg") or 0
+    comp_yr2 = player.get("comp_yr2_avg_ppg") or 0
+    college_grade = player.get("college_profile_grade", "unknown")
+
+    translation = _TRANSLATION_RATES.get(
+        (position, min(draft_round, 2)),
+        "Historical translation data limited for this draft slot"
+    )
+
+    # Format dependency flags
+    dep_flags = player.get("dependency_flags", [])
+    flags_text = "\n".join([
+        f"- {f.get('type', f.get('flag_type', ''))}: "
+        f"{f.get('reasoning', f.get('effect', ''))[:120]}"
+        for f in dep_flags[:5]
+    ]) or "No significant flags"
+
+    injury = player.get("injury_profile", {})
+    schedule = player.get("schedule", {})
+
+    return ROOKIE_PROJECTION_PROMPT.format(
+        player_name=player.get("name", "Unknown"),
+        position=position,
+        team=player.get("team_abbr", player.get("_team", "UNK")),
+        scheme_type=team_context.get("oc_scheme", "unknown"),
+        age=player.get("age", "unknown"),
+        draft_round=draft_round,
+        draft_pick=draft_pick,
+        college_stats=f"Grade: {college_grade}, Capital: {player.get('draft_capital_signal', 'unknown')}",
+        comp_data=(
+            f"Comps: {', '.join(comp_names)}\n"
+            f"Comp yr1 avg: {comp_yr1:.1f} PPG\n"
+            f"Comp yr2 avg: {comp_yr2:.1f} PPG"
+            if comp_names else "No historical comps available"
+        ),
+        translation_rate_summary=translation,
+        team_grade=team_context.get("system_grade", "unknown"),
+        scheme_description=(team_context.get("oc_scheme", "") or "")[:200],
+        qb_name=team_context.get("qb_name", "unknown"),
+        qb_tier=team_context.get("qb_tier", "unknown"),
+        depth_chart_order=player.get("depth_chart_rank", "unknown"),
+        dependency_flags=flags_text,
+        injury_risk_level=injury.get("overall_risk_level", "unknown"),
+        early_schedule=schedule.get("early_window_grade", "unknown"),
+        playoff_schedule=schedule.get("playoff_window_grade", "unknown"),
+    )
+
+
+def _parse_rookie_sonnet_output(raw: str, player: dict) -> dict | None:
+    """Parse rookie Sonnet JSON output with validation and fallback."""
+    try:
+        result = parse_json_output(raw)
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            return None
+
+        # Validate required fields
+        if "projected_ppr_season" not in result:
+            logger.warning("Rookie Sonnet missing projected_ppr_season for %s", player.get("name"))
+            return None
+
+        # Enforce confidence constraint: never "high" for rookies
+        if result.get("confidence") not in ("low", "medium"):
+            result["confidence"] = "low"
+
+        # Clamp breakout_probability
+        bp = result.get("breakout_probability", 0.1)
+        result["breakout_probability"] = max(0.0, min(1.0, float(bp)))
+
+        # Validate comp_translation_grade
+        if result.get("comp_translation_grade") not in ("A", "B", "C", "D"):
+            result["comp_translation_grade"] = "C"
+
+        return result
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Rookie Sonnet invalid output for %s: %s",
+            player.get("name"), str(exc)[:200],
+        )
+        return None
+
+
+def _rookie_sonnet_fallback(player: dict) -> dict:
+    """Fallback dict when rookie Sonnet call fails or returns invalid JSON."""
+    comp_yr1 = player.get("comp_yr1_avg_ppg") or _ROOKIE_DEFAULT_PPG.get(player.get("position", "WR"), 8.0)
+    midpoint = comp_yr1 * 14  # conservative 14-game assumption
+    return {
+        "projected_ppr_season": round(midpoint, 1),
+        "projected_ppr_floor": round(midpoint * 0.6, 1),
+        "projected_ppr_ceiling": round(midpoint * 1.4, 1),
+        "projected_games": 14,
+        "role_classification": "unknown",
+        "confidence": "low",
+        "breakout_probability": 0.10,
+        "comp_translation_grade": "C",
+        "key_risks": ["projection uncertain — Sonnet unavailable"],
+        "key_upside_factors": [],
+        "projection_reasoning": "Sonnet projection unavailable — using comp baseline.",
+    }
+
+
 SONNET_SYSTEM_PROMPT = """You are a fantasy football projection analyst. You synthesize ALL available context
 to produce a forward-looking PPR projection for one NFL player.
 
@@ -1461,33 +1659,94 @@ class PlayerProfilesAgent(BaseAgent):
 
             # Pass 2: Sonnet per-player (complex players)
             for player in sonnet_players:
-                player_context = {
-                    "team": team,
-                    "analysis_year": context["analysis_year"],
-                    "team_system": context["team_system"],
-                    "player": player,
-                }
-                try:
-                    raw = await self._call_sonnet_with_limit(
-                        system=SONNET_SYSTEM_PROMPT,
-                        user=(
-                            f"Project PPR for {player['name']} ({team}):\n\n"
-                            f"{json.dumps(player_context, default=str)}"
-                        ),
-                        input_data=player_context,
-                        entity_id=f"{team}_{player['name']}",
+                is_rookie_player = bool(player.get("is_rookie"))
+
+                # Rookies with comp data get a dedicated rookie prompt
+                has_comps = bool(
+                    player.get("historical_comp_names")
+                    or player.get("comp_yr1_avg_ppg")
+                )
+
+                if is_rookie_player and has_comps:
+                    # Rookie Sonnet path: college comp baseline + AI reasoning
+                    player["_team"] = team  # attach team for prompt formatting
+                    rookie_user = _format_rookie_prompt(
+                        player, context.get("team_system", {})
                     )
-                    if raw:
-                        prof = parse_json_output(raw)
-                        if isinstance(prof, list) and prof:
-                            prof = prof[0]
-                        if isinstance(prof, dict):
-                            all_profiles.append(prof)
-                except Exception as exc:
-                    logger.warning(
-                        "%s: Sonnet call failed for %s (%s), skipping player",
-                        team, player["name"], exc,
-                    )
+                    player_context = {
+                        "team": team,
+                        "analysis_year": context["analysis_year"],
+                        "team_system": context["team_system"],
+                        "player": player,
+                        "_rookie_sonnet": True,
+                    }
+                    try:
+                        raw = await self._call_sonnet_with_limit(
+                            system=ROOKIE_SONNET_SYSTEM,
+                            user=rookie_user,
+                            input_data=player_context,
+                            entity_id=f"{team}_{player['name']}_rookie",
+                            max_tokens=800,
+                        )
+                        if raw:
+                            parsed = _parse_rookie_sonnet_output(raw, player)
+                            if parsed:
+                                # Tag as rookie Sonnet output so _write_profiles
+                                # knows to merge with Python baseline
+                                parsed["player_name"] = player["name"]
+                                parsed["_rookie_sonnet"] = True
+                                all_profiles.append(parsed)
+                            else:
+                                # Parse failed — use fallback
+                                fb = _rookie_sonnet_fallback(player)
+                                fb["player_name"] = player["name"]
+                                fb["_rookie_sonnet"] = True
+                                all_profiles.append(fb)
+                        else:
+                            # Cache hit returned empty — use fallback
+                            fb = _rookie_sonnet_fallback(player)
+                            fb["player_name"] = player["name"]
+                            fb["_rookie_sonnet"] = True
+                            all_profiles.append(fb)
+                    except Exception as exc:
+                        logger.warning(
+                            "%s: Rookie Sonnet call failed for %s (%s), using fallback",
+                            team, player["name"], exc,
+                        )
+                        fb = _rookie_sonnet_fallback(player)
+                        fb["player_name"] = player["name"]
+                        fb["_rookie_sonnet"] = True
+                        all_profiles.append(fb)
+                else:
+                    # Veteran Sonnet path (or rookie without comps → handled
+                    # in _write_profiles as Python-only)
+                    player_context = {
+                        "team": team,
+                        "analysis_year": context["analysis_year"],
+                        "team_system": context["team_system"],
+                        "player": player,
+                    }
+                    try:
+                        raw = await self._call_sonnet_with_limit(
+                            system=SONNET_SYSTEM_PROMPT,
+                            user=(
+                                f"Project PPR for {player['name']} ({team}):\n\n"
+                                f"{json.dumps(player_context, default=str)}"
+                            ),
+                            input_data=player_context,
+                            entity_id=f"{team}_{player['name']}",
+                        )
+                        if raw:
+                            prof = parse_json_output(raw)
+                            if isinstance(prof, list) and prof:
+                                prof = prof[0]
+                            if isinstance(prof, dict):
+                                all_profiles.append(prof)
+                    except Exception as exc:
+                        logger.warning(
+                            "%s: Sonnet call failed for %s (%s), skipping player",
+                            team, player["name"], exc,
+                        )
 
             written = await _write_profiles(
                 all_profiles, context, team,
@@ -1705,15 +1964,38 @@ async def _write_profiles(
             seasons    = ctx_player.get("seasons", [])
             ts3yr, ts_last, ay3yr = _compute_season_averages(seasons, analysis_year)
 
-            # Route: rookies → Python, Sonnet players → AI projection, Haiku → Python baseline
+            # Route: rookies → Python + optional Sonnet, veterans → AI/Python
             is_rookie = bool(ctx_player.get("is_rookie", False))
+            has_rookie_sonnet = bool(prof.get("_rookie_sonnet"))
             has_ai_projection = bool(prof.get("projected_ppr_points"))
 
             if is_rookie:
-                # Use purely Python-computed rookie profile — model has no NFL data to work with
+                # Step 1: Python baseline from college comps (always computed)
                 team_ctx = context.get("team_system", {})
                 rookie_prof = _build_rookie_profile(ctx_player, team_ctx)
-                clean_baseline = rookie_prof["clean_season_baseline"]
+
+                if has_rookie_sonnet and prof.get("projected_ppr_season"):
+                    # Step 2: Merge Sonnet reasoning with Python baseline
+                    clean_baseline = {
+                        **rookie_prof["clean_season_baseline"],
+                        "projected_ppr_season": round(float(prof["projected_ppr_season"]), 1),
+                        "projected_ppr_floor": round(float(prof.get("projected_ppr_floor", 0)), 1),
+                        "projected_ppr_ceiling": round(float(prof.get("projected_ppr_ceiling", 0)), 1),
+                        "breakout_probability": round(float(prof.get("breakout_probability", 0.1)), 2),
+                        "comp_translation_grade": prof.get("comp_translation_grade", "C"),
+                        "key_risks": prof.get("key_risks", []),
+                        "key_upside_factors": prof.get("key_upside_factors", []),
+                    }
+                    # Override Python ceiling/floor with Sonnet's wider range
+                    rookie_prof["ceiling_value_ppr"] = round(float(prof.get("projected_ppr_ceiling", rookie_prof["ceiling_value_ppr"])), 1)
+                    rookie_prof["floor_value_ppr"] = round(float(prof.get("projected_ppr_floor", rookie_prof["floor_value_ppr"])), 1)
+                    # Sonnet drives role classification for rookies
+                    rookie_prof["role_classification"] = prof.get("role_classification") or rookie_prof.get("role_classification")
+                    rookie_prof["profile_source"] = "sonnet_rookie"
+                    rookie_prof["confidence"] = prof.get("confidence", "low")
+                else:
+                    # No Sonnet — Python-only path (no comps or Sonnet failed)
+                    clean_baseline = rookie_prof["clean_season_baseline"]
             elif has_ai_projection:
                 # Sonnet-profiled player: AI drives the PPR projection
                 ai_ppr = float(prof["projected_ppr_points"])
@@ -1771,7 +2053,9 @@ async def _write_profiles(
             record.anomalous_seasons_excluded = effective.get("anomalous_seasons_excluded") or []
             record.breakout_flag              = bool(effective.get("breakout_flag", False))
             record.breakout_reasoning         = effective.get("breakout_reasoning")
-            record.projection_reasoning       = prof.get("projection_reasoning") if has_ai_projection else None
+            record.projection_reasoning       = (
+                prof.get("projection_reasoning") if (has_ai_projection or has_rookie_sonnet) else None
+            )
             record.positional_scarcity_tier   = effective.get("positional_scarcity_tier")
             record.target_share_3yr_avg       = _to_decimal(ts3yr)
             record.target_share_last_season   = _to_decimal(ts_last)
@@ -1780,9 +2064,12 @@ async def _write_profiles(
 
             # Rookie-specific columns
             record.is_rookie        = is_rookie
-            record.profile_source   = "college_comps" if is_rookie else ("sonnet_projection" if has_ai_projection else "nfl_history")
+            record.profile_source   = (
+                rookie_prof.get("profile_source", "college_comps") if is_rookie
+                else ("sonnet_projection" if has_ai_projection else "nfl_history")
+            )
             record.confidence       = (
-                rookie_prof.get("confidence") if is_rookie
+                rookie_prof.get("confidence", "low") if is_rookie
                 else prof.get("confidence", "medium") if has_ai_projection
                 else "medium"
             )

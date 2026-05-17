@@ -272,6 +272,11 @@ export default function DraftBoard() {
 
                         {/* Flags */}
                         <div className="flex gap-1 ml-auto flex-wrap justify-end">
+                          {p.is_rookie && (
+                            <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                              Rookie
+                            </span>
+                          )}
                           {p.pay_up_flag && (
                             <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
                               PAY UP
