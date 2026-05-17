@@ -60,9 +60,22 @@ class LeagueSyncService:
         platform = await get_platform_api(user_league, self._db)
         current_season = get_current_season()
 
-        # 0. Fetch and store Yahoo league settings
+        # 0. Fetch and store platform-specific league settings
         if user_league.platform == "yahoo":
             await self._sync_yahoo_settings(user_league, league_key)
+        elif user_league.platform == "espn":
+            try:
+                draft_type, budget = await platform.detect_draft_type()
+                if user_league.draft_type != draft_type:
+                    logger.info(
+                        "ESPN draft type updated: %s → %s",
+                        user_league.draft_type, draft_type,
+                    )
+                    user_league.draft_type = draft_type
+                    if budget is not None:
+                        user_league.budget = budget
+            except Exception as exc:
+                logger.warning("ESPN draft type re-detection failed: %s", exc)
 
         summary = {
             "platform": user_league.platform,

@@ -357,6 +357,38 @@ async def test_user_a_picks_not_visible_to_user_b():
 
 
 @pytest.mark.asyncio
+async def test_sync_espn_redetects_draft_type():
+    """ESPN re-sync updates draft_type from snake → auction when detected."""
+    league = _make_league(platform="espn")
+    league.draft_type = "snake"
+    league.budget = None
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = []
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.detect_draft_type.return_value = ("auction", 200)
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), patch(
+        "backend.services.league_sync.LeagueRepository",
+    ):
+        from backend.services.league_sync import LeagueSyncService
+        service = LeagueSyncService(mock_db, league.user_id)
+        await service.sync_league(league.id)
+
+    assert league.draft_type == "auction"
+    assert league.budget == 200
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_picks_without_player_info():
     """Picks with no player_name and no platform_player_id should be skipped."""
     league = _make_league()

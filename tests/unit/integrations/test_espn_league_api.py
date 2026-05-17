@@ -115,6 +115,75 @@ async def test_get_draft_picks_parses_auction():
 
 
 @pytest.mark.asyncio
+async def test_detect_draft_type_auction():
+    """Picks with bidAmount > 0 → auction."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+
+    mock_response = {
+        "draftDetail": {
+            "picks": [
+                {"playerId": 1, "bidAmount": 55},
+                {"playerId": 2, "bidAmount": 0},
+            ]
+        }
+    }
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_response
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "auction"
+    assert budget == 200
+
+
+@pytest.mark.asyncio
+async def test_detect_draft_type_snake():
+    """All picks with bidAmount=0 or None → snake."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+
+    mock_response = {
+        "draftDetail": {
+            "picks": [
+                {"playerId": 1, "bidAmount": 0},
+                {"playerId": 2},  # no bidAmount key
+            ]
+        }
+    }
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_response
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_detect_draft_type_no_picks():
+    """Empty picks list → default snake."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+
+    mock_response = {"draftDetail": {"picks": []}}
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_response
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
+async def test_detect_draft_type_api_error_defaults_snake():
+    """API failure → graceful fallback to snake."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = Exception("API timeout")
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "snake"
+    assert budget is None
+
+
+@pytest.mark.asyncio
 async def test_create_raises_without_cookies():
     league = _make_league()
 

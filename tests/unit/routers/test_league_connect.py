@@ -174,6 +174,71 @@ async def test_invalid_espn_cookies_raise_app_error():
 
 
 @pytest.mark.asyncio
+async def test_espn_connect_detects_snake_draft():
+    """ESPN connect should detect snake draft instead of hardcoding auction."""
+    user = _make_user()
+
+    from backend.core.dependencies import get_current_user, get_db
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    mock_api = AsyncMock()
+    mock_api.validate_cookies.return_value = True
+    mock_api.detect_draft_type.return_value = ("snake", None)
+
+    mock_league = _make_league(user.id, platform="espn")
+    mock_league.draft_type = "snake"
+
+    with patch(
+        "backend.integrations.espn_league_api.ESPNLeagueAPI",
+        return_value=mock_api,
+    ), patch(
+        "backend.repositories.credential_repo.CredentialRepository",
+    ) as MockCredRepo, patch(
+        "backend.routers.league_connect.LeagueRepository",
+    ) as MockLeagueRepo, patch(
+        "backend.services.feature_service.FeatureService",
+    ), patch(
+        "backend.services.league_sync.LeagueSyncService",
+    ) as MockSync:
+        MockCredRepo.return_value.upsert_espn = AsyncMock()
+        MockLeagueRepo.return_value.count_active = AsyncMock(return_value=0)
+
+        mock_service = AsyncMock()
+        mock_service.add_league = AsyncMock(return_value=mock_league)
+        with patch(
+            "backend.services.league_service.LeagueService",
+            return_value=mock_service,
+        ):
+            MockSync.return_value.sync_league = AsyncMock(
+                return_value={"picks_imported": 0, "seasons_imported": 0,
+                              "managers_found": 0, "free_agents_cached": 0}
+            )
+
+            try:
+                async with AsyncClient(
+                    transport=ASGITransport(app=app),
+                    base_url="http://test",
+                ) as ac:
+                    resp = await ac.post(
+                        "/leagues/connect/espn",
+                        json={
+                            "league_id": "999",
+                            "espn_s2": "cookie",
+                            "swid": "{SWID}",
+                        },
+                    )
+                assert resp.status_code == 200
+                # Verify add_league was called with detected draft_type
+                call_kwargs = mock_service.add_league.call_args[1]
+                assert call_kwargs["draft_type"] == "snake"
+                assert call_kwargs["budget"] == 200  # fallback
+            finally:
+                app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_league_status_returns_info():
     user = _make_user()
     league = _make_league(user.id)

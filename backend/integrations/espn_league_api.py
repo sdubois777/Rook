@@ -113,6 +113,26 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
     ) -> list[FreeAgent]:
         return []
 
+    async def detect_draft_type(self) -> tuple[str, int | None]:
+        """Detect auction vs snake from draft pick data.
+
+        Returns (draft_type, budget):
+            - ("auction", 200) if any pick has bidAmount > 0
+            - ("snake", None) otherwise or if no picks exist
+        """
+        try:
+            data = await self._get("mDraftDetail")
+            picks = data.get("draftDetail", {}).get("picks", [])
+            if not picks:
+                return ("snake", None)
+            for pick in picks:
+                if (pick.get("bidAmount") or 0) > 0:
+                    return ("auction", 200)
+            return ("snake", None)
+        except Exception as exc:
+            logger.warning("ESPN draft type detection failed: %s", exc)
+            return ("snake", None)
+
     async def get_draft_picks(
         self, *, league_key: str | None = None,
     ) -> list[DraftPick]:

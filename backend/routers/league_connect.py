@@ -262,6 +262,9 @@ async def connect_espn_league(
     )
     await api.validate_cookies()
 
+    # Detect draft type from actual draft data
+    draft_type, budget = await api.detect_draft_type()
+
     # Store cookies
     repo = CredentialRepository(db)
     await repo.upsert_espn(
@@ -282,9 +285,9 @@ async def connect_espn_league(
         league_id=body.league_id,
         season_year=target_season,
         team_count=12,
-        draft_type="auction",
+        draft_type=draft_type,
         scoring="ppr",
-        budget=200,
+        budget=budget or 200,
         is_active=is_active,
     )
 
