@@ -28,6 +28,7 @@ class Player(Base):
     team_abbr: Mapped[Optional[str]] = mapped_column(String(5))
     position: Mapped[Optional[str]] = mapped_column(String(5))  # QB, RB, WR, TE, K, DEF
     age: Mapped[Optional[int]] = mapped_column(Integer)
+    depth_chart_order: Mapped[Optional[int]] = mapped_column(Integer)
     contract_year: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Top-level valuation (computed from pipeline agents)
