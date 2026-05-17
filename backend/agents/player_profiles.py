@@ -1117,6 +1117,18 @@ class PlayerProfilesAgent(BaseAgent):
             dbp["name"]: dbp.get("nfl_seasons_played")
             for dbp in db_team_players
         }
+        # Enrich existing roster entries with IDs from DB players.
+        # nfl_data_py roster lacks sleeper_id/sportradar_id — without
+        # these, _get_player_season_stats() falls back to fragile
+        # last-name matching which can pick the wrong player
+        # (e.g. Brian Robinson instead of Bijan Robinson on ATL).
+        db_by_name = {dbp["name"]: dbp for dbp in db_team_players}
+        for r in roster:
+            if dbp := db_by_name.get(r["name"]):
+                r.setdefault("sleeper_id", dbp.get("sleeper_id"))
+                r.setdefault("sportradar_id", dbp.get("sportradar_id"))
+                if not r.get("nfl_player_id"):
+                    r["nfl_player_id"] = dbp.get("nfl_player_id")
         for dbp in db_team_players:
             if dbp["name"] not in roster_names:
                 roster.append(dbp)
