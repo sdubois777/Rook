@@ -14,7 +14,7 @@ export default function PositionBadge({ position }) {
 
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded border ${style}`}
+      className={`inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded border shrink-0 ${style}`}
     >
       {position}
     </span>

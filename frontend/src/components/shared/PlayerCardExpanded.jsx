@@ -10,16 +10,16 @@ export default function PlayerCardExpanded({ player, onClick }) {
       className="px-4 py-3 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
     >
       <div className="flex items-center gap-3">
-        <PositionBadge position={player.position} />
-        <div className="min-w-[160px]">
-          <span className="font-medium text-sm text-slate-200">{player.name}</span>
-          <span className="text-xs text-slate-500 ml-2">{player.team_abbr}</span>
+        <span className="w-9 shrink-0"><PositionBadge position={player.position} /></span>
+        <div className="w-[160px] shrink-0">
+          <span className="font-medium text-sm text-slate-200 truncate block">{player.name}</span>
+          <span className="text-xs text-slate-500">{player.team_abbr}</span>
         </div>
 
-        <span className="text-xs text-slate-500 w-10">T{player.tier || '?'}</span>
+        <span className="text-xs text-slate-500 w-10 shrink-0">T{player.tier || '?'}</span>
 
         {/* Bid ceiling */}
-        <div className="text-right w-16">
+        <div className="text-right w-16 shrink-0">
           <div className="text-sm text-blue-400 font-mono">
             {player.recommended_bid_ceiling != null
               ? `$${player.recommended_bid_ceiling.toFixed(0)}`
@@ -29,7 +29,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
         </div>
 
         {/* AI ceiling */}
-        <div className="text-right w-16">
+        <div className="text-right w-16 shrink-0">
           <div className="text-sm text-purple-400 font-mono">
             {player.ai_bid_ceiling != null
               ? `$${player.ai_bid_ceiling}`
@@ -39,7 +39,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
         </div>
 
         {/* System value */}
-        <div className="text-right w-16">
+        <div className="text-right w-16 shrink-0">
           <div className="text-sm text-slate-300 font-mono">
             {player.baseline_value != null
               ? `$${player.baseline_value.toFixed(0)}`
@@ -49,7 +49,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
         </div>
 
         {/* Market value */}
-        <div className="text-right w-16">
+        <div className="text-right w-16 shrink-0">
           <div className="text-sm text-slate-300 font-mono">
             {player.market_value != null
               ? `$${player.market_value.toFixed(0)}`
@@ -59,7 +59,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
         </div>
 
         {/* Value gap — AI ceiling vs market */}
-        <div className="w-24">
+        <div className="w-24 shrink-0">
           {player.ai_bid_ceiling != null && player.market_value != null ? (
             <ValueComparisonBar
               systemValue={player.ai_bid_ceiling}

@@ -4,6 +4,7 @@ import { fetchPlayers, searchPlayers } from '../api/players'
 import { useUIStore } from '../stores/ui'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import SearchInput from '../components/shared/SearchInput'
+import SortableHeader from '../components/shared/SortableHeader'
 import PlayerCardExpanded from '../components/shared/PlayerCardExpanded'
 import Pagination from '../components/shared/Pagination'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
@@ -50,14 +51,16 @@ const TEAM_OPTIONS = [
   ...NFL_TEAMS.map((t) => ({ value: t, label: t })),
 ]
 
-const SORT_OPTIONS = [
-  { value: 'bid_ceiling', label: 'Bid Ceiling' },
-  { value: 'system_value', label: 'System Value' },
-  { value: 'market_value', label: 'Market Value' },
-  { value: 'value_gap', label: 'Value Gap' },
-  { value: 'name', label: 'Name' },
-  { value: 'tier', label: 'Tier' },
-]
+// Maps clickable header sortKey → backend sort param
+const SORT_KEY_MAP = {
+  tier: 'tier',
+  name: 'name',
+  bid_ceiling: 'bid_ceiling',
+  ai_ceiling: 'ai_ceiling',
+  system_value: 'system_value',
+  market_value: 'market_value',
+  value_gap: 'value_gap',
+}
 
 export default function Players() {
   const [position, setPosition] = useState('')
@@ -65,7 +68,8 @@ export default function Players() {
   const [team, setTeam] = useState('')
   const [valueGap, setValueGap] = useState('')
   const [flag, setFlag] = useState('')
-  const [sort, setSort] = useState('bid_ceiling')
+  const [sort, setSort] = useState('tier')
+  const [order, setOrder] = useState('asc')
   const [page, setPage] = useState(1)
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -73,9 +77,16 @@ export default function Players() {
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
 
+  const handleSort = (key, newOrder) => {
+    const backendSort = SORT_KEY_MAP[key] || key
+    setSort(backendSort)
+    setOrder(newOrder)
+    setPage(1)
+  }
+
   // Main player list query
   const { data, isLoading } = useQuery({
-    queryKey: ['players', position, tier, team, valueGap, flag, sort, page],
+    queryKey: ['players', position, tier, team, valueGap, flag, sort, order, page],
     queryFn: () =>
       fetchPlayers({
         position: position || undefined,
@@ -84,7 +95,7 @@ export default function Players() {
         value_gap_dir: valueGap || undefined,
         flag: flag || undefined,
         sort,
-        order: sort === 'name' ? 'asc' : 'desc',
+        order,
         page,
         per_page: 50,
       }),
@@ -151,28 +162,22 @@ export default function Players() {
             onChange={(v) => { setFlag(v); setPage(1) }}
             options={FLAG_OPTIONS}
           />
-          <FilterSelect
-            label="Sort"
-            value={sort}
-            onChange={(v) => { setSort(v); setPage(1) }}
-            options={SORT_OPTIONS}
-          />
         </FilterBar>
       )}
 
       {/* Player list */}
       <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-[#2d3148] text-[10px] uppercase tracking-wider text-slate-500">
-          <span className="w-8">Pos</span>
-          <span className="min-w-[160px]">Player</span>
-          <span className="w-10">Tier</span>
-          <span className="w-16 text-right">Ceiling</span>
-          <span className="w-16 text-right">AI Ceil</span>
-          <span className="w-16 text-right">System</span>
-          <span className="w-16 text-right">Market</span>
-          <span className="w-24">Gap</span>
-          <span className="ml-auto">Flags</span>
+        {/* Sortable column headers */}
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-[#2d3148]">
+          <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
+          <SortableHeader label="Player" sortKey="name" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-[160px] shrink-0" defaultOrder="asc" />
+          <SortableHeader label="Tier" sortKey="tier" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-10 shrink-0" defaultOrder="asc" />
+          <SortableHeader label="Ceiling" sortKey="bid_ceiling" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          <SortableHeader label="System" sortKey="system_value" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          <SortableHeader label="Market" sortKey="market_value" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          <SortableHeader label="Gap" sortKey="value_gap" currentSort={sort} currentOrder={order} onSort={handleSort} className="w-24 shrink-0" />
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
         </div>
 
         {(isLoading || isSearching) ? (
