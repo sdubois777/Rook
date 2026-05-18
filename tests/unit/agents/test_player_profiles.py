@@ -2573,9 +2573,9 @@ def test_prompt_version_triggers_regeneration():
     )
 
 
-def test_prompt_version_constant_is_v3():
-    """Sanity: prompt version constant is v3 after warehouse refactor."""
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v3"
+def test_prompt_version_constant_is_v4():
+    """Sanity: prompt version constant is v4 after efficiency fields update."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v4"
 
 
 # ---------------------------------------------------------------------------
