@@ -185,29 +185,23 @@ export default function DraftBoard() {
           onClick={() => openPlayerDetail(p.id)}
         >
           <span className="w-9 shrink-0"><PositionBadge position={p.position} /></span>
-          <span className="text-sm font-medium text-slate-200 w-[160px] shrink-0 truncate">
+          <span className="text-sm font-medium text-slate-200 w-[220px] shrink-0 truncate">
             {p.name}
           </span>
-          <span className="text-xs text-slate-500 w-10 shrink-0">{p.team_abbr}</span>
+          <span className="text-xs text-slate-500 w-12 shrink-0">{p.team_abbr}</span>
 
-          <span className="text-sm text-blue-400 font-mono w-14 shrink-0 text-right">
-            ${p.recommended_bid_ceiling?.toFixed(0) || '--'}
-          </span>
-          <span className="text-sm text-purple-400 font-mono w-14 shrink-0 text-right">
+          <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
             {p.ai_bid_ceiling != null ? `$${p.ai_bid_ceiling}` : '--'}
           </span>
-          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
-            ${p.baseline_value?.toFixed(0) || '--'}
-          </span>
-          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
+          <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
             ${p.market_value?.toFixed(0) || '--'}
           </span>
-          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
+          <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
             {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
           </span>
 
           <span
-            className={`text-xs font-mono w-12 shrink-0 text-right ${
+            className={`text-xs font-mono w-16 shrink-0 text-right ${
               aiGap != null && aiGap > 3
                 ? 'text-emerald-400'
                 : aiGap != null && aiGap < -3
@@ -265,14 +259,12 @@ export default function DraftBoard() {
       <span className="w-[14px] shrink-0" />
       <div className="flex items-center gap-3 flex-1 min-w-0">
         <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
-        <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-[160px] shrink-0" defaultOrder="asc" />
-        <span className="w-10 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
-        <SortableHeader label="Ceiling" sortKey="ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
-        <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
-        <SortableHeader label="System" sortKey="system" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
-        <SortableHeader label="Market" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
-        <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
-        <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 shrink-0" align="right" />
+        <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-[220px] shrink-0" defaultOrder="asc" />
+        <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
+        <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+        <SortableHeader label="Market" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+        <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+        <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
         <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
       </div>
     </div>

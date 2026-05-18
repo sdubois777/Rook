@@ -161,7 +161,7 @@ async def start_draft(req: StartDraftRequest):
     """
     global _bridge, _engine, _state
 
-    from backend.database import async_session
+    from backend.database import AsyncSessionLocal as async_session
     from backend.engines.draft_state_manager import DraftStateManager
     from backend.engines.dependency_resolver import DependencyResolver
     from backend.engines.opponent_threat import OpponentThreatAnalyzer
