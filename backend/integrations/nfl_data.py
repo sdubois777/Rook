@@ -1133,6 +1133,7 @@ class NflDataWarehouse:
         # Supplementary data (player_profiles agent)
         self.ngs_receiving: dict[int, pd.DataFrame] = {}
         self.ngs_rushing: dict[int, pd.DataFrame] = {}
+        self.ngs_passing: dict[int, pd.DataFrame] = {}
         self.snap_pct: dict[int, pd.DataFrame] = {}
 
         # Depth chart data (current season)
@@ -1377,6 +1378,16 @@ class NflDataWarehouse:
             except Exception as exc:
                 logger.warning("  %d ngs_rushing unavailable: %s", season, exc)
 
+            # NGS passing
+            try:
+                raw = fetch_ngs_data("passing", season)
+                self.ngs_passing[season] = PlayerProfilesAgent._aggregate_ngs(
+                    raw, ["completion_percentage_above_expectation", "avg_time_to_throw", "aggressiveness"]
+                )
+                logger.info("  %d ngs_passing: %d players", season, len(self.ngs_passing[season]))
+            except Exception as exc:
+                logger.warning("  %d ngs_passing unavailable: %s", season, exc)
+
         # Snap pct for current season
         try:
             self.snap_pct[self.current_season] = compute_snap_pct(self.current_season)
@@ -1417,6 +1428,9 @@ class NflDataWarehouse:
 
     def get_ngs_rushing(self, season: int) -> pd.DataFrame:
         return self.ngs_rushing.get(season, pd.DataFrame())
+
+    def get_ngs_passing(self, season: int) -> pd.DataFrame:
+        return self.ngs_passing.get(season, pd.DataFrame())
 
     def get_snap_pct(self, season: int) -> pd.DataFrame:
         return self.snap_pct.get(season, pd.DataFrame())

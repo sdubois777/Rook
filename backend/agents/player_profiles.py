@@ -50,7 +50,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v3"
+PLAYER_PROFILES_PROMPT_VERSION = "v4"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +265,18 @@ Additional NGS efficiency data in player seasons (when present):
   avg_yac_above_expectation: yards after catch above model expectation; positive = elite YAC.
   rush_yards_over_expected_per_att: rushing yards over expected; positive = above-avg vision/burst.
 Use these numeric signals to inform separation_score, yards_after_catch_score, and efficiency_signal.
+
+Additional Sleeper efficiency data in player seasons (when present):
+  RB: rush_ypa (yards per carry, league avg ~4.2, elite 5.0+),
+      rush_btkl (broken tackles, elite 20+/season),
+      rush_fd (rushing first downs).
+  WR/TE: rec_ypr (yards per reception, deep threat 14+, possession 10-),
+         catch_pct (catch percentage, elite 70%+, concerning under 55%),
+         rec_fd (receiving first downs).
+  QB: cpoe (completion % above expectation, elite +3.0, poor -3.0),
+      avg_time_to_throw (quick <2.7s, slow >3.2s).
+  All: snap_count (offensive snaps for season).
+Use these to assess whether production is efficiency-driven or volume-driven.
 
 For players where all seasons show games=0 (rookies or new acquisitions with no NFL history):
   - Still include them; classify by position, team system, and dependency_flags.
@@ -547,7 +559,19 @@ Rules:
   say exactly that. Only reference injuries explicitly listed in the provided injury risk profile.
   Never fabricate torn ACLs, hamstring tears, or other specific injuries not in the data.
 - Output ONLY valid JSON. No preamble, no explanation, no markdown fences.
-Your entire response must be parseable by json.loads()."""
+Your entire response must be parseable by json.loads().
+
+Additional efficiency data in player seasons (when present):
+  RB: rush_ypa (yards per carry, league avg ~4.2, elite 5.0+),
+      rush_btkl (broken tackles, elite 20+/season),
+      rush_fd (rushing first downs).
+  WR/TE: rec_ypr (yards per reception, deep threat 14+, possession 10-),
+         catch_pct (catch percentage, elite 70%+, concerning under 55%),
+         rec_fd (receiving first downs).
+  QB: cpoe (completion % above expectation, elite +3.0, poor -3.0),
+      avg_time_to_throw (quick <2.7s, slow >3.2s).
+  All: snap_count (offensive snaps for season).
+Use these to assess whether production is efficiency-driven or volume-driven."""
 
 
 # ---------------------------------------------------------------------------
@@ -731,19 +755,32 @@ class PlayerProfilesAgent(BaseAgent):
                     return round(float(v), decimals) if v is not None and pd.notna(v) else None
                 except (TypeError, ValueError):
                     return None
+            targets = int(row.get("total_targets", 0) or 0)
+            receptions = int(row.get("total_receptions", 0) or 0)
             return {
                 "games":           games,
                 "recent_team":     str(row.get("recent_team", "") or ""),
                 "target_share":    _f("avg_target_share"),
                 "air_yards_share": _f("avg_air_yards_share"),
-                "targets":         int(row.get("total_targets",    0) or 0),
-                "receptions":      int(row.get("total_receptions", 0) or 0),
+                "targets":         targets,
+                "receptions":      receptions,
                 "rec_yards":       int(row.get("total_rec_yards",  0) or 0),
                 "rec_tds":         int(row.get("total_rec_tds",    0) or 0),
                 "carries":         int(row.get("total_carries",    0) or 0),
                 "rush_yards":      int(row.get("total_rush_yards", 0) or 0),
                 "rush_tds":        int(row.get("total_rush_tds",   0) or 0),
                 "ppr_per_game":    _f("ppr_per_game", 1),
+                # Efficiency fields
+                "rush_ypa":        _f("rush_ypa", 2),
+                "rush_btkl":       _f("rush_btkl", 0),
+                "rec_ypr":         _f("rec_ypr", 2),
+                "snap_count":      _f("off_snp", 0),
+                "rush_fd":         _f("rush_fd", 0),
+                "rec_fd":          _f("rec_fd", 0),
+                "catch_pct": (
+                    round(receptions / targets * 100, 1)
+                    if targets > 0 else None
+                ),
             }
 
         def _extract_combined(rows: pd.DataFrame) -> dict | None:
@@ -787,12 +824,13 @@ class PlayerProfilesAgent(BaseAgent):
                     pid, computed_ppr, fantasy_ppr,
                 )
 
+            total_targets = _int_sum("total_targets")
             return {
                 "games":           total_games,
                 "recent_team":     str(primary_team or ""),
                 "target_share":    _weighted_avg("avg_target_share"),
                 "air_yards_share": _weighted_avg("avg_air_yards_share"),
-                "targets":         _int_sum("total_targets"),
+                "targets":         total_targets,
                 "receptions":      receptions,
                 "rec_yards":       rec_yards,
                 "rec_tds":         rec_tds,
@@ -800,6 +838,17 @@ class PlayerProfilesAgent(BaseAgent):
                 "rush_yards":      rush_yards,
                 "rush_tds":        rush_tds,
                 "ppr_per_game":    _weighted_avg("ppr_per_game", 1),
+                # Efficiency fields
+                "rush_ypa":        _weighted_avg("rush_ypa", 2),
+                "rush_btkl":       _int_sum("rush_btkl") or None,
+                "rec_ypr":         _weighted_avg("rec_ypr", 2),
+                "snap_count":      _int_sum("off_snp") or None,
+                "rush_fd":         _int_sum("rush_fd") or None,
+                "rec_fd":          _int_sum("rec_fd") or None,
+                "catch_pct": (
+                    round(receptions / total_targets * 100, 1)
+                    if total_targets > 0 else None
+                ),
             }
 
         # --- Path 0a: sleeper_id match (best — 100% coverage from Sleeper) ---
@@ -1031,6 +1080,34 @@ class PlayerProfilesAgent(BaseAgent):
                     result[col] = round(float(v), 2)
             except (TypeError, ValueError):
                 pass
+        return result
+
+    def _get_ngs_passing_stats(self, player_name: str, team: str, season: int) -> dict:
+        """Return NGS passing metrics (CPOE, time to throw, aggressiveness)."""
+        ngs = self._warehouse.get_ngs_passing(season)
+        if ngs is None or ngs.empty:
+            return {}
+
+        last = player_name.split()[-1]
+        mask = ngs["player_display_name"].str.contains(last, case=False, na=False)
+        if "team_abbr" in ngs.columns:
+            mask = mask & (ngs["team_abbr"].str.upper() == team.upper())
+        rows = ngs[mask]
+        if rows.empty:
+            return {}
+
+        row = rows.iloc[0]
+        result = {}
+        for col in ("completion_percentage_above_expectation", "avg_time_to_throw", "aggressiveness"):
+            v = row.get(col)
+            try:
+                if v is not None and pd.notna(v):
+                    result[col] = round(float(v), 2)
+            except (TypeError, ValueError):
+                pass
+        # Rename CPOE to shorter key for prompt
+        if "completion_percentage_above_expectation" in result:
+            result["cpoe"] = result.pop("completion_percentage_above_expectation")
         return result
 
     # ------------------------------------------------------------------
@@ -1358,11 +1435,15 @@ class PlayerProfilesAgent(BaseAgent):
             )
 
             if pos == "QB":
-                # QB branch: use QB-specific passing stats
+                # QB branch: use QB-specific passing stats + NGS passing
                 for season in player_seasons:
                     stats = self._get_qb_season(pname, team, season, nfl_player_id=nfl_pid)
                     if stats:
+                        ngs = self._get_ngs_passing_stats(pname, team, season)
+                        if ngs:
+                            stats.update(ngs)
                         stats["year"] = season
+                        stats = {k: v for k, v in stats.items() if v is not None}
                         seasons_data.append(stats)
                     else:
                         seasons_data.append({"year": season, "games": 0, "note": "no data"})
@@ -1394,6 +1475,7 @@ class PlayerProfilesAgent(BaseAgent):
                             ngs = self._get_ngs_rushing_stats(pname, team, season)
                             if ngs:
                                 stats.update(ngs)
+                        stats = {k: v for k, v in stats.items() if v is not None}
                         seasons_data.append(stats)
                     else:
                         seasons_data.append({
