@@ -13,6 +13,7 @@ from backend.database import Base
 if TYPE_CHECKING:
     from backend.models.dependency import PlayerDependency, BeatReporterSignal
     from backend.models.draft_state import OpponentProfile
+    from backend.models.market_value_historic import MarketValueHistoric
     from backend.models.season_roster import SeasonRoster
 
 
@@ -124,6 +125,9 @@ class Player(Base):
     )
     season_roster: Mapped[Optional[SeasonRoster]] = relationship(
         "SeasonRoster", back_populates="player", uselist=False
+    )
+    historic_prices: Mapped[list[MarketValueHistoric]] = relationship(
+        "MarketValueHistoric", back_populates="player"
     )
 
 
