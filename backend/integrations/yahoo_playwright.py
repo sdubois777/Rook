@@ -73,7 +73,10 @@ class YahooPlaywrightBridge:
         self._draft_room_url = draft_room_url
         playwright = await async_playwright().start()
         try:
-            self.browser = await playwright.chromium.launch(headless=False)
+            self.browser = await playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
         except Exception as exc:
             if "Executable doesn't exist" in str(exc):
                 logger.error(
