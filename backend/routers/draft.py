@@ -111,6 +111,12 @@ async def connect_bridge(req: ConnectRequest):
     try:
         await _bridge.connect(req.draft_room_url)
         return {"status": "connected", "url": req.draft_room_url}
+    except RuntimeError as exc:
+        if "Chromium not installed" in str(exc):
+            logger.error("Chromium not installed: %s", exc)
+            raise HTTPException(status_code=503, detail=str(exc))
+        logger.error("Bridge connect failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Bridge connection failed: {exc}")
     except Exception as exc:
         logger.error("Bridge connect failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Bridge connection failed: {exc}")
@@ -225,6 +231,11 @@ async def start_draft(req: StartDraftRequest):
         _bridge.register_event_callback(_engine.handle_event)
         try:
             await _bridge.connect(req.draft_room_url)
+        except RuntimeError as exc:
+            if "Chromium not installed" in str(exc):
+                raise HTTPException(status_code=503, detail=str(exc))
+            logger.error("Bridge connect failed during start: %s", exc)
+            # Engine is still usable without bridge (manual frame injection)
         except Exception as exc:
             logger.error("Bridge connect failed during start: %s", exc)
             # Engine is still usable without bridge (manual frame injection)

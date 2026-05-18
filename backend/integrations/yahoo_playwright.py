@@ -72,7 +72,17 @@ class YahooPlaywrightBridge:
 
         self._draft_room_url = draft_room_url
         playwright = await async_playwright().start()
-        self.browser = await playwright.chromium.launch(headless=False)
+        try:
+            self.browser = await playwright.chromium.launch(headless=False)
+        except Exception as exc:
+            if "Executable doesn't exist" in str(exc):
+                logger.error(
+                    "Chromium not installed. Run: playwright install chromium"
+                )
+                raise RuntimeError(
+                    "Playwright Chromium not installed — run 'playwright install chromium'"
+                ) from exc
+            raise
         context = await self.browser.new_context()
         self.page = await context.new_page()
 
