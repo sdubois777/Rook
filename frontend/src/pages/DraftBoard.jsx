@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Star, StarOff, Download, Printer } from 'lucide-react'
 import { fetchDraftboard } from '../api/draftboard'
@@ -7,6 +7,7 @@ import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import PositionBadge from '../components/shared/PositionBadge'
 import FlagBadge from '../components/shared/FlagBadge'
+import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
 
@@ -26,10 +27,41 @@ const POSITION_OPTIONS = [
   { value: 'TE', label: 'TE' },
 ]
 
+function getPlayerGap(p) {
+  return p.ai_bid_ceiling != null && p.market_value != null
+    ? p.ai_bid_ceiling - p.market_value
+    : null
+}
+
+function sortPlayers(players, sortKey, sortOrder) {
+  const sorted = [...players]
+  const dir = sortOrder === 'asc' ? 1 : -1
+
+  sorted.sort((a, b) => {
+    let va, vb
+    switch (sortKey) {
+      case 'tier': va = a.tier ?? 99; vb = b.tier ?? 99; break
+      case 'name': va = a.name?.toLowerCase() ?? ''; vb = b.name?.toLowerCase() ?? ''; break
+      case 'ceiling': va = a.recommended_bid_ceiling ?? -Infinity; vb = b.recommended_bid_ceiling ?? -Infinity; break
+      case 'ai_ceiling': va = a.ai_bid_ceiling ?? -Infinity; vb = b.ai_bid_ceiling ?? -Infinity; break
+      case 'system': va = a.baseline_value ?? -Infinity; vb = b.baseline_value ?? -Infinity; break
+      case 'market': va = a.market_value ?? -Infinity; vb = b.market_value ?? -Infinity; break
+      case 'ppr': va = a.ppr_points ?? -Infinity; vb = b.ppr_points ?? -Infinity; break
+      case 'gap': va = getPlayerGap(a) ?? -Infinity; vb = getPlayerGap(b) ?? -Infinity; break
+      default: va = a.tier ?? 99; vb = b.tier ?? 99; break
+    }
+    if (typeof va === 'string') return va < vb ? -dir : va > vb ? dir : 0
+    return (va - vb) * dir
+  })
+  return sorted
+}
+
 export default function DraftBoard() {
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
   const [showWatchlistOnly, setShowWatchlistOnly] = useState(false)
+  const [sortKey, setSortKey] = useState('tier')
+  const [sortOrder, setSortOrder] = useState('asc')
 
   const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
@@ -58,6 +90,31 @@ export default function DraftBoard() {
   const tiers = data?.tiers || {}
   const tierKeys = Object.keys(tiers).sort((a, b) => parseInt(a) - parseInt(b))
   const totalPlayers = data?.total_players || 0
+
+  // Flatten all players from all tiers
+  const allPlayers = useMemo(() => {
+    const flat = []
+    for (const key of tierKeys) {
+      for (const p of tiers[key] || []) flat.push(p)
+    }
+    return flat
+  }, [tiers, tierKeys])
+
+  // Apply watchlist filter + sort
+  const sortedPlayers = useMemo(() => {
+    let filtered = allPlayers
+    if (showWatchlistOnly) {
+      filtered = filtered.filter((p) => isWatchlisted(p.id))
+    }
+    return sortPlayers(filtered, sortKey, sortOrder)
+  }, [allPlayers, showWatchlistOnly, watchlist, sortKey, sortOrder])
+
+  const isTierSort = sortKey === 'tier'
+
+  const handleSort = (key, order) => {
+    setSortKey(key)
+    setSortOrder(order)
+  }
 
   const handleStrategyChange = (v) => {
     setStrategy(v)
@@ -89,6 +146,149 @@ export default function DraftBoard() {
   }
 
   const handlePrint = () => window.print()
+
+  const renderPlayerRow = (p) => {
+    const highlight = p.strategy_highlight
+    const watched = isWatchlisted(p.id)
+    const aiGap = getPlayerGap(p)
+
+    let highlightClasses = ''
+    if (highlight === 'primary') {
+      highlightClasses = 'border-l-2 border-blue-500 bg-blue-500/5'
+    } else if (highlight === 'secondary') {
+      highlightClasses = 'border-l-2 border-purple-500 bg-purple-500/5'
+    } else if (highlight === 'dimmed') {
+      highlightClasses = 'opacity-40'
+    }
+
+    return (
+      <div
+        key={p.id}
+        className={`flex items-center gap-3 px-4 py-2.5 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50 ${highlightClasses}`}
+      >
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            watched ? removeFromWatchlist(p.id) : addToWatchlist(p.id)
+          }}
+          className="shrink-0"
+        >
+          {watched ? (
+            <Star size={14} className="text-yellow-400 fill-yellow-400" />
+          ) : (
+            <StarOff size={14} className="text-slate-600 hover:text-slate-400" />
+          )}
+        </button>
+
+        <div
+          className="flex items-center gap-3 flex-1 min-w-0"
+          onClick={() => openPlayerDetail(p.id)}
+        >
+          <span className="w-9 shrink-0"><PositionBadge position={p.position} /></span>
+          <span className="text-sm font-medium text-slate-200 w-[160px] shrink-0 truncate">
+            {p.name}
+          </span>
+          <span className="text-xs text-slate-500 w-10 shrink-0">{p.team_abbr}</span>
+
+          <span className="text-sm text-blue-400 font-mono w-14 shrink-0 text-right">
+            ${p.recommended_bid_ceiling?.toFixed(0) || '--'}
+          </span>
+          <span className="text-sm text-purple-400 font-mono w-14 shrink-0 text-right">
+            {p.ai_bid_ceiling != null ? `$${p.ai_bid_ceiling}` : '--'}
+          </span>
+          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
+            ${p.baseline_value?.toFixed(0) || '--'}
+          </span>
+          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
+            ${p.market_value?.toFixed(0) || '--'}
+          </span>
+          <span className="text-xs text-slate-400 font-mono w-14 shrink-0 text-right">
+            {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
+          </span>
+
+          <span
+            className={`text-xs font-mono w-12 shrink-0 text-right ${
+              aiGap != null && aiGap > 3
+                ? 'text-emerald-400'
+                : aiGap != null && aiGap < -3
+                ? 'text-red-400'
+                : 'text-slate-500'
+            }`}
+          >
+            {aiGap != null
+              ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
+              : '--'}
+          </span>
+
+          {/* Flags */}
+          <div className="flex gap-1 ml-auto flex-wrap justify-end">
+            {p.is_rookie && (
+              <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                Rookie
+              </span>
+            )}
+            {p.pay_up_flag && (
+              <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                PAY UP
+              </span>
+            )}
+            {p.nomination_target_flag && (
+              <span className="text-[10px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                NOMINATE
+              </span>
+            )}
+            {(p.flags || []).slice(0, 2).map((f, i) => (
+              <FlagBadge key={i} flagType={f.flag_type} compact />
+            ))}
+            {p.breakout_flag && (
+              <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full">
+                Breakout
+              </span>
+            )}
+            {p.injury_risk_level && p.injury_risk_level !== 'low' && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                p.injury_risk_level === 'high'
+                  ? 'text-red-400 bg-red-500/15'
+                  : 'text-amber-400 bg-amber-500/15'
+              }`}>
+                {p.injury_risk_level}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const columnHeaders = (
+    <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[#2d3148]">
+      <span className="w-[14px] shrink-0" />
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
+        <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-[160px] shrink-0" defaultOrder="asc" />
+        <span className="w-10 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
+        <SortableHeader label="Ceiling" sortKey="ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
+        <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
+        <SortableHeader label="System" sortKey="system" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
+        <SortableHeader label="Market" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
+        <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-14 shrink-0" align="right" />
+        <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 shrink-0" align="right" />
+        <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
+      </div>
+    </div>
+  )
+
+  // Group sorted players by tier for tier-grouped view
+  const tierGroups = useMemo(() => {
+    if (!isTierSort) return null
+    const groups = {}
+    for (const p of sortedPlayers) {
+      const key = String(p.tier ?? 0)
+      if (!groups[key]) groups[key] = []
+      groups[key].push(p)
+    }
+    return groups
+  }, [sortedPlayers, isTierSort])
 
   return (
     <div className="max-w-6xl">
@@ -147,21 +347,29 @@ export default function DraftBoard() {
           />
           Watchlist only
         </label>
+        {sortKey !== 'tier' && (
+          <button
+            onClick={() => { setSortKey('tier'); setSortOrder('asc') }}
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            Reset to tier view
+          </button>
+        )}
       </FilterBar>
 
       {isLoading ? (
         <div className="py-20 text-center text-slate-500">Loading draft board...</div>
-      ) : tierKeys.length === 0 ? (
+      ) : sortedPlayers.length === 0 ? (
         <div className="py-20 text-center text-slate-500">No ranked players found.</div>
-      ) : (
+      ) : isTierSort && tierGroups ? (
+        /* Tier-grouped view (default) */
         <div className="space-y-4">
-          {tierKeys.map((tierKey) => {
-            let players = tiers[tierKey] || []
-            if (showWatchlistOnly) {
-              players = players.filter((p) => isWatchlisted(p.id))
-            }
-            if (players.length === 0) return null
-
+          {Object.keys(tierGroups).sort((a, b) => {
+            const dir = sortOrder === 'asc' ? 1 : -1
+            return (parseInt(a) - parseInt(b)) * dir
+          }).map((tierKey) => {
+            const players = tierGroups[tierKey]
+            if (!players || players.length === 0) return null
             return (
               <div key={tierKey} className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
                 <div className="px-4 py-2.5 border-b border-[#2d3148] flex items-center justify-between">
@@ -170,148 +378,17 @@ export default function DraftBoard() {
                   </h3>
                   <span className="text-xs text-slate-500">{players.length} players</span>
                 </div>
-
-                {/* Column headers */}
-                <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[#2d3148] text-[10px] uppercase tracking-wider text-slate-500">
-                  <span className="w-[14px] shrink-0" />
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <span className="w-6" />
-                    <span className="min-w-[140px]">Player</span>
-                    <span className="w-10">Team</span>
-                    <span className="w-14 text-right">Ceiling</span>
-                    <span className="w-14 text-right">AI Ceil</span>
-                    <span className="w-14 text-right">System</span>
-                    <span className="w-14 text-right">Market</span>
-                    <span className="w-14 text-right">PPR</span>
-                    <span className="w-12 text-right">Gap</span>
-                    <span className="ml-auto">Flags</span>
-                  </div>
-                </div>
-
-                {players.map((p) => {
-                  const highlight = p.strategy_highlight
-                  const watched = isWatchlisted(p.id)
-
-                  let highlightClasses = ''
-                  if (highlight === 'primary') {
-                    highlightClasses = 'border-l-2 border-blue-500 bg-blue-500/5'
-                  } else if (highlight === 'secondary') {
-                    highlightClasses = 'border-l-2 border-purple-500 bg-purple-500/5'
-                  } else if (highlight === 'dimmed') {
-                    highlightClasses = 'opacity-40'
-                  }
-
-                  return (
-                    <div
-                      key={p.id}
-                      className={`flex items-center gap-3 px-4 py-2.5 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50 ${highlightClasses}`}
-                    >
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          watched ? removeFromWatchlist(p.id) : addToWatchlist(p.id)
-                        }}
-                        className="shrink-0"
-                      >
-                        {watched ? (
-                          <Star size={14} className="text-yellow-400 fill-yellow-400" />
-                        ) : (
-                          <StarOff size={14} className="text-slate-600 hover:text-slate-400" />
-                        )}
-                      </button>
-
-                      <div
-                        className="flex items-center gap-3 flex-1 min-w-0"
-                        onClick={() => openPlayerDetail(p.id)}
-                      >
-                        <PositionBadge position={p.position} />
-                        <span className="text-sm font-medium text-slate-200 min-w-[140px]">
-                          {p.name}
-                        </span>
-                        <span className="text-xs text-slate-500 w-10">{p.team_abbr}</span>
-
-                        <span className="text-sm text-blue-400 font-mono w-14 text-right">
-                          ${p.recommended_bid_ceiling?.toFixed(0) || '--'}
-                        </span>
-                        {p.ai_bid_ceiling != null && (
-                          <span className="text-sm text-purple-400 font-mono w-14 text-right">
-                            ${p.ai_bid_ceiling}
-                          </span>
-                        )}
-                        <span className="text-xs text-slate-400 font-mono w-14 text-right">
-                          ${p.baseline_value?.toFixed(0) || '--'}
-                        </span>
-                        <span className="text-xs text-slate-400 font-mono w-14 text-right">
-                          ${p.market_value?.toFixed(0) || '--'}
-                        </span>
-                        <span className="text-xs text-slate-400 font-mono w-14 text-right">
-                          {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
-                        </span>
-
-                        {/* Value gap indicator — AI ceiling vs market */}
-                        {(() => {
-                          const aiGap = p.ai_bid_ceiling != null && p.market_value != null
-                            ? p.ai_bid_ceiling - p.market_value
-                            : null
-                          return (
-                            <span
-                              className={`text-xs font-mono w-12 text-right ${
-                                aiGap != null && aiGap > 3
-                                  ? 'text-emerald-400'
-                                  : aiGap != null && aiGap < -3
-                                  ? 'text-red-400'
-                                  : 'text-slate-500'
-                              }`}
-                            >
-                              {aiGap != null
-                                ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
-                                : '--'}
-                            </span>
-                          )
-                        })()}
-
-                        {/* Flags */}
-                        <div className="flex gap-1 ml-auto flex-wrap justify-end">
-                          {p.is_rookie && (
-                            <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                              Rookie
-                            </span>
-                          )}
-                          {p.pay_up_flag && (
-                            <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                              PAY UP
-                            </span>
-                          )}
-                          {p.nomination_target_flag && (
-                            <span className="text-[10px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                              NOMINATE
-                            </span>
-                          )}
-                          {(p.flags || []).slice(0, 2).map((f, i) => (
-                            <FlagBadge key={i} flagType={f.flag_type} compact />
-                          ))}
-                          {p.breakout_flag && (
-                            <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full">
-                              Breakout
-                            </span>
-                          )}
-                          {p.injury_risk_level && p.injury_risk_level !== 'low' && (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                              p.injury_risk_level === 'high'
-                                ? 'text-red-400 bg-red-500/15'
-                                : 'text-amber-400 bg-amber-500/15'
-                            }`}>
-                              {p.injury_risk_level}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
+                {columnHeaders}
+                {players.map(renderPlayerRow)}
               </div>
             )
           })}
+        </div>
+      ) : (
+        /* Flat sorted view */
+        <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
+          {columnHeaders}
+          {sortedPlayers.map(renderPlayerRow)}
         </div>
       )}
 

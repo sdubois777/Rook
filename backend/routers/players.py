@@ -502,6 +502,7 @@ async def list_players(
         # Sort
         sort_map = {
             "bid_ceiling": Player.recommended_bid_ceiling,
+            "ai_ceiling": Player.ai_bid_ceiling,
             "system_value": Player.baseline_value,
             "market_value": Player.market_value,
             "value_gap": Player.value_gap,
