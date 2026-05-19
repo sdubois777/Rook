@@ -87,6 +87,8 @@ async def sync_players_from_sleeper(
         by_sportradar = {p.sportradar_id: p for p in all_players if p.sportradar_id}
         by_gsis = {p.gsis_id: p for p in all_players if p.gsis_id}
         by_name_pos = {}
+        # Reverse map: stripped Sleeper name → DB player with suffix
+        by_stripped_name_pos: dict[tuple[str, str], Player] = {}
         for p in all_players:
             if p.name and p.position:
                 by_name_pos[(p.name.lower(), p.position.upper())] = p
@@ -94,6 +96,8 @@ async def sync_players_from_sleeper(
                 stripped = _SUFFIX_RE.sub("", p.name).strip().lower()
                 if stripped != p.name.lower():
                     by_name_pos.setdefault((stripped, p.position.upper()), p)
+                    # Reverse: Sleeper sends "Brian Thomas" → match DB "Brian Thomas Jr."
+                    by_stripped_name_pos.setdefault((stripped, p.position.upper()), p)
 
         for _, row in players_df.iterrows():
             sleeper_id = str(row["player_id"])
@@ -136,6 +140,9 @@ async def sync_players_from_sleeper(
                     existing = cand
             if not existing:
                 existing = by_name_pos.get((full_name.lower(), position.upper()))
+            # Reverse suffix match: Sleeper "Brian Thomas" → DB "Brian Thomas Jr."
+            if not existing:
+                existing = by_stripped_name_pos.get((full_name.lower(), position.upper()))
 
             if existing:
                 # Track meaningful changes — team move

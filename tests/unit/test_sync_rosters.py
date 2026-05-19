@@ -306,3 +306,128 @@ async def test_sync_returns_teams_invalidated():
     assert result["teams_invalidated"] == sorted(["DEN", "GB", "MIA", "NYJ"])
     assert result["cache_cleared"] is True
     assert result["updated"] == 2
+
+
+# ===========================================================================
+# Suffix normalization tests (Jr./Sr./II/III)
+# ===========================================================================
+
+
+def test_suffix_normalization():
+    """_SUFFIX_RE strips Jr., Sr., II, III, IV, V from player names."""
+    from scripts.sync_rosters import _SUFFIX_RE
+
+    cases = {
+        "Brian Thomas Jr.": "Brian Thomas",
+        "Brian Thomas Jr": "Brian Thomas",
+        "Kenneth Walker III": "Kenneth Walker",
+        "Marvin Harrison Jr.": "Marvin Harrison",
+        "Odell Beckham Jr": "Odell Beckham",
+        "Anthony Tyus Jr.": "Anthony Tyus",
+        "Michael Pittman Jr": "Michael Pittman",
+        "Irv Smith Jr.": "Irv Smith",
+        "Patrick Mahomes II": "Patrick Mahomes",
+    }
+    for original, expected in cases.items():
+        stripped = _SUFFIX_RE.sub("", original).strip()
+        assert stripped == expected, f"Failed: {original!r} → {stripped!r}, expected {expected!r}"
+
+
+@pytest.mark.asyncio
+async def test_jr_sr_suffix_handled_in_sync():
+    """Sleeper sends 'Brian Thomas' (no suffix) → matches DB 'Brian Thomas Jr.'."""
+    # DB has "Brian Thomas Jr." with sportradar_id but no sleeper_id
+    player = _make_player(
+        name="Brian Thomas Jr.",
+        position="WR",
+        team_abbr="JAX",
+        sportradar_id=None,
+        sleeper_id=None,
+    )
+
+    # Sleeper sends "Brian Thomas" (no suffix) with a sleeper_id
+    sleeper_df = _make_sleeper_df([{
+        "player_id": "12345",
+        "full_name": "Brian Thomas",
+        "position": "WR",
+        "team": "JAX",
+        "sportradar_id": None,
+    }])
+
+    session = _mock_session([player])
+
+    with patch(
+        "backend.integrations.sleeper.fetch_sleeper_players",
+        return_value=sleeper_df,
+    ):
+        from scripts.sync_rosters import sync_players_from_sleeper
+        result = await sync_players_from_sleeper(db=session)
+
+    # Should match (update), NOT insert a duplicate
+    assert result["updated"] == 1
+    assert result["inserted"] == 0
+    # sleeper_id should be set on the matched player
+    assert player.sleeper_id == "12345"
+
+
+@pytest.mark.asyncio
+async def test_no_brian_thomas_duplicate():
+    """Syncing 'Brian Thomas' from Sleeper when DB has 'Brian Thomas Jr.' must not create a new record."""
+    player_jr = _make_player(
+        name="Brian Thomas Jr.",
+        position="WR",
+        team_abbr="JAX",
+        sportradar_id="sr-btj",
+    )
+
+    sleeper_df = _make_sleeper_df([{
+        "player_id": "99999",
+        "full_name": "Brian Thomas",
+        "position": "WR",
+        "team": "JAX",
+        "sportradar_id": "sr-btj",
+    }])
+
+    session = _mock_session([player_jr])
+
+    with patch(
+        "backend.integrations.sleeper.fetch_sleeper_players",
+        return_value=sleeper_df,
+    ):
+        from scripts.sync_rosters import sync_players_from_sleeper
+        result = await sync_players_from_sleeper(db=session)
+
+    assert result["inserted"] == 0
+    assert result["updated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_brian_thomas_jr_gets_sleeper_id():
+    """After sync, Brian Thomas Jr. should have the sleeper_id from the suffix-less Sleeper entry."""
+    player_jr = _make_player(
+        name="Brian Thomas Jr.",
+        position="WR",
+        team_abbr="JAX",
+        sportradar_id=None,
+        sleeper_id=None,
+    )
+
+    sleeper_df = _make_sleeper_df([{
+        "player_id": "BTJ_SLEEPER",
+        "full_name": "Brian Thomas",
+        "position": "WR",
+        "team": "JAX",
+        "sportradar_id": "sr-btj-new",
+    }])
+
+    session = _mock_session([player_jr])
+
+    with patch(
+        "backend.integrations.sleeper.fetch_sleeper_players",
+        return_value=sleeper_df,
+    ):
+        from scripts.sync_rosters import sync_players_from_sleeper
+        result = await sync_players_from_sleeper(db=session)
+
+    assert player_jr.sleeper_id == "BTJ_SLEEPER"
+    assert player_jr.sportradar_id == "sr-btj-new"
