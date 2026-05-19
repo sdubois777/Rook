@@ -712,3 +712,161 @@ def test_pfr_team_mapping():
     assert _PFR_TEAM_MAP["TAM"] == "TB"
     assert _CANONICAL_TO_PFR["GB"] == "GNB"
     assert _CANONICAL_TO_PFR["KC"] == "KAN"
+
+
+# ---------------------------------------------------------------------------
+# QB mismatch re-run tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mismatch_triggers_rerun():
+    """When model returns wrong QB, call_once() is called TWICE (original + re-run)."""
+    agent = TeamSystemsAgent()
+
+    # Context has Kyler Murray as the depth chart starter
+    context = {
+        "team": "MIN",
+        "qb_metrics": {"starter_name": "Kyler Murray", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    # First call returns McCarthy (wrong QB)
+    first_response = _minimal_team_system(
+        "MIN", qb_name="J.J. McCarthy", qb_tier="average",
+        notes="McCarthy enters year 2 under center.",
+    )
+    # Re-run returns Murray (correct QB)
+    second_response = _minimal_team_system(
+        "MIN", qb_name="Kyler Murray", qb_tier="solid",
+        notes="Murray brings dual-threat ability to Minnesota.",
+    )
+
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()) as mock_upsert:
+                result = await agent.run_for_team("MIN")
+
+    # Two calls: original + re-run
+    assert call_count == 2
+    # Result should use the re-run's analysis
+    assert result["qb_name"] == "Kyler Murray"
+    assert result["qb_tier"] == "solid"
+    assert "Murray" in result["notes"]
+    # Verify upsert was called with correct data
+    written = mock_upsert.call_args[0][1]
+    assert written["qb_name"] == "Kyler Murray"
+
+
+@pytest.mark.asyncio
+async def test_no_mismatch_single_call():
+    """When model returns correct QB, call_once() is called exactly ONCE."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "KC",
+        "qb_metrics": {"starter_name": "Patrick Mahomes", "years_exp": 9},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    response = _minimal_team_system(
+        "KC", qb_name="Patrick Mahomes", qb_tier="elite",
+    )
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", new=AsyncMock(return_value=json.dumps(response))) as mock_call:
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                result = await agent.run_for_team("KC")
+
+    mock_call.assert_called_once()
+    assert result["qb_name"] == "Patrick Mahomes"
+
+
+@pytest.mark.asyncio
+async def test_qb_name_pinned_after_rerun():
+    """Even if re-run returns a slightly different name format, depth chart name wins."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "ARI",
+        "qb_metrics": {"starter_name": "Gardner Minshew", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    # Model returns Carson Beck (wrong)
+    first_response = _minimal_team_system("ARI", qb_name="Carson Beck", qb_tier="average")
+    # Re-run returns "Gardner Minshew II" (close but not exact)
+    second_response = _minimal_team_system(
+        "ARI", qb_name="Gardner Minshew II", qb_tier="below_average",
+        notes="Minshew is a bridge starter in Arizona.",
+    )
+
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                result = await agent.run_for_team("ARI")
+
+    # Final name pinned to depth chart's exact name
+    assert result["qb_name"] == "Gardner Minshew"
+    # But analysis from re-run is used
+    assert result["qb_tier"] == "below_average"
+    assert "Minshew" in result["notes"]
+
+
+@pytest.mark.asyncio
+async def test_qb_override_in_rerun_context():
+    """Re-run context must include a qb_override instruction."""
+    agent = TeamSystemsAgent()
+
+    context = {
+        "team": "MIN",
+        "qb_metrics": {"starter_name": "Kyler Murray", "years_exp": 6},
+        "oline": {},
+        "personnel": {},
+        "roster_summary": {},
+    }
+    first_response = _minimal_team_system("MIN", qb_name="J.J. McCarthy")
+    second_response = _minimal_team_system("MIN", qb_name="Kyler Murray", qb_tier="solid")
+
+    call_contexts = []
+    call_count = 0
+    async def _mock_call_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Capture the user= kwarg which is the JSON context
+        user_json = kwargs.get("user", "{}")
+        call_contexts.append(json.loads(user_json))
+        if call_count == 1:
+            return json.dumps(first_response)
+        return json.dumps(second_response)
+
+    with patch.object(agent, "_build_team_context", new=AsyncMock(return_value=context)):
+        with patch.object(agent, "call_once", side_effect=_mock_call_once):
+            with patch("backend.agents.team_systems._upsert_team_system", new=AsyncMock()):
+                await agent.run_for_team("MIN")
+
+    assert len(call_contexts) == 2
+    # First call should NOT have qb_override
+    assert "qb_override" not in call_contexts[0]
+    # Second call MUST have qb_override mentioning Murray
+    assert "qb_override" in call_contexts[1]
+    assert "Kyler Murray" in call_contexts[1]["qb_override"]

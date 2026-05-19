@@ -494,8 +494,10 @@ class TeamSystemsAgent(BaseAgent):
             # Enforce team_abbr from our canonical list
             data["team_abbr"] = team
 
-            # Enforce QB name from data, not model hallucination.
-            # The model may output a QB who is no longer on this team.
+            # Detect QB mismatch: if model analyzed a different QB than
+            # the Sleeper depth chart starter, the entire analysis (qb_tier,
+            # notes, system_grade) is calibrated for the wrong player.
+            # Re-run with an explicit QB correction so all fields are consistent.
             qb_data = context.get("qb_metrics", {})
             data_qb = qb_data.get("starter_name")
             model_qb = data.get("qb_name")
@@ -504,9 +506,29 @@ class TeamSystemsAgent(BaseAgent):
                 model_norm = normalize_player_name(model_qb)
                 if data_norm != model_norm:
                     logger.warning(
-                        "%s: model output qb_name=%r but data says %r — overriding",
+                        "%s: QB mismatch — model=%r, depth_chart=%r — re-running",
                         team, model_qb, data_qb,
                     )
+                    # Add explicit QB correction to context and re-run
+                    context["qb_override"] = (
+                        f"IMPORTANT: The current starting QB for {team} is "
+                        f"{data_qb} (from Sleeper depth chart, depth_chart_order=1). "
+                        f"You MUST generate ALL analysis — qb_name, qb_tier, notes, "
+                        f"system_grade — for {data_qb}, NOT {model_qb}. "
+                        f"Do not speculate about future QB changes."
+                    )
+                    raw2 = await self.call_once(
+                        system=SYSTEM_PROMPT,
+                        user=json.dumps(context, default=str),
+                        input_data=context,
+                        entity_id=team,
+                    )
+                    if raw2:
+                        data2 = parse_json_output(raw2)
+                        if isinstance(data2, dict):
+                            data = data2
+                            data["team_abbr"] = team
+                    # Final enforcement: even after re-run, pin the name
                     data["qb_name"] = data_qb
 
             # Enforce rookie_qb_flag from Sleeper years_exp when available.
