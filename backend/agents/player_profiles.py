@@ -680,7 +680,7 @@ class PlayerProfilesAgent(BaseAgent):
             if age_val is not None and pd.notna(age_val):
                 entry["age"] = int(age_val)
             entry["contract_year"] = bool(row.get("contract_year", False))
-            # Include nfl gsis player_id for reliable cross-source matching
+            # Sleeper roster player_id (NOT gsis — overwritten later by DB enrichment)
             pid = row.get("player_id")
             if pid and pd.notna(pid):
                 entry["nfl_player_id"] = str(pid).strip()
@@ -1444,17 +1444,19 @@ class PlayerProfilesAgent(BaseAgent):
             for dbp in db_team_players
         }
         # Enrich existing roster entries with IDs from DB players.
-        # nfl_data_py roster lacks sleeper_id/sportradar_id — without
-        # these, _get_player_season_stats() falls back to fragile
-        # last-name matching which can pick the wrong player
-        # (e.g. Brian Robinson instead of Bijan Robinson on ATL).
+        # Sleeper roster "player_id" is Sleeper's own ID — NOT GSIS.
+        # DB players have real gsis_id, sleeper_id, sportradar_id.
+        # Always prefer DB's gsis_id for nfl_player_id (used by QB stats
+        # from nfl_data_py which keys on GSIS IDs).
         db_by_name = {dbp["name"]: dbp for dbp in db_team_players}
         for r in roster:
             if dbp := db_by_name.get(r["name"]):
                 r.setdefault("sleeper_id", dbp.get("sleeper_id"))
                 r.setdefault("sportradar_id", dbp.get("sportradar_id"))
-                if not r.get("nfl_player_id"):
-                    r["nfl_player_id"] = dbp.get("nfl_player_id")
+                # Always overwrite nfl_player_id with DB gsis_id — the
+                # roster value is Sleeper's ID, not GSIS.
+                if dbp.get("nfl_player_id"):
+                    r["nfl_player_id"] = dbp["nfl_player_id"]
         for dbp in db_team_players:
             if dbp["name"] not in roster_names:
                 roster.append(dbp)

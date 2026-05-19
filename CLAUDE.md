@@ -280,7 +280,7 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-955 tests passing (backend). 29 frontend tests passing.
+1057 tests passing (backend). 29 frontend tests passing.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -338,10 +338,10 @@ fantasy-football-ai/
   - 35 tests, no-polling AST verification passing
 - [x] Stage 11.5: Backtest & Validation (operator tool — NOT user-facing)
   - Default season: get_current_season() - 1 (never current year — no results yet)
-  - Latest results (2025 season, post-tier calibration):
-    79.6% signal accuracy, 97% buy accuracy, 33.4 MAE, 0.850 correlation
+  - Latest results (2025 season, post QB stats fix):
+    88.7% signal accuracy, 94% buy accuracy, 42.8 MAE, 0.779 correlation
+  - RB correlation 0.940 (excellent), avoid accuracy 71% (up from 38%)
   - CMC correctly appears as VALUE: $50 paid / $72 ceiling / 415 actual PPR
-  - Avoid signals improving (38% accuracy) — calibration ongoing
 - [x] Stage 12: Live draft agent
   - DraftStateManager, DependencyResolver, OpponentThreatAnalyzer, LiveDraftEngine
   - Historical tendencies wired into threat analysis
@@ -410,31 +410,31 @@ fantasy-football-ai/
 
 ---
 
-## Backtest Results (2025 Season — post tier calibration)
+## Backtest Results (2025 Season — post QB stats fix)
 
 | Metric | Value | Grade |
 |--------|-------|-------|
-| Signal accuracy | 79.6% | STRONG |
-| Projection MAE | 33.4 PPR | Good (30-50) |
-| Correlation | 0.850 | Strong |
-| Buy accuracy | 97% (38 players) | Excellent |
-| Avoid accuracy | 38% (16 players) | Improving — calibration ongoing |
-| Top opportunities | 13/15 (87%) | Strong |
+| Signal accuracy | 88.7% | EXCELLENT |
+| Projection MAE | 42.8 PPR | Good (30-50) |
+| Correlation | 0.779 | Strong |
+| Buy accuracy | 94% (48 players) | Excellent |
+| Avoid accuracy | 71% (14 players) | Strong |
+| Tier monotonic | T1(309) > T2(198) > T3(180) > T4(108) | Yes |
 
-Key validated calls: CMC VALUE at $50→415 PPR ✓, JSN buy→360 PPR ✓,
-Kyle Pitts buy at $3→211 PPR ✓, Barkley strong_avoid→230 PPR at $61 ✓,
-BTJ strong_avoid→139 PPR at $51 ✓
+Key validated calls: CMC VALUE at $50→415 PPR ✓, JSN neutral→360 PPR ✓,
+Kyle Pitts buy at $3→211 PPR ✓, Barkley avoid→230 PPR at $61 ✓,
+Etienne buy at $3→254 PPR ✓, Olave buy at $9→268 PPR ✓
 
-Lamar Jackson QB bias (+155) — injury-shortened 2025 inflating QB error.
-Avoid signal accuracy 38% — ceiling calibration ongoing, known limitation.
+By position: RB r=0.940 (excellent), WR r=0.790, TE r=0.715, QB r=0.376
+QB MAE=77.2, bias=+64.4 — injury-driven (Daniels, Burrow, Purdy missed games).
+Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 
 ---
 
 ## Known Issues / Backlog
 
 - FULL_SEASON_ABSENCE detection not implemented in injury agent
-- Avoid signal accuracy 38% — ceiling calibration ongoing
-- Lamar Jackson QB bias (+42.6 PPR) — injury year inflating QB error
+- QB projection bias: MAE=77.2, bias=+64.4 — mostly injury-driven misses
 - Pipeline admin freshness thresholds uniform 7d (should be per-agent)
 - Frontend test coverage sparse (4 files for 43 JSX/JS source files)
 - .pre-commit-config.yaml never created

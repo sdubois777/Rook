@@ -123,7 +123,7 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 
 ## Project Status
 
-883 backend tests + 29 frontend tests passing.
+1057 backend tests + 29 frontend tests passing.
 
 ### Completed
 
@@ -131,7 +131,7 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 - [x] **Stage 2: Data Ingestion** — Sleeper API (primary), nfl_data_py (schedules/PBP/NGS only)
 - [x] **Stage 3: Team Systems Agent** — Haiku, 500 tokens, 32 calls, dynamic season years
 - [x] **Stage 4: Roster Changes Agent** — Sonnet, 4000 tokens, causal reasoning, displacement/contingency flags
-- [x] **Stage 5: Player Profiles Agent** — Haiku, 4000 tokens, role classification, 682 player profiles, dynamic per-player lookback
+- [x] **Stage 5: Player Profiles Agent** — Haiku+Sonnet, 4000 tokens, role classification, 753 player profiles, dynamic per-player lookback
 - [x] **Stage 6: Injury Risk Agent** — Haiku, 1000 tokens, pattern flags pre-computed in Python
 - [x] **Stage 7: Schedule Agent** — Haiku, 1500 tokens, defensive grades inverted from weekly PPR, bye-in-playoff flag
 - [x] **Stage 8: Beat Reporter Agent** — Haiku, 300 tokens, feedparser RSS, APScheduler daily at 7am, dedup
@@ -144,14 +144,14 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 - [x] **Stage 22: Pipeline Admin UI** — Status dashboard, manual triggers, cost reports (8/10 spec items)
 - [x] **Stage 25: SaaS Foundation** — LeagueConfig, user/credit/league models, middleware, exception handlers
 - [x] **Stage 26: User Auth** — Clerk JWT verification, webhook lifecycle, protected routes, account dashboard
+- [x] **Stage 27: Landing Page** — DraftMind marketing site with hero, validation stats, pricing, FAQ
+- [x] **Stage 28: League Sync** — Yahoo/ESPN/Sleeper multi-user, Fernet encryption, league setup wizard
 
 ### Remaining
 
 - [ ] **Stage 14:** Season Roster Store (post-draft sync via Yahoo API)
 - [ ] **Stages 15-21:** In-season features (Roster Monitor, Trade Analyzer, Trade Proposals, Lineup Optimizer, Waiver Wire, Opponent Analyzer)
 - [ ] **Stage 23:** Deployment + testing (Railway, GitHub Actions CI/CD)
-- [x] **Stage 27: Landing Page** — DraftMind marketing site with hero, validation stats, pricing, FAQ
-- [ ] **Stage 28:** League Sync (Yahoo multi-user OAuth, Sleeper leagues, ESPN)
 - [ ] **Stage 29:** Snake Draft support
 - [ ] **Stage 30:** Half PPR scoring
 
