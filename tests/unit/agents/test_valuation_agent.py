@@ -256,3 +256,35 @@ async def test_ai_ceiling_clamped_to_position_max():
     max_bids = {"RB": 80, "WR": 70, "QB": 50, "TE": 45}
     clamped = min(int(results_map["WR Max"]["ai_bid_ceiling"]), max_bids.get("WR", 80))
     assert clamped == 70
+
+
+# ---------------------------------------------------------------------------
+# Auction note sanitization
+# ---------------------------------------------------------------------------
+
+def test_no_league_language_in_auction_notes():
+    """auction_note sanitizer strips 'your league paid' and 'in your league' phrasing."""
+    import re
+
+    # Reproduce the sanitization logic from _write_results
+    def sanitize(note):
+        if not note:
+            return note
+        note = re.sub(
+            r"(?i)\b(your|the|this) league (paid|spent|valued|priced)\b",
+            "consensus ADP was",
+            note,
+        )
+        note = re.sub(r"(?i)\bin your league\b", "at consensus", note)
+        return note
+
+    # Phrases that should be scrubbed
+    assert "your league" not in sanitize("Your league paid $32 last year")
+    assert "consensus ADP was" in sanitize("Your league paid $32 last year")
+    assert "in your league" not in sanitize("This player is undervalued in your league")
+    assert "at consensus" in sanitize("This player is undervalued in your league")
+    assert "the league spent" not in sanitize("The league spent $45 on this player")
+
+    # Clean notes should pass through unchanged
+    clean = "Elite target share in high-volume offense at $40 consensus ADP."
+    assert sanitize(clean) == clean

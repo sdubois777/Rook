@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from sqlalchemy import select
@@ -345,7 +346,17 @@ class ValuationAgent(BaseAgent):
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
                 db_player.value_assessment = result.get("value_assessment")
-                db_player.auction_note = result.get("auction_note")
+                note = result.get("auction_note")
+                if note:
+                    # Sanitize: strip league-specific language the model
+                    # sometimes generates despite prompt instructions
+                    note = re.sub(
+                        r"(?i)\b(your|the|this) league (paid|spent|valued|priced)\b",
+                        "consensus ADP was",
+                        note,
+                    )
+                    note = re.sub(r"(?i)\bin your league\b", "at consensus", note)
+                db_player.auction_note = note
                 db_player.pay_up_flag = result.get("pay_up_flag", False)
                 db_player.nomination_target_flag = result.get("nomination_target_flag", False)
                 written += 1
