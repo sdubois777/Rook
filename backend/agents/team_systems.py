@@ -29,9 +29,22 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.database import AsyncSessionLocal
 from backend.integrations.nfl_data import normalize_player_name
 from backend.models.team_system import TeamSystem
-from backend.utils.seasons import get_current_season, get_analysis_seasons
+from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# OLine draft context — runtime injection only (no DB storage)
+# ---------------------------------------------------------------------------
+
+_OLINE_POSITIONS = frozenset({"T", "G", "C", "OT", "OG", "OL", "OC"})
+
+# nfl_data_py uses PFR team codes — map to our canonical abbreviations
+_PFR_TEAM_MAP: dict[str, str] = {
+    "GNB": "GB", "KAN": "KC", "LAR": "LA", "LVR": "LV",
+    "NOR": "NO", "NWE": "NE", "SFO": "SF", "TAM": "TB",
+}
+_CANONICAL_TO_PFR: dict[str, str] = {v: k for k, v in _PFR_TEAM_MAP.items()}
 
 # ---------------------------------------------------------------------------
 # All 32 NFL teams
@@ -84,6 +97,16 @@ Rules:
 - compound_risk_flag cascades severe penalties to all skill position players — flag conservatively
 - The notes field must focus on fantasy implications, not general football analysis
 
+OLine grade adjustment rules (when oline_draft_picks is provided in oline data):
+- Round 1 OT pick (picks 1-32): pass_protection_grade improves 1-2 grades above historical sack rate baseline.
+  Example: 8% sack rate = C+ baseline, but R1 OT pick → B or B+.
+- Round 1 OG/C pick (picks 1-32): run_blocking_grade improves 1-2 grades. Modest pass_protection improvement too.
+- Round 2 OT/OG (picks 33-64): improve grades by 1 grade. Day 1 starter likely but not guaranteed.
+- Round 3+ OLine picks: modest improvement, depth/rotational. 0-1 grade improvement maximum.
+- Multiple OLine picks same year: stack improvements (additive). 2 OLinemen in R1-R2 = full grade adjustments.
+- No OLine picks + historical sack_rate > 7%: grade stays at or near historical level. Do not inflate without evidence.
+- When oline_draft_picks is empty []: base grade entirely on sack_rate and avg_time_to_throw.
+
 Output ONLY a valid JSON object. No explanation. No preamble. No markdown fences.
 Your entire response must be parseable by json.loads()."""
 
@@ -96,6 +119,52 @@ class TeamSystemsAgent(BaseAgent):
     AGENT_NAME       = "team_systems"
     AGENT_MODEL      = HAIKU
     AGENT_MAX_TOKENS = 500
+
+    # Class-level cache: fetched once, shared across all 32 teams
+    _draft_cache: dict[int, pd.DataFrame] = {}
+
+    # ------------------------------------------------------------------
+    # OLine draft context — fetched once per season, not per team
+    # ------------------------------------------------------------------
+
+    def _get_oline_draft_context(self, team: str, season: int) -> list[dict]:
+        """Return OLine draft picks for *team* in the given draft *season*.
+
+        Uses a class-level cache so nfl_data_py is called at most once
+        across all 32 teams.  Returns empty list on miss.
+        """
+        if season not in self.__class__._draft_cache:
+            try:
+                import nfl_data_py as nfl_data
+                draft = nfl_data.import_draft_picks([season])
+                self.__class__._draft_cache[season] = draft
+            except Exception as exc:
+                logger.warning("Draft picks %d unavailable: %s", season, exc)
+                self.__class__._draft_cache[season] = pd.DataFrame()
+
+        draft = self.__class__._draft_cache[season]
+        if draft.empty:
+            return []
+
+        # Map canonical team code to PFR code used by nfl_data_py
+        pfr_team = _CANONICAL_TO_PFR.get(team, team)
+
+        team_oline = draft[
+            (draft["team"] == pfr_team)
+            & (draft["position"].isin(_OLINE_POSITIONS))
+        ].sort_values("pick")
+
+        name_col = "pfr_player_name" if "pfr_player_name" in draft.columns else "player_name"
+
+        return [
+            {
+                "round": int(row["round"]),
+                "pick": int(row["pick"]),
+                "player": str(row.get(name_col, "")),
+                "position": str(row.get("position", "")),
+            }
+            for _, row in team_oline.iterrows()
+        ]
 
     # ------------------------------------------------------------------
     # Data pre-aggregation — all Python, zero API calls
@@ -138,13 +207,24 @@ class TeamSystemsAgent(BaseAgent):
         }
 
     async def _get_oline_data(self, team: str, season: int) -> dict:
+        analysis_year = get_analysis_year()
+        oline_picks = self._get_oline_draft_context(team, analysis_year)
+
         oline_stats = self._warehouse.get_oline_stats(season)
         if oline_stats.empty:
-            return {"team": team, "note": "No data — use model knowledge"}
+            return {
+                "team": team,
+                "oline_draft_picks": oline_picks,
+                "note": "No historical sack rate data — use model knowledge and oline_draft_picks.",
+            }
 
         team_row = oline_stats[oline_stats["team"] == team]
         if team_row.empty:
-            return {"team": team, "note": "No data — use model knowledge"}
+            return {
+                "team": team,
+                "oline_draft_picks": oline_picks,
+                "note": "No historical sack rate data — use model knowledge and oline_draft_picks.",
+            }
 
         row = team_row.iloc[0]
         sack_rate = row.get("sack_rate")
@@ -167,9 +247,17 @@ class TeamSystemsAgent(BaseAgent):
             "total_dropbacks": total_dropbacks,
             "sack_rate": sack_rate,
             "avg_time_to_throw": avg_ttt,
+            "oline_draft_picks": oline_picks,
             "note": (
-                "Use sack_rate and avg_time_to_throw as primary inputs for pass_protection_grade. "
-                "Lower sack_rate (<5%) and moderate time_to_throw (~2.6-2.8s) indicate good protection."
+                "Use sack_rate and avg_time_to_throw as primary inputs for historical "
+                "pass_protection_grade. "
+                "IMPORTANT: Also factor in oline_draft_picks — draft capital invested in OLine "
+                "is a strong forward-looking signal. "
+                "A Round 1 OT pick should improve pass_protection_grade by 1-2 letter grades "
+                "above the historical sack rate baseline. "
+                "A Round 1 OG/C pick improves run_blocking_grade similarly. "
+                "Multiple OLine picks = multiply the effect. "
+                "No OLine picks + high sack rate = grade stays at historical level."
             ),
         }
 
