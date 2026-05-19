@@ -11,7 +11,7 @@ Architecture:
   - Never uses run_agent() (that is for live draft only)
 
 Key flags produced:
-  - rookie_qb_flag: true for any first-year starter
+  - rookie_qb_flag: true only for genuine first-time NFL starters (not veterans on new teams)
   - compound_risk_flag: rookie QB AND pass_protection_grade C or below
     → cascades as a severe penalty to all skill positions on that roster
 """
@@ -92,9 +92,11 @@ Produce a JSON object matching this exact schema:
 }
 
 Rules:
-- rookie_qb_flag = true if this is the QB's first full season as a starter
-- compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below
-- compound_risk_flag cascades severe penalties to all skill position players — flag conservatively
+- rookie_qb_flag = true ONLY if this QB has never been a full-season NFL starter before — meaning a true first or second-year player making their debut as a starter.
+  TRUE examples (actual rookies/first-time starters): Shedeur Sanders (CLE), Jaxson Dart (NYG), Cam Ward (TEN).
+  FALSE examples (veterans on new teams): Kyler Murray (6+ NFL seasons), Gardner Minshew (6+ seasons), Spencer Rattler (1+ seasons, NFL veteran), Bo Nix (played a full prior season as starter).
+  A QB who changes teams is NOT a rookie. A QB who missed time due to injury is NOT a rookie. rookie_qb_flag is about NFL experience level, not familiarity with a new team or system.
+- compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below. This flag is reserved for genuine first-year starters behind bad OLines — a rare scenario. Flag conservatively.
 - The notes field must focus on fantasy implications, not general football analysis
 
 OLine grade adjustment rules (when oline_draft_picks is provided in oline data):
@@ -304,16 +306,34 @@ class TeamSystemsAgent(BaseAgent):
                     if starter_name is None:
                         starter_name = team_qbs.iloc[0]["player_name"]
 
+        # --- Sleeper years_exp for the identified QB ---
+        qb_years_exp = None
+        if starter_name:
+            sleeper_rosters = self._warehouse.rosters
+            if not sleeper_rosters.empty:
+                name_col_r = "full_name" if "full_name" in sleeper_rosters.columns else "player_name"
+                qb_match = sleeper_rosters[
+                    (sleeper_rosters[name_col_r] == starter_name)
+                    & (sleeper_rosters["position"] == "QB")
+                ]
+                if not qb_match.empty:
+                    yrs = qb_match.iloc[0].get("years_exp")
+                    if yrs is not None and pd.notna(yrs):
+                        qb_years_exp = int(yrs)
+
         # --- Source 2: QB stats from warehouse ---
         qb_stats = self._warehouse.get_qb_stats(season)
         if qb_stats.empty:
             if starter_name:
-                return {
+                result = {
                     "team": team, "season": season,
                     "starter_name": starter_name,
                     "source": "roster_only",
                     "note": f"{starter_name} identified from roster but no stats available — use model knowledge",
                 }
+                if qb_years_exp is not None:
+                    result["years_exp"] = qb_years_exp
+                return result
             return {"team": team, "note": "No QB data — use model knowledge"}
 
         # Find the QB's stats
@@ -339,12 +359,15 @@ class TeamSystemsAgent(BaseAgent):
                     )
 
             if starter_df.empty:
-                return {
+                result = {
                     "team": team, "season": season,
                     "starter_name": starter_name,
                     "source": "roster_only",
                     "note": f"{starter_name} identified from roster but no stats found — use model knowledge",
                 }
+                if qb_years_exp is not None:
+                    result["years_exp"] = qb_years_exp
+                return result
             row = starter_df.iloc[0]
         else:
             # --- Fallback: most passing yards on this team ---
@@ -365,7 +388,7 @@ class TeamSystemsAgent(BaseAgent):
         completions = _safe_int(row.get("completions", 0))
         games = _safe_int(row.get("games", 0))
 
-        return {
+        result = {
             "team": team,
             "season": season,
             "starter_name": starter_name,
@@ -380,6 +403,9 @@ class TeamSystemsAgent(BaseAgent):
             "rushing_tds": _safe_int(row.get("rushing_tds", 0)),
             "note": "Supplement with your knowledge of this QB's performance under pressure and CPOE.",
         }
+        if qb_years_exp is not None:
+            result["years_exp"] = qb_years_exp
+        return result
 
     async def _get_personnel_data(self, team: str, season: int) -> dict:
         ts_df = self._warehouse.get_target_share(season)
@@ -482,6 +508,18 @@ class TeamSystemsAgent(BaseAgent):
                         team, model_qb, data_qb,
                     )
                     data["qb_name"] = data_qb
+
+            # Enforce rookie_qb_flag from Sleeper years_exp when available.
+            # Model may flag a veteran as rookie (e.g. predicting a different
+            # starter than depth chart shows).
+            qb_years = qb_data.get("years_exp")
+            if qb_years is not None and qb_years >= 3 and data.get("rookie_qb_flag"):
+                logger.info(
+                    "%s: overriding rookie_qb_flag to False — %s has %d years NFL exp",
+                    team, data.get("qb_name"), qb_years,
+                )
+                data["rookie_qb_flag"] = False
+                data["compound_risk_flag"] = False
 
             # Attach Python-computed numerics (NOT from model output)
             oline_data = context.get("oline", {})
