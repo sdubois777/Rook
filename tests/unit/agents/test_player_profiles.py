@@ -2467,6 +2467,31 @@ def test_profile_needs_refresh_current():
     ) is False
 
 
+def test_profile_needs_refresh_team_system_updated():
+    """Profile should refresh when team_systems agent re-grades the team."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
+    profile_time = _now() - timedelta(days=5)
+    # Team system was re-run AFTER the profile was generated
+    new_ts = _now() - timedelta(hours=1)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        team_system_updated_at=new_ts,
+        stored_prompt_version=ver,
+    ) is True
+
+
+def test_profile_needs_refresh_team_system_old():
+    """Profile should NOT refresh when team_system is older than profile."""
+    ver = PLAYER_PROFILES_PROMPT_VERSION
+    profile_time = _now() - timedelta(days=2)
+    old_ts = _now() - timedelta(days=10)
+    assert profile_needs_refresh(
+        profile_updated_at=profile_time,
+        team_system_updated_at=old_ts,
+        stored_prompt_version=ver,
+    ) is False
+
+
 # ---------------------------------------------------------------------------
 # IR-year-1 player handling (McCarthy scenario)
 # ---------------------------------------------------------------------------

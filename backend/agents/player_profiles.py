@@ -63,6 +63,7 @@ def profile_needs_refresh(
     injury_updated_at: datetime | None = None,
     beat_signal_timestamps: list[datetime] | None = None,
     team_updated_at: datetime | None = None,
+    team_system_updated_at: datetime | None = None,
     stored_prompt_version: str | None = None,
 ) -> bool:
     """Check if a player's profile needs regeneration.
@@ -73,6 +74,7 @@ def profile_needs_refresh(
       - Dependency flags updated since last profile
       - Injury profile updated since last profile
       - Team changed since last profile (team_updated_at > profile.updated_at)
+      - Team system re-graded since last profile (OLine, QB, scheme changes)
       - New high-confidence beat signals since last profile
       - Prompt version changed (system prompt was updated)
     """
@@ -93,6 +95,9 @@ def profile_needs_refresh(
         return True
 
     if team_updated_at and team_updated_at > profile_updated_at:
+        return True
+
+    if team_system_updated_at and team_system_updated_at > profile_updated_at:
         return True
 
     for ts in (beat_signal_timestamps or []):
@@ -1632,6 +1637,23 @@ class PlayerProfilesAgent(BaseAgent):
             for s in bs_result:
                 beat_times.setdefault(s.player_id, []).append(s.flagged_at)
 
+            # Team system updated_at — keyed by team_abbr
+            from backend.models.team_system import TeamSystem
+            from backend.utils.seasons import get_current_season
+            ts_updated: dict[str, datetime] = {}
+            team_abbrs = {p.team_abbr for p in players if p.team_abbr}
+            if team_abbrs:
+                ts_result = (
+                    await session.execute(
+                        select(TeamSystem).where(
+                            TeamSystem.team_abbr.in_(team_abbrs),
+                            TeamSystem.season_year == get_current_season(),
+                        )
+                    )
+                ).scalars().all()
+                for ts in ts_result:
+                    ts_updated[ts.team_abbr] = ts.updated_at
+
             stale: set[str] = set()
             for p in players:
                 prof = profiles.get(p.id)
@@ -1644,6 +1666,7 @@ class PlayerProfilesAgent(BaseAgent):
                     injury_updated_at=injuries[p.id].updated_at if p.id in injuries else None,
                     beat_signal_timestamps=beat_times.get(p.id, []),
                     team_updated_at=getattr(p, "team_updated_at", None),
+                    team_system_updated_at=ts_updated.get(p.team_abbr),
                     stored_prompt_version=stored_ver,
                 ):
                     stale.add(p.name)
