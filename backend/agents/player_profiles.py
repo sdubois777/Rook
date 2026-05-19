@@ -689,35 +689,81 @@ class PlayerProfilesAgent(BaseAgent):
         return result
 
     def _is_backup_qb_season(self, team: str, season: int) -> bool:
-        """True if the team's backup QB started 4+ regular-season games in this season."""
-        weekly = self._warehouse.get_seasonal_stats(season)
-        if weekly is None:
-            return False
-        # Use REG season only — postseason/preseason weeks inflate QB game counts
-        w = weekly
-        if "season_type" in w.columns:
-            w = w[w["season_type"] == "REG"]
-        qbs = w[
-            (w["recent_team"] == team) & (w["position"] == "QB")
-        ]
-        if qbs.empty:
-            return False
-        # seasonal_stats is already aggregated — "games" column has per-player counts
-        name_col = "player_name" if "player_name" in qbs.columns else "player_display_name"
-        if "games" in qbs.columns:
-            qb_games = (
-                qbs.groupby(name_col)["games"]
-                .sum()
-                .sort_values(ascending=False)
+        """Returns True only if the team had a meaningful backup QB situation —
+        not garbage-time mop-up appearances.
+
+        Threshold: backup must have >= 30 pass attempts OR starter must have
+        played < 14 games.
+
+        This prevents false positives like a starter playing all 17 games
+        while a backup appears in a few garbage-time mop-up games.
+        """
+        try:
+            qb_stats = self._warehouse.get_qb_stats(season)
+            if qb_stats is None or qb_stats.empty:
+                return False
+
+            # Get all QBs for this team
+            team_col = next(
+                (c for c in ("recent_team", "team") if c in qb_stats.columns),
+                None,
             )
-        else:
-            # fallback for weekly-level data
-            qb_games = (
-                qbs.groupby(name_col)[qbs.columns[0]]
-                .count()
-                .sort_values(ascending=False)
+            if not team_col:
+                return False
+
+            team_qbs = qb_stats[qb_stats[team_col] == team]
+            if team_qbs.empty:
+                return False
+
+            # Find starter = QB with most attempts (fall back to passing_yards
+            # for Sleeper seasons where attempts is NA)
+            att_col = next(
+                (c for c in ("attempts", "pass_att")
+                 if c in team_qbs.columns and team_qbs[c].notna().any()),
+                None,
             )
-        return len(qb_games) >= 2 and int(qb_games.iloc[1]) >= 4
+            sort_col = att_col or (
+                "passing_yards" if "passing_yards" in team_qbs.columns else None
+            )
+            if not sort_col:
+                return False
+
+            team_qbs = team_qbs.sort_values(sort_col, ascending=False)
+            if len(team_qbs) < 2:
+                return False  # Only one QB
+
+            starter = team_qbs.iloc[0]
+            backup = team_qbs.iloc[1]
+
+            # Check games for starter
+            games_col = next(
+                (c for c in ("games", "gp") if c in team_qbs.columns),
+                None,
+            )
+            starter_games = (
+                float(starter.get(games_col, 17) or 17) if games_col else 17
+            )
+
+            # Determine if backup had meaningful playing time
+            if att_col:
+                backup_att = float(backup.get(att_col, 0) or 0)
+                meaningful_backup = backup_att >= 30
+            else:
+                # Sleeper fallback: use passing_yards as proxy
+                # 30 attempts × ~6.5 ypa ≈ 195 yards
+                backup_yds = float(backup.get("passing_yards", 0) or 0)
+                meaningful_backup = backup_yds >= 200
+
+            injured_starter = starter_games < 14
+
+            return meaningful_backup or injured_starter
+
+        except Exception as e:
+            logger.warning(
+                "_is_backup_qb_season failed for %s %d: %s",
+                team, season, e,
+            )
+            return False
 
     def _get_player_season_stats(
         self, player_name: str, team: str, season: int,

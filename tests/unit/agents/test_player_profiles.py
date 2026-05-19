@@ -204,36 +204,132 @@ def test_clean_season_baseline_strips_backup_qb_year():
     Agent sends backup_qb_season=true annotation for those seasons.
     Model is expected to exclude them in anomalous_seasons_excluded.
     We verify the agent correctly annotates backup QB seasons in context.
+
+    Uses qb_stats (not seasonal_stats) — the function checks pass attempts
+    and starter games to distinguish genuine backup situations from
+    garbage-time mop-ups.
     """
     agent = PlayerProfilesAgent()
 
     from backend.utils.seasons import get_analysis_seasons
     seasons = get_analysis_seasons(3)
 
-    # Mock weekly data: one season where the backup QB started 5 games
-    def _make_weekly_df(backup_games: int) -> pd.DataFrame:
-        rows = []
-        # Starter: 17 games
-        for w in range(1, 18):
-            rows.append({"recent_team": "LAC", "position": "QB",
-                         "player_name": "Justin Herbert", "week": w})
-        # Backup: backup_games games
-        for w in range(18, 18 + backup_games):
-            rows.append({"recent_team": "LAC", "position": "QB",
-                         "player_name": "Easton Stick", "week": w})
-        return pd.DataFrame(rows)
+    def _make_qb_df(backup_attempts: int, starter_games: int = 17) -> pd.DataFrame:
+        return pd.DataFrame([
+            {"recent_team": "LAC", "player_name": "Justin Herbert",
+             "attempts": 500, "games": starter_games, "passing_yards": 4000},
+            {"recent_team": "LAC", "player_name": "Easton Stick",
+             "attempts": backup_attempts, "games": 4, "passing_yards": backup_attempts * 7},
+        ])
 
-    # Build warehouse with seasonal_stats for the seasons we need
-    seasonal_stats = {
-        seasons[-1]: _make_weekly_df(5),   # 5 backup starts → should be flagged
-        seasons[-2]: _make_weekly_df(2),   # 2 backup starts → not flagged
+    qb_stats = {
+        # Backup with 50 attempts → genuine backup situation
+        seasons[-1]: _make_qb_df(backup_attempts=50, starter_games=13),
+        # Backup with 8 attempts → garbage time, NOT a backup year
+        seasons[-2]: _make_qb_df(backup_attempts=8, starter_games=17),
     }
-    agent._warehouse = _make_warehouse(seasonal_stats=seasonal_stats)
+    agent._warehouse = _make_warehouse(qb_stats=qb_stats)
 
     assert agent._is_backup_qb_season("LAC", seasons[-1]) is True
     assert agent._is_backup_qb_season("LAC", seasons[-2]) is False
     # No data for seasons[0] → not flagged
     assert agent._is_backup_qb_season("LAC", seasons[0]) is False
+
+
+def test_backup_qb_garbage_time_not_flagged():
+    """MIN 2024 scenario: Darnold played all 17 games, Mullens appeared in
+    4 games with only ~8 pass attempts (garbage time).  Should NOT be
+    flagged as a backup_qb_season."""
+    agent = PlayerProfilesAgent()
+    qb_stats = {
+        2024: pd.DataFrame([
+            {"recent_team": "MIN", "player_name": "Sam Darnold",
+             "attempts": 545, "games": 17, "passing_yards": 4319},
+            {"recent_team": "MIN", "player_name": "Nick Mullens",
+             "attempts": 2, "games": 4, "passing_yards": 14},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_stats)
+    assert agent._is_backup_qb_season("MIN", 2024) is False
+
+
+def test_backup_qb_injury_flagged():
+    """MIN 2023 scenario: Cousins hurt week 8, backup(s) started rest
+    of the season.  Should be flagged."""
+    agent = PlayerProfilesAgent()
+    qb_stats = {
+        2023: pd.DataFrame([
+            {"recent_team": "MIN", "player_name": "Kirk Cousins",
+             "attempts": 244, "games": 8, "passing_yards": 2331},
+            {"recent_team": "MIN", "player_name": "Nick Mullens",
+             "attempts": 198, "games": 5, "passing_yards": 1589},
+            {"recent_team": "MIN", "player_name": "Jaren Hall",
+             "attempts": 60, "games": 3, "passing_yards": 432},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_stats)
+    assert agent._is_backup_qb_season("MIN", 2023) is True
+
+
+def test_backup_qb_carousel_flagged():
+    """MIN 2025 scenario: genuine QB carousel (McCarthy/Brosmer/Wentz).
+    Sleeper data lacks attempts but has passing_yards — fallback logic
+    should detect meaningful backup play."""
+    agent = PlayerProfilesAgent()
+    qb_stats = {
+        2025: pd.DataFrame([
+            {"recent_team": "MIN", "player_name": "J.McCarthy",
+             "attempts": None, "games": 10, "passing_yards": 1632},
+            {"recent_team": "MIN", "player_name": "C.Wentz",
+             "attempts": None, "games": 5, "passing_yards": 1216},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_stats)
+    assert agent._is_backup_qb_season("MIN", 2025) is True
+
+
+def test_backup_qb_threshold_30_attempts():
+    """Backup with 29 attempts → False; backup with 31 → True."""
+    agent = PlayerProfilesAgent()
+
+    # 29 attempts: just under threshold
+    qb_under = {
+        2024: pd.DataFrame([
+            {"recent_team": "NYJ", "player_name": "Starter",
+             "attempts": 500, "games": 17, "passing_yards": 3500},
+            {"recent_team": "NYJ", "player_name": "Backup",
+             "attempts": 29, "games": 3, "passing_yards": 190},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_under)
+    assert agent._is_backup_qb_season("NYJ", 2024) is False
+
+    # 31 attempts: just over threshold
+    qb_over = {
+        2024: pd.DataFrame([
+            {"recent_team": "NYJ", "player_name": "Starter",
+             "attempts": 500, "games": 17, "passing_yards": 3500},
+            {"recent_team": "NYJ", "player_name": "Backup",
+             "attempts": 31, "games": 3, "passing_yards": 210},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_over)
+    assert agent._is_backup_qb_season("NYJ", 2024) is True
+
+
+def test_starter_under_14_games_flagged():
+    """Starter plays only 13 games → True even if backup has few attempts."""
+    agent = PlayerProfilesAgent()
+    qb_stats = {
+        2024: pd.DataFrame([
+            {"recent_team": "SEA", "player_name": "Starter",
+             "attempts": 400, "games": 13, "passing_yards": 3000},
+            {"recent_team": "SEA", "player_name": "Backup",
+             "attempts": 20, "games": 4, "passing_yards": 150},
+        ]),
+    }
+    agent._warehouse = _make_warehouse(qb_stats=qb_stats)
+    assert agent._is_backup_qb_season("SEA", 2024) is True
 
 
 # ---------------------------------------------------------------------------
