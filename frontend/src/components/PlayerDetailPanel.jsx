@@ -379,10 +379,10 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                       )}
                       {dep.value_impact_pct != null && (() => {
                         const v = dep.value_impact_pct
-                        const pct = Math.round(Math.abs(v) > 1 ? v : v * 100)
+                        const display = Math.abs(v) >= 1 ? Math.round(v) : (Math.abs(v) < 0.01 ? 0 : +v.toFixed(1))
                         return (
-                          <div className={`text-xs mt-1 ${pct > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                            Impact: {pct > 0 ? '+' : ''}{pct}%
+                          <div className={`text-xs mt-1 ${display > 0 ? 'text-emerald-400' : display < 0 ? 'text-red-400' : 'text-slate-500'}`}>
+                            Impact: {display > 0 ? '+' : ''}{display}%
                           </div>
                         )
                       })()}
