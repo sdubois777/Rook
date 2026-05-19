@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Star, StarOff, Download, Printer } from 'lucide-react'
+import { Star, StarOff, Download, Printer, Search, X, ChevronDown } from 'lucide-react'
 import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
@@ -24,6 +24,31 @@ const POSITION_OPTIONS = [
   { value: 'WR', label: 'WR' },
   { value: 'TE', label: 'TE' },
 ]
+
+const NFL_TEAMS = [
+  'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',
+  'DAL','DEN','DET','GB','HOU','IND','JAX','KC',
+  'LA','LAC','LV','MIA','MIN','NE','NO','NYG',
+  'NYJ','PHI','PIT','SEA','SF','TB','TEN','WAS',
+]
+
+const TEAM_OPTIONS = [
+  { value: '', label: 'All Teams' },
+  ...NFL_TEAMS.map((t) => ({ value: t, label: t })),
+]
+
+const FLAG_OPTIONS = ['PAY UP', 'NOMINATE', 'AVOID', 'ROOKIE', 'BREAKOUT']
+
+/** Returns the set of badge labels a player has on the draft board. */
+function getPlayerBadges(p) {
+  const badges = []
+  if (p.pay_up_flag) badges.push('PAY UP')
+  if (p.breakout_flag) badges.push('BREAKOUT')
+  if (p.nomination_target_flag) badges.push('NOMINATE')
+  if (p.is_rookie) badges.push('ROOKIE')
+  if (p.value_assessment && ['avoid', 'strong_avoid'].includes(p.value_assessment)) badges.push('AVOID')
+  return badges
+}
 
 function getPlayerGap(p) {
   return p.ai_bid_ceiling != null && p.market_value != null
@@ -54,9 +79,77 @@ function sortPlayers(players, sortKey, sortOrder) {
   return sorted
 }
 
+function FlagsDropdown({ selected, onChange }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const toggle = (flag) => {
+    if (selected.includes(flag)) {
+      onChange(selected.filter((f) => f !== flag))
+    } else {
+      onChange([...selected, flag])
+    }
+  }
+
+  const label = selected.length > 0 ? `Flags (${selected.length})` : 'Flags'
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 text-sm border rounded px-2 py-1 transition-colors ${
+          selected.length > 0
+            ? 'text-blue-400 border-blue-500/50 bg-blue-500/10'
+            : 'text-slate-300 border-[#2d3148] bg-[#1c1f2e]'
+        }`}
+      >
+        {label}
+        <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-50 bg-[#1c1f2e] border border-[#2d3148] rounded shadow-lg py-1 min-w-[150px]">
+          {FLAG_OPTIONS.map((flag) => (
+            <label
+              key={flag}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-300 hover:bg-[#222539] cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(flag)}
+                onChange={() => toggle(flag)}
+                className="rounded border-[#2d3148] bg-[#161822] text-blue-500 focus:ring-blue-500/30"
+              />
+              {flag}
+            </label>
+          ))}
+          {selected.length > 0 && (
+            <button
+              onClick={() => onChange([])}
+              className="w-full text-left px-3 py-1.5 text-xs text-slate-500 hover:text-slate-300 border-t border-[#2d3148] mt-1"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function DraftBoard() {
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
+  const [team, setTeam] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedFlags, setSelectedFlags] = useState([])
   const [showWatchlistOnly, setShowWatchlistOnly] = useState(false)
   const [sortKey, setSortKey] = useState('tier')
   const [sortOrder, setSortOrder] = useState('asc')
@@ -93,14 +186,36 @@ export default function DraftBoard() {
     return flat
   }, [tiers, tierKeys])
 
-  // Apply watchlist filter + sort
+  // Apply all client-side filters + sort
   const sortedPlayers = useMemo(() => {
     let filtered = allPlayers
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase()
+      filtered = filtered.filter((p) => p.name.toLowerCase().includes(q))
+    }
+
+    // Team filter
+    if (team) {
+      filtered = filtered.filter((p) => p.team_abbr === team)
+    }
+
+    // Flags filter (OR logic — player must have ANY of the selected badges)
+    if (selectedFlags.length > 0) {
+      filtered = filtered.filter((p) => {
+        const badges = getPlayerBadges(p)
+        return selectedFlags.some((f) => badges.includes(f))
+      })
+    }
+
+    // Watchlist filter
     if (showWatchlistOnly) {
       filtered = filtered.filter((p) => isWatchlisted(p.id))
     }
+
     return sortPlayers(filtered, sortKey, sortOrder)
-  }, [allPlayers, showWatchlistOnly, watchlist, sortKey, sortOrder])
+  }, [allPlayers, searchQuery, team, selectedFlags, showWatchlistOnly, watchlist, sortKey, sortOrder])
 
   const isTierSort = sortKey === 'tier'
 
@@ -273,7 +388,7 @@ export default function DraftBoard() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
         <div className="flex items-center gap-3 no-print">
-          <span className="text-sm text-slate-500">{totalPlayers} players</span>
+          <span className="text-sm text-slate-500">{sortedPlayers.length} of {totalPlayers} players</span>
           <button onClick={handleExportTxt} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded hover:bg-[#222539] transition-colors" title="Export TXT cheat sheet">
             <Download size={13} /> Export
           </button>
@@ -292,6 +407,26 @@ export default function DraftBoard() {
 
 
       <FilterBar>
+        {/* Search */}
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search players..."
+            className="w-48 pl-8 pr-8 py-1 text-sm bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded focus:outline-none focus:border-blue-500/50 placeholder-slate-600"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
         <FilterSelect
           label="Strategy"
           value={strategy}
@@ -304,6 +439,13 @@ export default function DraftBoard() {
           onChange={setPosition}
           options={POSITION_OPTIONS}
         />
+        <FilterSelect
+          label="Team"
+          value={team}
+          onChange={setTeam}
+          options={TEAM_OPTIONS}
+        />
+        <FlagsDropdown selected={selectedFlags} onChange={setSelectedFlags} />
         <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
           <input
             type="checkbox"

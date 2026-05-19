@@ -2,7 +2,6 @@ import { NavLink } from 'react-router-dom'
 import { UserButton } from '@clerk/clerk-react'
 import {
   LayoutDashboard,
-  Users,
   Shield,
   Newspaper,
   ClipboardList,
@@ -15,7 +14,6 @@ import { useUIStore } from '../../stores/ui'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/players', label: 'Players', icon: Users },
   { to: '/teams', label: 'Teams', icon: Shield },
   { to: '/news', label: 'News', icon: Newspaper },
   { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },

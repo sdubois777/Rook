@@ -6,7 +6,6 @@ import Layout from './components/layout/Layout'
 import Landing from './pages/Landing'
 import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
-import Players from './pages/Players'
 import Teams from './pages/Teams'
 import TeamDetail from './pages/TeamDetail'
 import News from './pages/News'
@@ -64,7 +63,6 @@ function App() {
   const routes = (
     <Routes>
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/players" element={<ProtectedRoute><Players /></ProtectedRoute>} />
       <Route path="/teams" element={<ProtectedRoute><Teams /></ProtectedRoute>} />
       <Route path="/teams/:abbr" element={<ProtectedRoute><TeamDetail /></ProtectedRoute>} />
       <Route path="/news" element={<ProtectedRoute><News /></ProtectedRoute>} />
