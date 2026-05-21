@@ -45,7 +45,7 @@ async def test_tendencies_requires_auth():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.get(f"/api/league/tendencies?league_id={league_id}")
+        resp = await ac.get(f"/league/tendencies?league_id={league_id}")
     # Without auth dependency override, should fail
     assert resp.status_code in (401, 403, 422)
 
@@ -60,7 +60,7 @@ async def test_tendencies_requires_league_id():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.get("/api/league/tendencies")
+            resp = await ac.get("/league/tendencies")
         assert resp.status_code == 422  # Missing required param
     finally:
         app.dependency_overrides.pop(get_current_user, None)
@@ -98,7 +98,7 @@ async def test_tendencies_scoped_to_user_and_league():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.get(f"/api/league/tendencies?league_id={league_id}")
+            resp = await ac.get(f"/league/tendencies?league_id={league_id}")
         assert resp.status_code == 200
         # Verify that queries include user_id filtering
         # At least the history queries should reference user_id
@@ -139,7 +139,7 @@ async def test_user_a_cannot_see_user_b_tendencies():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp_a = await ac.get(f"/api/league/tendencies?league_id={league_id}")
+            resp_a = await ac.get(f"/league/tendencies?league_id={league_id}")
         assert resp_a.status_code == 200
     finally:
         app.dependency_overrides.pop(get_current_user, None)

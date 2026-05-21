@@ -135,7 +135,7 @@ async def test_get_draftboard(mock_player_rb_tier1, mock_player_wr_tier2):
     try:
         with patch("backend.routers.draftboard.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/api/draftboard")
+                resp = await ac.get("/draftboard")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -165,7 +165,7 @@ async def test_get_draftboard_with_strategy(mock_player_rb_tier1):
     try:
         with patch("backend.routers.draftboard.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/api/draftboard?strategy=hero_rb")
+                resp = await ac.get("/draftboard?strategy=hero_rb")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
