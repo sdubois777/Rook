@@ -61,7 +61,7 @@ async def test_get_me_returns_user():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.get("/api/account/me")
+            resp = await ac.get("/account/me")
     finally:
         app.dependency_overrides.clear()
 
@@ -89,7 +89,7 @@ async def test_get_credits_returns_balance():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.get("/api/account/credits")
+            resp = await ac.get("/account/credits")
     finally:
         app.dependency_overrides.clear()
 
@@ -118,7 +118,7 @@ async def test_add_league_succeeds_within_limit():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
             resp = await ac.post(
-                "/api/account/leagues",
+                "/account/leagues",
                 json={
                     "platform": "yahoo",
                     "league_id": "test-league-123",
@@ -155,7 +155,7 @@ async def test_add_league_respects_tier_limit():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
             resp = await ac.post(
-                "/api/account/leagues",
+                "/account/leagues",
                 json={
                     "platform": "yahoo",
                     "league_id": "new-league",
@@ -191,7 +191,7 @@ async def test_delete_league_hard_deletes():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.delete(f"/api/account/leagues/{league.id}")
+            resp = await ac.delete(f"/account/leagues/{league.id}")
     finally:
         app.dependency_overrides.clear()
 
@@ -220,7 +220,7 @@ async def test_user_cannot_delete_other_users_league():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.delete(f"/api/account/leagues/{other_league_id}")
+            resp = await ac.delete(f"/account/leagues/{other_league_id}")
     finally:
         app.dependency_overrides.clear()
 
