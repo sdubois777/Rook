@@ -4,7 +4,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { apiClient } from '../api/client'
 import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL || '/api'
 
 const PLATFORMS = [
   { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },
