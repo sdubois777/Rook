@@ -87,7 +87,7 @@ async def test_list_players():
     try:
         with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/players")
+                resp = await ac.get("/api/players")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -121,7 +121,7 @@ async def test_search_players():
 
     with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players/search?q=chase")
+            resp = await ac.get("/api/players/search?q=chase")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -133,7 +133,7 @@ async def test_search_players():
 async def test_search_players_requires_query():
     """GET /players/search without q returns 422."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.get("/players/search")
+        resp = await ac.get("/api/players/search")
 
     assert resp.status_code == 422
 
@@ -164,7 +164,7 @@ async def test_player_summary():
 
     with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players/summary")
+            resp = await ac.get("/api/players/summary")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -214,7 +214,7 @@ async def test_get_player_detail():
 
     with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get(f"/players/{player_id}")
+            resp = await ac.get(f"/api/players/{player_id}")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -238,6 +238,6 @@ async def test_get_player_not_found():
     fake_id = str(uuid.uuid4())
     with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get(f"/players/{fake_id}")
+            resp = await ac.get(f"/api/players/{fake_id}")
 
     assert resp.status_code == 404

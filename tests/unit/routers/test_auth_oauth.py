@@ -35,7 +35,7 @@ async def test_yahoo_connect_redirects():
             base_url="http://test",
             follow_redirects=False,
         ) as ac:
-            resp = await ac.get("/auth/yahoo/connect")
+            resp = await ac.get("/api/auth/yahoo/connect")
         # Should be a redirect to Yahoo
         assert resp.status_code in (302, 307)
         location = resp.headers.get("location", "")
@@ -56,7 +56,7 @@ async def test_state_param_encodes_user_id():
             base_url="http://test",
             follow_redirects=False,
         ) as ac:
-            resp = await ac.get("/auth/yahoo/connect")
+            resp = await ac.get("/api/auth/yahoo/connect")
         location = resp.headers.get("location", "")
         # Extract state param
         assert "state=" in location
@@ -80,7 +80,7 @@ async def test_callback_without_state_raises_error():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/auth/yahoo/callback?code=abc")
+            resp = await ac.get("/api/auth/yahoo/callback?code=abc")
         # No state → ValidationError (422)
         assert resp.status_code == 422
     finally:
@@ -88,7 +88,7 @@ async def test_callback_without_state_raises_error():
 
 
 @pytest.mark.asyncio
-async def test_callback_with_invalid_state_raises_error():
+async def test_callback_with_invalid_state_redirects_with_error():
     from backend.core.dependencies import get_db
     mock_db = AsyncMock()
     app.dependency_overrides[get_db] = lambda: mock_db
@@ -97,11 +97,13 @@ async def test_callback_with_invalid_state_raises_error():
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
+            follow_redirects=False,
         ) as ac:
             resp = await ac.get(
-                "/auth/yahoo/callback?code=abc&state=not-valid-base64!!!"
+                "/api/auth/yahoo/callback?code=abc&state=not-valid-base64!!!"
             )
-        assert resp.status_code == 422
+        assert resp.status_code == 302
+        assert "error=invalid_state" in resp.headers.get("location", "")
     finally:
         app.dependency_overrides.clear()
 
@@ -113,6 +115,10 @@ async def test_state_param_decoded_on_callback():
     from backend.core.dependencies import get_db
 
     mock_db = AsyncMock()
+    # Mock the user existence check: db.execute(select(User)...).scalar_one_or_none()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute = AsyncMock(return_value=mock_result)
     app.dependency_overrides[get_db] = lambda: mock_db
 
     # Encode state with user_id
@@ -143,16 +149,16 @@ async def test_state_param_decoded_on_callback():
                 follow_redirects=False,
             ) as ac:
                 resp = await ac.get(
-                    f"/auth/yahoo/callback?code=test_code&state={state}"
+                    f"/api/auth/yahoo/callback?code=test_code&state={state}"
                 )
             # Should redirect to /league-setup?platform=yahoo
             assert resp.status_code == 302
             assert "platform=yahoo" in resp.headers.get("location", "")
 
-            # Verify upsert_yahoo called with decoded user_id
+            # Verify upsert_yahoo called with decoded user_id as UUID
             mock_repo.upsert_yahoo.assert_called_once()
             call_kwargs = mock_repo.upsert_yahoo.call_args
-            assert call_kwargs.kwargs.get("user_id") == str(user.id)
+            assert call_kwargs.kwargs.get("user_id") == user.id
             assert call_kwargs.kwargs.get("access_token") == "new_access_token"
             assert call_kwargs.kwargs.get("refresh_token") == "new_refresh_token"
         finally:
@@ -181,7 +187,7 @@ async def test_get_yahoo_leagues_requires_connection():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 400
             assert resp.json()["action"] == "connect"
         finally:
@@ -223,7 +229,7 @@ async def test_get_yahoo_leagues_returns_list():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 200
             data = resp.json()
             assert len(data["leagues"]) == 1
@@ -268,7 +274,7 @@ async def test_get_yahoo_leagues_auto_refreshes_expired_token():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 200
 
             # Refresh was called
@@ -323,7 +329,7 @@ async def test_get_yahoo_league_settings_endpoint():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.get(
-                    "/auth/yahoo/league-settings?league_key=470.l.12345"
+                    "/api/auth/yahoo/league-settings?league_key=470.l.12345"
                 )
             assert resp.status_code == 200
             data = resp.json()
@@ -350,7 +356,7 @@ async def test_league_settings_requires_league_key():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/auth/yahoo/league-settings")
+            resp = await ac.get("/api/auth/yahoo/league-settings")
         assert resp.status_code == 422
     finally:
         app.dependency_overrides.clear()
@@ -376,7 +382,7 @@ async def test_yahoo_disconnect_removes_credentials():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.delete("/auth/yahoo/disconnect")
+                resp = await ac.delete("/api/auth/yahoo/disconnect")
             assert resp.status_code == 200
             assert resp.json()["status"] == "disconnected"
             mock_repo.disconnect.assert_called_once_with(
@@ -384,3 +390,210 @@ async def test_yahoo_disconnect_removes_credentials():
             )
         finally:
             app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 tests — UUID cast + FK race condition
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_callback_casts_user_id_to_uuid():
+    """user_id from state is cast to uuid.UUID before passing to upsert_yahoo."""
+    user = _make_user()
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    with patch(
+        "backend.routers.auth.exchange_code_for_tokens",
+        new_callable=AsyncMock,
+        return_value={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
+    ), patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo:
+        mock_repo = AsyncMock()
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                follow_redirects=False,
+            ) as ac:
+                resp = await ac.get(
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
+                )
+            assert resp.status_code == 302
+
+            # user_id should be a UUID object, not a string
+            call_kwargs = mock_repo.upsert_yahoo.call_args.kwargs
+            assert isinstance(call_kwargs["user_id"], uuid.UUID)
+            assert call_kwargs["user_id"] == user.id
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_callback_missing_user_redirects_with_retry():
+    """When user row doesn't exist (Clerk webhook pending), redirect with retry flag."""
+    user = _make_user()
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    # User NOT found in DB
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    with patch(
+        "backend.routers.auth.exchange_code_for_tokens",
+        new_callable=AsyncMock,
+        return_value={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
+    ):
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                follow_redirects=False,
+            ) as ac:
+                resp = await ac.get(
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
+                )
+            assert resp.status_code == 302
+            location = resp.headers.get("location", "")
+            assert "error=account_not_ready" in location
+            assert "retry=true" in location
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_callback_integrity_error_redirects_with_retry():
+    """IntegrityError from upsert → redirect with retry flag, not 500."""
+    from sqlalchemy.exc import IntegrityError as SA_IntegrityError
+    user = _make_user()
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.rollback = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": str(user.id)}).encode()
+    ).decode()
+
+    with patch(
+        "backend.routers.auth.exchange_code_for_tokens",
+        new_callable=AsyncMock,
+        return_value={"access_token": "a", "refresh_token": "r", "expires_in": 3600},
+    ), patch(
+        "backend.routers.auth.CredentialRepository"
+    ) as MockRepo:
+        mock_repo = AsyncMock()
+        mock_repo.upsert_yahoo.side_effect = SA_IntegrityError(
+            "INSERT", {}, Exception("FK violation")
+        )
+        MockRepo.return_value = mock_repo
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                follow_redirects=False,
+            ) as ac:
+                resp = await ac.get(
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
+                )
+            # Should NOT be 500 — should redirect gracefully
+            assert resp.status_code == 302
+            location = resp.headers.get("location", "")
+            assert "error=account_not_ready" in location
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_callback_with_non_uuid_state_redirects():
+    """State with non-UUID user_id → redirect with error, not crash."""
+    from backend.core.dependencies import get_db
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    # State has a non-UUID string as user_id
+    bad_state = base64.urlsafe_b64encode(
+        json.dumps({"user_id": "not-a-uuid"}).encode()
+    ).decode()
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as ac:
+            resp = await ac.get(
+                f"/api/auth/yahoo/callback?code=c&state={bad_state}"
+            )
+        assert resp.status_code == 302
+        assert "error=invalid_state" in resp.headers.get("location", "")
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 tests — /api prefix routing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auth_routes_accessible_under_api_prefix():
+    """Auth routes are reachable at /api/auth/* (frontend path)."""
+    from backend.core.dependencies import get_current_user
+    user = _make_user()
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as ac:
+            resp = await ac.get("/api/auth/yahoo/connect")
+        # Should work (redirect to Yahoo, not 404)
+        assert resp.status_code in (302, 307)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_auth_callback_accessible_without_api_prefix():
+    """Yahoo callback also works at /auth/yahoo/callback (Yahoo redirect target)."""
+    from backend.core.dependencies import get_db
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as ac:
+            # Without /api prefix — Yahoo calls this directly
+            resp = await ac.get("/auth/yahoo/callback?code=abc")
+        # 422 because state param missing — but NOT 404
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.clear()

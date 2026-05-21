@@ -10,10 +10,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import uuid as uuid_mod
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.config import settings
 from backend.core.dependencies import get_current_user, get_db
@@ -26,6 +29,7 @@ from backend.integrations.yahoo_api import (
     get_user_leagues,
     refresh_access_token_for_user,
 )
+from backend.models.user import User
 from backend.repositories.credential_repo import CredentialRepository
 
 logger = logging.getLogger(__name__)
@@ -157,9 +161,11 @@ async def yahoo_callback(
         state_data = json.loads(
             base64.urlsafe_b64decode(state).decode()
         )
-        user_id = state_data["user_id"]
-    except Exception:
-        raise ValidationError("Invalid OAuth state")
+        user_id = uuid_mod.UUID(state_data["user_id"])
+    except (ValueError, KeyError, Exception):
+        return RedirectResponse(
+            url="/league-setup?error=invalid_state", status_code=302,
+        )
 
     try:
         tokens = await exchange_code_for_tokens(code)
@@ -169,19 +175,45 @@ async def yahoo_callback(
 
     # Compute expiry
     expires_in = int(tokens.get("expires_in", 3600))
+    from datetime import timedelta
     expires_at = datetime.now(timezone.utc).replace(
         microsecond=0
-    )
-    from datetime import timedelta
-    expires_at = expires_at + timedelta(seconds=expires_in)
+    ) + timedelta(seconds=expires_in)
+
+    # Verify user exists before writing credentials — Clerk webhook
+    # may not have created the row yet (race condition).
+    user_row = (await db.execute(
+        select(User).where(User.id == user_id)
+    )).scalar_one_or_none()
+
+    if not user_row:
+        logger.warning(
+            "Yahoo OAuth callback: user %s not found (Clerk webhook pending)",
+            user_id,
+        )
+        return RedirectResponse(
+            url="/league-setup?platform=yahoo&error=account_not_ready&retry=true",
+            status_code=302,
+        )
 
     repo = CredentialRepository(db)
-    await repo.upsert_yahoo(
-        user_id=user_id,
-        access_token=tokens.get("access_token", ""),
-        refresh_token=tokens.get("refresh_token", ""),
-        expires_at=expires_at,
-    )
+    try:
+        await repo.upsert_yahoo(
+            user_id=user_id,
+            access_token=tokens.get("access_token", ""),
+            refresh_token=tokens.get("refresh_token", ""),
+            expires_at=expires_at,
+        )
+    except IntegrityError:
+        logger.warning(
+            "Yahoo OAuth callback: IntegrityError for user %s (FK violation)",
+            user_id,
+        )
+        await db.rollback()
+        return RedirectResponse(
+            url="/league-setup?platform=yahoo&error=account_not_ready&retry=true",
+            status_code=302,
+        )
 
     logger.info("Yahoo OAuth complete for user %s", user_id)
     return RedirectResponse(url="/league-setup?platform=yahoo", status_code=302)

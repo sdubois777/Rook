@@ -55,21 +55,29 @@ async def app_error_handler(request, exc: AppError):
 
 
 # ── Routers ─────────────────────────────────────────────────
+# All routers under /api prefix for production compatibility.
+# In dev, Vite proxy forwards /api/* as-is to FastAPI.
+# In production, frontend is served by FastAPI on the same origin.
 
-app.include_router(admin.router)
-app.include_router(assistant.router)
+app.include_router(admin.router, prefix="/api")
+app.include_router(assistant.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+app.include_router(draft.router, prefix="/api")
+app.include_router(draftboard.router, prefix="/api")
+app.include_router(league.router, prefix="/api")
+app.include_router(news.router, prefix="/api")
+app.include_router(pipeline.router, prefix="/api")
+app.include_router(players.router, prefix="/api")
+app.include_router(preferences.router, prefix="/api")
+app.include_router(teams.router, prefix="/api")
+app.include_router(account.router, prefix="/api")
+app.include_router(league_connect.router, prefix="/api")
+
+# External callbacks — ALSO mounted without /api prefix.
+# Yahoo redirects to /auth/yahoo/callback (configured in developer console).
+# Clerk sends webhooks to /webhooks/clerk (configured in Clerk dashboard).
 app.include_router(auth.router)
-app.include_router(draft.router)
-app.include_router(draftboard.router)
-app.include_router(league.router)
-app.include_router(news.router)
-app.include_router(pipeline.router)
-app.include_router(players.router)
-app.include_router(preferences.router)
-app.include_router(teams.router)
-app.include_router(account.router)
 app.include_router(webhooks.router)
-app.include_router(league_connect.router)
 
 _scheduler = None
 
@@ -194,10 +202,12 @@ if FRONTEND_DIST.exists():
     # Catch-all: serve index.html for any non-API route
     # (React Router handles client-side routing)
     _API_PREFIXES = (
-        "admin", "assistant", "auth", "draft", "draftboard",
-        "league", "leagues", "news", "pipeline", "players", "preferences",
-        "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/", "webhooks",
+        "api/",        # All API routes under /api prefix
+        "auth/",       # Yahoo callback (also mounted without /api)
+        "webhooks/",   # Clerk webhook (mounted without /api)
+        "health",
+        "docs", "openapi.json", "redoc",
+        "ws/",
     )
 
     @app.get("/{full_path:path}")

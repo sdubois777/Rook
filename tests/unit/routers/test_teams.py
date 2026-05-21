@@ -59,7 +59,7 @@ async def test_list_teams(mock_team_system):
 
     with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams")
+            resp = await ac.get("/api/teams")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -92,7 +92,7 @@ async def test_get_team_detail(mock_team_system):
 
     with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams/kc")
+            resp = await ac.get("/api/teams/kc")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -114,6 +114,6 @@ async def test_get_team_not_found():
 
     with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams/XXX")
+            resp = await ac.get("/api/teams/XXX")
 
     assert resp.status_code == 404

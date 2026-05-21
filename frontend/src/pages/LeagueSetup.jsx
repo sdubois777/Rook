@@ -4,7 +4,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { apiClient } from '../api/client'
 import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL || '/api'
 
 const PLATFORMS = [
   { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },
@@ -559,10 +559,32 @@ export default function LeagueSetup() {
   const [result, setResult] = useState(null)
   const [yahooLeagues, setYahooLeagues] = useState(null)
   const [selectedLeague, setSelectedLeague] = useState(null)
+  const [retryMessage, setRetryMessage] = useState('')
 
   // Handle redirect params (?platform=espn or ?platform=yahoo after OAuth)
   useEffect(() => {
     const p = searchParams.get('platform')
+    const error = searchParams.get('error')
+    const retry = searchParams.get('retry')
+
+    if (error === 'account_not_ready' && retry === 'true') {
+      setRetryMessage('Account is setting up — retrying automatically...')
+      setPlatform(p || 'yahoo')
+      setStep(1)
+      const timer = setTimeout(() => {
+        setRetryMessage('')
+        window.location.href = `${API_URL}/auth/yahoo/connect`
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+
+    if (error === 'invalid_state') {
+      setRetryMessage('OAuth session expired. Please try connecting again.')
+      setPlatform(p || 'yahoo')
+      setStep(1)
+      return
+    }
+
     if (p) {
       setPlatform(p)
       setStep(1)
@@ -618,6 +640,12 @@ export default function LeagueSetup() {
         </p>
 
         <StepIndicator current={step} />
+
+        {retryMessage && (
+          <div className="text-yellow-400 text-sm mb-4 bg-yellow-900/20 border border-yellow-800 rounded-lg px-4 py-3">
+            {retryMessage}
+          </div>
+        )}
 
         {step === 0 && <PlatformStep onSelect={handlePlatformSelect} />}
         {step === 1 && (

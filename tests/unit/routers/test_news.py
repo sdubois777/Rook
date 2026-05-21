@@ -46,7 +46,7 @@ async def test_get_news_feed(mock_signal):
 
     with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news")
+            resp = await ac.get("/api/news")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -76,7 +76,7 @@ async def test_get_news_with_filters(mock_signal):
 
     with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news?team=KC&signal_type=injury_update&days=7")
+            resp = await ac.get("/api/news?team=KC&signal_type=injury_update&days=7")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -102,7 +102,7 @@ async def test_get_news_empty():
 
     with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news")
+            resp = await ac.get("/api/news")
 
     assert resp.status_code == 200
     data = resp.json()

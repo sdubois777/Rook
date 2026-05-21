@@ -58,7 +58,7 @@ async def test_get_watchlist():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/preferences/watchlist")
+                resp = await ac.get("/api/preferences/watchlist")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -90,7 +90,7 @@ async def test_add_to_watchlist():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-2"})
+                resp = await ac.post("/api/preferences/watchlist", json={"player_id": "player-2"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -116,7 +116,7 @@ async def test_add_to_watchlist_duplicate():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-1"})
+                resp = await ac.post("/api/preferences/watchlist", json={"player_id": "player-1"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -140,7 +140,7 @@ async def test_remove_from_watchlist():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.delete("/preferences/watchlist/player-1")
+                resp = await ac.delete("/api/preferences/watchlist/player-1")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -164,7 +164,7 @@ async def test_remove_from_watchlist_not_found():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.delete("/preferences/watchlist/nonexistent")
+                resp = await ac.delete("/api/preferences/watchlist/nonexistent")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -192,7 +192,7 @@ async def test_get_strategy():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/preferences/strategy")
+                resp = await ac.get("/api/preferences/strategy")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -218,7 +218,7 @@ async def test_set_strategy():
     try:
         with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.put("/preferences/strategy", json={"strategy": "zero_rb"})
+                resp = await ac.put("/api/preferences/strategy", json={"strategy": "zero_rb"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -232,7 +232,7 @@ async def test_set_strategy_invalid():
     app.dependency_overrides[get_current_user] = _mock_user
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.put("/preferences/strategy", json={"strategy": "yolo"})
+            resp = await ac.put("/api/preferences/strategy", json={"strategy": "yolo"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
