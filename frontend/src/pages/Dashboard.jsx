@@ -68,13 +68,13 @@ export default function Dashboard() {
 
   // Watchlist players
   const { data: watchlistPlayers } = useQuery({
-    queryKey: ['dashboard-watchlist', watchlist.map((w) => w.player_id).join(',')],
+    queryKey: ['dashboard-watchlist', (watchlist || []).map((w) => w.player_id).join(',')],
     queryFn: () => fetchPlayers({ per_page: 100 }),
-    enabled: watchlist.length > 0,
+    enabled: (watchlist || []).length > 0,
   })
 
   const watchlistedPlayers = (watchlistPlayers?.players || []).filter((p) =>
-    watchlist.some((w) => w.player_id === p.id)
+    (watchlist || []).some((w) => w.player_id === p.id)
   )
 
   return (

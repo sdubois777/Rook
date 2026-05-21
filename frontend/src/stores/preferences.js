@@ -14,7 +14,7 @@ export const usePreferencesStore = create((set, get) => ({
 
   loadWatchlist: async () => {
     const data = await fetchWatchlist()
-    set({ watchlist: data.items })
+    set({ watchlist: data.items || [] })
   },
 
   addToWatchlist: async (playerId) => {
