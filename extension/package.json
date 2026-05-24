@@ -1,0 +1,16 @@
+{
+  "name": "draftmind-extension",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "zip:chrome": "cd dist && zip -r ../draftmind-chrome.zip . && cd ..",
+    "zip:firefox": "cd dist && zip -r ../draftmind-firefox.zip . && cd .."
+  },
+  "devDependencies": {
+    "webpack": "^5",
+    "webpack-cli": "^5",
+    "copy-webpack-plugin": "^12"
+  }
+}
