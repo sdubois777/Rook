@@ -22,10 +22,12 @@ HTTP actions (called by React UI):
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from backend.core.dependencies import get_db
 from backend.websocket.manager import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,43 @@ class StartDraftRequest(BaseModel):
 
 class FrameRequest(BaseModel):
     frame: dict
+
+
+class DraftEventPayload(BaseModel):
+    type: str        # nomination|bid_update|draft_pick|clock
+    platform: str    # yahoo|espn|sleeper
+    payload: dict
+
+
+# ---------------------------------------------------------------------------
+# Extension relay — receives draft events via X-Draft-Token
+# ---------------------------------------------------------------------------
+
+@router.post("/event", summary="Relay draft event from browser extension")
+async def relay_draft_event(
+    event: DraftEventPayload,
+    x_draft_token: str = Header(..., alias="X-Draft-Token"),
+    db=Depends(get_db),
+):
+    """
+    Receives draft events from the browser extension.
+    Authenticates via X-Draft-Token header (not JWT).
+    Broadcasts to React UI via WebSocket manager.
+    """
+    from backend.repositories.user_repo import UserRepository
+
+    repo = UserRepository(db)
+    user = await repo.get_by_draft_token(x_draft_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid draft token")
+
+    await ws_manager.broadcast({
+        "type": event.type,
+        "payload": event.payload,
+        "platform": event.platform,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"status": "relayed"}
 
 
 # ---------------------------------------------------------------------------

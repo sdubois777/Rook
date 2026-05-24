@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -296,6 +296,57 @@ async def connect_espn_league(
     summary = await sync_service.sync_league(league.id)
 
     return {"status": "connected", "league_id": str(league.id), **summary}
+
+
+# ---------------------------------------------------------------------------
+# Passive sync from browser extension
+# ---------------------------------------------------------------------------
+
+@router.post("/sync-platform/{platform}")
+async def sync_platform_leagues(
+    platform: str,
+    x_draft_token: str = Header(..., alias="X-Draft-Token"),
+    db=Depends(get_db),
+):
+    """
+    Re-syncs all user leagues on a platform.
+    Called by browser extension passive sync trigger.
+    Authenticates via X-Draft-Token.
+    Returns 200 even on failure — never interrupts the user's browser session.
+    """
+    if platform not in ("yahoo", "espn"):
+        return {"status": "skipped", "reason": "platform_excluded"}
+
+    from backend.repositories.user_repo import UserRepository
+
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_draft_token(x_draft_token)
+    if not user:
+        return {"status": "skipped", "reason": "invalid_token"}
+
+    league_repo = LeagueRepository(db)
+    leagues = await league_repo.get_user_leagues_by_platform(user.id, platform)
+
+    if not leagues:
+        return {"status": "skipped", "reason": "no_leagues"}
+
+    from backend.services.league_sync import LeagueSyncService
+
+    sync_service = LeagueSyncService(db, user.id)
+    results = []
+    for league in leagues:
+        try:
+            await sync_service.sync_league(league.id)
+            results.append({"league_id": str(league.id), "status": "synced"})
+        except Exception as exc:
+            logger.warning("Passive sync failed for league %s: %s", league.id, exc)
+            results.append({"league_id": str(league.id), "status": "failed"})
+
+    return {
+        "status": "ok",
+        "platform": platform,
+        "leagues_synced": len([r for r in results if r["status"] == "synced"]),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -12,9 +12,12 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+import uuid as uuid_mod
+
 from backend.core.dependencies import (
     get_credit_service,
     get_current_user,
+    get_db,
     get_league_service,
 )
 from backend.models.user import TIER_LIMITS, User
@@ -163,6 +166,35 @@ async def add_league(
         season_year=body.season_year,
     )
     return _league_response(league)
+
+
+@router.get("/draft-token")
+async def get_draft_token(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Returns user's draft token. Creates one if it doesn't exist.
+    Long-lived UUID used by the browser extension to authenticate
+    without a session.
+    """
+    if not user.draft_token:
+        user.draft_token = str(uuid_mod.uuid4())
+        await db.commit()
+        await db.refresh(user)
+    return {"draft_token": user.draft_token}
+
+
+@router.post("/draft-token/revoke")
+async def revoke_draft_token(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Regenerate token — invalidates the old one."""
+    user.draft_token = str(uuid_mod.uuid4())
+    await db.commit()
+    await db.refresh(user)
+    return {"draft_token": user.draft_token}
 
 
 @router.delete("/leagues/{league_id}", status_code=204)

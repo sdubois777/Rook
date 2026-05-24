@@ -24,6 +24,16 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_draft_token(
+        self, draft_token: str
+    ) -> User | None:
+        result = await self._session.execute(
+            select(User).where(
+                User.draft_token == draft_token
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_email(
         self, email: str
     ) -> User | None:
