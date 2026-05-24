@@ -389,20 +389,32 @@ fantasy-football-ai/
 - [x] Stage 25: SaaS Foundation
   LeagueConfig, users table, credit system, feature gating, enterprise architecture
   SecurityHeaders + RequestLogging middleware, /account/* endpoints, 868 tests
-- [x] Stage 26: User Auth — Clerk JWT verification, webhook lifecycle, protected routes, account dashboard
+- [~] Stage 26: User Auth — Clerk JWT verification, webhook lifecycle, protected routes, account dashboard
   Clerk auth, 3 tiers (intro $5/standard $9/pro $18), Stripe billing
   Credits: intro=25 signup, standard=75 signup+20/mo, pro=200 signup+50/mo
   Live draft = tier entitlement (not credit cost)
   9 auth tests, user_id scoped preferences, real email from Clerk API
+  - Stripe not implemented
 - [x] Stage 27: Landing Page — DraftMind marketing site
   Public landing at /, pricing at /pricing, 9 components, dark theme
   Hero, social proof, how-it-works, validation stats, feature comparison,
   3-tier pricing table, FAQ accordion, footer CTA, SEO meta tags
 - [x] Stage 28: League Sync — Yahoo/ESPN/Sleeper multi-user
   Fernet token encryption, PlatformCredential model, LeaguePlatformAPI abstraction
-  Yahoo multi-user OAuth (state=user_id CSRF), ESPN bookmarklet + cookie API
-  Sleeper public API, LeagueSyncService (4yr history), league setup wizard
+  Yahoo multi-user OAuth (state=user_id CSRF)
+  ESPN cookie extraction via browser extension
+    (replaces bookmarklet — espn_s2 + SWID read from document.cookie,
+    sent to backend automatically when user visits ESPN)
+  Sleeper public API, LeagueSyncService (4yr history)
+  League setup wizard
+  Browser extension handles league connection for ESPN and draft room
+    relay for all platforms (Yahoo/ESPN/Sleeper) — see extension/ directory
   56 new tests, 955 total
+  PENDING — extension not yet built:
+    Extension scaffold, WS interceptor, content scripts
+    (yahoo_draft, espn_draft, sleeper_draft, espn_auth),
+    popup UI, draft_token endpoint on backend,
+    POST /draft/event relay endpoint
 - [ ] Stage 29: Snake Draft — see docs/stages/stage-29-snake-draft.md
   SnakeValuationEngine, VOE metric, SnakeDraftAgent
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
@@ -438,6 +450,18 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 - Pipeline admin freshness thresholds uniform 7d (should be per-agent)
 - Frontend test coverage sparse (4 files for 43 JSX/JS source files)
 - .pre-commit-config.yaml never created
+- Production /api prefix mismatch — frontend calls /api/* but FastAPI serves /* directly.
+  In dev, Vite proxy rewrites /api → '' before hitting FastAPI. In production, no proxy
+  exists so /api/* requests fail with 404/405. Fix requires: (a) add prefix="/api" to all
+  routers in main.py (except /health, /auth/* callbacks, /webhooks/*), (b) remove Vite
+  proxy rewrite so dev matches production, (c) custom domain required first — Clerk
+  production instance needs DNS. Deferred until custom domain is purchased.
+- Clerk production instance setup — currently running Clerk dev instance (pk_test_) in
+  production on Railway. Works but shows cookie warnings and is not suitable for real
+  users. Fix requires: (a) purchase custom domain, (b) create Clerk production instance
+  at dashboard.clerk.com, (c) add CNAME DNS record from Clerk, (d) swap CLERK_PUBLISHABLE_KEY
+  and CLERK_SECRET_KEY env vars on Railway to production keys, (e) re-test OAuth flows
+  and webhook signatures with production keys. Blocked on custom domain purchase.
 
 ---
 

@@ -5,6 +5,8 @@
 - `docs/stages/stage-26-user-auth.md` (must be complete)
 - `docs/stages/stage-14-season-roster.md` (platform abstraction layer)
 - `docs/LIVE_DRAFT.md`
+- `extension/` directory — browser extension handles ESPN auth
+  and live draft relay for all platforms
 
 ---
 
@@ -30,7 +32,10 @@ to another user.
 - `LeagueSyncService` — all sync logic, no platform code
 - `CredentialRepository` — all credential DB access
 - Tokens encrypted at rest with Fernet — never plaintext
-- ESPN uses bookmarklet — no manual DevTools for users
+- ESPN uses browser extension for cookie extraction — no manual
+  DevTools or bookmarklet required
+- Extension triggers background sync when user visits Yahoo/ESPN —
+  keeps roster/waiver data fresh without manual resync
 - Row-level security: `user_id` on all synced data
 
 ---
@@ -41,7 +46,24 @@ to another user.
 |----------|------|--------------|-------------|-------------|------|
 | Yahoo | OAuth 2.0 per user | ✓ (4 years) | ✓ | ✓ | ✓ |
 | Sleeper | Public API | ✓ | ✓ | ✓ (derived) | ✓ |
-| ESPN | Cookie-based bookmarklet | ✓ | ✓ | ✓ | ✓ |
+| ESPN | Browser extension (cookie extraction) | ✓ | ✓ | ✓ | ✓ |
+
+### How ESPN auth works
+
+The DraftMind browser extension (see `extension/`) runs a content
+script on `fantasy.espn.com` that automatically reads `espn_s2`
+and `SWID` from `document.cookie` (neither is httpOnly) and POSTs
+them to the backend via `POST /leagues/connect/espn/callback`.
+
+The user experience:
+1. Install the DraftMind extension
+2. Visit any ESPN Fantasy page while logged in
+3. Extension detects cookies and sends them automatically
+4. Return to DraftMind — ESPN shows as connected
+
+**Fallback for users without the extension:**
+Manual cookie entry is still supported via the league setup wizard
+(collapsed by default, shown as "Having trouble? Enter manually").
 
 ---
 
@@ -54,7 +76,7 @@ Add to `backend/config.py`:
 platform_token_encryption_key: str
 # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-# App URL (for ESPN bookmarklet redirect)
+# App URL (for OAuth redirects)
 app_url: str = "http://localhost:8000"
 
 # In-season data (Stage 20 — configure now)
@@ -157,6 +179,8 @@ class PlatformCredential(Base):
     )
 
     # ESPN cookies (encrypted)
+    # Populated by browser extension content script on espn.com
+    # espn_s2 and SWID are not httpOnly — readable from document.cookie
     espn_s2: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )
@@ -430,22 +454,17 @@ class YahooLeagueAPI(LeaguePlatformAPI):
         self._expires_at = new_expiry
 
     async def get_rosters(self) -> list[TeamRoster]:
-        # Calls Yahoo API, returns normalized TeamRoster list
-        # Uses existing yahoo_api.py functions
         token = await self._get_token()
-        # ... Yahoo-specific implementation
         return []
 
     async def get_free_agents(
         self, position: str | None = None
     ) -> list[FreeAgent]:
         token = await self._get_token()
-        # Yahoo: /fantasy/v2/league/{league_key}/players;status=A
         return []
 
     async def get_draft_picks(self) -> list[DraftPick]:
         token = await self._get_token()
-        # Yahoo: /fantasy/v2/league/{league_key}/draftresults
         return []
 
     async def get_matchups(self, week: int) -> list[WeeklyMatchup]:
@@ -468,6 +487,8 @@ class YahooLeagueAPI(LeaguePlatformAPI):
 """
 ESPN LeaguePlatformAPI implementation.
 Cookie-based unofficial API. Validates cookies on first use.
+Cookies sourced from browser extension (espn_auth.js content script)
+or manual entry fallback.
 """
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -503,8 +524,9 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         cookies = await repo.get_espn_cookies(league.user_id)
         if not cookies:
             raise AppError(
-                "ESPN not connected — use the ESPN bookmarklet",
-                {"platform": "espn", "action": "bookmarklet"},
+                "ESPN not connected — install the DraftMind extension "
+                "and visit ESPN Fantasy, or enter cookies manually",
+                {"platform": "espn", "action": "connect_extension"},
             )
         espn_s2, swid = cookies
         return cls(league=league, espn_s2=espn_s2, swid=swid)
@@ -525,11 +547,12 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
             resp = await client.get(url, params={"view": view})
             if resp.status_code == 401:
                 raise AppError(
-                    "ESPN cookies expired — please reconnect",
+                    "ESPN cookies expired — please reconnect via the "
+                    "DraftMind extension or manual entry",
                     {
                         "platform": "espn",
                         "action": "reconnect",
-                        "bookmarklet_url": "/league-setup?platform=espn",
+                        "setup_url": "/league-setup?platform=espn",
                     },
                 )
             resp.raise_for_status()
@@ -542,7 +565,6 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
 
     async def get_rosters(self) -> list[TeamRoster]:
         data = await self._get("mRoster")
-        # Parse ESPN roster format → TeamRoster list
         return []
 
     async def get_free_agents(
@@ -562,9 +584,7 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                 .get("player", {})
             )
             result.append(DraftPick(
-                platform_player_id=str(
-                    pick.get("playerId", "")
-                ),
+                platform_player_id=str(pick.get("playerId", "")),
                 player_name=player_data.get("fullName", ""),
                 position=self._espn_pos(
                     player_data.get("defaultPositionId", 0)
@@ -591,7 +611,10 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         return []
 
     def _espn_pos(self, pos_id: int) -> str:
-        return {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DEF"}.get(pos_id, "")
+        return {
+            1: "QB", 2: "RB", 3: "WR",
+            4: "TE", 5: "K", 16: "DEF",
+        }.get(pos_id, "")
 ```
 
 ### Sleeper
@@ -651,18 +674,12 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
     async def get_free_agents(
         self, position: str | None = None
     ) -> list[FreeAgent]:
-        # Sleeper doesn't have a free agent endpoint.
-        # Derive: all NFL players NOT on any roster.
         rosters = await self.get_rosters()
         rostered_sleeper_ids = {
             player_id
             for team in rosters
-            for player_id in (
-                team.players or []
-            )
+            for player_id in (team.players or [])
         }
-        # In full implementation: fetch all players,
-        # filter out rostered ones
         return []
 
     async def get_draft_picks(self) -> list[DraftPick]:
@@ -719,13 +736,15 @@ Update `backend/routers/auth.py` to store tokens per-user:
 ```python
 # backend/routers/auth.py — replace existing Yahoo endpoints
 
-import base64, json
-from fastapi import APIRouter, Depends, Request
+import base64, json, uuid
+from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from backend.core.dependencies import get_current_user, get_db
-from backend.config import settings
 from backend.repositories.credential_repo import CredentialRepository
+from backend.models.user import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -755,30 +774,58 @@ async def yahoo_callback(
 ):
     """
     Yahoo OAuth callback — exchange code for tokens.
-    Stores encrypted tokens per user. Redirects to account page.
+    Stores encrypted tokens per user. Redirects to league setup.
+
+    Handles two failure modes cleanly:
+    1. Malformed state param → redirect with error
+    2. FK race condition (Clerk webhook not yet fired) → redirect
+       with retry=true so LeagueSetup.jsx auto-retries after 2s
     """
     try:
         state_data = json.loads(
             base64.urlsafe_b64decode(state).decode()
         )
-        user_id = state_data["user_id"]
-    except Exception:
-        from backend.core.exceptions import ValidationError
-        raise ValidationError("Invalid OAuth state parameter")
+        user_id = uuid.UUID(state_data["user_id"])
+    except (Exception, ValueError, KeyError):
+        return RedirectResponse(
+            url="/league-setup?error=invalid_state"
+        )
+
+    # Verify user exists (Clerk webhook may not have fired yet)
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        return RedirectResponse(
+            url="/league-setup"
+                "?platform=yahoo"
+                "&error=account_not_ready"
+                "&retry=true"
+        )
 
     from backend.integrations.yahoo_api import exchange_code_for_tokens
     tokens = await exchange_code_for_tokens(code)
 
-    repo = CredentialRepository(db)
-    await repo.upsert_yahoo(
-        user_id=user_id,
-        access_token=tokens["access_token"],
-        refresh_token=tokens["refresh_token"],
-        expires_at=tokens["expires_at"],
-    )
+    try:
+        repo = CredentialRepository(db)
+        await repo.upsert_yahoo(
+            user_id=user_id,
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            expires_at=tokens["expires_at"],
+        )
+    except IntegrityError:
+        return RedirectResponse(
+            url="/league-setup"
+                "?platform=yahoo"
+                "&error=account_not_ready"
+                "&retry=true"
+        )
 
     return RedirectResponse(
-        url="/account?connected=yahoo", status_code=302
+        url="/league-setup?platform=yahoo", status_code=302
     )
 
 
@@ -794,66 +841,22 @@ async def yahoo_disconnect(
 
 ---
 
-## Part 7 — ESPN bookmarklet
-
-### Bookmarklet utility
-
-```javascript
-// frontend/src/utils/espnBookmarklet.js
-/**
- * Returns the bookmarklet code string.
- * User saves this as a browser bookmark.
- * When clicked on ESPN Fantasy, extracts cookies
- * and redirects to DraftMind automatically.
- */
-export function getBookmarkletCode(appUrl) {
-  const code = `
-    (function() {
-      function getCookie(name) {
-        const match = document.cookie
-          .split('; ')
-          .find(r => r.startsWith(name + '='));
-        return match ? decodeURIComponent(match.split('=')[1]) : null;
-      }
-
-      const espn_s2 = getCookie('espn_s2');
-      const swid = getCookie('SWID');
-
-      if (!espn_s2 || !swid) {
-        alert(
-          'ESPN cookies not found.\\n\\n' +
-          'Make sure you are logged in to ESPN Fantasy before clicking this.'
-        );
-        return;
-      }
-
-      // Extract league ID from URL if on a league page
-      const leagueMatch = window.location.href.match(/leagueId=(\\d+)/);
-      const leagueId = leagueMatch ? leagueMatch[1] : '';
-
-      let url = '${appUrl}/leagues/connect/espn/callback' +
-        '?espn_s2=' + encodeURIComponent(espn_s2) +
-        '&swid=' + encodeURIComponent(swid);
-
-      if (leagueId) {
-        url += '&league_id=' + leagueId;
-      }
-
-      window.location.href = url;
-    })();
-  `.trim();
-
-  return 'javascript:' + encodeURIComponent(code);
-}
-```
+## Part 7 — ESPN connection via browser extension
 
 ### Backend callback endpoint
+
+The ESPN callback receives cookies from either:
+- The browser extension (automatic, preferred)
+- Manual entry form (fallback)
+
+Both paths hit the same endpoint. The source doesn't matter —
+the backend just validates and stores the cookies.
 
 ```python
 # backend/routers/league_connect.py
 
-@router.get("/connect/espn/callback")
-async def espn_bookmarklet_callback(
+@router.post("/connect/espn/callback")
+async def espn_connect_callback(
     espn_s2: str,
     swid: str,
     league_id: str | None = None,
@@ -862,9 +865,11 @@ async def espn_bookmarklet_callback(
     db=Depends(get_db),
 ):
     """
-    Receives ESPN cookies from the bookmarklet.
+    Receives ESPN cookies from the browser extension or manual entry.
+    Extension sends via POST automatically when user visits ESPN.
+    Manual fallback available in league setup wizard.
+
     Validates cookies against ESPN before storing.
-    Redirects to league setup wizard.
     """
     from backend.integrations.espn_league_api import ESPNLeagueAPI
     from backend.utils.seasons import get_current_season
@@ -872,7 +877,6 @@ async def espn_bookmarklet_callback(
 
     target_season = season or get_current_season()
 
-    # Validate cookies work before storing
     if league_id:
         mock_league = UserLeague(
             league_id=league_id,
@@ -883,7 +887,6 @@ async def espn_bookmarklet_callback(
             league=mock_league, espn_s2=espn_s2, swid=swid
         )
         await api.validate_cookies()
-        # Raises AppError if invalid — caught by exception handler
 
     repo = CredentialRepository(db)
     await repo.upsert_espn(
@@ -895,6 +898,291 @@ async def espn_bookmarklet_callback(
         redirect_url += f"&league_id={league_id}"
 
     return RedirectResponse(url=redirect_url, status_code=302)
+
+
+# GET variant for redirect-based flows
+@router.get("/connect/espn/callback")
+async def espn_connect_callback_get(
+    espn_s2: str,
+    swid: str,
+    league_id: str | None = None,
+    season: int | None = None,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """GET variant — same logic, supports redirect-based flows."""
+    return await espn_connect_callback(
+        espn_s2=espn_s2,
+        swid=swid,
+        league_id=league_id,
+        season=season,
+        user=user,
+        db=db,
+    )
+```
+
+### Extension content script (reference)
+
+The extension's `espn_auth.js` content script handles automatic
+cookie extraction. See `extension/src/content_scripts/espn_auth.js`.
+
+Key behavior:
+- Runs on all `fantasy.espn.com` pages at `document_idle`
+- Reads `espn_s2` and `SWID` from `document.cookie`
+- POSTs to `/leagues/connect/espn/callback` with `X-Draft-Token` header
+- Stores `espn_connected: true` in extension storage for popup display
+- Silent — no user action required beyond visiting ESPN while logged in
+
+---
+
+## Part 7b — Passive sync trigger (extension)
+
+When a user visits Yahoo Fantasy or ESPN Fantasy while the extension
+is installed, the extension silently POSTs to the backend to trigger
+a background resync of their connected leagues on that platform.
+
+This keeps roster changes, waiver wire pickups, and trade completions
+fresh without the user ever having to manually resync.
+
+**Sleeper is excluded** — Sleeper has no session to detect and its
+public API is already fast enough to sync on demand.
+
+### Content script additions
+
+Add a passive sync trigger to the Yahoo and ESPN content scripts.
+This runs once per platform visit, debounced to avoid hammering the
+backend on every page navigation:
+
+```javascript
+// src/utils/passive_sync.js
+/**
+ * Trigger a background sync when user visits a platform.
+ * Debounced — only fires once per 30 minutes per platform
+ * to avoid hammering the backend on every page load.
+ */
+import browser from './browser.js'
+import { getDraftToken } from './api.js'
+
+const SYNC_DEBOUNCE_MS = 30 * 60 * 1000  // 30 minutes
+
+export async function triggerPassiveSync(platform) {
+    const storageKey = `last_sync_${platform}`
+    const token = await getDraftToken()
+
+    if (!token) return  // Not connected — skip
+
+    const result = await browser.storage.local.get(storageKey)
+    const lastSync = result[storageKey] || 0
+    const now = Date.now()
+
+    // Debounce — don't sync more than once per 30 minutes
+    if (now - lastSync < SYNC_DEBOUNCE_MS) return
+
+    try {
+        const resp = await fetch(
+            `${getApiBase()}/leagues/sync-platform/${platform}`,
+            {
+                method: 'POST',
+                headers: { 'X-Draft-Token': token },
+            }
+        )
+        if (resp.ok) {
+            await browser.storage.local.set({
+                [storageKey]: now
+            })
+            console.debug(
+                `DraftMind: passive sync triggered for ${platform}`
+            )
+        }
+    } catch (err) {
+        // Silent fail — passive sync should never interrupt the user
+        console.debug(`DraftMind: passive sync failed for ${platform}`, err)
+    }
+}
+
+function getApiBase() {
+    return (
+        typeof process !== 'undefined' &&
+        process.env?.NODE_ENV === 'production'
+            ? 'https://fantasymanager-production.up.railway.app'
+            : 'http://localhost:8000'
+    )
+}
+```
+
+Add to `espn_auth.js` (runs on all ESPN fantasy pages):
+
+```javascript
+// At bottom of espn_auth.js — after cookie extraction
+import { triggerPassiveSync } from '../utils/passive_sync.js'
+
+// Trigger background sync after extracting cookies
+// (or even if cookies were already stored — just visiting means
+// the user may have made roster moves)
+triggerPassiveSync('espn')
+```
+
+Add to `yahoo_auth.js` (new content script for Yahoo fantasy pages):
+
+```javascript
+// src/content_scripts/yahoo_auth.js
+// Runs on all Yahoo Fantasy pages — triggers passive sync
+import { triggerPassiveSync } from '../utils/passive_sync.js'
+
+triggerPassiveSync('yahoo')
+```
+
+Add Yahoo fantasy pages to manifest.json content_scripts:
+
+```json
+{
+    "matches": [
+        "https://football.fantasysports.yahoo.com/*"
+    ],
+    "js": ["dist/yahoo_auth.js"],
+    "run_at": "document_idle"
+}
+```
+
+### Backend endpoint
+
+Add a platform-level sync endpoint that re-syncs all of a user's
+leagues on a given platform. Called by the extension passive trigger.
+
+```python
+# backend/routers/league_connect.py
+
+@router.post("/sync-platform/{platform}")
+async def sync_platform_leagues(
+    platform: str,
+    draft_token: str = Header(..., alias="X-Draft-Token"),
+    db=Depends(get_db),
+):
+    """
+    Re-sync all of a user's leagues on a given platform.
+    Called by the browser extension when user visits Yahoo/ESPN.
+    Authenticates via X-Draft-Token (no session required).
+
+    Silent — returns 200 even if no leagues connected.
+    Never blocks the user's browser session.
+    """
+    if platform not in ("yahoo", "espn"):
+        # Sleeper excluded — public API, no passive sync needed
+        return {"status": "skipped", "reason": "platform_excluded"}
+
+    # Authenticate via draft token
+    user = await get_user_by_draft_token(draft_token, db)
+    if not user:
+        # Return 200 not 401 — passive sync should never
+        # show errors to the user
+        return {"status": "skipped", "reason": "invalid_token"}
+
+    # Find all active leagues for this platform
+    from backend.repositories.league_repo import LeagueRepository
+    repo = LeagueRepository(db)
+    leagues = await repo.get_user_leagues_by_platform(
+        user.id, platform
+    )
+
+    if not leagues:
+        return {"status": "skipped", "reason": "no_leagues"}
+
+    # Sync each league in background
+    # Don't await — return immediately so browser isn't blocked
+    import asyncio
+    sync_service = LeagueSyncService(db, user.id)
+
+    results = []
+    for league in leagues:
+        try:
+            summary = await sync_service.sync_league(league)
+            results.append({
+                "league_id": str(league.id),
+                "status": "synced",
+                **summary,
+            })
+        except Exception as exc:
+            # Silent fail per league — others continue
+            logger.warning(
+                "Passive sync failed for league %s: %s",
+                league.id, exc,
+            )
+            results.append({
+                "league_id": str(league.id),
+                "status": "failed",
+            })
+
+    return {
+        "status": "ok",
+        "platform": platform,
+        "leagues_synced": len(
+            [r for r in results if r["status"] == "synced"]
+        ),
+    }
+```
+
+Add `get_user_leagues_by_platform()` to LeagueRepository:
+
+```python
+async def get_user_leagues_by_platform(
+    self,
+    user_id: uuid.UUID,
+    platform: str,
+) -> list[UserLeague]:
+    result = await self._session.execute(
+        select(UserLeague).where(
+            UserLeague.user_id == user_id,
+            UserLeague.platform == platform,
+            UserLeague.is_active.is_(True),
+        )
+    )
+    return list(result.scalars().all())
+```
+
+### Popup status display
+
+Show last sync time per platform in the extension popup:
+
+```javascript
+// In popup.js — add to platform rows
+
+const {
+    espn_connected,
+    yahoo_connected,
+    last_sync_espn,
+    last_sync_yahoo,
+} = await browser.storage.local.get([
+    'espn_connected',
+    'yahoo_connected',
+    'last_sync_espn',
+    'last_sync_yahoo',
+])
+
+function formatLastSync(ts) {
+    if (!ts) return 'Never'
+    const mins = Math.floor((Date.now() - ts) / 60000)
+    if (mins < 1) return 'Just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.floor(mins / 60)
+    return `${hrs}h ago`
+}
+
+// In platform row HTML:
+// ESPN row:
+`<div class="platform-row">
+    <span>ESPN</span>
+    <div class="platform-right">
+        <span class="sync-time">
+            ${espn_connected
+                ? `Synced ${formatLastSync(last_sync_espn)}`
+                : 'Not connected'
+            }
+        </span>
+        <span class="${espn_connected ? 'badge-green' : 'badge-gray'}">
+            ${espn_connected ? '●' : '○'}
+        </span>
+    </div>
+</div>`
 ```
 
 ---
@@ -916,14 +1204,12 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.platform_factory import get_platform_api
-from backend.models.league_config import LeagueConfig
 from backend.models.user_league import UserLeague
 from backend.repositories.league_repo import LeagueRepository
 from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
 
-# How many historical seasons to import
 HISTORY_SEASONS = 4
 
 
@@ -933,18 +1219,7 @@ class LeagueSyncService:
         self._user_id = user_id
         self._league_repo = LeagueRepository(db)
 
-    async def sync_league(
-        self, user_league: UserLeague
-    ) -> dict:
-        """
-        Full sync for a connected league.
-        1. Verify credentials
-        2. Import league settings → update LeagueConfig
-        3. Import historical draft data (up to 4 seasons)
-        4. Import current season rosters
-        5. Cache free agent pool
-        Returns sync summary.
-        """
+    async def sync_league(self, user_league: UserLeague) -> dict:
         platform = await get_platform_api(user_league, self._db)
         current_season = get_current_season()
 
@@ -956,15 +1231,13 @@ class LeagueSyncService:
             "free_agents_cached": 0,
         }
 
-        # 1. Import draft history — up to HISTORY_SEASONS
         picks_total = 0
         for offset in range(HISTORY_SEASONS):
-            season = current_season - offset - 1  # completed seasons
+            season = current_season - offset - 1
             if season < 2020:
                 break
             try:
                 picks = await platform.get_draft_picks()
-                # filter/store picks for this season
                 picks_total += len(picks)
             except Exception as exc:
                 logger.warning(
@@ -974,18 +1247,15 @@ class LeagueSyncService:
 
         summary["picks_imported"] = picks_total
 
-        # 2. Import current rosters
         rosters = await platform.get_rosters()
         summary["managers_found"] = len(rosters)
 
-        # Store manager map in user_league
         user_league.manager_map = {
             r.platform_team_id: r.manager_name
             for r in rosters
         }
         user_league.last_synced = datetime.now(timezone.utc)
 
-        # 3. Cache free agents (for waiver wire)
         free_agents = await platform.get_free_agents()
         summary["free_agents_cached"] = len(free_agents)
 
@@ -998,11 +1268,6 @@ class LeagueSyncService:
         user_league_id: uuid.UUID,
         season: int,
     ) -> int:
-        """
-        Store historical draft picks.
-        All picks scoped to user_id.
-        Deduplication via on_conflict_do_nothing.
-        """
         from backend.models.league_auction_history import (
             LeagueAuctionHistory,
         )
@@ -1053,25 +1318,21 @@ async def connect_yahoo_league(
     from backend.services.league_service import LeagueService
     from backend.utils.seasons import get_current_season
 
-    # Check tier limits
     service = LeagueService(LeagueRepository(db))
     current_count = len(await service.get_user_leagues(user.id))
     FeatureService.can_add_league(user, current_count)
 
-    # Create league record
     league = await service.add_league(
         user_id=user.id,
         platform="yahoo",
         league_id=league_id,
         season_year=get_current_season(),
-        # Other settings fetched during sync
         team_count=12,
         draft_type="auction",
         scoring="ppr",
         budget=200,
     )
 
-    # Sync
     sync_service = LeagueSyncService(db, user.id)
     summary = await sync_service.sync_league(league)
 
@@ -1086,7 +1347,6 @@ async def connect_sleeper_league(
     db=Depends(get_db),
 ):
     """Connect a Sleeper league by username."""
-    # Validate username exists in Sleeper
     import httpx
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -1097,12 +1357,9 @@ async def connect_sleeper_league(
             raise NotFoundError(f"Sleeper user '{username}' not found")
         sleeper_data = resp.json()
 
-    # Store Sleeper user ID
     repo = CredentialRepository(db)
     await repo.upsert_sleeper(user.id, sleeper_data["user_id"])
-
-    # Create + sync league
-    # ... same pattern as Yahoo
+    # Create + sync league — same pattern as Yahoo
 
 
 @router.post("/{league_id}/sync")
@@ -1169,32 +1426,48 @@ Step 2: Connect (platform-specific)
     [Connect with Yahoo →]
     (OAuth redirect — handled server side)
 
-  ESPN:
-    Connect Your ESPN League
-    
-    Make sure you're logged in to ESPN Fantasy,
-    then click below:
-    
-    [🏈 Connect ESPN →]   ← bookmarklet <a> tag
-    
-    Having trouble?
-    [Enter cookies manually ↓]  (collapsed by default)
+    Auto-retries if account still setting up:
+    "Account is setting up — retrying automatically..."
+
+  ESPN — extension installed:
+    ┌─────────────────────────────────────────┐
+    │  ✓ Extension detected                   │
+    │  Visit ESPN Fantasy while logged in     │
+    │  and your account connects automatically│
+    │                                         │
+    │  [Open ESPN Fantasy →]  (new tab)       │
+    └─────────────────────────────────────────┘
+
+  ESPN — extension NOT installed:
+    ┌─────────────────────────────────────────┐
+    │  Install the DraftMind Extension        │
+    │  for automatic ESPN connection.         │
+    │                                         │
+    │  [Install Chrome Extension →]           │
+    │  [Install Firefox Extension →]          │
+    │                                         │
+    │  ─── or ───                             │
+    │                                         │
+    │  [Enter cookies manually ↓]  (collapsed)│
+    └─────────────────────────────────────────┘
+
+    Manual fallback (collapsed):
+      espn_s2:   [________________________]
+      SWID:      [________________________]
+      League ID: [_______]  (optional)
+      [Connect ESPN →]
 
   Sleeper:
     Sleeper Username: [____________]
     [Find My Leagues →]
 
 Step 3: Select League
-  List of leagues found on platform.
-  Radio buttons — select one.
-  
   ○ The League (12-team PPR Auction)
   ○ Side League (10-team Half PPR Snake)
 
 Step 4: Confirm Settings
   Team count: 12    Scoring: PPR
   Format: Auction   Budget: $200
-  
   [These look right → Import League]
   [Edit Settings]
 
@@ -1206,27 +1479,39 @@ Step 5: Importing...
   [Go to Dashboard →]
 ```
 
-ESPN bookmarklet button:
+### Extension detection
+
 ```jsx
-import { getBookmarkletCode } from '../utils/espnBookmarklet'
+// Extension injects window.__draftmind__ = true when loaded
+const [extensionInstalled, setExtensionInstalled] = useState(false)
 
-const APP_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+useEffect(() => {
+  setExtensionInstalled(!!window.__draftmind__)
+}, [])
+```
 
-<a
-  href={getBookmarkletCode(APP_URL)}
-  className="bg-orange-600 hover:bg-orange-500 text-white
-             font-medium px-6 py-3 rounded-lg inline-flex
-             items-center gap-2 transition-colors"
-  onClick={(e) => {
-    if (!window.location.href.includes('espn.com')) {
-      e.preventDefault()
-      window.open('https://fantasy.espn.com', '_blank')
-      setShowEspnInstructions(true)
-    }
-  }}
->
-  🏈 Connect ESPN →
-</a>
+### Yahoo auto-retry on account_not_ready
+
+```jsx
+const params = new URLSearchParams(window.location.search)
+const error = params.get('error')
+const retry = params.get('retry')
+
+useEffect(() => {
+  if (error === 'account_not_ready' && retry === 'true') {
+    setMessage('Account is setting up — retrying automatically...')
+    const timer = setTimeout(() => {
+      window.location.href = '/auth/yahoo/connect'
+    }, 2000)
+    return () => clearTimeout(timer)
+  }
+}, [error, retry])
+
+{message && (
+  <div className="text-yellow-400 text-sm mt-2">
+    {message}
+  </div>
+)}
 ```
 
 ---
@@ -1262,21 +1547,44 @@ def test_espn_cookies_stored_encrypted()
 def test_user_a_cannot_access_user_b_tokens()
 def test_disconnect_removes_credentials()
 
-# ESPN bookmarklet
-def test_bookmarklet_contains_app_url()
-def test_espn_callback_validates_cookies_first()
+# ESPN extension flow
+def test_espn_callback_post_stores_cookies()
+def test_espn_callback_get_stores_cookies()
+def test_espn_callback_validates_cookies_before_storing()
 def test_espn_callback_requires_auth()
 def test_invalid_espn_cookies_raise_app_error()
+def test_espn_error_message_references_extension()
+    # AppError should mention extension, not bookmarklet
 
 # Yahoo OAuth
 def test_state_param_encodes_user_id()
 def test_state_param_decoded_on_callback()
+def test_yahoo_callback_casts_uuid_string()
+def test_yahoo_callback_handles_invalid_state()
+def test_yahoo_callback_handles_missing_user()
+    # FK race → redirect with retry=true, NOT 500
 def test_token_refresh_on_expiry()
 
 # Sleeper
 def test_sleeper_unknown_username_404()
 def test_sleeper_roster_normalized()
 def test_sleeper_draft_picks_with_auction_price()
+
+# Passive sync trigger
+def test_passive_sync_triggers_on_espn_visit()
+def test_passive_sync_triggers_on_yahoo_visit()
+def test_passive_sync_debounced_30_minutes()
+    # Second call within 30min is skipped
+def test_passive_sync_silent_fail_on_error()
+    # Network error does not throw or alert user
+def test_passive_sync_skips_sleeper()
+    # POST /sync-platform/sleeper returns skipped
+def test_passive_sync_skips_invalid_token()
+    # Invalid draft token returns 200 not 401
+def test_passive_sync_skips_no_leagues()
+    # No connected leagues returns skipped
+def test_sync_platform_endpoint_syncs_all_user_leagues()
+def test_get_user_leagues_by_platform()
 
 # League sync
 def test_sync_imports_up_to_4_seasons()
@@ -1307,14 +1615,19 @@ print('Encryption: PASS')
 "
 
 # 2. Yahoo OAuth complete (use your personal account)
-# GET /auth/yahoo/connect → authorize → /account?connected=yahoo
+# GET /auth/yahoo/connect → authorize → /league-setup?platform=yahoo
 
-# 3. ESPN bookmarklet works
-# Go to fantasy.espn.com → logged in → click bookmarklet
-# Should redirect to /league-setup?platform=espn&league_id=...
+# 3. ESPN via extension
+# Install extension → visit fantasy.espn.com while logged in
+# → Popup shows ESPN as connected
+# → Return to app → league-setup shows connected
+
+# 3b. ESPN manual fallback (no extension)
+# POST /leagues/connect/espn/callback with espn_s2 and SWID
+# Should validate and store
 
 # 4. Sleeper connects
-# POST /leagues/connect/sleeper {username: "your_sleeper_name", league_id: "..."}
+# POST /leagues/connect/sleeper {username: "...", league_id: "..."}
 # Returns: {picks_imported: N, managers_found: M}
 
 # 5. User isolation
@@ -1328,8 +1641,7 @@ print('Encryption: PASS')
 
 ```
 Commit 1:
-feat(credentials): PlatformCredential model
-and token encryption
+feat(credentials): PlatformCredential model and token encryption
 
 Fernet AES encryption for all platform credentials.
 encrypt_token/decrypt_token utilities.
@@ -1337,28 +1649,43 @@ CredentialRepository: upsert/get/disconnect per user.
 Migration: platform_credentials table.
 
 Commit 2:
-feat(integrations): Yahoo, ESPN, Sleeper
-LeaguePlatformAPI implementations
+feat(integrations): Yahoo, ESPN, Sleeper LeaguePlatformAPI implementations
 
-All implement LeaguePlatformAPI interface.
 Yahoo: per-user OAuth, auto-refresh, existing yahoo_api.py adapted.
 ESPN: cookie-based unofficial API, validates before storing.
+      Error messages reference extension, not bookmarklet.
 Sleeper: public API, roster/draft/transaction normalization.
 
 Commit 3:
 feat(auth): Yahoo OAuth multi-user
 
 State parameter encodes user_id (CSRF protection).
+Explicit uuid.UUID() cast from state param.
+User existence check before credential write.
+IntegrityError → clean redirect with retry flag.
 Tokens stored encrypted in platform_credentials.
 /auth/yahoo/connect, /callback, DELETE /disconnect.
 No more YAHOO_REFRESH_TOKEN env var.
 
 Commit 4:
-feat(espn): bookmarklet flow
+feat(espn): browser extension cookie flow
 
-GET /leagues/connect/espn/callback validates + stores cookies.
-getBookmarkletCode() utility for frontend.
-One-click connection — no DevTools required.
+POST + GET /leagues/connect/espn/callback.
+Receives cookies from extension or manual entry — same endpoint.
+Validates cookies before storing.
+Replaces bookmarklet approach entirely.
+espnBookmarklet.js utility removed.
+
+Commit 4b:
+feat(extension): passive sync trigger
+
+triggerPassiveSync() fires on Yahoo/ESPN visits.
+Debounced to 30 minutes per platform.
+POST /leagues/sync-platform/{platform} authenticates via
+X-Draft-Token, re-syncs all user leagues on that platform.
+Silent fail — never interrupts user session.
+Popup shows last sync time per platform.
+Sleeper excluded — public API sufficient.
 
 Commit 5:
 feat(sync): LeagueSyncService and connect endpoints
@@ -1373,8 +1700,10 @@ Commit 6:
 feat(ui): League setup wizard
 
 5-step wizard: platform → connect → select → confirm → import.
-ESPN: bookmarklet button with fallback manual entry.
-Yahoo: OAuth redirect button.
+ESPN: extension detection with install prompt.
+      Manual cookie entry as fallback (collapsed).
+      No bookmarklet code.
+Yahoo: OAuth redirect + auto-retry on account_not_ready.
 Sleeper: username search.
 Coverage: X%.
 ```
