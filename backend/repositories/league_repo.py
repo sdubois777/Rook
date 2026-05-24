@@ -71,6 +71,20 @@ class LeagueRepository(BaseRepository[UserLeague]):
         )
         return result.scalar() or 0
 
+    async def get_user_leagues_by_platform(
+        self,
+        user_id: uuid.UUID,
+        platform: str,
+    ) -> list[UserLeague]:
+        """All active leagues for a user on a specific platform."""
+        result = await self._session.execute(
+            select(UserLeague)
+            .where(UserLeague.user_id == user_id)
+            .where(UserLeague.platform == platform)
+            .where(UserLeague.is_active.is_(True))
+        )
+        return list(result.scalars().all())
+
     async def upsert(
         self,
         user_id: uuid.UUID,

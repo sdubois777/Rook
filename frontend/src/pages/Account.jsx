@@ -5,15 +5,17 @@ import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
 
 async function fetchAccountData() {
-  const [me, credits, leagues] = await Promise.all([
+  const [me, credits, leagues, tokenResp] = await Promise.all([
     apiClient.get('/account/me'),
     apiClient.get('/account/credits'),
     apiClient.get('/account/leagues'),
+    apiClient.get('/account/draft-token').catch(() => ({ data: {} })),
   ])
   return {
     user: me.data,
     credits: credits.data,
     leagues: leagues.data,
+    draftToken: tokenResp.data.draft_token || null,
   }
 }
 
@@ -38,6 +40,54 @@ function SignOutButton() {
     >
       Sign out
     </button>
+  )
+}
+
+function DraftTokenSection({ token, onRevoke }) {
+  const [copied, setCopied] = useState(false)
+  const [revoking, setRevoking] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(token)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleRevoke = async () => {
+    if (!window.confirm('Revoke this token? Your browser extension will need a new token.')) return
+    setRevoking(true)
+    try {
+      await onRevoke()
+    } finally {
+      setRevoking(false)
+    }
+  }
+
+  return (
+    <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+      <h2 className="text-lg font-semibold mb-2">Browser Extension</h2>
+      <p className="text-sm text-gray-400 mb-4">
+        Paste this token into the DraftMind extension popup to connect.
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 bg-gray-800 text-gray-300 text-sm px-3 py-2 rounded-lg font-mono truncate">
+          {token}
+        </code>
+        <button
+          onClick={handleCopy}
+          className="text-sm text-blue-400 hover:text-blue-300 whitespace-nowrap transition-colors"
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+        <button
+          onClick={handleRevoke}
+          disabled={revoking}
+          className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50 whitespace-nowrap transition-colors"
+        >
+          {revoking ? 'Revoking...' : 'Revoke'}
+        </button>
+      </div>
+    </section>
   )
 }
 
@@ -158,7 +208,13 @@ export default function AccountPage() {
     )
   }
 
-  const { user, credits, leagues } = data
+  const { user, credits, leagues, draftToken } = data
+  const queryClient = useQueryClient()
+
+  const handleRevokeToken = async () => {
+    await apiClient.post('/account/draft-token/revoke')
+    queryClient.invalidateQueries({ queryKey: ['account'] })
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -242,6 +298,11 @@ export default function AccountPage() {
             </div>
           )}
         </section>
+
+        {/* Browser Extension */}
+        {draftToken && (
+          <DraftTokenSection token={draftToken} onRevoke={handleRevokeToken} />
+        )}
 
         {/* Leagues */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">

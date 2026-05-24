@@ -111,6 +111,11 @@ class User(Base):
     )
     # Accumulate — never reset. Monthly credits ADD to balance.
 
+    # Browser extension auth — long-lived UUID token
+    draft_token: Mapped[Optional[str]] = mapped_column(
+        String(36), unique=True, nullable=True, index=True
+    )
+
     # Stripe
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(
         String(100), unique=True, nullable=True
