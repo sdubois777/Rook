@@ -36,18 +36,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/yahoo/leagues", summary="List user's Yahoo Fantasy leagues")
-async def get_yahoo_leagues(
-    user=Depends(get_current_user),
-    db=Depends(get_db),
-):
+async def _get_valid_yahoo_access_token(
+    repo: CredentialRepository, user_id: uuid_mod.UUID
+) -> str:
+    """Return a usable Yahoo access token for the user.
+
+    Raises a 400 AppError if Yahoo is not connected. If the stored
+    token is expired, refreshes it and persists the new tokens before
+    returning.
     """
-    Returns all Yahoo Fantasy Football leagues for the authenticated user.
-    Requires Yahoo OAuth to be complete (credentials in platform_credentials).
-    Auto-refreshes expired tokens.
-    """
-    repo = CredentialRepository(db)
-    tokens = await repo.get_yahoo_tokens(user.id)
+    tokens = await repo.get_yahoo_tokens(user_id)
     if not tokens:
         err = AppError("Yahoo not connected", {"action": "connect"})
         err.status_code = 400
@@ -61,9 +59,24 @@ async def get_yahoo_leagues(
             await refresh_access_token_for_user(refresh_token)
         )
         await repo.upsert_yahoo(
-            user.id, access_token, refresh_token, new_expiry,
+            user_id, access_token, refresh_token, new_expiry,
         )
 
+    return access_token
+
+
+@router.get("/yahoo/leagues", summary="List user's Yahoo Fantasy leagues")
+async def get_yahoo_leagues(
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Returns all Yahoo Fantasy Football leagues for the authenticated user.
+    Requires Yahoo OAuth to be complete (credentials in platform_credentials).
+    Auto-refreshes expired tokens.
+    """
+    repo = CredentialRepository(db)
+    access_token = await _get_valid_yahoo_access_token(repo, user.id)
     leagues = await get_user_leagues(access_token)
     return {"leagues": leagues}
 
@@ -77,25 +90,10 @@ async def get_yahoo_league_settings(
     """
     Fetch full Yahoo league settings (scoring, draft type, etc.)
     for a specific league_key. Used by frontend confirm screen.
+    Auto-refreshes expired tokens.
     """
     repo = CredentialRepository(db)
-    tokens = await repo.get_yahoo_tokens(user.id)
-    if not tokens:
-        err = AppError("Yahoo not connected", {"action": "connect"})
-        err.status_code = 400
-        raise err
-
-    access_token, refresh_token, expires_at = tokens
-
-    # Auto-refresh if expired
-    if expires_at and datetime.now(timezone.utc) >= expires_at:
-        access_token, refresh_token, new_expiry = (
-            await refresh_access_token_for_user(refresh_token)
-        )
-        await repo.upsert_yahoo(
-            user.id, access_token, refresh_token, new_expiry,
-        )
-
+    access_token = await _get_valid_yahoo_access_token(repo, user.id)
     league_settings = await get_league_settings(access_token, league_key)
     return {"settings": league_settings}
 
