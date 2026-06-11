@@ -7,17 +7,17 @@ dependencies = [
     # Web framework
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
-    "python-multipart>=0.0.9",
-    "websockets>=12.0",
+    "python-multipart>=0.0.9",  # never imported directly — FastAPI form parsing
+    "websockets>=12.0",         # never imported directly — uvicorn WS protocol
 
     # Database
     "sqlalchemy[asyncio]>=2.0.0",
-    "asyncpg>=0.29.0",
+    "asyncpg>=0.29.0",          # never imported directly — postgresql+asyncpg driver
     "alembic>=1.13.0",
 
     # Config / settings
     "pydantic-settings>=2.2.0",
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.0.0",     # never imported directly — pydantic-settings env_file loader
 
     # AI
     "anthropic>=0.25.0",
@@ -44,7 +44,7 @@ dependencies = [
     # Scraping / feeds
     "beautifulsoup4>=4.12.0",
     "feedparser>=6.0.11",
-    "lxml>=5.2.0",
+    "lxml>=5.2.0",              # never imported directly — BeautifulSoup parser backend (overthecap.py)
 ]
 
 [project.optional-dependencies]
