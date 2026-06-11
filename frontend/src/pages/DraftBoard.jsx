@@ -8,6 +8,7 @@ import PositionBadge from '../components/shared/PositionBadge'
 import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
+import { buildPositionOptions } from '../lib/constants'
 
 const STRATEGY_OPTIONS = [
   { value: '', label: 'No Strategy' },
@@ -17,13 +18,7 @@ const STRATEGY_OPTIONS = [
   { value: 'balanced', label: 'Balanced' },
 ]
 
-const POSITION_OPTIONS = [
-  { value: '', label: 'All Positions' },
-  { value: 'QB', label: 'QB' },
-  { value: 'RB', label: 'RB' },
-  { value: 'WR', label: 'WR' },
-  { value: 'TE', label: 'TE' },
-]
+const POSITION_OPTIONS = buildPositionOptions('All Positions')
 
 const NFL_TEAMS = [
   'ARI','ATL','BAL','BUF','CAR','CHI','CIN','CLE',

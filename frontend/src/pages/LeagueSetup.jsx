@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useAuth } from '@clerk/clerk-react'
 import { apiClient } from '../api/client'
+import { fetchYahooConnectUrl } from '../api/league'
+import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
 import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
@@ -77,7 +78,6 @@ function ConnectStep({ platform, onConnected, onYahooLeagues, onBack }) {
 }
 
 function YahooConnect({ onYahooLeagues, onBack }) {
-  const { getToken } = useAuth()
   const [checking, setChecking] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -100,13 +100,8 @@ function YahooConnect({ onYahooLeagues, onBack }) {
     setError('')
     setLoading(true)
     try {
-      // Step 1: authenticated fetch to get the Yahoo OAuth URL
-      const token = await getToken()
-      const response = await fetch(`${API_URL}/auth/yahoo/connect-url`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!response.ok) throw new Error('Failed to get Yahoo OAuth URL')
-      const { url } = await response.json()
+      // Step 1: authenticated request for the Yahoo OAuth URL
+      const url = await fetchYahooConnectUrl()
 
       // Step 2: browser navigates to Yahoo (no CORS issue)
       window.location.href = url
@@ -240,9 +235,6 @@ function YahooLeagueSelect({ leagues, onSelect, onBack }) {
 }
 
 // Friendly labels for scoring/draft types
-const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Standard' }
-const DRAFT_LABELS = { auction: 'Auction', snake: 'Snake' }
-
 // Step 3 — Yahoo Confirm
 function YahooConfirmStep({ league, onImport, onBack }) {
   const [loading, setLoading] = useState(false)

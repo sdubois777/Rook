@@ -1,4 +1,5 @@
 import browser from '../utils/browser.js'
+import { MESSAGE_TYPES, STORAGE_KEYS } from '../utils/constants.js'
 import { triggerPassiveSync } from '../utils/passive_sync.js'
 
 // Signal extension presence to React app
@@ -32,13 +33,17 @@ async function extractAndSendCookies() {
   )
   const league_id = leagueMatch?.[1] || leagueMatch?.[2] || null
 
-  browser.runtime.sendMessage({
-    type: 'ESPN_COOKIES',
-    payload: { espn_s2, swid, league_id },
-  })
+  try {
+    await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.ESPN_COOKIES,
+      payload: { espn_s2, swid, league_id },
+    })
+  } catch (err) {
+    console.debug('DraftMind: ESPN cookie relay failed', err)
+  }
 
   await browser.storage.local.set({
-    espn_connected: true,
-    espn_league_id: league_id,
+    [STORAGE_KEYS.ESPN_CONNECTED]: true,
+    [STORAGE_KEYS.ESPN_LEAGUE_ID]: league_id,
   })
 }

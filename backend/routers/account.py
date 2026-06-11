@@ -12,8 +12,6 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-import uuid as uuid_mod
-
 from backend.core.dependencies import (
     get_credit_service,
     get_current_user,
@@ -21,6 +19,7 @@ from backend.core.dependencies import (
     get_league_service,
 )
 from backend.models.user import TIER_LIMITS, User
+from backend.repositories.user_repo import UserRepository
 
 router = APIRouter(prefix="/account", tags=["account"])
 
@@ -179,11 +178,8 @@ async def get_draft_token(
     without a session.
     """
     if not user.draft_token:
-        from backend.models.user import User as UserModel
-        db_user = await db.get(UserModel, user.id)
-        db_user.draft_token = str(uuid_mod.uuid4())
-        await db.commit()
-        return {"draft_token": db_user.draft_token}
+        token = await UserRepository(db).rotate_draft_token(user.id)
+        return {"draft_token": token}
     return {"draft_token": user.draft_token}
 
 
@@ -193,11 +189,8 @@ async def revoke_draft_token(
     db=Depends(get_db),
 ):
     """Regenerate token — invalidates the old one."""
-    from backend.models.user import User as UserModel
-    db_user = await db.get(UserModel, user.id)
-    db_user.draft_token = str(uuid_mod.uuid4())
-    await db.commit()
-    return {"draft_token": db_user.draft_token}
+    token = await UserRepository(db).rotate_draft_token(user.id)
+    return {"draft_token": token}
 
 
 @router.delete("/leagues/{league_id}", status_code=204)

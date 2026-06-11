@@ -28,32 +28,34 @@ def _make_league(platform="yahoo", league_id="test-123"):
 
 
 def _make_mock_db(league):
-    """Create a mock db that returns the league on SELECT, otherwise a plain mock."""
+    """Create a mock db session; statements return a permissive mock."""
     mock_db = AsyncMock()
     mock_db.commit = AsyncMock()
     mock_db.rollback = AsyncMock()
-
-    # First execute call = SELECT UserLeague (returns league)
-    # Subsequent calls = INSERT statements (return plain mock)
-    select_result = MagicMock()
-    select_result.scalar_one_or_none.return_value = league
 
     insert_result = MagicMock()
     insert_result.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
 
     call_count = {"n": 0}
-    original_execute = AsyncMock(return_value=insert_result)
 
-    async def smart_execute(stmt, *a, **kw):
+    async def counting_execute(stmt, *a, **kw):
         call_count["n"] += 1
-        if call_count["n"] == 1:
-            return select_result
-        return await original_execute(stmt, *a, **kw)
+        return insert_result
 
-    mock_db.execute = smart_execute
+    mock_db.execute = counting_execute
     # Expose for assertions
     mock_db._call_count = call_count
     return mock_db
+
+
+def _patch_league_repo(league):
+    """Patch LeagueRepository so the service's league reload returns `league`."""
+    repo = MagicMock()
+    repo.get_user_league = AsyncMock(return_value=league)
+    return patch(
+        "backend.services.league_sync.LeagueRepository",
+        return_value=repo,
+    )
 
 
 def _make_picks(count=5, season=2025):
@@ -103,9 +105,7 @@ async def test_sync_imports_up_to_4_seasons():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         summary = await service.sync_league(league.id)
@@ -142,9 +142,7 @@ async def test_sync_handles_season_failure_gracefully():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         summary = await service.sync_league(league.id)
@@ -183,9 +181,7 @@ async def test_sync_stores_manager_map():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         await service.sync_league(league.id)
@@ -221,9 +217,7 @@ async def test_sync_caches_free_agents():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         summary = await service.sync_league(league.id)
@@ -250,9 +244,7 @@ async def test_sync_deduplicates_picks():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
 
         # First sync
@@ -289,16 +281,14 @@ async def test_picks_stored_with_user_id():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, user_id)
         assert service._user_id == user_id
         await service.sync_league(league.id)
 
-    # Picks were stored (execute called for INSERT statements + initial SELECT)
-    assert mock_db._call_count["n"] > 1
+    # Picks were stored (execute called for INSERT statements)
+    assert mock_db._call_count["n"] >= 1
 
 
 @pytest.mark.asyncio
@@ -322,6 +312,12 @@ async def test_user_a_picks_not_visible_to_user_b():
     mock_platform.get_rosters.return_value = []
     mock_platform.get_free_agents.return_value = []
 
+    def _league_for(user_id, league_id):
+        return league_a if league_id == league_a.id else league_b
+
+    repo = MagicMock()
+    repo.get_user_league = AsyncMock(side_effect=_league_for)
+
     with patch(
         "backend.services.league_sync.get_platform_api",
         new_callable=AsyncMock,
@@ -331,6 +327,7 @@ async def test_user_a_picks_not_visible_to_user_b():
         return_value=2026,
     ), patch(
         "backend.services.league_sync.LeagueRepository",
+        return_value=repo,
     ):
         from backend.services.league_sync import LeagueSyncService
 
@@ -377,9 +374,7 @@ async def test_sync_espn_redetects_draft_type():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         await service.sync_league(league.id)
@@ -430,9 +425,7 @@ async def test_sync_skips_picks_without_player_info():
     ), patch(
         "backend.services.league_sync.get_current_season",
         return_value=2026,
-    ), patch(
-        "backend.services.league_sync.LeagueRepository",
-    ):
+    ), _patch_league_repo(league):
         from backend.services.league_sync import LeagueSyncService
         service = LeagueSyncService(mock_db, league.user_id)
         summary = await service.sync_league(league.id)

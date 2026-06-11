@@ -12,6 +12,9 @@ from pydantic import BaseModel
 
 T = TypeVar("T")
 
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
+
 
 @dataclass
 class PaginationParams:
@@ -29,7 +32,9 @@ class PaginationParams:
 
 def get_pagination(
     page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(50, ge=1, le=100, description="Items per page"),
+    per_page: int = Query(
+        DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"
+    ),
 ) -> PaginationParams:
     """FastAPI dependency for pagination parameters."""
     return PaginationParams(page=page, per_page=per_page)

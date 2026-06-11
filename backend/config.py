@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     vite_clerk_publishable_key: Optional[str] = None
     clerk_webhook_secret: Optional[str] = None
 
+    # Rate limits — requests per minute, per client IP
+    rate_limit_api_rpm: int = 120        # general API endpoints
+    rate_limit_pipeline_rpm: int = 5     # expensive pipeline triggers
+    rate_limit_auth_rpm: int = 10        # auth endpoints
+
+    # How many seasons of draft history a league sync imports
+    league_sync_history_seasons: int = 4
+
     @property
     def clerk_enabled(self) -> bool:
         """True when Clerk is configured."""

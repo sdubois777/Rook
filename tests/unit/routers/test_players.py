@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, get_db
 from backend.main import app
 
 
@@ -19,6 +19,13 @@ def _mock_user():
     m.tier = "intro"
     m.credits_remaining = 25
     return m
+
+
+def _override_db(session):
+    """Return a get_db override that yields the given mock session."""
+    async def _get_db():
+        yield session
+    return _get_db
 
 
 def _make_player(**overrides):
@@ -79,17 +86,14 @@ async def test_list_players():
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
     app.dependency_overrides[get_current_user] = _mock_user
+    app.dependency_overrides[get_db] = _override_db(session)
     try:
-        with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/players")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/players")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -115,13 +119,12 @@ async def test_search_players():
     result_mock.scalars.return_value = scalars_mock
     session.execute = AsyncMock(return_value=result_mock)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/players/search?q=chase")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -158,13 +161,12 @@ async def test_player_summary():
 
     session.execute = AsyncMock(side_effect=[grouped_result, total_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/players/summary")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -208,13 +210,12 @@ async def test_get_player_detail():
 
     session.execute = AsyncMock(side_effect=[player_result, ts_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(f"/players/{player_id}")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
     data = resp.json()
@@ -231,13 +232,12 @@ async def test_get_player_not_found():
     result.scalar_one_or_none.return_value = None
     session.execute = AsyncMock(return_value=result)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
     fake_id = str(uuid.uuid4())
-    with patch("backend.routers.players.AsyncSessionLocal", return_value=ctx):
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(f"/players/{fake_id}")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 404

@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from pathlib import Path
 
 import pandas as pd
 import requests
+
+from backend.integrations import parquet_cache
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +32,10 @@ CACHE_TTL_HISTORICAL = None  # historical stats: forever
 
 
 def _cache_path(name: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR / f"{name}.parquet"
+    return parquet_cache.cache_path(CACHE_DIR, name)
 
 
+# Sanity floors: reject suspiciously small caches (stale test data)
 _MIN_CACHE_ROWS = {
     "players_current": 1000,   # ~3940 active skill players
     "stats_":          500,    # ~2900 per season
@@ -42,29 +43,17 @@ _MIN_CACHE_ROWS = {
 }
 
 
-def _cache_valid(path: Path, ttl_hours: float | None) -> bool:
-    """True if cache file exists, within TTL, and has enough rows."""
-    if not path.exists():
-        return False
-    if ttl_hours is not None:
-        age = (time.time() - path.stat().st_mtime) / 3600
-        if age >= ttl_hours:
-            return False
-    # Sanity check: reject suspiciously small caches (stale test data)
+def _min_rows_for(path: Path) -> int | None:
+    """Return the row-count floor for a cache file, if one applies."""
     for prefix, min_rows in _MIN_CACHE_ROWS.items():
         if prefix in path.stem:
-            try:
-                df = pd.read_parquet(path)
-                if len(df) < min_rows:
-                    logger.warning(
-                        "Cache %s has only %d rows (min %d) — re-fetching",
-                        path.name, len(df), min_rows,
-                    )
-                    return False
-            except Exception:
-                return False
-            break
-    return True
+            return min_rows
+    return None
+
+
+def _cache_valid(path: Path, ttl_hours: float | None) -> bool:
+    """True if cache file exists, within TTL, and has enough rows."""
+    return parquet_cache.cache_valid(path, ttl_hours, _min_rows_for(path))
 
 
 # ---------------------------------------------------------------------------

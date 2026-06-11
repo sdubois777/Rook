@@ -1,8 +1,9 @@
 import browser from './browser.js'
+import { STORAGE_KEYS } from './constants.js'
 
 export async function getDraftToken() {
-  const result = await browser.storage.local.get('draft_token')
-  return result.draft_token || null
+  const result = await browser.storage.local.get(STORAGE_KEYS.DRAFT_TOKEN)
+  return result[STORAGE_KEYS.DRAFT_TOKEN] || null
 }
 
 export async function postDraftEvent(event) {

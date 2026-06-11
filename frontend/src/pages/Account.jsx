@@ -3,6 +3,7 @@ import { useUser, useClerk } from '@clerk/clerk-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
+import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
 
 async function fetchAccountData() {
   const [me, credits, leagues, tokenResp] = await Promise.all([
@@ -17,12 +18,6 @@ async function fetchAccountData() {
     leagues: leagues.data,
     draftToken: tokenResp.data.draft_token || null,
   }
-}
-
-const TIER_LABELS = {
-  intro: 'Intro \u2014 $5/mo',
-  standard: 'Standard \u2014 $9/mo',
-  pro: 'Pro \u2014 $18/mo',
 }
 
 const TIER_COLORS = {
@@ -90,8 +85,6 @@ function DraftTokenSection({ token, onRevoke }) {
     </section>
   )
 }
-
-const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Standard' }
 
 function LeagueCard({ league }) {
   const queryClient = useQueryClient()
@@ -183,8 +176,6 @@ function LeagueCard({ league }) {
 
 export default function AccountPage() {
   const { user: clerkUser, isLoaded } = useUser()
-  console.log('AccountPage rendering')
-  console.log('Clerk user loaded:', isLoaded, clerkUser?.id)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['account'],

@@ -555,7 +555,7 @@ class InjuryRiskAgent(BaseAgent):
 async def _bulk_resolve_player_ids(
     session: AsyncSession,
     names_and_teams: list[tuple[str, str]],
-) -> dict[tuple, str | None]:
+) -> dict[tuple[str, str], str | None]:
     """Resolve player IDs from (name, team) pairs in a single query.
 
     Uses team-based fetch for efficiency and builds gsis_id lookup map

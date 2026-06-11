@@ -1,5 +1,3 @@
-import { getPositionColor } from '../../lib/theme'
-
 const positionStyles = {
   QB: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
   RB: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',

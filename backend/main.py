@@ -77,6 +77,14 @@ _scheduler = None
 @app.on_event("startup")
 async def startup_checks():
     global _scheduler
+
+    # Fail loudly at boot: production must never run without Clerk auth.
+    # Without this, the first authenticated request would 401 hours later.
+    if settings.environment == "production" and not settings.clerk_enabled:
+        raise RuntimeError(
+            "CLERK_SECRET_KEY not configured — refusing to start in production"
+        )
+
     missing = []
     if not settings.yahoo_client_id:
         missing.append("YAHOO_CLIENT_ID")

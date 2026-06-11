@@ -25,9 +25,10 @@ from sqlalchemy import select
 
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player
+from backend.utils.seasons import get_current_season
 
-# Load seasonal rosters from 2010 through 2025
-ROSTER_YEARS = list(range(2010, 2026))
+# Load seasonal rosters from 2010 through the last completed season
+ROSTER_YEARS = list(range(2010, get_current_season()))
 
 
 def load_season_counts() -> dict[str, int]:

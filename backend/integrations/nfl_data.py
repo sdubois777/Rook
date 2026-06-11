@@ -18,6 +18,8 @@ from typing import Optional
 import pandas as pd
 import nfl_data_py as nfl
 
+from backend.integrations import parquet_cache
+
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "data/cache"))
@@ -81,24 +83,12 @@ def build_player_lookup(players: list[dict]) -> dict[str, str]:
     return lookup
 
 
-def _ensure_cache():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
 def _cache_path(name: str) -> Path:
-    _ensure_cache()
-    return CACHE_DIR / f"{name}.parquet"
+    return parquet_cache.cache_path(CACHE_DIR, name)
 
 
 def _load_or_fetch(cache_name: str, fetch_fn) -> pd.DataFrame:
-    path = _cache_path(cache_name)
-    if path.exists():
-        logger.debug("Cache hit: %s", cache_name)
-        return pd.read_parquet(path)
-    logger.info("Downloading: %s", cache_name)
-    df = fetch_fn()
-    df.to_parquet(path, index=False)
-    return df
+    return parquet_cache.load_or_fetch(CACHE_DIR, cache_name, fetch_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +570,7 @@ def compute_seasonal_stats_from_pbp(
     Verified accurate for 2025:
       CMC: 414.6, Allen: 378.6, Nacua: 377.0
     """
-    _ensure_cache()
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE_DIR / f"seasonal_pbp_{season}.pkl"
     if use_cache and cache_file.exists():
         logger.info("Loading %d PBP stats from cache", season)

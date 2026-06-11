@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from backend.integrations import parquet_cache
 from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
@@ -61,19 +62,15 @@ def _ensure_dirs() -> None:
 
 def _cache_path(name: str) -> Path:
     _ensure_dirs()
-    return CACHE_DIR / f"{name}.parquet"
+    return parquet_cache.cache_path(CACHE_DIR, name)
 
 
 def _load_or_fetch(cache_name: str, fetch_fn) -> pd.DataFrame:
-    path = _cache_path(cache_name)
-    if path.exists():
-        logger.debug("Cache hit: %s", cache_name)
-        return pd.read_parquet(path)
-    logger.info("Fetching via R: %s", cache_name)
-    df = fetch_fn()
-    if not df.empty:
-        df.to_parquet(path, index=False)
-    return df
+    _ensure_dirs()
+    return parquet_cache.load_or_fetch(
+        CACHE_DIR, cache_name, fetch_fn,
+        skip_empty=True, fetch_log="Fetching via R",
+    )
 
 
 # ---------------------------------------------------------------------------
