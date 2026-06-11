@@ -19,8 +19,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.dependencies import get_current_user, get_db
-from backend.engines.valuation import get_market_context
 from backend.models.user import User
+from backend.services.league_analysis import build_bias_analysis
 from backend.repositories.league_auction_repo import (
     LeagueAuctionHistoryRepository,
 )
@@ -138,61 +138,12 @@ async def get_league_tendencies(
     ]
 
     # Current season bias analysis
-    positional_biases: list[PositionBias] = []
-    top_opportunities: list[BiasPlayer] = []
-    top_traps: list[BiasPlayer] = []
-
-    if players:
-        player_contexts = [(p, get_market_context(p)) for p in players]
-
-        pos_data: dict[str, dict] = {}
-        for p, mctx in player_contexts:
-            pos = p.position
-            if pos not in pos_data:
-                pos_data[pos] = {"league_sum": 0.0, "fp_sum": 0.0, "bias_sum": 0.0, "count": 0}
-            league = float(mctx["market_value_league"]) if mctx["market_value_league"] is not None else 0
-            fp = float(mctx["market_value_fantasypros"]) if mctx["market_value_fantasypros"] is not None else 0
-            bias = float(mctx["league_bias"]) if mctx["league_bias"] is not None else 0
-            pos_data[pos]["league_sum"] += league
-            pos_data[pos]["fp_sum"] += fp
-            pos_data[pos]["bias_sum"] += bias
-            pos_data[pos]["count"] += 1
-
-        for pos in ["QB", "RB", "WR", "TE"]:
-            d = pos_data.get(pos)
-            if not d or d["count"] == 0:
-                continue
-            positional_biases.append(PositionBias(
-                position=pos,
-                avg_league_price=round(d["league_sum"] / d["count"], 1),
-                avg_fp_price=round(d["fp_sum"] / d["count"], 1),
-                avg_bias=round(d["bias_sum"] / d["count"], 1),
-                player_count=d["count"],
-            ))
-
-        with_bias = [(p, m) for p, m in player_contexts if m["league_bias"] is not None]
-
-        def _to_bias_player(p, mctx) -> BiasPlayer:
-            return BiasPlayer(
-                id=str(p.id),
-                name=p.name,
-                position=p.position,
-                market_value_league=float(mctx["market_value_league"]) if mctx["market_value_league"] is not None else None,
-                market_value_fantasypros=float(mctx["market_value_fantasypros"]) if mctx["market_value_fantasypros"] is not None else None,
-                bias=float(mctx["league_bias"]),
-                bias_signal=mctx["league_bias_signal"],
-            )
-
-        sorted_opps = sorted(with_bias, key=lambda x: float(x[1]["league_bias"]))
-        top_opportunities = [_to_bias_player(p, m) for p, m in sorted_opps[:5] if float(m["league_bias"]) < -5]
-
-        sorted_traps = sorted(with_bias, key=lambda x: float(x[1]["league_bias"]), reverse=True)
-        top_traps = [_to_bias_player(p, m) for p, m in sorted_traps[:5] if float(m["league_bias"]) > 5]
+    biases, opportunities, traps = build_bias_analysis(players)
 
     return LeagueTendenciesResponse(
-        positional_biases=positional_biases,
-        top_opportunities=top_opportunities,
-        top_traps=top_traps,
+        positional_biases=[PositionBias(**b) for b in biases],
+        top_opportunities=[BiasPlayer(**p) for p in opportunities],
+        top_traps=[BiasPlayer(**p) for p in traps],
         total_players_with_league_data=len(players),
         seasons_available=seasons_available,
         positional_trends=positional_trends,
