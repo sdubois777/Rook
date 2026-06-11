@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 # Smart-skip: if the last analysis for a team is within this many days, skip re-analysis
 ROSTER_CHANGES_STALENESS_DAYS = 7
 
+# Min production thresholds — departures/arrivals below these are depth moves, not flag-worthy
+MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
+MIN_CARRIES = 150  # ~9 carries/game — RB1 level
+
 # Suffix regex for cross-source name matching (Sleeper drops suffixes, nfl_data_py keeps them)
 _SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 
@@ -1002,10 +1006,6 @@ class RosterChangesAgent(BaseAgent):
                     existing = prod_by_name.get(name, (0, 0))
                     prod_by_name[name] = (existing[0] + tgts, existing[1] + carries)
 
-        # Min production thresholds — only flag WR1/RB1/TE1 departures
-        MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
-        MIN_CARRIES = 150  # ~9 carries/game — RB1 level
-
         mask = prev_rosters[team_col].str.upper() == team
         if "position" in prev_rosters.columns:
             mask &= prev_rosters["position"].isin(skill_pos)
@@ -1163,9 +1163,6 @@ class RosterChangesAgent(BaseAgent):
                 if name:
                     existing = prod_by_name.get(name, (0, 0))
                     prod_by_name[name] = (max(existing[0], tgts), max(existing[1], carries))
-
-        MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
-        MIN_CARRIES = 150  # ~9 carries/game — RB1 level
 
         flags: list[dict] = []
         for arrival_name in arrival_names:
