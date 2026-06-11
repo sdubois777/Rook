@@ -1,10 +1,11 @@
 import browser from '../utils/browser.js'
 import { getApiBase } from '../utils/api.js'
+import { STORAGE_KEYS } from '../utils/constants.js'
 
 document.addEventListener('DOMContentLoaded', init)
 
 async function init() {
-  const { draft_token } = await browser.storage.local.get('draft_token')
+  const { draft_token } = await browser.storage.local.get(STORAGE_KEYS.DRAFT_TOKEN)
   if (draft_token) {
     showMainView(draft_token)
   } else {
@@ -28,7 +29,7 @@ function showTokenEntry() {
   document.getElementById('save-btn').addEventListener('click', async () => {
     const token = document.getElementById('token-input').value.trim()
     if (!token) return
-    await browser.storage.local.set({ draft_token: token })
+    await browser.storage.local.set({ [STORAGE_KEYS.DRAFT_TOKEN]: token })
     showMainView(token)
   })
 }
@@ -36,7 +37,7 @@ function showTokenEntry() {
 /* ── Main connected view ── */
 async function showMainView(token) {
   const platforms = await getPlatformStatus()
-  const { capture_mode } = await browser.storage.local.get('capture_mode')
+  const { capture_mode } = await browser.storage.local.get(STORAGE_KEYS.CAPTURE_MODE)
 
   document.getElementById('app').innerHTML = `
     <div class="header">
@@ -71,16 +72,16 @@ async function showMainView(token) {
   `
 
   document.getElementById('disconnect-btn').addEventListener('click', async () => {
-    await browser.storage.local.remove('draft_token')
+    await browser.storage.local.remove(STORAGE_KEYS.DRAFT_TOKEN)
     showTokenEntry()
   })
 
   document.getElementById('capture-toggle').addEventListener('change', async (e) => {
-    await browser.storage.local.set({ capture_mode: e.target.checked })
+    await browser.storage.local.set({ [STORAGE_KEYS.CAPTURE_MODE]: e.target.checked })
   })
 
   document.getElementById('export-btn').addEventListener('click', async () => {
-    const { captured_frames } = await browser.storage.local.get('captured_frames')
+    const { captured_frames } = await browser.storage.local.get(STORAGE_KEYS.CAPTURED_FRAMES)
     if (!captured_frames || captured_frames.length === 0) {
       alert('No captured frames yet. Enable capture mode and open a draft room.')
       return
@@ -100,12 +101,14 @@ async function showMainView(token) {
 /* ── Platform status ── */
 async function getPlatformStatus() {
   const keys = await browser.storage.local.get([
-    'espn_connected', 'yahoo_synced_at', 'sleeper_synced_at',
+    STORAGE_KEYS.ESPN_CONNECTED,
+    STORAGE_KEYS.YAHOO_SYNCED_AT,
+    STORAGE_KEYS.SLEEPER_SYNCED_AT,
   ])
   return [
-    { name: 'Yahoo', connected: !!keys.yahoo_synced_at },
-    { name: 'ESPN', connected: !!keys.espn_connected },
-    { name: 'Sleeper', connected: !!keys.sleeper_synced_at },
+    { name: 'Yahoo', connected: !!keys[STORAGE_KEYS.YAHOO_SYNCED_AT] },
+    { name: 'ESPN', connected: !!keys[STORAGE_KEYS.ESPN_CONNECTED] },
+    { name: 'Sleeper', connected: !!keys[STORAGE_KEYS.SLEEPER_SYNCED_AT] },
   ]
 }
 
