@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, get_db
 from backend.main import app
 
 _USER_ID = uuid.uuid4()
@@ -24,6 +24,13 @@ def _mock_user():
     return m
 
 
+def _override_db(session):
+    """Return a get_db override that yields the given mock session."""
+    async def _get_db():
+        yield session
+    return _get_db
+
+
 def _make_pref(ptype="watchlist", entity_id="player-1", value=None):
     p = MagicMock()
     p.id = uuid.uuid4()
@@ -33,6 +40,18 @@ def _make_pref(ptype="watchlist", entity_id="player-1", value=None):
     p.created_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
     p.updated_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
     return p
+
+
+async def _request(session, method, url, **kwargs):
+    """Issue one request with user + db overrides installed."""
+    app.dependency_overrides[get_current_user] = _mock_user
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            return await ac.request(method, url, **kwargs)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_db, None)
 
 
 # ---------------------------------------------------------------------------
@@ -50,17 +69,7 @@ async def test_get_watchlist():
     result_mock.scalars.return_value = scalars_mock
     session.execute = AsyncMock(return_value=result_mock)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/preferences/watchlist")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(session, "GET", "/preferences/watchlist")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -71,8 +80,6 @@ async def test_get_watchlist():
 @pytest.mark.asyncio
 async def test_add_to_watchlist():
     """POST /preferences/watchlist adds player."""
-    new_pref = _make_pref(entity_id="player-2")
-
     session = AsyncMock()
     # First execute: check existing — returns None
     result_existing = MagicMock()
@@ -80,19 +87,13 @@ async def test_add_to_watchlist():
     session.execute = AsyncMock(return_value=result_existing)
     session.add = MagicMock()
     session.commit = AsyncMock()
-    session.refresh = AsyncMock(side_effect=lambda p: setattr(p, 'created_at', datetime(2026, 5, 1, tzinfo=timezone.utc)))
+    session.refresh = AsyncMock(
+        side_effect=lambda p: setattr(p, 'created_at', datetime(2026, 5, 1, tzinfo=timezone.utc))
+    )
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-2"})
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(
+        session, "POST", "/preferences/watchlist", json={"player_id": "player-2"}
+    )
 
     assert resp.status_code == 201
     data = resp.json()
@@ -108,17 +109,9 @@ async def test_add_to_watchlist_duplicate():
     result_mock.scalar_one_or_none.return_value = existing
     session.execute = AsyncMock(return_value=result_mock)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/preferences/watchlist", json={"player_id": "player-1"})
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(
+        session, "POST", "/preferences/watchlist", json={"player_id": "player-1"}
+    )
 
     assert resp.status_code == 409
 
@@ -132,17 +125,7 @@ async def test_remove_from_watchlist():
     session.execute = AsyncMock(return_value=result_mock)
     session.commit = AsyncMock()
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.delete("/preferences/watchlist/player-1")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(session, "DELETE", "/preferences/watchlist/player-1")
 
     assert resp.status_code == 204
 
@@ -156,17 +139,7 @@ async def test_remove_from_watchlist_not_found():
     session.execute = AsyncMock(return_value=result_mock)
     session.commit = AsyncMock()
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.delete("/preferences/watchlist/nonexistent")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(session, "DELETE", "/preferences/watchlist/nonexistent")
 
     assert resp.status_code == 404
 
@@ -184,17 +157,7 @@ async def test_get_strategy():
     result_mock.scalar_one_or_none.return_value = pref
     session.execute = AsyncMock(return_value=result_mock)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.get("/preferences/strategy")
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(session, "GET", "/preferences/strategy")
 
     assert resp.status_code == 200
     assert resp.json()["strategy"] == "hero_rb"
@@ -210,17 +173,9 @@ async def test_set_strategy():
     session.add = MagicMock()
     session.commit = AsyncMock()
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    app.dependency_overrides[get_current_user] = _mock_user
-    try:
-        with patch("backend.routers.preferences.AsyncSessionLocal", return_value=ctx):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.put("/preferences/strategy", json={"strategy": "zero_rb"})
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    resp = await _request(
+        session, "PUT", "/preferences/strategy", json={"strategy": "zero_rb"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["strategy"] == "zero_rb"
