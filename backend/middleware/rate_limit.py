@@ -13,7 +13,10 @@ from threading import Lock
 
 from fastapi import Request
 
+from backend.config import settings
 from backend.core.exceptions import RateLimitError
+
+WINDOW_SECONDS = 60
 
 
 class RateLimiter:
@@ -27,7 +30,7 @@ class RateLimiter:
         requests_per_minute: int = 60,
     ):
         self._rpm = requests_per_minute
-        self._window = 60  # seconds
+        self._window = WINDOW_SECONDS
         self._buckets: dict[str, list[float]] = defaultdict(list)
         self._lock = Lock()
 
@@ -54,25 +57,25 @@ class RateLimiter:
             self._buckets[key].append(now)
 
 
-# Global limiters — different limits for different endpoint classes
-_api_limiter = RateLimiter(requests_per_minute=120)      # General API
-_pipeline_limiter = RateLimiter(requests_per_minute=5)   # Expensive ops
-_auth_limiter = RateLimiter(requests_per_minute=10)      # Auth endpoints
+# Global limiters — limits per endpoint class, tunable via config
+_api_limiter = RateLimiter(requests_per_minute=settings.rate_limit_api_rpm)
+_pipeline_limiter = RateLimiter(requests_per_minute=settings.rate_limit_pipeline_rpm)
+_auth_limiter = RateLimiter(requests_per_minute=settings.rate_limit_auth_rpm)
 
 
 def rate_limit_api(request: Request) -> None:
-    """General API rate limit — 120 req/min per IP."""
+    """General API rate limit per IP."""
     key = request.client.host if request.client else "unknown"
     _api_limiter.check(key)
 
 
 def rate_limit_pipeline(request: Request) -> None:
-    """Pipeline trigger rate limit — 5 req/min per IP."""
+    """Pipeline trigger rate limit per IP."""
     key = request.client.host if request.client else "unknown"
     _pipeline_limiter.check(key)
 
 
 def rate_limit_auth(request: Request) -> None:
-    """Auth endpoint rate limit — 10 req/min per IP."""
+    """Auth endpoint rate limit per IP."""
     key = request.client.host if request.client else "unknown"
     _auth_limiter.check(key)

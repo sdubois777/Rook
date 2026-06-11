@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import settings
 from backend.integrations.platform_factory import get_platform_api
 from backend.models.user_league import UserLeague
 from backend.repositories.league_repo import LeagueRepository
@@ -20,7 +21,7 @@ from backend.utils.seasons import get_current_season
 logger = logging.getLogger(__name__)
 
 # How many historical seasons to import
-HISTORY_SEASONS = 4
+HISTORY_SEASONS = settings.league_sync_history_seasons
 
 
 class LeagueSyncService:
