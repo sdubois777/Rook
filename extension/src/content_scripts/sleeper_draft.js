@@ -11,8 +11,8 @@ import INTERCEPTOR_CODE from '../utils/ws_interceptor.js?raw'
 })()
 
 window.addEventListener('__draftmind_ws_frame__', async (event) => {
-  const { capturing } = await browser.storage.local.get('capturing')
-  if (capturing) {
+  const { capture_mode } = await browser.storage.local.get('capture_mode')
+  if (capture_mode) {
     await captureFrame(event.detail)
   }
 
