@@ -3,14 +3,9 @@ import { useDraftStore } from '../../stores/draft'
 import PositionBadge from '../shared/PositionBadge'
 import SearchInput from '../shared/SearchInput'
 import { FilterSelect } from '../shared/FilterBar'
+import { buildPositionOptions } from '../../lib/constants'
 
-const POSITION_OPTIONS = [
-  { value: '', label: 'All' },
-  { value: 'QB', label: 'QB' },
-  { value: 'RB', label: 'RB' },
-  { value: 'WR', label: 'WR' },
-  { value: 'TE', label: 'TE' },
-]
+const POSITION_OPTIONS = buildPositionOptions('All')
 
 export default function AvailablePlayers() {
   const availablePlayers = useDraftStore((s) => s.availablePlayers)

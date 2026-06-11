@@ -15,17 +15,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
 
-from backend.database import AsyncSessionLocal
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
 from backend.utils.seasons import get_current_season
-from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, PlayerSchedule
-from backend.models.dependency import PlayerDependency, BeatReporterSignal
-from backend.models.market_value_historic import MarketValueHistoric
-from backend.models.team_system import TeamSystem
+from backend.models.player import Player
+from backend.repositories.player_repo import PlayerRepository
+from backend.repositories.team_system_repo import TeamSystemRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/players", tags=["players"])
@@ -265,45 +261,22 @@ def _player_to_summary(player: Player) -> PlayerSummary:
 # ---------------------------------------------------------------------------
 
 @router.get("/search", response_model=list[PlayerSummary])
-async def search_players(q: str = Query(..., min_length=2)):
+async def search_players(
+    q: str = Query(..., min_length=2),
+    db=Depends(get_db),
+) -> list[PlayerSummary]:
     """Search players by name. Returns top 20 matches by bid ceiling."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Player)
-            .where(Player.name.ilike(f"%{q}%"))
-            .options(
-                selectinload(Player.dependencies),
-                selectinload(Player.injury_profile),
-                selectinload(Player.schedule),
-                selectinload(Player.historic_prices),
-            )
-            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
-            .limit(20)
-        )
-        players = result.scalars().all()
-
+    repo = PlayerRepository(db)
+    players = await repo.search_by_name(q, limit=20)
     return [_player_to_summary(p) for p in players]
 
 
 @router.get("/summary", response_model=PlayerSummaryResponse)
-async def player_summary():
+async def player_summary(db=Depends(get_db)) -> PlayerSummaryResponse:
     """Position counts by tier for scarcity display."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                Player.position,
-                Player.tier,
-                func.count(Player.id),
-            )
-            .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
-            .group_by(Player.position, Player.tier)
-        )
-        rows = result.all()
-
-        total_result = await session.execute(
-            select(func.count(Player.id))
-        )
-        total_players = total_result.scalar() or 0
+    repo = PlayerRepository(db)
+    rows = await repo.count_by_position_tier()
+    total_players = await repo.count_all()
 
     position_counts: dict[str, PositionCounts] = {}
     for pos, tier, count in rows:
@@ -325,48 +298,30 @@ async def player_summary():
 
 
 @router.get("/{player_id}", response_model=PlayerDetail)
-async def get_player(player_id: uuid.UUID):
+async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
     """Full player detail with all related data."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Player)
-            .where(Player.id == player_id)
-            .options(
-                selectinload(Player.profile),
-                selectinload(Player.injury_profile),
-                selectinload(Player.schedule),
-                selectinload(Player.dependencies),
-                selectinload(Player.beat_signals),
-                selectinload(Player.historic_prices),
-            )
-        )
-        player = result.scalar_one_or_none()
+    repo = PlayerRepository(db)
+    player = await repo.get_detail(player_id)
 
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
 
-        # Get team system context
-        team_system = None
-        if player.team_abbr:
-            ts_result = await session.execute(
-                select(TeamSystem)
-                .where(TeamSystem.team_abbr == player.team_abbr)
-                .order_by(TeamSystem.season_year.desc())
-                .limit(1)
+    # Get team system context
+    team_system = None
+    if player.team_abbr:
+        ts = await TeamSystemRepository(db).get_latest_for_team(player.team_abbr)
+        if ts:
+            team_system = TeamSystemSummary(
+                team_abbr=ts.team_abbr,
+                system_grade=ts.system_grade,
+                qb_name=ts.qb_name,
+                qb_tier=ts.qb_tier,
+                pass_protection_grade=ts.pass_protection_grade,
+                run_blocking_grade=ts.run_blocking_grade,
+                oc_scheme=ts.oc_scheme,
+                rookie_qb_flag=ts.rookie_qb_flag or False,
+                compound_risk_flag=ts.compound_risk_flag or False,
             )
-            ts = ts_result.scalar_one_or_none()
-            if ts:
-                team_system = TeamSystemSummary(
-                    team_abbr=ts.team_abbr,
-                    system_grade=ts.system_grade,
-                    qb_name=ts.qb_name,
-                    qb_tier=ts.qb_tier,
-                    pass_protection_grade=ts.pass_protection_grade,
-                    run_blocking_grade=ts.run_blocking_grade,
-                    oc_scheme=ts.oc_scheme,
-                    rookie_qb_flag=ts.rookie_qb_flag or False,
-                    compound_risk_flag=ts.compound_risk_flag or False,
-                )
 
     summary = _player_to_summary(player)
 
@@ -475,72 +430,21 @@ async def list_players(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     _user=Depends(get_current_user),
-):
+    db=Depends(get_db),
+) -> PlayerListResponse:
     """Paginated, filterable player list."""
-    async with AsyncSessionLocal() as session:
-        # Base query
-        query = select(Player).options(
-            selectinload(Player.dependencies),
-            selectinload(Player.injury_profile),
-            selectinload(Player.schedule),
-            selectinload(Player.historic_prices),
-        )
-
-        # Filters
-        if position:
-            query = query.where(Player.position == position.upper())
-        if tier is not None:
-            query = query.where(Player.tier == tier)
-        if team:
-            query = query.where(Player.team_abbr == team.upper())
-        if value_gap_dir == "undervalued":
-            query = query.where(Player.value_gap_signal == "market_undervalues")
-        elif value_gap_dir == "overvalued":
-            query = query.where(Player.value_gap_signal == "market_overvalues")
-        elif value_gap_dir == "aligned":
-            query = query.where(Player.value_gap_signal == "aligned")
-
-        # Flag filter — requires subquery
-        if flag == "flagged":
-            query = query.where(
-                Player.id.in_(
-                    select(PlayerDependency.player_id).distinct()
-                )
-            )
-        elif flag == "clean":
-            query = query.where(
-                ~Player.id.in_(
-                    select(PlayerDependency.player_id).distinct()
-                )
-            )
-
-        # Count total
-        count_query = select(func.count()).select_from(query.subquery())
-        total_result = await session.execute(count_query)
-        total = total_result.scalar() or 0
-
-        # Sort
-        sort_map = {
-            "bid_ceiling": Player.recommended_bid_ceiling,
-            "ai_ceiling": Player.ai_bid_ceiling,
-            "system_value": Player.baseline_value,
-            "market_value": Player.market_value,
-            "value_gap": Player.value_gap,
-            "name": Player.name,
-            "tier": Player.tier,
-        }
-        sort_col = sort_map.get(sort, Player.recommended_bid_ceiling)
-        if order == "asc":
-            query = query.order_by(sort_col.asc().nulls_last())
-        else:
-            query = query.order_by(sort_col.desc().nulls_last())
-
-        # Paginate
-        offset = (page - 1) * per_page
-        query = query.offset(offset).limit(per_page)
-
-        result = await session.execute(query)
-        players = result.scalars().all()
+    repo = PlayerRepository(db)
+    players, total = await repo.list_filtered(
+        position=position,
+        tier=tier,
+        team=team,
+        flag=flag,
+        value_gap_dir=value_gap_dir,
+        sort=sort,
+        order=order,
+        page=page,
+        per_page=per_page,
+    )
 
     pages = (total + per_page - 1) // per_page if total > 0 else 1
 

@@ -12,14 +12,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
 
-from backend.database import AsyncSessionLocal
-from backend.models.dependency import BeatReporterSignal
-from backend.models.player import Player
+from backend.core.dependencies import get_db
+from backend.repositories.news_repo import NewsRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/news", tags=["news"])
@@ -64,38 +61,19 @@ async def get_news(
     signal_type: Optional[str] = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
-):
+    db=Depends(get_db),
+) -> NewsFeedResponse:
     """Beat reporter signals feed with filters."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-    async with AsyncSessionLocal() as session:
-        # Base query with player join
-        query = (
-            select(BeatReporterSignal, Player.name, Player.team_abbr, Player.position)
-            .outerjoin(Player, BeatReporterSignal.player_id == Player.id)
-            .where(BeatReporterSignal.flagged_at >= cutoff)
-        )
-
-        # Filters
-        if team:
-            query = query.where(Player.team_abbr == team.upper())
-        if player_id:
-            query = query.where(BeatReporterSignal.player_id == player_id)
-        if signal_type:
-            query = query.where(BeatReporterSignal.signal_type == signal_type)
-
-        # Count
-        count_query = select(func.count()).select_from(query.subquery())
-        total_result = await session.execute(count_query)
-        total = total_result.scalar() or 0
-
-        # Order and paginate
-        query = query.order_by(BeatReporterSignal.flagged_at.desc())
-        offset = (page - 1) * per_page
-        query = query.offset(offset).limit(per_page)
-
-        result = await session.execute(query)
-        rows = result.all()
+    rows, total = await NewsRepository(db).list_feed(
+        cutoff=cutoff,
+        team=team,
+        player_id=player_id,
+        signal_type=signal_type,
+        page=page,
+        per_page=per_page,
+    )
 
     signals = []
     for row in rows:

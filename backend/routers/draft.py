@@ -220,16 +220,12 @@ async def start_draft(req: StartDraftRequest):
     if req.league_id:
         try:
             import uuid as _uuid
-            from sqlalchemy import select
-            from backend.models.user_league import UserLeague
+            from backend.repositories.league_repo import LeagueRepository
 
             async with async_session() as session:
-                result = await session.execute(
-                    select(UserLeague).where(
-                        UserLeague.id == _uuid.UUID(req.league_id)
-                    )
+                user_league = await LeagueRepository(session).get(
+                    _uuid.UUID(req.league_id)
                 )
-                user_league = result.scalar_one_or_none()
         except Exception as exc:
             logger.warning(
                 "Could not load league %s for draft config: %s",

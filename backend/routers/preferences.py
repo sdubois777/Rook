@@ -16,12 +16,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
 
-from backend.core.dependencies import get_current_user
-from backend.database import AsyncSessionLocal
+from backend.core.dependencies import get_current_user, get_db
 from backend.models.user import User
-from backend.models.user_preference import UserPreference
+from backend.repositories.preference_repo import UserPreferenceRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/preferences", tags=["preferences"])
@@ -59,16 +57,12 @@ class SetStrategyRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/watchlist", response_model=WatchlistResponse)
-async def get_watchlist(user: User = Depends(get_current_user)):
+async def get_watchlist(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> WatchlistResponse:
     """List all watchlist player IDs for current user."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(UserPreference)
-            .where(UserPreference.preference_type == "watchlist")
-            .where(UserPreference.user_id == user.id)
-            .order_by(UserPreference.created_at.desc())
-        )
-        prefs = result.scalars().all()
+    prefs = await UserPreferenceRepository(db).list_watchlist(user.id)
 
     items = [
         WatchlistItem(
@@ -82,28 +76,17 @@ async def get_watchlist(user: User = Depends(get_current_user)):
 
 
 @router.post("/watchlist", response_model=WatchlistItem, status_code=201)
-async def add_to_watchlist(body: AddWatchlistRequest, user: User = Depends(get_current_user)):
+async def add_to_watchlist(
+    body: AddWatchlistRequest,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> WatchlistItem:
     """Add a player to the watchlist."""
-    async with AsyncSessionLocal() as session:
-        # Check if already in watchlist for this user
-        existing = await session.execute(
-            select(UserPreference)
-            .where(UserPreference.preference_type == "watchlist")
-            .where(UserPreference.entity_id == body.player_id)
-            .where(UserPreference.user_id == user.id)
-        )
-        if existing.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="Player already in watchlist")
+    repo = UserPreferenceRepository(db)
+    if await repo.get_watchlist_entry(user.id, body.player_id):
+        raise HTTPException(status_code=409, detail="Player already in watchlist")
 
-        pref = UserPreference(
-            preference_type="watchlist",
-            entity_id=body.player_id,
-            user_id=user.id,
-            value={},
-        )
-        session.add(pref)
-        await session.commit()
-        await session.refresh(pref)
+    pref = await repo.add_watchlist_entry(user.id, body.player_id)
 
     return WatchlistItem(
         id=str(pref.id),
@@ -113,18 +96,16 @@ async def add_to_watchlist(body: AddWatchlistRequest, user: User = Depends(get_c
 
 
 @router.delete("/watchlist/{player_id}", status_code=204)
-async def remove_from_watchlist(player_id: str, user: User = Depends(get_current_user)):
+async def remove_from_watchlist(
+    player_id: str,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> None:
     """Remove a player from the watchlist."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            delete(UserPreference)
-            .where(UserPreference.preference_type == "watchlist")
-            .where(UserPreference.entity_id == player_id)
-            .where(UserPreference.user_id == user.id)
-        )
-        await session.commit()
-
-    if result.rowcount == 0:
+    removed = await UserPreferenceRepository(db).remove_watchlist_entry(
+        user.id, player_id
+    )
+    if removed == 0:
         raise HTTPException(status_code=404, detail="Player not in watchlist")
 
 
@@ -136,16 +117,12 @@ VALID_STRATEGIES = {"hero_rb", "zero_rb", "stars_and_scrubs", "balanced"}
 
 
 @router.get("/strategy", response_model=StrategyResponse)
-async def get_strategy(user: User = Depends(get_current_user)):
+async def get_strategy(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> StrategyResponse:
     """Get the active draft strategy for current user."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(UserPreference)
-            .where(UserPreference.preference_type == "strategy")
-            .where(UserPreference.user_id == user.id)
-            .limit(1)
-        )
-        pref = result.scalar_one_or_none()
+    pref = await UserPreferenceRepository(db).get_strategy(user.id)
 
     strategy = None
     if pref and pref.value:
@@ -155,7 +132,11 @@ async def get_strategy(user: User = Depends(get_current_user)):
 
 
 @router.put("/strategy", response_model=StrategyResponse)
-async def set_strategy(body: SetStrategyRequest, user: User = Depends(get_current_user)):
+async def set_strategy(
+    body: SetStrategyRequest,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> StrategyResponse:
     """Set the draft strategy for current user."""
     if body.strategy not in VALID_STRATEGIES:
         raise HTTPException(
@@ -163,26 +144,6 @@ async def set_strategy(body: SetStrategyRequest, user: User = Depends(get_curren
             detail=f"Invalid strategy. Must be one of: {sorted(VALID_STRATEGIES)}",
         )
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(UserPreference)
-            .where(UserPreference.preference_type == "strategy")
-            .where(UserPreference.user_id == user.id)
-            .limit(1)
-        )
-        pref = result.scalar_one_or_none()
-
-        if pref:
-            pref.value = {"strategy": body.strategy}
-        else:
-            pref = UserPreference(
-                preference_type="strategy",
-                entity_id=None,
-                user_id=user.id,
-                value={"strategy": body.strategy},
-            )
-            session.add(pref)
-
-        await session.commit()
+    await UserPreferenceRepository(db).set_strategy(user.id, body.strategy)
 
     return StrategyResponse(strategy=body.strategy)

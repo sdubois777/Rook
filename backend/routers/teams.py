@@ -10,14 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
 
-from backend.database import AsyncSessionLocal
-from backend.models.player import Player
+from backend.core.dependencies import get_db
 from backend.models.team_system import TeamSystem
+from backend.repositories.player_repo import PlayerRepository
+from backend.repositories.team_system_repo import TeamSystemRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -126,36 +125,14 @@ def _calculate_qb_wr_trust_score(ts: TeamSystem) -> int:
 # ---------------------------------------------------------------------------
 
 @router.get("", response_model=TeamListResponse)
-async def list_teams(sort: str = "system_grade", order: str = "desc"):
+async def list_teams(
+    sort: str = "system_grade",
+    order: str = "desc",
+    db=Depends(get_db),
+) -> TeamListResponse:
     """All 32 teams with latest system grades and player counts."""
-    async with AsyncSessionLocal() as session:
-        # Get latest team system per team
-        subq = (
-            select(
-                TeamSystem.team_abbr,
-                func.max(TeamSystem.season_year).label("max_year"),
-            )
-            .group_by(TeamSystem.team_abbr)
-            .subquery()
-        )
-
-        result = await session.execute(
-            select(TeamSystem)
-            .join(
-                subq,
-                (TeamSystem.team_abbr == subq.c.team_abbr)
-                & (TeamSystem.season_year == subq.c.max_year),
-            )
-        )
-        team_systems = result.scalars().all()
-
-        # Get player counts per team
-        count_result = await session.execute(
-            select(Player.team_abbr, func.count(Player.id))
-            .where(Player.team_abbr.isnot(None))
-            .group_by(Player.team_abbr)
-        )
-        counts = dict(count_result.all())
+    team_systems = await TeamSystemRepository(db).list_latest()
+    counts = await PlayerRepository(db).count_by_team()
 
     teams = []
     for ts in team_systems:
@@ -187,32 +164,15 @@ async def list_teams(sort: str = "system_grade", order: str = "desc"):
 
 
 @router.get("/{abbr}", response_model=TeamDetail)
-async def get_team(abbr: str):
+async def get_team(abbr: str, db=Depends(get_db)) -> TeamDetail:
     """Team detail with full system context and skill position players."""
     team_abbr = abbr.upper()
 
-    async with AsyncSessionLocal() as session:
-        # Get latest team system
-        result = await session.execute(
-            select(TeamSystem)
-            .where(TeamSystem.team_abbr == team_abbr)
-            .order_by(TeamSystem.season_year.desc())
-            .limit(1)
-        )
-        ts = result.scalar_one_or_none()
+    ts = await TeamSystemRepository(db).get_latest_for_team(team_abbr)
+    if not ts:
+        raise HTTPException(status_code=404, detail=f"Team not found: {team_abbr}")
 
-        if not ts:
-            raise HTTPException(status_code=404, detail=f"Team not found: {team_abbr}")
-
-        # Get skill position players
-        player_result = await session.execute(
-            select(Player)
-            .where(Player.team_abbr == team_abbr)
-            .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
-            .options(selectinload(Player.dependencies))
-            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
-        )
-        players = player_result.scalars().all()
+    players = await PlayerRepository(db).list_skill_players_for_team(team_abbr)
 
     team_players = []
     for p in players:

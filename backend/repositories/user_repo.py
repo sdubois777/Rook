@@ -42,6 +42,17 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def rotate_draft_token(self, user_id: uuid.UUID) -> str:
+        """Assign a fresh draft token to the user and commit.
+
+        Used both to mint a first token and to revoke-and-replace an
+        existing one (the old token stops authenticating immediately).
+        """
+        user = await self.get_or_404(user_id)
+        user.draft_token = str(uuid.uuid4())
+        await self._session.commit()
+        return user.draft_token
+
     async def update_credits(
         self,
         user_id: uuid.UUID,

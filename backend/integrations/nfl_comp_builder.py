@@ -45,7 +45,7 @@ def get_draft_tier(pick_overall: int) -> str:
 @lru_cache(maxsize=1)
 def build_comp_table(
     start_year: int = 2010,
-    end_year: int = 2023,
+    end_year: int | None = None,
 ) -> pd.DataFrame:
     """
     Build a historical comp table from nfl_data_py draft + seasonal data.
@@ -55,8 +55,15 @@ def build_comp_table(
       - Compute PPR per game (fantasy_points_ppr / games)
       - Tag with capital_tier from pick number
 
+    end_year defaults to the newest draft class with two completed
+    seasons (Year 1 + Year 2 data both available).
+
     Returns a DataFrame ready for comp matching and tier-based averaging.
     """
+    if end_year is None:
+        from backend.utils.seasons import get_current_season
+        end_year = get_current_season() - 2
+
     all_rows: list[dict] = []
 
     for draft_year in range(start_year, end_year + 1):

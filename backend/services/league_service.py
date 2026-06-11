@@ -9,14 +9,24 @@ import uuid
 
 from backend.core.exceptions import NotFoundError
 from backend.models.user_league import UserLeague
+from backend.repositories.league_auction_repo import (
+    LeagueAuctionHistoryRepository,
+)
 from backend.repositories.league_repo import LeagueRepository
 
 logger = logging.getLogger(__name__)
 
 
 class LeagueService:
-    def __init__(self, repo: LeagueRepository):
+    """User-scoped league CRUD orchestration."""
+
+    def __init__(
+        self,
+        repo: LeagueRepository,
+        history_repo: LeagueAuctionHistoryRepository,
+    ):
         self._repo = repo
+        self._history_repo = history_repo
 
     async def get_user_leagues(
         self, user_id: uuid.UUID
@@ -55,11 +65,6 @@ class LeagueService:
         league_id: uuid.UUID,
     ) -> None:
         """Hard delete league and all child data."""
-        from sqlalchemy import delete as sa_delete
-        from backend.models.league_auction_history import (
-            LeagueAuctionHistory,
-        )
-
         league = await self._repo.get_user_league(
             user_id, league_id
         )
@@ -68,16 +73,9 @@ class LeagueService:
                 f"League {league_id} not found"
             )
 
-        # Delete child data explicitly
-        await self._repo._session.execute(
-            sa_delete(LeagueAuctionHistory).where(
-                LeagueAuctionHistory.user_league_id == league_id,
-                LeagueAuctionHistory.user_id == user_id,
-            )
-        )
-
-        # Delete the league row
-        await self._repo._session.delete(league)
+        # Delete child data explicitly, then the league row
+        await self._history_repo.delete_for_league(user_id, league_id)
+        await self._repo.delete(league)
         await self._repo.commit()
 
     async def get_league_config(

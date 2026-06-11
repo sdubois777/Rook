@@ -33,7 +33,7 @@ async def test_league_service_falls_back_to_default_on_none():
     from backend.services.league_service import LeagueService
 
     repo = _make_repo()
-    service = LeagueService(repo)
+    service = LeagueService(repo, AsyncMock())
     config = await service.get_league_config(uuid.uuid4(), None)
 
     assert config is DEFAULT_LEAGUE_CONFIG
@@ -47,7 +47,7 @@ async def test_league_service_falls_back_to_default_on_miss():
     from backend.services.league_service import LeagueService
 
     repo = _make_repo(league=None)
-    service = LeagueService(repo)
+    service = LeagueService(repo, AsyncMock())
     config = await service.get_league_config(uuid.uuid4(), uuid.uuid4())
 
     assert config is DEFAULT_LEAGUE_CONFIG
@@ -60,7 +60,7 @@ async def test_league_service_returns_user_league_config():
 
     league = _make_user_league(team_count=10, budget=250, scoring="half_ppr")
     repo = _make_repo(league=league)
-    service = LeagueService(repo)
+    service = LeagueService(repo, AsyncMock())
     config = await service.get_league_config(uuid.uuid4(), uuid.uuid4())
 
     assert config.team_count == 10

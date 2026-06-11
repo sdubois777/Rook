@@ -1,12 +1,30 @@
 """Tests for backend/routers/teams.py"""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.core.dependencies import get_db
 from backend.main import app
+
+
+def _override_db(session):
+    """Return a get_db override that yields the given mock session."""
+    async def _get_db():
+        yield session
+    return _get_db
+
+
+async def _request(session, url):
+    """Issue one GET with the db override installed."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            return await ac.get(url)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture
@@ -53,13 +71,7 @@ async def test_list_teams(mock_team_system):
 
     session.execute = AsyncMock(side_effect=[result1, result2])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams")
+    resp = await _request(session, "/teams")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -86,13 +98,7 @@ async def test_get_team_detail(mock_team_system):
 
     session.execute = AsyncMock(side_effect=[result1, result2])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams/kc")
+    resp = await _request(session, "/teams/kc")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -108,12 +114,6 @@ async def test_get_team_not_found():
     result.scalar_one_or_none.return_value = None
     session.execute = AsyncMock(return_value=result)
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.teams.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/teams/XXX")
+    resp = await _request(session, "/teams/XXX")
 
     assert resp.status_code == 404

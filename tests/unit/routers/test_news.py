@@ -3,12 +3,30 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.core.dependencies import get_db
 from backend.main import app
+
+
+def _override_db(session):
+    """Return a get_db override that yields the given mock session."""
+    async def _get_db():
+        yield session
+    return _get_db
+
+
+async def _request(session, url):
+    """Issue one GET with the db override installed."""
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            return await ac.get(url)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture
@@ -40,13 +58,7 @@ async def test_get_news_feed(mock_signal):
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news")
+    resp = await _request(session, "/news")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -70,13 +82,7 @@ async def test_get_news_with_filters(mock_signal):
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news?team=KC&signal_type=injury_update&days=7")
+    resp = await _request(session, "/news?team=KC&signal_type=injury_update&days=7")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -96,13 +102,7 @@ async def test_get_news_empty():
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=session)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.routers.news.AsyncSessionLocal", return_value=ctx):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/news")
+    resp = await _request(session, "/news")
 
     assert resp.status_code == 200
     data = resp.json()

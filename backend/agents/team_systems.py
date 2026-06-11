@@ -378,7 +378,7 @@ class TeamSystemsAgent(BaseAgent):
             row = team_qb_data.sort_values("passing_yards", ascending=False).iloc[0]
             starter_name = row[name_col]
 
-        def _safe_int(val):
+        def _safe_int(val: object) -> int:
             try:
                 return int(val)
             except (TypeError, ValueError):

@@ -11,3 +11,8 @@ export async function fetchUserLeagues() {
   const { data } = await api.get('/account/leagues')
   return data
 }
+
+export async function fetchYahooConnectUrl() {
+  const { data } = await api.get('/auth/yahoo/connect-url')
+  return data.url
+}

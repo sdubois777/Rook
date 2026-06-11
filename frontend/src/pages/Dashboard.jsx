@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, BarChart3, Plus } from 'lucide-react'
@@ -29,17 +29,16 @@ export default function Dashboard() {
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
 
-  // League selector state
-  const [leagues, setLeagues] = useState([])
-  const [selectedLeagueId, setSelectedLeagueId] = useState(null)
+  // League selector state — null until the user picks; default derived below
+  const [pickedLeagueId, setPickedLeagueId] = useState(null)
 
-  useEffect(() => {
-    fetchUserLeagues().then((data) => {
-      const active = data.filter((l) => l.is_active)
-      setLeagues(active)
-      if (active.length > 0) setSelectedLeagueId(active[0].id)
-    }).catch(() => {})
-  }, [])
+  const { data: leaguesData } = useQuery({
+    queryKey: ['user-leagues'],
+    queryFn: fetchUserLeagues,
+  })
+  const leagues = (leaguesData || []).filter((l) => l.is_active)
+  const selectedLeagueId =
+    pickedLeagueId ?? (leagues.length > 0 ? leagues[0].id : null)
 
   // Top value gaps (undervalued)
   const { data: valueData } = useQuery({
@@ -101,7 +100,7 @@ export default function Dashboard() {
           <label className="text-sm text-slate-400">League:</label>
           <select
             value={selectedLeagueId || ''}
-            onChange={(e) => setSelectedLeagueId(e.target.value)}
+            onChange={(e) => setPickedLeagueId(e.target.value)}
             className="bg-[#1c1f2e] border border-[#2d3148] rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
           >
             {leagues.map((l) => (

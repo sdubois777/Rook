@@ -267,9 +267,13 @@ async def get_credit_service(
 
 async def get_league_service(
     league_repo=Depends(get_league_repo),
+    db=Depends(get_db),
 ):
+    from backend.repositories.league_auction_repo import (
+        LeagueAuctionHistoryRepository,
+    )
     from backend.services.league_service import LeagueService
-    return LeagueService(league_repo)
+    return LeagueService(league_repo, LeagueAuctionHistoryRepository(db))
 
 
 # ── Guard dependencies ───────────────────────────────────

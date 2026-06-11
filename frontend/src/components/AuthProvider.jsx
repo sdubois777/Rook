@@ -14,12 +14,7 @@ export default function AuthProvider({ children }) {
     if (isLoaded) {
       registerTokenGetter(async () => {
         if (!isSignedIn) return null
-        const token = await getToken()
-        console.log(
-          'Token fetched:',
-          token ? token.substring(0, 20) + '...' : 'null'
-        )
-        return token
+        return getToken()
       })
     }
   }, [isLoaded, isSignedIn, getToken])

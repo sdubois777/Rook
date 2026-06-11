@@ -1,15 +1,16 @@
 import browser from '../utils/browser.js'
-import { postDraftEvent, getApiBase } from '../utils/api.js'
+import { postDraftEvent, getApiBase, getDraftToken } from '../utils/api.js'
+import { MESSAGE_TYPES } from '../utils/constants.js'
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'DRAFT_EVENT') {
+  if (message.type === MESSAGE_TYPES.DRAFT_EVENT) {
     postDraftEvent(message.payload)
       .then((ok) => sendResponse({ ok }))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true // keep channel open for async response
   }
 
-  if (message.type === 'ESPN_COOKIES') {
+  if (message.type === MESSAGE_TYPES.ESPN_COOKIES) {
     sendESPNCookies(message.payload)
       .then((result) => sendResponse(result))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
@@ -18,7 +19,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 })
 
 async function sendESPNCookies(payload) {
-  const { draft_token } = await browser.storage.local.get('draft_token')
+  const draft_token = await getDraftToken()
   if (!draft_token) {
     throw new Error('No draft token — set in extension popup')
   }

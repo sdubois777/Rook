@@ -21,6 +21,9 @@ from pydantic import BaseModel
 from backend.core.dependencies import get_current_user, get_db
 from backend.core.exceptions import NotFoundError, ValidationError
 from backend.repositories.credential_repo import CredentialRepository
+from backend.repositories.league_auction_repo import (
+    LeagueAuctionHistoryRepository,
+)
 from backend.repositories.league_repo import LeagueRepository
 
 logger = logging.getLogger(__name__)
@@ -211,7 +214,9 @@ async def connect_sleeper_league(
     target_season = get_current_season()
 
     # Create league record
-    service = LeagueService(league_repo)
+    service = LeagueService(
+        league_repo, LeagueAuctionHistoryRepository(db)
+    )
     league = await service.add_league(
         user_id=user.id,
         platform="sleeper",
@@ -278,7 +283,9 @@ async def connect_espn_league(
 
     # Create league record
     is_active = target_season == get_current_season()
-    service = LeagueService(league_repo)
+    service = LeagueService(
+        league_repo, LeagueAuctionHistoryRepository(db)
+    )
     league = await service.add_league(
         user_id=user.id,
         platform="espn",
@@ -397,21 +404,11 @@ async def disconnect_league(
     Hard delete a league and ALL related data.
     Cannot be undone. User can re-import later.
     """
-    from sqlalchemy import delete as sa_delete
-    from backend.models.league_auction_history import LeagueAuctionHistory
+    from backend.services.league_service import LeagueService
 
-    league = await _get_user_league(league_id, user, db)
-
-    # Delete all child data explicitly
-    await db.execute(
-        sa_delete(LeagueAuctionHistory).where(
-            LeagueAuctionHistory.user_league_id == league_id,
-            LeagueAuctionHistory.user_id == user.id,
-        )
+    service = LeagueService(
+        LeagueRepository(db), LeagueAuctionHistoryRepository(db)
     )
-
-    # Delete the league itself
-    await db.delete(league)
-    await db.commit()
+    await service.delete_league(user.id, league_id)
 
     return {"status": "deleted", "league_id": str(league_id)}
