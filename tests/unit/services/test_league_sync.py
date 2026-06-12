@@ -432,3 +432,64 @@ async def test_sync_skips_picks_without_player_info():
 
     # Only 1 valid pick per season × 4 seasons = 4
     assert summary["picks_imported"] == 4
+
+
+@pytest.mark.asyncio
+async def test_sync_stamps_last_synced_even_if_no_history():
+    """A new league with zero draft picks still records a successful sync."""
+    league = _make_league()
+    league.last_synced = None
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []  # pre-draft league
+    mock_platform.get_rosters.return_value = _make_rosters(1)
+    mock_platform.get_free_agents.return_value = []
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), _patch_league_repo(league):
+        from backend.services.league_sync import LeagueSyncService
+        service = LeagueSyncService(mock_db, league.user_id)
+        summary = await service.sync_league(league.id)
+
+    assert league.last_synced is not None
+    assert summary["picks_imported"] == 0
+    assert summary["managers_found"] == 1
+    assert summary["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_sync_continues_after_history_failure():
+    """Draft-history failure becomes a warning; sync completes and stamps last_synced."""
+    league = _make_league()
+    league.last_synced = None
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.side_effect = Exception("403 Forbidden")
+    mock_platform.get_rosters.return_value = _make_rosters(2)
+    mock_platform.get_free_agents.return_value = []
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock,
+        return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season",
+        return_value=2026,
+    ), _patch_league_repo(league):
+        from backend.services.league_sync import LeagueSyncService
+        service = LeagueSyncService(mock_db, league.user_id)
+        summary = await service.sync_league(league.id)
+
+    assert league.last_synced is not None
+    assert summary["picks_imported"] == 0
+    # One warning per attempted history season
+    assert len(summary["warnings"]) == 4
+    assert all("No draft history" in w for w in summary["warnings"])
