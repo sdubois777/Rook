@@ -347,3 +347,14 @@ def test_yahoo_league_key_construction():
     assert yahoo_league_key("12345", 2026) == "470.l.12345"
     assert yahoo_league_key("12345", 2024) == "449.l.12345"
     assert yahoo_league_key("99999", 2025) == "461.l.99999"
+
+
+def test_yahoo_game_key_2026():
+    """The current season (2026) maps to game key 470."""
+    assert yahoo_league_key("46511", 2026) == "470.l.46511"
+
+
+def test_yahoo_game_key_unknown_raises():
+    """Seasons without a known game key raise instead of silently using 470."""
+    with pytest.raises(ValueError, match="Unknown Yahoo game key for season 2027"):
+        yahoo_league_key("12345", 2027)

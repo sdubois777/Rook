@@ -163,6 +163,7 @@ class LeagueSyncService:
         try:
             from backend.integrations.yahoo_api import (
                 get_league_settings,
+                refresh_access_token_for_user,
                 yahoo_league_key,
             )
             from backend.repositories.credential_repo import CredentialRepository
@@ -179,7 +180,16 @@ class LeagueSyncService:
                 )
                 return
 
-            settings = await get_league_settings(tokens[0], key)
+            access_token, refresh_token, expires_at = tokens
+            if expires_at and datetime.now(timezone.utc) >= expires_at:
+                access_token, refresh_token, new_expiry = (
+                    await refresh_access_token_for_user(refresh_token)
+                )
+                await repo.upsert_yahoo(
+                    self._user_id, access_token, refresh_token, new_expiry,
+                )
+
+            settings = await get_league_settings(access_token, key)
             user_league.league_name = settings["name"]
             user_league.team_count = settings["num_teams"]
             user_league.draft_type = settings["draft_type"]

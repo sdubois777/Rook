@@ -195,9 +195,21 @@ class YahooLeagueAPI(LeaguePlatformAPI):
         self, *, league_key: str | None = None,
     ) -> list[DraftPick]:
         key = league_key or self._league_key()
-        data = await self._api_get(
-            f"league/{key}/draftresults"
-        )
+        try:
+            data = await self._api_get(
+                f"league/{key}/draftresults"
+            )
+        except httpx.HTTPStatusError as exc:
+            # Yahoo returns 400/403/404 on draftresults for leagues that
+            # have not drafted yet (or did not exist that season).
+            # That is valid empty history, not an error.
+            if exc.response.status_code in (400, 403, 404):
+                logger.info(
+                    "No draft history for league %s — new league or pre-draft",
+                    key,
+                )
+                return []
+            raise  # Re-raise unexpected errors
         content = data.get("fantasy_content", {}).get("league", [{}, {}])
         results_raw = content[1].get("draft_results", {}) if len(content) > 1 else {}
 

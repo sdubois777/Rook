@@ -44,8 +44,17 @@ YAHOO_NFL_GAME_KEYS: dict[int, str] = {
 
 
 def yahoo_league_key(league_id: str, season: int) -> str:
-    """Construct Yahoo league key from league_id and season year."""
-    game_key = YAHOO_NFL_GAME_KEYS.get(season, "470")
+    """Construct Yahoo league key from league_id and season year.
+
+    Raises ValueError for seasons without a known game key — a silent
+    wrong-key fallback produces confusing 401/403s from Yahoo.
+    """
+    game_key = YAHOO_NFL_GAME_KEYS.get(season)
+    if game_key is None:
+        raise ValueError(
+            f"Unknown Yahoo game key for season {season}. "
+            f"Update YAHOO_NFL_GAME_KEYS in yahoo_api.py"
+        )
     return f"{game_key}.l.{league_id}"
 
 # ---------------------------------------------------------------------------
