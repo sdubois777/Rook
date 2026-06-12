@@ -91,12 +91,15 @@ function LeagueCard({ league }) {
   const [syncing, setSyncing] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState('')
+  const [syncWarnings, setSyncWarnings] = useState([])
 
   const handleSync = async () => {
     setError('')
+    setSyncWarnings([])
     setSyncing(true)
     try {
-      await apiClient.post(`/leagues/${league.id}/sync`)
+      const resp = await apiClient.post(`/leagues/${league.id}/sync`)
+      setSyncWarnings(resp.data.warnings || [])
       queryClient.invalidateQueries({ queryKey: ['account'] })
     } catch (err) {
       setError(err.response?.data?.message || 'Sync failed')
@@ -170,6 +173,11 @@ function LeagueCard({ league }) {
         </div>
       </div>
       {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+      {syncWarnings.length > 0 && (
+        <div className="text-xs text-yellow-500 mt-1">
+          {syncWarnings.join(' · ')}
+        </div>
+      )}
     </div>
   )
 }

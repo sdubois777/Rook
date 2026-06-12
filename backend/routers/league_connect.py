@@ -369,10 +369,18 @@ async def resync_league(
     """Re-sync a connected league (free — no credits)."""
     from backend.services.league_sync import LeagueSyncService
 
-    await _get_user_league(league_id, user, db)  # verify ownership
+    league = await _get_user_league(league_id, user, db)  # verify ownership
     sync_service = LeagueSyncService(db, user.id)
     summary = await sync_service.sync_league(league_id)
-    return {"status": "synced", **summary}
+    await db.refresh(league)
+    return {
+        "status": "synced",
+        "last_synced": (
+            league.last_synced.isoformat()
+            if league.last_synced else None
+        ),
+        **summary,
+    }
 
 
 @router.get("/{league_id}/status")
