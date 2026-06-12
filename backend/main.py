@@ -27,16 +27,21 @@ app = FastAPI(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
+# Browser-extension origins (moz-extension://<id>, chrome-extension://<id>)
+# carry per-install random IDs, so they cannot be listed explicitly —
+# a regex is the only way to allow them alongside the web origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://fantasymanager-production.up.railway.app",
-    ],
+    allow_origin_regex=(
+        r"moz-extension://.*"
+        r"|chrome-extension://.*"
+        r"|http://localhost(:\d+)?"
+        r"|https://fantasymanager-production"
+        r"\.up\.railway\.app"
+    ),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["X-Draft-Token", "Authorization", "Content-Type"],
 )
 
 
