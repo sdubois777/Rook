@@ -33,11 +33,15 @@ def resolve_player_season_stats(
 ) -> dict | None:
     """Resolve one player's season stats from a Player ORM object.
 
-    Convenience wrapper over resolve_player_season_stats_by_fields that
-    reads identity columns off the Player record. Returns the compact
-    stats dict (including a ``games`` field) or None when no confident
-    match exists.
+    WR/RB/TE resolve from the target_share frame (sleeper_id-first,
+    full names). QBs are not in target_share, so they resolve from the
+    seasonal_stats frame by gsis_id + position guard. Returns the
+    compact stats dict (including a ``games`` field) or None when no
+    confident match exists.
     """
+    if (player.position or "").upper() == "QB":
+        return _resolve_qb_stats(player, season, warehouse)
+
     return resolve_player_season_stats_by_fields(
         warehouse,
         player_name=player.name,
@@ -48,6 +52,56 @@ def resolve_player_season_stats(
         sleeper_id=player.sleeper_id,
         sportradar_id=player.sportradar_id,
     )
+
+
+def _resolve_qb_stats(
+    player: "Player",
+    season: int,
+    warehouse: "NflDataWarehouse",
+) -> dict | None:
+    """QB-specific resolver: gsis_id + position='QB' against seasonal_stats.
+
+    The seasonal_stats frame carries no sleeper_id; its ``player_id``
+    column holds the gsis id. The position guard prevents surname
+    collisions (e.g. "Allen" → Josh Allen QB, never Braelon Allen RB;
+    "Murray" → Kyler Murray QB, never an RB Murray).
+
+    gsis is stripped on BOTH sides: a DB-level TRIM cleaned today's
+    rows, but sync_rosters can reintroduce whitespace on the next run,
+    so the resolver must not depend on DB hygiene.
+    """
+    stats = warehouse.get_seasonal_stats(season)
+    if stats is None or stats.empty:
+        return None
+
+    gsis = (player.gsis_id or "").strip()
+    if not gsis or "player_id" not in stats.columns:
+        return None
+
+    mask = stats["player_id"].astype(str).str.strip() == gsis
+    if "position" in stats.columns:
+        mask = mask & (stats["position"].astype(str).str.upper() == "QB")
+
+    match = stats[mask]
+    if match.empty:
+        return None
+
+    row = match.iloc[0]
+    games = int(row.get("games", 0) or 0)
+    if games == 0:
+        return None
+
+    ppr_total = row.get("fantasy_points_ppr")
+    try:
+        ppr_total = float(ppr_total) if ppr_total is not None and pd.notna(ppr_total) else None
+    except (TypeError, ValueError):
+        ppr_total = None
+
+    return {
+        "games": games,
+        "ppr_per_game": round(ppr_total / games, 1) if ppr_total and games else None,
+        "position": "QB",
+    }
 
 
 def resolve_player_season_stats_by_fields(

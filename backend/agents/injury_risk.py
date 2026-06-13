@@ -36,7 +36,7 @@ from backend.utils.seasons import get_current_season, get_analysis_seasons, get_
 
 logger = logging.getLogger(__name__)
 
-SKILL_POSITIONS = {"WR", "RB", "TE"}
+SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 
 # ---------------------------------------------------------------------------
 # System prompt

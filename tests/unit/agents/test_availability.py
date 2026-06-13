@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from backend.agents.injury_risk import (
+    SKILL_POSITIONS,
     build_player_availability,
     compute_availability_metrics,
 )
@@ -127,3 +128,55 @@ def test_build_returns_unknown_when_no_stats():
     )
     assert out["availability_risk"] == "unknown"
     assert out["games_played_history"] == []
+
+
+# ---------------------------------------------------------------------------
+# QB availability — resolves via seasonal_stats by gsis + position
+# ---------------------------------------------------------------------------
+
+def test_qb_in_skill_positions():
+    """QBs are processed by the injury agent so availability is computed."""
+    assert "QB" in SKILL_POSITIONS
+
+
+def _qb_warehouse(games_by_season: dict[int, int], gsis="00-0036442"):
+    """Warehouse whose seasonal_stats holds one QB row per season."""
+    frames = {
+        season: pd.DataFrame([{
+            "player_id": gsis, "player_name": "Q.B", "position": "QB",
+            "games": games, "fantasy_points_ppr": games * 18.0,
+        }])
+        for season, games in games_by_season.items()
+    }
+    return types.SimpleNamespace(get_seasonal_stats=lambda s: frames.get(s))
+
+
+def _qb_player(gsis="00-0036442"):
+    return types.SimpleNamespace(
+        name="Joe Burrow", team_abbr="CIN", position="QB",
+        gsis_id=gsis, sleeper_id="6770", sportradar_id=None,
+    )
+
+
+def test_burrow_concern_availability():
+    """Burrow [10, 17, 8] (avg 11.7) → concern."""
+    wh = _qb_warehouse({2023: 10, 2024: 17, 2025: 8})
+    out = build_player_availability(_qb_player(), wh, [2023, 2024, 2025])
+    assert [g["games"] for g in out["games_played_history"]] == [10, 17, 8]
+    assert out["availability_risk"] == "concern"
+
+
+def test_allen_durable_availability():
+    """Allen [17, 16, 16] (avg 16.3) → durable."""
+    wh = _qb_warehouse({2023: 17, 2024: 16, 2025: 16})
+    out = build_player_availability(_qb_player(), wh, [2023, 2024, 2025])
+    assert out["availability_risk"] == "durable"
+    assert out["availability_risk_modifier"] == 0.0
+
+
+def test_daniels_concern_two_seasons():
+    """Daniels has no 2023 NFL data; [17, 7] (avg 12) → concern, not unknown."""
+    wh = _qb_warehouse({2024: 17, 2025: 7})  # 2023 absent (college)
+    out = build_player_availability(_qb_player(), wh, [2023, 2024, 2025])
+    assert [g["games"] for g in out["games_played_history"]] == [17, 7]
+    assert out["availability_risk"] == "concern"
