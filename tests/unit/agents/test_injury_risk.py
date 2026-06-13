@@ -951,3 +951,66 @@ def test_volatile_kept_for_chronic_multi_season():
     recent = sorted(injury_seasons, key=lambda s: s.get("season", 0), reverse=True)[:3]
     severe_seasons = sum(1 for s in recent if s.get("games_missed", 0) >= 8)
     assert severe_seasons >= 2, "Should have 2+ severe seasons — VOLATILE justified"
+
+
+# ---------------------------------------------------------------------------
+# Token budget — must cover a full skill roster, not truncate at ~10 players
+# ---------------------------------------------------------------------------
+
+def test_injury_agent_max_tokens_sufficient():
+    """1000 truncated the per-team JSON at ~10 players; 4000 covers a full roster."""
+    assert InjuryRiskAgent.AGENT_MAX_TOKENS >= 4000
+
+
+@pytest.mark.asyncio
+async def test_injury_agent_covers_full_roster():
+    """Given a 30-player team, the write path persists all 30 — no cap.
+
+    The truncation that dropped starters happened at the model output
+    (token budget); the write loop itself must never cap. This proves
+    the write path scales so the token bump fully resolves coverage.
+    """
+    n = 30
+    players = []
+    for i in range(n):
+        p = MagicMock()
+        p.id = uuid.uuid4()
+        p.name = f"Player{i}"          # unique single-token surname
+        p.team_abbr = "KC"
+        p.baseline_value = None        # skip risk_adjusted update path
+        players.append(p)
+
+    profiles = [
+        {"player_name": f"Player{i}", "overall_risk_level": "low",
+         "risk_adjusted_value_modifier": 0.0, "risk_notes": "clean"}
+        for i in range(n)
+    ]
+    context = {"players": [
+        {"name": f"Player{i}", "position": "WR", "age": 25, "age_risk_mult": 1.0,
+         "pattern_flags": [], "concussion_count": 0, "career_carries": 0,
+         "last_season_carries": 0, "injury_seasons": []}
+        for i in range(n)
+    ]}
+
+    # One result object that answers both access patterns the write path uses:
+    #   bulk-resolve  -> .scalars().all() == the 30 players
+    #   existing-row  -> .scalar_one_or_none() == None (create new)
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = players
+    result.scalar_one_or_none.return_value = None
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.agents.injury_risk.AsyncSessionLocal", return_value=ctx):
+        # warehouse=None → skip availability resolution; isolate the write loop
+        written = await _write_injury_profiles(profiles, context, "KC", None)
+
+    assert written == n
+    assert session.add.call_count == n

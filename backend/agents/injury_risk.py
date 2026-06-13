@@ -373,7 +373,11 @@ def build_player_availability(
 class InjuryRiskAgent(BaseAgent):
     AGENT_NAME       = "injury_risk"
     AGENT_MODEL      = HAIKU
-    AGENT_MAX_TOKENS = 1000
+    # ~90 tokens per player profile; a full skill roster is ~30 players.
+    # 1000 truncated the JSON at ~10 players/team, silently dropping
+    # starters (Burrow/Daniels/Murray). 4000 covers ~44 players safely —
+    # same fix already applied to the player_profiles agent.
+    AGENT_MAX_TOKENS = 4000
 
     # ------------------------------------------------------------------
     # Sync data helpers — read from warehouse (no network calls)
