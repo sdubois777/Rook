@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# An NFL team plays at most 17 games, so a single player-season can never
+# exceed this. Higher values are data contamination (playoff weeks counted,
+# duplicate rows) and are clamped — see MAX_NFL_GAMES in injury_risk.
+MAX_SEASON_GAMES = 17
+
 
 def resolve_player_season_stats(
     player: "Player",
@@ -87,7 +92,7 @@ def _resolve_qb_stats(
         return None
 
     row = match.iloc[0]
-    games = int(row.get("games", 0) or 0)
+    games = min(int(row.get("games", 0) or 0), MAX_SEASON_GAMES)
     if games == 0:
         return None
 
@@ -142,7 +147,7 @@ def resolve_player_season_stats_by_fields(
         return df
 
     def _extract(row: pd.Series) -> dict | None:
-        games = int(row.get("games", 0) or 0)
+        games = min(int(row.get("games", 0) or 0), MAX_SEASON_GAMES)
         if games == 0:
             return None
 
@@ -182,11 +187,35 @@ def resolve_player_season_stats_by_fields(
         }
 
     def _extract_combined(rows: pd.DataFrame) -> dict | None:
-        """Aggregate stats across multi-team splits for the same player."""
+        """Aggregate stats across rows for one player.
+
+        Deduplicates same-team rows FIRST. The target_share frame
+        contains exact duplicate rows for some players (same id, same
+        team, same season); summing them inflates games past the
+        17-game maximum (CMC 2022: 17+17=34). Same-team dupes collapse
+        to the most-complete row; only genuinely distinct teams remain
+        to combine. Games are taken as MAX across rows, never summed —
+        a season is capped at the league game count no matter how many
+        rows exist.
+        """
+        team_col = "recent_team" if "recent_team" in rows.columns else None
+        if team_col:
+            rows = (
+                rows.sort_values("games", ascending=False)
+                .drop_duplicates(subset=[team_col], keep="first")
+            )
+
+        # Same-team dupes collapse to one row — the common case.
+        if len(rows) == 1:
+            return _extract(rows.iloc[0])
+
         def _int_sum(col: str) -> int:
             return int(rows[col].fillna(0).sum()) if col in rows.columns else 0
 
-        total_games = _int_sum("games")
+        # Genuinely distinct teams = a mid-season trade: games sum (the season
+        # is partitioned across teams), then clamp to the 17-game maximum to
+        # absorb any residual overlap/contamination.
+        total_games = min(_int_sum("games"), MAX_SEASON_GAMES)
         if total_games == 0:
             return None
 

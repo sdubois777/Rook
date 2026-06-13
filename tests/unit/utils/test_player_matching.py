@@ -75,6 +75,52 @@ def test_position_filter_prevents_cross_position_collision():
     assert stats["carries"] == 0
 
 
+def test_same_team_dupes_collapsed_not_summed():
+    """Two identical same-team rows collapse to one — games is 17, not 34."""
+    df = pd.DataFrame([
+        {"player_name": "Christian McCaffrey", "recent_team": "SF", "position": "RB",
+         "sleeper_id": "4034", "games": 17, "total_carries": 200, "total_receptions": 40},
+        {"player_name": "Christian McCaffrey", "recent_team": "SF", "position": "RB",
+         "sleeper_id": "4034", "games": 17, "total_carries": 200, "total_receptions": 40},
+    ])
+    wh = _warehouse({2022: df})
+    stats = resolve_player_season_stats(_player(name="Christian McCaffrey", sleeper_id="4034"), 2022, wh)
+    assert stats is not None
+    assert stats["games"] == 17          # not 34
+    assert stats["carries"] == 200       # not 400
+
+
+def test_games_clamped_to_17():
+    """A contaminated single row (games=18, e.g. playoff week) is clamped to 17."""
+    df = pd.DataFrame([
+        {"player_name": "Mike Williams", "recent_team": "NYJ", "position": "WR",
+         "sleeper_id": "w1", "games": 18, "total_receptions": 30},
+    ])
+    wh = _warehouse({2024: df})
+    stats = resolve_player_season_stats(
+        _player(name="Mike Williams", team_abbr="NYJ", position="WR", sleeper_id="w1"), 2024, wh
+    )
+    assert stats is not None
+    assert stats["games"] == 17
+
+
+def test_multi_team_split_games_summed_and_clamped():
+    """Genuine two-team trade: games sum (partitioned season), clamped to 17."""
+    df = pd.DataFrame([
+        {"player_name": "Player X", "recent_team": "LV", "position": "WR",
+         "sleeper_id": "x1", "games": 10, "total_receptions": 40},
+        {"player_name": "Player X", "recent_team": "NYJ", "position": "WR",
+         "sleeper_id": "x1", "games": 9, "total_receptions": 30},
+    ])
+    wh = _warehouse({2024: df})
+    stats = resolve_player_season_stats(
+        _player(name="Player X", team_abbr="NYJ", position="WR", sleeper_id="x1"), 2024, wh
+    )
+    assert stats is not None
+    assert stats["games"] == 17          # 10+9=19 summed, clamped to 17
+    assert stats["receptions"] == 70     # counting stats combine
+
+
 def test_zero_games_row_returns_none():
     """A row with games=0 is treated as no data."""
     df = pd.DataFrame([
