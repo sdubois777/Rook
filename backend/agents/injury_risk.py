@@ -262,6 +262,11 @@ def compute_pattern_flags(
 FULL_SEASON_GAMES = 15      # games at/above this count as a "full" season
 MAX_NFL_GAMES = 17          # projection cap
 
+# Availability measures career durability patterns, so it uses a longer
+# window than the 3-year projection baseline — a player with 2 lost
+# seasons in 5 years is a different risk than 2 in 3.
+AVAILABILITY_SEASONS = 5
+
 # avg_games → (availability_risk, base modifier on projected PPR)
 _DURABLE_MIN_GAMES = 15
 _MONITOR_MIN_GAMES = 13
@@ -317,8 +322,14 @@ def compute_availability_metrics(games_history: list[dict]) -> dict:
     if trend == "declining" and modifier > -0.15:
         modifier += _DECLINING_EXTRA_MODIFIER
 
-    # Project next season — weight recent seasons more heavily
-    if len(games) >= 3:
+    # Project next season — weight recent seasons more heavily.
+    # Weights sum to 1.0 in each branch.
+    if len(games) >= 5:
+        projected = round(
+            games[-1] * 0.35 + games[-2] * 0.25 + games[-3] * 0.20
+            + games[-4] * 0.12 + games[-5] * 0.08
+        )
+    elif len(games) >= 3:
         projected = round(games[-1] * 0.5 + games[-2] * 0.3 + games[-3] * 0.2)
     else:
         projected = round(avg_games)
@@ -730,7 +741,9 @@ async def _write_injury_profiles(
         return 0
 
     ctx_map: dict[str, dict] = {p["name"]: p for p in context.get("players", [])}
-    analysis_seasons = get_analysis_seasons(3)
+    # Availability uses a longer window than projection baselines —
+    # career durability pattern, not recent production trend.
+    availability_seasons = get_analysis_seasons(AVAILABILITY_SEASONS)
 
     async with AsyncSessionLocal() as session:
         names_and_teams = [(p.get("player_name", ""), team) for p in profiles]
@@ -823,7 +836,7 @@ async def _write_injury_profiles(
             player_obj = player_objs.get(player_id)
             if warehouse is not None and player_obj is not None:
                 avail = build_player_availability(
-                    player_obj, warehouse, analysis_seasons
+                    player_obj, warehouse, availability_seasons
                 )
                 record.games_played_history       = avail["games_played_history"]
                 record.avg_games_per_season        = _to_decimal(avail["avg_games_per_season"])
