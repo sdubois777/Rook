@@ -422,6 +422,61 @@ fantasy-football-ai/
 
 ---
 
+## Backtest Results (June 2026 — final config)
+## 3-year availability + QB extension + dedup fix
+
+| Metric | Value | Grade |
+|--------|-------|-------|
+| Projection MAE | 34.3 PPR | Best ever |
+| Correlation | 0.849 | Strong |
+| Overall bias | +10.3 | Best ever |
+| Within 20% accuracy | 62% | Best ever |
+| Signal accuracy | 81.0% | Strong |
+| Buy accuracy | 97% | Excellent |
+| Avoid accuracy | 55% | Improving |
+| QB MAE | 49.7 | (was 71.1) |
+| QB bias | +32.0 | (was +64.4) |
+| Tier monotonic | Yes | ✓ |
+
+Key improvements vs original baseline:
+  MAE: 42.8 → 34.3 (−20%)
+  QB MAE: 71.1 → 49.7 (−30%)
+  QB bias: +64.4 → +32.0 (−50%)
+  Buy accuracy: 94% → 97%
+
+What drove the improvement:
+  - Games-based availability model
+    (replaces Sleeper injury narrative)
+  - QB availability extension
+    (Burrow/Daniels/Murray correctly
+     flagged as concern)
+  - Traded-player dedup fix
+    (CMC 2022: 34 games → 17 games)
+  - Forbidden injury language in prompts
+    (hallucinated diagnoses eliminated)
+
+Known limitations:
+  - CMC #1 miss (238 vs 415 actual) —
+    one-off injury over-penalization.
+    2024 was 4 games (injury), 2025 was
+    17 (full bounce-back). 3-year avg
+    correctly flags concern but miss is
+    large. Future: recency-weighted hybrid.
+  - 5-year window tested and rejected —
+    dilutes recent signal, regresses all
+    metrics. 3-year is the better predictor.
+  - Prospective validation deferred —
+    requires pipeline re-run capped at 2024.
+    Post-August draft validation planned.
+  - In-sample caveat: 2025-informed signals
+    scored against 2025 actuals. Like-for-
+    like improvement is real but absolute
+    numbers not a clean prospective test.
+
+1212 tests passing.
+
+---
+
 ## Backtest Results (2025 Season — post QB stats fix)
 
 | Metric | Value | Grade |
