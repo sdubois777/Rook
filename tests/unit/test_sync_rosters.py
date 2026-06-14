@@ -253,12 +253,16 @@ async def test_new_player_invalidates_their_team():
 
     session = _mock_session([])  # no existing players
 
+    # Pass a warehouse where the new player is relevant (on the depth chart),
+    # so the recent-activity gate inserts them.
+    wh = _gate_warehouse(depth_sleeper_ids=["500"])
+
     with patch(
         "backend.integrations.sleeper.fetch_sleeper_players",
         return_value=sleeper_df,
     ):
         from scripts.sync_rosters import sync_players_from_sleeper
-        result = await sync_players_from_sleeper(db=session)
+        result = await sync_players_from_sleeper(db=session, warehouse=wh)
 
     assert "LAC" in result["teams_invalidated"]
     assert result["inserted"] == 1
@@ -431,3 +435,67 @@ async def test_brian_thomas_jr_gets_sleeper_id():
 
     assert player_jr.sleeper_id == "BTJ_SLEEPER"
     assert player_jr.sportradar_id == "sr-btj-new"
+
+
+# ---------------------------------------------------------------------------
+# Recent-activity gate — is_relevant_player()
+# ---------------------------------------------------------------------------
+import types  # noqa: E402
+
+from scripts.sync_rosters import is_relevant_player  # noqa: E402
+
+
+def _gate_warehouse(depth_sleeper_ids=(), stats_gsis_by_season=None):
+    """Mock warehouse: a 2026 depth-chart frame (sleeper_id keyed) and
+    per-season seasonal-stats frames (player_id == gsis)."""
+    stats_gsis_by_season = stats_gsis_by_season or {}
+    dc = pd.DataFrame({"sleeper_id": [str(s) for s in depth_sleeper_ids]})
+    frames = {
+        season: pd.DataFrame({"player_id": [str(g) for g in gsis_list]})
+        for season, gsis_list in stats_gsis_by_season.items()
+    }
+    return types.SimpleNamespace(
+        depth_charts={2026: dc},
+        get_seasonal_stats=lambda s: frames.get(s, pd.DataFrame()),
+    )
+
+
+def test_roethlisberger_filtered_at_sync():
+    """No 2026 depth chart slot, no 2024/2025 games -> filtered out."""
+    wh = _gate_warehouse(depth_sleeper_ids=["4046"], stats_gsis_by_season={2025: ["00-0033873"]})
+    ben = {"player_id": "138", "gsis_id": "00-0022924", "full_name": "Ben Roethlisberger"}
+    assert is_relevant_player(ben, wh) is False
+
+
+def test_mahomes_kept_at_sync():
+    """A 2025 game appearance (gsis in stats) keeps the player."""
+    wh = _gate_warehouse(depth_sleeper_ids=[], stats_gsis_by_season={2025: ["00-0033873"]})
+    mahomes = {"player_id": "4046", "gsis_id": "00-0033873", "full_name": "Patrick Mahomes"}
+    assert is_relevant_player(mahomes, wh) is True
+
+
+def test_ir_player_kept_via_depth_chart():
+    """On the 2026 depth chart but no recent games (IR starter) -> kept."""
+    wh = _gate_warehouse(depth_sleeper_ids=["999"], stats_gsis_by_season={2025: []})
+    ir = {"player_id": "999", "gsis_id": "00-0099999", "full_name": "Hurt Starter"}
+    assert is_relevant_player(ir, wh) is True
+
+
+def test_gsis_matching_not_sleeper_id():
+    """Stats are matched by gsis, not sleeper_id. A player whose sleeper_id
+    coincidentally equals a stats player_id (gsis) is NOT matched."""
+    # stats frame keyed by gsis "G-REAL"; player has sleeper_id 'G-REAL' but a
+    # different gsis -> must NOT match (proves gsis-keyed, not sleeper-keyed).
+    wh = _gate_warehouse(depth_sleeper_ids=[], stats_gsis_by_season={2025: ["G-REAL"]})
+    collider = {"player_id": "G-REAL", "gsis_id": "G-OTHER", "full_name": "Collision Guy"}
+    assert is_relevant_player(collider, wh) is False
+    # Same player, correct gsis -> matches.
+    matched = {"player_id": "12345", "gsis_id": "G-REAL", "full_name": "Real Guy"}
+    assert is_relevant_player(matched, wh) is True
+
+
+def test_no_gsis_and_no_depth_chart_filtered():
+    """A player with no gsis and no depth-chart slot (UDFA noise) -> filtered."""
+    wh = _gate_warehouse(depth_sleeper_ids=["111"], stats_gsis_by_season={2025: ["00-0011111"]})
+    udfa = {"player_id": "55555", "gsis_id": "", "full_name": "Practice Squad Guy"}
+    assert is_relevant_player(udfa, wh) is False

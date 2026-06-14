@@ -40,9 +40,50 @@ _SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 logger = logging.getLogger(__name__)
 
 
+def is_relevant_player(player_row: dict, warehouse) -> bool:
+    """Return True if a Sleeper player is relevant for fantasy drafting.
+
+    Relevant = on the current (2026) depth chart OR appeared in a 2024/2025
+    game. This filters retired / deep-practice-squad players that Sleeper
+    still flags as Active (Roethlisberger, Le'Veon Bell, etc.).
+
+    Matching:
+      - Depth chart: by sleeper_id (the warehouse depth_charts frame is
+        Sleeper-sourced and sleeper_id-keyed, well-populated beyond starters).
+      - Recent games: by gsis_id against the seasonal-stats frame, whose
+        player_id column IS the gsis id. We do NOT name-match the recent
+        seasons — the 2025 frame uses abbreviated names ("C.McCaffrey").
+
+    The depth-chart check carries the load (Sleeper gsis coverage is only
+    ~16% on-team); the gsis check is a secondary catch for players with
+    recent games who are off the depth chart.
+    """
+    sleeper_id = str(player_row.get("player_id", "") or "").strip()
+    gsis_id = str(player_row.get("gsis_id", "") or "").strip()
+
+    # Check 1 — current-season depth chart slot (Sleeper, by sleeper_id)
+    dc = warehouse.depth_charts.get(2026, pd.DataFrame())
+    if dc is not None and not dc.empty and sleeper_id:
+        id_col = next((c for c in ("sleeper_id", "player_id") if c in dc.columns), None)
+        if id_col and (dc[id_col].astype(str).str.strip() == sleeper_id).any():
+            return True
+
+    # Check 2 — game appearances in 2024/2025 (by gsis_id == stats.player_id)
+    if gsis_id:
+        for season in (2024, 2025):
+            stats = warehouse.get_seasonal_stats(season)
+            if stats is None or stats.empty or "player_id" not in stats.columns:
+                continue
+            if (stats["player_id"].astype(str).str.strip() == gsis_id).any():
+                return True
+
+    return False
+
+
 async def sync_players_from_sleeper(
     dry_run: bool = False,
     db=None,
+    warehouse=None,
 ) -> dict:
     """
     Sync players table from Sleeper API.
@@ -69,7 +110,13 @@ async def sync_players_from_sleeper(
     players_df = fetch_sleeper_players()
     print(f"Loaded {len(players_df)} active skill players from Sleeper.\n")
 
-    updated = inserted = skipped = 0
+    # Warehouse powers the recent-activity gate on new inserts. Build once
+    # if the caller (pipeline) didn't pass an already-built one.
+    if warehouse is None:
+        from backend.integrations.nfl_data import NflDataWarehouse
+        warehouse = NflDataWarehouse.build()
+
+    updated = inserted = skipped = filtered = 0
     changed_teams: set[str] = set()
 
     if db is None:
@@ -182,6 +229,18 @@ async def sync_players_from_sleeper(
 
                 updated += 1
             else:
+                # Recent-activity gate — only seed NEW players who are on
+                # the 2026 depth chart or appeared in 2024/2025 games.
+                # Filters retired/practice-squad noise Sleeper marks Active
+                # (Roethlisberger, Bell, Haskins). Existing players are never
+                # gated here, so an active player already in the DB is never
+                # dropped by a coverage gap.
+                if not is_relevant_player(row, warehouse):
+                    filtered += 1
+                    if dry_run:
+                        print(f"  [DRY-RUN] FILTERED (no depth chart, no 2024/25 games): {full_name} ({position}, {team or 'FA'})")
+                    continue
+
                 # Insert new player — invalidate their team
                 if not dry_run:
                     if team:
@@ -235,13 +294,14 @@ async def sync_players_from_sleeper(
             await session_ctx.__aexit__(None, None, None)
 
     logger.info(
-        "Sleeper sync: %d updated, %d inserted, %d skipped",
-        updated, inserted, skipped,
+        "Sleeper sync: %d updated, %d inserted, %d skipped, %d filtered (irrelevant)",
+        updated, inserted, skipped, filtered,
     )
     return {
         "updated": updated,
         "inserted": inserted,
         "skipped": skipped,
+        "filtered": filtered,
         "teams_invalidated": sorted(changed_teams),
         "cache_cleared": len(changed_teams) > 0,
     }
@@ -262,7 +322,8 @@ async def main() -> None:
     mode = "DRY-RUN" if args.dry_run else "DONE"
     print(f"\n[{mode}] {result['updated']} updated, "
           f"{result['inserted']} inserted, "
-          f"{result['skipped']} skipped.")
+          f"{result['skipped']} skipped, "
+          f"{result.get('filtered', 0)} filtered (irrelevant).")
     if result.get("teams_invalidated"):
         print(f"Cache invalidated for: {result['teams_invalidated']}")
 
