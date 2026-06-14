@@ -8,12 +8,27 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from backend.models.dependency import PlayerDependency
 from backend.models.player import Player
 from backend.repositories.base import BaseRepository
+
+
+def draftable_filter():
+    """WHERE clause hiding pure-noise players (retired / deep practice squad).
+
+    A player is shown only if FantasyPros lists them (has an ADP) OR the
+    pipeline valued them above the $1 floor. This hides Roethlisberger-type
+    rows — valued at $1 with no ADP — without deleting anything. Used by the
+    player list and draft board so the same definition of "draftable" applies
+    to both.
+    """
+    return or_(
+        Player.market_value_fantasypros.isnot(None),
+        Player.ai_bid_ceiling > 1,
+    )
 
 # Relationships needed to build a PlayerSummary response.
 _SUMMARY_LOADS = (
@@ -133,7 +148,7 @@ class PlayerRepository(BaseRepository[Player]):
         Returns (players for the requested page, total matching count).
         Unknown sort keys fall back to bid_ceiling.
         """
-        query = select(Player).options(*_SUMMARY_LOADS)
+        query = select(Player).options(*_SUMMARY_LOADS).where(draftable_filter())
 
         if position:
             query = query.where(Player.position == position.upper())

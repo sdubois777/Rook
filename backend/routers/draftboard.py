@@ -18,6 +18,7 @@ from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
+from backend.repositories.player_repo import draftable_filter
 from backend.utils.seasons import get_current_season
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ async def get_draftboard(
         query = (
             select(Player)
             .where(Player.recommended_bid_ceiling.isnot(None))
+            .where(draftable_filter())
             .options(
                 selectinload(Player.dependencies),
                 selectinload(Player.injury_profile),
