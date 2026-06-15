@@ -103,14 +103,21 @@ async def relay_draft_event(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
-    # Feed the live draft engine when one is running. on_nomination triggers
-    # the Sonnet recommendation and broadcasts it itself; on_pick_confirmed
-    # updates opponent/budget state. Both are no-ops until POST /draft/start.
-    if _engine is not None:
-        if event.type == "nomination":
-            await _trigger_nomination(event)
-        elif event.type == "draft_pick":
-            await _record_pick(event)
+    # Feed the live draft engine. A nomination needs a recommendation, so if the
+    # engine singleton is missing (e.g. a Railway redeploy reset it mid-draft),
+    # lazily build a default one rather than silently dropping the event. Picks
+    # only update state, so they're recorded only when an engine already exists.
+    if event.type == "nomination":
+        if _engine is None:
+            logger.warning(
+                "Nomination received with no live draft engine — lazily "
+                "initializing a default engine (a redeploy likely reset it). "
+                "Call POST /draft/start for full budget/opponent fidelity."
+            )
+            await _build_engine()
+        await _trigger_nomination(event)
+    elif event.type == "draft_pick" and _engine is not None:
+        await _record_pick(event)
 
     # Always relay the raw event so the UI updates (nomination card, bid,
     # clock, team budgets, pick log) regardless of engine state.
@@ -162,6 +169,67 @@ async def _record_pick(event: "DraftEventPayload") -> None:
         "player_name": player_name,
         "position": player.position if player else "",
     })
+
+
+async def _build_engine(your_team_id: str = "", league_id: str | None = None) -> None:
+    """Construct the DraftStateManager + LiveDraftEngine into module globals.
+
+    Shared by POST /draft/start and the lazy-init path in POST /draft/event,
+    so a recommendation can still be produced if the engine singleton was wiped
+    by a container restart (Railway redeploy) mid-draft. league_id/your_team_id
+    are optional: with neither, a default config + empty team id is used, which
+    still yields valuation-driven recommendations (budget/opponent fidelity is
+    degraded until POST /draft/start supplies the real identity).
+    """
+    global _engine, _state
+
+    from backend.database import AsyncSessionLocal as async_session
+    from backend.engines.draft_state_manager import DraftStateManager
+    from backend.engines.dependency_resolver import DependencyResolver
+    from backend.engines.opponent_threat import OpponentThreatAnalyzer
+    from backend.engines.live_draft import LiveDraftEngine
+
+    # Load user's league settings if a league_id was provided
+    user_league = None
+    if league_id:
+        try:
+            import uuid as _uuid
+            from backend.repositories.league_repo import LeagueRepository
+
+            async with async_session() as session:
+                user_league = await LeagueRepository(session).get(
+                    _uuid.UUID(league_id)
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not load league %s for draft config: %s", league_id, exc
+            )
+
+    config = DraftStateManager.config_from_user_league(user_league)
+    _state = DraftStateManager(config, your_team_id)
+
+    resolver = DependencyResolver()
+
+    # Load historical manager tendencies from league auction data
+    tendencies: dict = {}
+    try:
+        from backend.engines.league_auction import load_manager_tendencies
+        async with async_session() as session:
+            tendencies = await load_manager_tendencies(session)
+        if tendencies:
+            logger.info("Loaded tendencies for %d managers", len(tendencies))
+    except Exception as exc:
+        logger.warning("Could not load manager tendencies: %s", exc)
+
+    threat_analyzer = OpponentThreatAnalyzer(tendencies=tendencies)
+
+    _engine = LiveDraftEngine(
+        state=_state,
+        resolver=resolver,
+        threat_analyzer=threat_analyzer,
+        db_session_factory=async_session,
+        ws_manager=ws_manager,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -273,14 +341,6 @@ async def start_draft(req: StartDraftRequest):
     Playwright bridge is intentionally not connected here (Yahoo's CSP blocks
     it and Chromium need not be installed).
     """
-    global _engine, _state
-
-    from backend.database import AsyncSessionLocal as async_session
-    from backend.engines.draft_state_manager import DraftStateManager
-    from backend.engines.dependency_resolver import DependencyResolver
-    from backend.engines.opponent_threat import OpponentThreatAnalyzer
-    from backend.engines.live_draft import LiveDraftEngine
-
     if _engine is not None:
         return {
             "status": "ready",
@@ -291,48 +351,7 @@ async def start_draft(req: StartDraftRequest):
             ),
         }
 
-    # Load user's league settings if league_id provided
-    user_league = None
-    if req.league_id:
-        try:
-            import uuid as _uuid
-            from backend.repositories.league_repo import LeagueRepository
-
-            async with async_session() as session:
-                user_league = await LeagueRepository(session).get(
-                    _uuid.UUID(req.league_id)
-                )
-        except Exception as exc:
-            logger.warning(
-                "Could not load league %s for draft config: %s",
-                req.league_id, exc,
-            )
-
-    config = DraftStateManager.config_from_user_league(user_league)
-    _state = DraftStateManager(config, req.your_team_id)
-
-    resolver = DependencyResolver()
-
-    # Load historical manager tendencies from league auction data
-    tendencies: dict = {}
-    try:
-        from backend.engines.league_auction import load_manager_tendencies
-        async with async_session() as session:
-            tendencies = await load_manager_tendencies(session)
-        if tendencies:
-            logger.info("Loaded tendencies for %d managers", len(tendencies))
-    except Exception as exc:
-        logger.warning("Could not load manager tendencies: %s", exc)
-
-    threat_analyzer = OpponentThreatAnalyzer(tendencies=tendencies)
-
-    _engine = LiveDraftEngine(
-        state=_state,
-        resolver=resolver,
-        threat_analyzer=threat_analyzer,
-        db_session_factory=async_session,
-        ws_manager=ws_manager,
-    )
+    await _build_engine(req.your_team_id, req.league_id)
 
     # No Playwright: the browser extension handles the draft room and relays
     # events via POST /draft/event. If a bridge was connected out-of-band via

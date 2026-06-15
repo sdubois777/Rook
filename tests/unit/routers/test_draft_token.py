@@ -164,7 +164,9 @@ async def test_draft_event_relays_to_ws_manager():
         "backend.repositories.user_repo.UserRepository"
     ) as MockRepo, patch(
         "backend.routers.draft.ws_manager"
-    ) as mock_ws:
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", AsyncMock()
+    ):
         mock_repo = AsyncMock()
         mock_repo.get_by_draft_token.return_value = user
         MockRepo.return_value = mock_repo
@@ -359,6 +361,185 @@ async def test_draft_pick_recorded():
             assert sent["final_price"] == 20
             raw = mock_ws.broadcast.call_args[0][0]
             assert raw["type"] == "draft_pick"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_nomination_lazy_inits_engine_when_none():
+    """A nomination with no engine lazily builds one, then runs it."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    build = AsyncMock()
+    trigger = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", None
+    ), patch(
+        "backend.routers.draft._build_engine", build
+    ), patch(
+        "backend.routers.draft._trigger_nomination", trigger
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "nomination",
+                        "platform": "yahoo",
+                        "payload": {"player_name": "Sam LaPorta"},
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            build.assert_awaited_once()
+            trigger.assert_awaited_once()
+            mock_ws.broadcast.assert_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_nomination_skips_lazy_init_when_engine_exists():
+    """A nomination with an existing engine does NOT rebuild it."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    build = AsyncMock()
+    trigger = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", AsyncMock()
+    ), patch(
+        "backend.routers.draft._build_engine", build
+    ), patch(
+        "backend.routers.draft._trigger_nomination", trigger
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "nomination",
+                        "platform": "yahoo",
+                        "payload": {"player_name": "Sam LaPorta"},
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            build.assert_not_awaited()
+            trigger.assert_awaited_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_draft_pick_does_not_lazy_init():
+    """A draft_pick with no engine relays raw but never builds/records."""
+    user = _make_user(draft_token="valid-token")
+    from backend.core.dependencies import get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    build = AsyncMock()
+    record = AsyncMock()
+
+    with patch(
+        "backend.repositories.user_repo.UserRepository"
+    ) as MockRepo, patch(
+        "backend.routers.draft.ws_manager"
+    ) as mock_ws, patch(
+        "backend.routers.draft._engine", None
+    ), patch(
+        "backend.routers.draft._build_engine", build
+    ), patch(
+        "backend.routers.draft._record_pick", record
+    ):
+        mock_repo = AsyncMock()
+        mock_repo.get_by_draft_token.return_value = user
+        MockRepo.return_value = mock_repo
+        mock_ws.broadcast = AsyncMock()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/event",
+                    json={
+                        "type": "draft_pick",
+                        "platform": "yahoo",
+                        "payload": {"player_name": "X", "final_price": 5},
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            build.assert_not_awaited()
+            record.assert_not_awaited()
+            mock_ws.broadcast.assert_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_start_draft_builds_engine_and_returns_ready():
+    """POST /draft/start builds the engine via the shared helper, no Playwright."""
+    build = AsyncMock()
+
+    with patch(
+        "backend.routers.draft._engine", None
+    ), patch(
+        "backend.routers.draft._bridge", None
+    ), patch(
+        "backend.routers.draft._build_engine", build
+    ):
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/draft/start",
+                    json={"your_team_id": "team_5"},
+                )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ready"
+            assert data["mode"] == "extension"
+            build.assert_awaited_once_with("team_5", None)
         finally:
             app.dependency_overrides.clear()
 
