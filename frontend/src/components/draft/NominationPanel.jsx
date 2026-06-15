@@ -5,9 +5,17 @@ import PositionBadge from '../shared/PositionBadge'
 import ValueComparisonBar from '../shared/ValueComparisonBar'
 import SearchInput from '../shared/SearchInput'
 
+// A team is a threat when it's sitting on lots of money with few slots filled.
+function isThreat(team) {
+  if (!team || !team.totalSlots) return false
+  return team.budget >= 80 && team.slotsUsed < team.totalSlots * 0.5
+}
+
 export default function NominationPanel() {
   const rec = useDraftStore((s) => s.recommendation)
   const currentBid = useDraftStore((s) => s.currentBid)
+  const currentNomination = useDraftStore((s) => s.currentNomination)
+  const teamsState = useDraftStore((s) => s.teamsState)
   const comboAlerts = useDraftStore((s) => s.comboAlerts)
   const availablePlayers = useDraftStore((s) => s.availablePlayers)
   const [nomSearch, setNomSearch] = useState('')
@@ -37,7 +45,14 @@ export default function NominationPanel() {
         .slice(0, 5)
     : []
 
-  const hasNomination = rec || currentBid
+  const nom = currentNomination
+  const playerName =
+    nom?.playerName || rec?.player_name || currentBid?.player_name || 'Unknown'
+  const bidAmount = nom?.currentBid ?? currentBid?.current_bid
+  const clock = nom?.clock
+  const clockDanger = nom?.secondsRemaining != null && nom.secondsRemaining < 10
+  const teamEntries = Object.entries(teamsState || {})
+  const hasNomination = nom || rec || currentBid
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
@@ -52,21 +67,40 @@ export default function NominationPanel() {
             <div className="flex items-center gap-2 mb-1">
               <PositionBadge position={rec?.position} />
               <span className="text-lg font-medium text-slate-200">
-                {rec?.player_name || currentBid?.player_name || 'Unknown'}
+                {playerName}
               </span>
+              {nom?.posTeam && (
+                <span className="text-xs text-slate-500">{nom.posTeam}</span>
+              )}
             </div>
           </div>
 
-          {/* Current bid */}
-          {currentBid && (
-            <div className="bg-[#1c1f2e] rounded-lg p-3 mb-3">
-              <div className="text-xs text-slate-500 mb-1">Current Bid</div>
-              <div className="text-2xl font-mono font-bold text-amber-400">
-                ${currentBid.current_bid}
+          {/* Current bid + clock */}
+          {(bidAmount != null || clock) && (
+            <div className="bg-[#1c1f2e] rounded-lg p-3 mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Current Bid</div>
+                <div className="text-2xl font-mono font-bold text-amber-400">
+                  ${bidAmount ?? '--'}
+                </div>
+                {currentBid?.current_bidder && (
+                  <div className="text-xs text-slate-500 mt-1">
+                    by {currentBid.current_bidder}
+                  </div>
+                )}
               </div>
-              <div className="text-xs text-slate-500 mt-1">
-                by {currentBid.current_bidder}
-              </div>
+              {clock && (
+                <div className="text-right">
+                  <div className="text-xs text-slate-500 mb-1">Clock</div>
+                  <div
+                    className={`text-2xl font-mono font-bold ${
+                      clockDanger ? 'text-red-500' : 'text-slate-300'
+                    }`}
+                  >
+                    {clock}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -77,6 +111,36 @@ export default function NominationPanel() {
                 systemValue={rec.system_value}
                 marketValue={rec.market_value}
               />
+            </div>
+          )}
+
+          {/* Team budgets (live from extension poller) */}
+          {teamEntries.length > 0 && (
+            <div className="mb-3">
+              <h4 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
+                Team Budgets
+              </h4>
+              <div className="space-y-0.5">
+                {teamEntries
+                  .sort(([, a], [, b]) => (b.budget || 0) - (a.budget || 0))
+                  .map(([name, team]) => (
+                    <div
+                      key={name}
+                      className="flex items-center justify-between text-xs px-2 py-1 rounded bg-[#1c1f2e]"
+                    >
+                      <span className="text-slate-300 truncate">{name}</span>
+                      <span className="flex items-center gap-2 font-mono text-slate-400">
+                        <span>${team.budget}</span>
+                        <span className="text-slate-600">
+                          {team.slotsUsed}/{team.totalSlots}
+                        </span>
+                        {isThreat(team) && (
+                          <span title="High budget, few slots filled">⚠️</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+              </div>
             </div>
           )}
         </>

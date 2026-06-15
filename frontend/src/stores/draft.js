@@ -6,6 +6,17 @@ import {
   endDraft as apiEndDraft,
 } from '../api/draft'
 
+/** Total seconds remaining from a "M:SS" clock string ("0:19" -> 19). */
+export function parseClockSeconds(clock) {
+  if (!clock) return null
+  const parts = String(clock).split(':')
+  if (parts.length !== 2) return null
+  const mins = parseInt(parts[0], 10)
+  const secs = parseInt(parts[1], 10)
+  if (Number.isNaN(mins) || Number.isNaN(secs)) return null
+  return mins * 60 + secs
+}
+
 export const useDraftStore = create((set, get) => ({
   // Connection
   phase: 'setup', // 'setup' | 'live' | 'ended'
@@ -15,6 +26,8 @@ export const useDraftStore = create((set, get) => ({
   // Current nomination
   recommendation: null,
   currentBid: null,
+  currentNomination: null, // { playerName, posTeam, currentBid, clock, secondsRemaining }
+  teamsState: {}, // live scraped team budgets from the extension poller
 
   // Draft state
   myBudget: 200,
@@ -72,23 +85,75 @@ export const useDraftStore = create((set, get) => ({
     })
   },
 
-  updateBid: (bid) => set({ currentBid: bid }),
+  // A new player hit the block (extension nomination event). Show the card
+  // immediately; the AI recommendation arrives a beat later from the engine.
+  setNomination: (payload) =>
+    set({
+      currentNomination: {
+        playerName: payload.player_name,
+        posTeam: payload.pos_team,
+        currentBid: payload.opening_bid,
+        clock: payload.clock,
+        secondsRemaining: parseClockSeconds(payload.clock),
+      },
+      currentBid: {
+        current_bid: payload.opening_bid,
+        player_name: payload.player_name,
+      },
+      recommendation: null,
+    }),
+
+  updateBid: (bid) =>
+    set((s) => ({
+      currentBid: bid,
+      currentNomination: s.currentNomination
+        ? {
+            ...s.currentNomination,
+            currentBid: bid.current_bid ?? s.currentNomination.currentBid,
+            clock: bid.clock ?? s.currentNomination.clock,
+            secondsRemaining:
+              bid.clock != null
+                ? parseClockSeconds(bid.clock)
+                : s.currentNomination.secondsRemaining,
+          }
+        : s.currentNomination,
+    })),
+
+  updateClock: (payload) =>
+    set((s) => ({
+      currentNomination: s.currentNomination
+        ? {
+            ...s.currentNomination,
+            clock: payload.clock,
+            secondsRemaining:
+              payload.seconds_remaining ?? parseClockSeconds(payload.clock),
+          }
+        : s.currentNomination,
+    })),
+
+  updateTeams: (teams) => set({ teamsState: teams || {} }),
 
   recordPick: (pick) => {
     const state = get()
     const newPicks = [...state.picks, pick]
 
-    // Remove drafted player from available list
+    // Remove drafted player from available list. Relayed picks from the
+    // extension carry only a name (no id), so match on id OR name.
     const newAvailable = state.availablePlayers.filter(
-      (p) => p.yahoo_player_id !== pick.player_id && p.id !== pick.player_id
+      (p) =>
+        p.yahoo_player_id !== pick.player_id &&
+        p.id !== pick.player_id &&
+        p.name !== pick.player_name
     )
 
-    // Clear current recommendation + bid after pick confirmed
+    // Clear current recommendation + bid + nomination after pick confirmed
     const updates = {
       picks: newPicks,
       availablePlayers: newAvailable,
       recommendation: null,
       currentBid: null,
+      currentNomination: null,
+      ...(pick.teams_snapshot ? { teamsState: pick.teams_snapshot } : {}),
     }
 
     // If it's our pick, add to roster

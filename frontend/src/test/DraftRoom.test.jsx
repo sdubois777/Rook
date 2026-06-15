@@ -56,6 +56,8 @@ function resetStore() {
     bridgeStatus: null,
     recommendation: null,
     currentBid: null,
+    currentNomination: null,
+    teamsState: {},
     myBudget: 200,
     myRoster: [],
     rosterSlotsRemaining: 16,
@@ -70,7 +72,7 @@ function resetStore() {
 }
 
 // Lazy imports to avoid module-level issues
-let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker
+let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker, NominationPanel
 
 beforeEach(async () => {
   resetStore()
@@ -80,6 +82,7 @@ beforeEach(async () => {
   MyRoster = (await import('../components/draft/MyRoster')).default
   AvailablePlayers = (await import('../components/draft/AvailablePlayers')).default
   OpponentTracker = (await import('../components/draft/OpponentTracker')).default
+  NominationPanel = (await import('../components/draft/NominationPanel')).default
 })
 
 describe('DraftRoom', () => {
@@ -363,6 +366,103 @@ describe('DraftRoom', () => {
     expect(state.availablePlayers).toHaveLength(1)
     expect(state.availablePlayers[0].name).toBe("Ja'Marr Chase")
     expect(state.picks).toHaveLength(1)
+  })
+
+  it('setNomination shows the nominee and clears any stale recommendation', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      recommendation: { action: 'buy', player_name: 'Old Guy', bid_ceiling: 10 },
+    })
+
+    act(() => {
+      useDraftStore.getState().setNomination({
+        player_name: 'Sam LaPorta',
+        pos_team: 'DET – TE',
+        opening_bid: 4,
+        clock: '0:19',
+      })
+    })
+
+    const state = useDraftStore.getState()
+    expect(state.recommendation).toBeNull()
+    expect(state.currentNomination.playerName).toBe('Sam LaPorta')
+    expect(state.currentNomination.secondsRemaining).toBe(19)
+  })
+
+  it('nomination panel turns the clock red under 10 seconds', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: {
+        playerName: 'Sam LaPorta',
+        posTeam: 'DET – TE',
+        currentBid: 4,
+        clock: '0:08',
+        secondsRemaining: 8,
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <NominationPanel />
+      </MemoryRouter>
+    )
+
+    const clockEl = screen.getByText('0:08')
+    expect(clockEl.className).toContain('text-red-500')
+    expect(screen.getByText('Sam LaPorta')).toBeInTheDocument()
+  })
+
+  it('nomination panel shows team budgets with a threat indicator', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: {
+        playerName: 'Sam LaPorta',
+        posTeam: 'DET – TE',
+        currentBid: 4,
+        clock: '0:19',
+        secondsRemaining: 19,
+      },
+      teamsState: {
+        'Team 3': { budget: 149, slotsUsed: 0, totalSlots: 15 },
+        Stephen: { budget: 9, slotsUsed: 6, totalSlots: 15 },
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <NominationPanel />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Team 3')).toBeInTheDocument()
+    expect(screen.getByText('Stephen')).toBeInTheDocument()
+    // Cash-heavy, few slots -> flagged; the small-budget team is not
+    expect(screen.getByTitle('High budget, few slots filled')).toBeInTheDocument()
+  })
+
+  it('recordPick removes a relayed (name-only) pick from available', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+        { id: 'p2', name: 'Travis Kelce', position: 'TE', yahoo_player_id: 'y3' },
+      ],
+    })
+
+    // Extension relay payload — no player_id, only a name
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor',
+        final_price: 52,
+        winner: 'Stephen',
+        teams_snapshot: { Stephen: { budget: 100, slotsUsed: 3, totalSlots: 15 } },
+      })
+    })
+
+    const state = useDraftStore.getState()
+    expect(state.availablePlayers).toHaveLength(1)
+    expect(state.availablePlayers[0].name).toBe('Travis Kelce')
+    expect(state.teamsState.Stephen.budget).toBe(100)
   })
 
   it('opponent tracker shows combo alerts', () => {

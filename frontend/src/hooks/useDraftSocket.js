@@ -20,7 +20,10 @@ export default function useDraftSocket() {
   const reconnectDelay = useRef(1000)
 
   const setRecommendation = useDraftStore((s) => s.setRecommendation)
+  const setNomination = useDraftStore((s) => s.setNomination)
   const updateBid = useDraftStore((s) => s.updateBid)
+  const updateClock = useDraftStore((s) => s.updateClock)
+  const updateTeams = useDraftStore((s) => s.updateTeams)
   const recordPick = useDraftStore((s) => s.recordPick)
   const addComboAlert = useDraftStore((s) => s.addComboAlert)
   const setBridgeStatus = useDraftStore((s) => s.setBridgeStatus)
@@ -40,20 +43,31 @@ export default function useDraftSocket() {
         try {
           const data = JSON.parse(event.data)
           switch (data.type) {
+            // Engine broadcasts (flat shape)
             case 'recommendation':
               setRecommendation(data)
-              break
-            case 'bid_update':
-              updateBid(data)
-              break
-            case 'draft_pick':
-              recordPick(data)
               break
             case 'opponent_combo_alert':
               addComboAlert(data)
               break
             case 'bridge_status':
               setBridgeStatus(data)
+              break
+            // Extension relay events (nested under data.payload)
+            case 'nomination':
+              setNomination(data.payload)
+              break
+            case 'bid_update':
+              updateBid(data.payload)
+              break
+            case 'clock':
+              updateClock(data.payload)
+              break
+            case 'draft_pick':
+              recordPick(data.payload)
+              break
+            case 'teams_update':
+              updateTeams(data.payload?.teams)
               break
           }
         } catch {
@@ -99,7 +113,10 @@ export default function useDraftSocket() {
     }
   }, [
     setRecommendation,
+    setNomination,
     updateBid,
+    updateClock,
+    updateTeams,
     recordPick,
     addComboAlert,
     setBridgeStatus,
