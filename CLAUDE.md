@@ -280,7 +280,7 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-1057 tests passing (backend). 29 frontend tests passing.
+1228 backend tests. 33 frontend tests. 12 extension tests.
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -415,6 +415,25 @@ fantasy-football-ai/
     (yahoo_draft, espn_draft, sleeper_draft, espn_auth),
     popup UI, draft_token endpoint on backend,
     POST /draft/event relay endpoint
+- [x] Yahoo draft room DOM poller
+  yahoo_draft.js: 300ms #draft poller +
+  console.error hook for own B/N events.
+  Pure parse logic in yahoo_draft_parse.mjs.
+  Popup shows draft active indicator.
+  Tested against live Yahoo mock draft
+  June 2026 — DOM structure confirmed.
+- [x] Live draft engine wired to extension
+  POST /draft/event nomination events →
+  fuzzy name resolution (find_by_name_fuzzy
+  reusing _norm_name) → LiveDraftEngine
+  .on_nomination() → Sonnet recommendation
+  broadcast. draft_pick → on_pick_confirmed.
+  engine guarded on /draft/start.
+- [x] Draft room UI handlers
+  NominationPanel: player name, current bid,
+  clock (red <10s), team budgets with threat
+  flags. Handles nomination/bid_update/clock/
+  teams_update/recommendation events.
 - [ ] Stage 29: Snake Draft — see docs/stages/stage-29-snake-draft.md
   SnakeValuationEngine, VOE metric, SnakeDraftAgent
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
@@ -422,58 +441,41 @@ fantasy-football-ai/
 
 ---
 
+## Current Pipeline State
+
+Pipeline last run: June 14, 2026
+Prompt version: v6 (availability model)
+Players valued: 580
+Visible on draftboard: 339
+Profiles: 775
+Availability model: 3-year games-based
+QB availability: active (Burrow/Murray/Daniels correctly flagged concern)
+Forbidden injury language: enforced (v6)
+
+---
+
 ## Backtest Results (June 2026 — final config)
 ## 3-year availability + QB extension + dedup fix
 
-| Metric | Value | Grade |
+| Metric | Value | Notes |
 |--------|-------|-------|
-| Projection MAE | 34.3 PPR | Best ever |
+| Projection MAE | 34.3 PPR | Best ever (was 42.8) |
 | Correlation | 0.849 | Strong |
 | Overall bias | +10.3 | Best ever |
-| Within 20% accuracy | 62% | Best ever |
+| Within 20% | 62% | Best ever |
 | Signal accuracy | 81.0% | Strong |
 | Buy accuracy | 97% | Excellent |
 | Avoid accuracy | 55% | Improving |
-| QB MAE | 49.7 | (was 71.1) |
-| QB bias | +32.0 | (was +64.4) |
+| QB MAE | 49.7 | Was 71.1 (-30%) |
+| QB bias | +32.0 | Was +64.4 (-50%) |
 | Tier monotonic | Yes | ✓ |
+| RB correlation | 0.903 | Outstanding |
 
 Key improvements vs original baseline:
-  MAE: 42.8 → 34.3 (−20%)
-  QB MAE: 71.1 → 49.7 (−30%)
-  QB bias: +64.4 → +32.0 (−50%)
+  MAE: 42.8 → 34.3 (-20%)
+  QB MAE: 71.1 → 49.7 (-30%)
+  QB bias: +64.4 → +32.0 (-50%)
   Buy accuracy: 94% → 97%
-
-What drove the improvement:
-  - Games-based availability model
-    (replaces Sleeper injury narrative)
-  - QB availability extension
-    (Burrow/Daniels/Murray correctly
-     flagged as concern)
-  - Traded-player dedup fix
-    (CMC 2022: 34 games → 17 games)
-  - Forbidden injury language in prompts
-    (hallucinated diagnoses eliminated)
-
-Known limitations:
-  - CMC #1 miss (238 vs 415 actual) —
-    one-off injury over-penalization.
-    2024 was 4 games (injury), 2025 was
-    17 (full bounce-back). 3-year avg
-    correctly flags concern but miss is
-    large. Future: recency-weighted hybrid.
-  - 5-year window tested and rejected —
-    dilutes recent signal, regresses all
-    metrics. 3-year is the better predictor.
-  - Prospective validation deferred —
-    requires pipeline re-run capped at 2024.
-    Post-August draft validation planned.
-  - In-sample caveat: 2025-informed signals
-    scored against 2025 actuals. Like-for-
-    like improvement is real but absolute
-    numbers not a clean prospective test.
-
-1212 tests passing.
 
 ---
 
@@ -500,31 +502,85 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 
 ## Known Issues / Backlog
 
-- 5-year availability window tested and rejected (June 2026 backtest). Longer
-  window dilutes recent injury signal — Burrow's concern flag softened to
-  monitor, increasing his miss. 3-year window outperforms on all metrics. Do
-  not revisit unless a recency-weighted hybrid is proposed (e.g. concern
-  requires recent season AND career pattern, not just avg).
-- Prospective validation (true out-of-sample): requires pipeline re-run with
-  season override capped at 2024. Deferred post-August draft. See seasons.py
-  for a FANTASY_SEASON_OVERRIDE design.
-- FULL_SEASON_ABSENCE detection not implemented in injury agent
-- QB projection bias: MAE=77.2, bias=+64.4 — mostly injury-driven misses
-- Pipeline admin freshness thresholds uniform 7d (should be per-agent)
-- Frontend test coverage sparse (4 files for 43 JSX/JS source files)
-- .pre-commit-config.yaml never created
-- Production /api prefix mismatch — frontend calls /api/* but FastAPI serves /* directly.
-  In dev, Vite proxy rewrites /api → '' before hitting FastAPI. In production, no proxy
-  exists so /api/* requests fail with 404/405. Fix requires: (a) add prefix="/api" to all
-  routers in main.py (except /health, /auth/* callbacks, /webhooks/*), (b) remove Vite
-  proxy rewrite so dev matches production, (c) custom domain required first — Clerk
-  production instance needs DNS. Deferred until custom domain is purchased.
-- Clerk production instance setup — currently running Clerk dev instance (pk_test_) in
-  production on Railway. Works but shows cookie warnings and is not suitable for real
-  users. Fix requires: (a) purchase custom domain, (b) create Clerk production instance
-  at dashboard.clerk.com, (c) add CNAME DNS record from Clerk, (d) swap CLERK_PUBLISHABLE_KEY
-  and CLERK_SECRET_KEY env vars on Railway to production keys, (e) re-test OAuth flows
-  and webhook signatures with production keys. Blocked on custom domain purchase.
+### Extension
+- Yahoo passive sync removed — Yahoo CSP
+  blocks content script injection in both
+  Chrome and Firefox. window.__draftmind__
+  detection still works for LeagueSetup.
+- my_nomination/my_bid console.error events
+  relayed to UI but not yet folded into
+  engine DraftStateManager budget/roster
+  state. Auto-roster updates and scraped-
+  budget reconciliation are future work.
+- DOM selectors (#draft, position regex,
+  budget line format) confirmed against
+  June 2026 mock draft. Re-verify against
+  real August draft room — Yahoo may change
+  their DOM between now and then.
+- Extension not yet published to Chrome
+  Web Store or Firefox Add-ons. Sideload
+  only (Load unpacked / Temporary Add-on).
+
+### Pipeline / Accuracy
+- CMC #1 projection miss (238 vs 415 actual)
+  — one-off injury over-penalization. 2024
+  was 4 games (injury), 2025 was 17 (bounce-
+  back). 3-year avg correctly flags concern
+  but the miss is large. Future: recency-
+  weighted hybrid (concern requires recent
+  season AND career pattern).
+- 5-year availability window tested and
+  rejected — dilutes recent signal, Burrow
+  softened from concern to monitor. 3-year
+  is the better predictor. Do not revisit
+  unless recency-weighted hybrid proposed.
+- Prospective validation deferred — requires
+  pipeline re-run capped at 2024. Post-
+  August draft validation planned using
+  real 2026 actuals.
+- QB projections still sensitive to in-season
+  injury — no model can predict this.
+  Lamar Jackson historical bias from injury-
+  shortened seasons remains.
+- FULL_SEASON_ABSENCE detection implemented
+  via games-based availability model.
+
+### SaaS / Auth
+- Clerk running in dev mode (pk_test_) in
+  production. Custom domain required for
+  production Clerk instance. Deferred until
+  domain purchased. See backlog item below.
+- Production /api prefix mismatch — frontend
+  calls /api/* but FastAPI serves /* in
+  production. Vite proxy handles in dev.
+  Fix requires custom domain + nginx rewrite.
+  Both items must be done together.
+- Yahoo OAuth multi-user — buddy confirmed
+  his own leagues loaded (not Stephen's),
+  so OAuth is working for other users.
+  Full multi-user load test still pending.
+
+### Data
+- 3,880 stale player rows in DB (retired/
+  irrelevant players). Display filter hides
+  them (visible count: 339). Physical deletion
+  deferred — FK-safe soft-delete needed since
+  453 rows have child records across 9 tables.
+- Ben Roethlisberger still in DB (hidden by
+  display filter). sync_rosters now gates
+  on recent activity so he won't be refreshed.
+
+### Stages Remaining
+- [ ] Stage 29: Snake draft support
+- [ ] Stage 30: Half PPR support
+- [ ] Browser extension Chrome/Firefox
+      store submission
+- [ ] my_nomination/my_bid → DraftStateManager
+      integration (auto-roster + budget sync)
+- [ ] teams_snapshot → engine state reconcile
+- [ ] CI/CD: GitHub Actions workflow
+      (highest leverage safety improvement)
+- [ ] Soft-delete stale player rows
 
 ---
 
