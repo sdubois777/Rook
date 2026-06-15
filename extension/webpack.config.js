@@ -4,6 +4,7 @@ module.exports = {
   entry: {
     background: './src/background/service_worker.js',
     yahoo_draft: './src/content_scripts/yahoo_draft.js',
+    yahoo_draft_main: './src/content_scripts/yahoo_draft_main.js',
     yahoo_auth: './src/content_scripts/yahoo_auth.js',
     espn_draft: './src/content_scripts/espn_draft.js',
     espn_auth: './src/content_scripts/espn_auth.js',
