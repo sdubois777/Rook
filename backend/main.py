@@ -38,6 +38,9 @@ app.add_middleware(
         r"|http://localhost(:\d+)?"
         r"|https://fantasymanager-production"
         r"\.up\.railway\.app"
+        r"|https://football\.fantasysports\.yahoo\.com"
+        r"|https://fantasysports\.yahoo\.com"
+        r"|https://.*\.yahoo\.com"
     ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
