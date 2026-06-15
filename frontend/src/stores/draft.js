@@ -141,9 +141,20 @@ export const useDraftStore = create((set, get) => ({
 
   recordPick: (pick) => {
     const state = get()
-    const newPicks = [...state.picks, pick]
-
     const pickName = (pick.player_name || '').toLowerCase()
+
+    // DEDUP: a player can only be drafted once, so a repeat of the same name
+    // is always a duplicate delivery (e.g. a double-mounted socket in dev, or
+    // a relay retry). Ignore it — otherwise the player is added to the roster
+    // twice and the available list is filtered on a second, stale pass.
+    if (
+      pickName &&
+      state.picks.some((p) => p.player_name?.toLowerCase() === pickName)
+    ) {
+      return
+    }
+
+    const newPicks = [...state.picks, pick]
 
     // Find the available entry (for position lookup) before removing it.
     const fromAvailable = state.availablePlayers.find(

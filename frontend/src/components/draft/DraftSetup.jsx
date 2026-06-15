@@ -28,15 +28,19 @@ export default function DraftSetup() {
 
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-slate-400 mb-1">Your Team ID</label>
+            <label className="block text-sm text-slate-400 mb-1">Your Team Name</label>
             <input
               type="text"
               value={teamId}
               onChange={(e) => setTeamId(e.target.value)}
-              placeholder="e.g. team_1"
+              placeholder="Stephen — exactly as in the draft room"
               className="w-full px-3 py-2 bg-[#1c1f2e] text-slate-200 border border-[#2d3148] rounded-lg focus:outline-none focus:border-blue-500/50 placeholder-slate-600"
               disabled={loading}
             />
+            <p className="text-xs text-slate-600 mt-1">
+              Must match your team name in the draft room's team list exactly —
+              this is how DraftMind detects the players you win.
+            </p>
           </div>
 
           <div>
