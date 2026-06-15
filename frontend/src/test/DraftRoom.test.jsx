@@ -1,7 +1,8 @@
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { useDraftStore } from '../stores/draft'
+import { ACTION_STYLES } from '../components/draft/RecommendationPanel'
 
 // Mock the API module
 vi.mock('../api/draft', () => ({
@@ -72,7 +73,7 @@ function resetStore() {
 }
 
 // Lazy imports to avoid module-level issues
-let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker, NominationPanel
+let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker, NominationPanel, DraftRoom
 
 beforeEach(async () => {
   resetStore()
@@ -83,6 +84,7 @@ beforeEach(async () => {
   AvailablePlayers = (await import('../components/draft/AvailablePlayers')).default
   OpponentTracker = (await import('../components/draft/OpponentTracker')).default
   NominationPanel = (await import('../components/draft/NominationPanel')).default
+  DraftRoom = (await import('../pages/DraftRoom')).default
 })
 
 describe('DraftRoom', () => {
@@ -463,6 +465,52 @@ describe('DraftRoom', () => {
     expect(state.availablePlayers).toHaveLength(1)
     expect(state.availablePlayers[0].name).toBe('Travis Kelce')
     expect(state.teamsState.Stephen.budget).toBe(100)
+  })
+
+  it('ACTION_STYLES has lowercase keys matching the engine actions', () => {
+    expect(Object.keys(ACTION_STYLES).sort()).toEqual(
+      ['bid_to', 'block', 'buy', 'pass']
+    )
+    // Every key must be lowercase (engine sends lowercase action strings)
+    for (const key of Object.keys(ACTION_STYLES)) {
+      expect(key).toBe(key.toLowerCase())
+    }
+  })
+
+  it('DraftRoom polls the backend for the last recommendation on mount', async () => {
+    const { getRecommendation } = await import('../api/draft')
+    getRecommendation.mockResolvedValueOnce({
+      type: 'recommendation',
+      action: 'buy',
+      bid_ceiling: 55,
+      player_name: 'Jonathan Taylor',
+      position: 'RB',
+      confidence: 'high',
+      reasoning: 'Elite RB1 at fair price',
+      system_value: 50,
+      market_value: 48,
+      active_flags: [],
+      opponent_alerts: [],
+      block_value: 0,
+      budget_allows_block: false,
+    })
+
+    useDraftStore.setState({ phase: 'live' })
+
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+
+    // The mount poll should pull the engine's existing recommendation into
+    // the store even though no WebSocket message ever arrived.
+    await waitFor(() => {
+      expect(getRecommendation).toHaveBeenCalled()
+      expect(useDraftStore.getState().recommendation?.player_name).toBe(
+        'Jonathan Taylor'
+      )
+    })
   })
 
   it('opponent tracker shows combo alerts', () => {

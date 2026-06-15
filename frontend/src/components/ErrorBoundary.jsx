@@ -26,6 +26,11 @@ export default class ErrorBoundary extends Component {
 
   render() {
     if (this.state.error) {
+      // A compact, scoped fallback may be supplied for wrapping a single
+      // panel; otherwise fall back to the full-screen recovery screen.
+      if (this.props.fallback !== undefined) {
+        return this.props.fallback
+      }
       return (
         <div className="min-h-screen bg-gray-950 flex items-center justify-center p-6">
           <div className="max-w-md text-center">

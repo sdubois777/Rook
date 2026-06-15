@@ -1,5 +1,6 @@
 import { useDraftStore } from '../stores/draft'
 import useDraftSocket from '../hooks/useDraftSocket'
+import ErrorBoundary from '../components/ErrorBoundary'
 import DraftSetup from '../components/draft/DraftSetup'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
 import NominationPanel from '../components/draft/NominationPanel'
@@ -62,7 +63,15 @@ export default function DraftRoom() {
       <div className="flex-1 grid grid-rows-[35fr_65fr] grid-cols-2 min-h-0">
         {/* Zone 1: Recommendation */}
         <div className="border-r border-b border-[#2d3148] min-h-0 overflow-hidden">
-          <RecommendationPanel />
+          <ErrorBoundary
+            fallback={
+              <div className="h-full flex items-center justify-center p-4 text-red-400 text-sm">
+                Recommendation error
+              </div>
+            }
+          >
+            <RecommendationPanel />
+          </ErrorBoundary>
         </div>
 
         {/* Zone 2: Current Nomination */}

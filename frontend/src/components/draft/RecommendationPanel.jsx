@@ -3,7 +3,8 @@ import { placeBid, passNomination } from '../../api/draft'
 import PositionBadge from '../shared/PositionBadge'
 import FlagBadge from '../shared/FlagBadge'
 
-const ACTION_STYLES = {
+// Keys are LOWERCASE — the engine sends action as buy|bid_to|block|pass.
+export const ACTION_STYLES = {
   buy: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', border: 'border-emerald-500/30' },
   bid_to: { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/30' },
   block: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/30' },

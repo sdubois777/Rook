@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useDraftStore } from '../stores/draft'
+import { getRecommendation } from '../api/draft'
 
 const MAX_RECONNECT_DELAY = 10000
 // Backend WS endpoint is /draft/ws/draft (prefix="/draft", path="/ws/draft")
@@ -30,6 +31,25 @@ export default function useDraftSocket() {
   const setWsStatus = useDraftStore((s) => s.setWsStatus)
 
   useEffect(() => {
+    // Recover any recommendation the engine generated before this client's
+    // WebSocket connected (the broadcast would otherwise have been missed).
+    // Only apply it if the store has nothing newer, so a fresh WS update or
+    // a just-cleared nomination is never clobbered by the stale poll result.
+    async function pollLastRecommendation() {
+      try {
+        const data = await getRecommendation()
+        if (
+          data?.type === 'recommendation' &&
+          !useDraftStore.getState().recommendation
+        ) {
+          setRecommendation(data)
+        }
+      } catch {
+        // No engine yet (409) or network error — nothing to recover
+      }
+    }
+    pollLastRecommendation()
+
     function connect() {
       const ws = new WebSocket(getWsUrl())
       wsRef.current = ws
