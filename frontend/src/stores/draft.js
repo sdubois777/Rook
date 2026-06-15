@@ -60,6 +60,7 @@ export const useDraftStore = create((set, get) => ({
     // Flatten tiers into a single list
     const tiers = board?.tiers || {}
     const players = Object.values(tiers).flat()
+    console.debug('DraftMind: draftboard players loaded:', players.length)
 
     set({
       phase: 'live',
@@ -71,11 +72,22 @@ export const useDraftStore = create((set, get) => ({
       rosterSlotsRemaining: state.roster_slots_remaining,
       spendable: state.spendable_on_next_player,
       positionalCounts: state.positional_counts || {},
-      availablePlayers: players,
+      // Never wipe an already-loaded list with an empty fetch result — only
+      // overwrite when the draftboard actually returned players.
+      ...(players.length > 0 ? { availablePlayers: players } : {}),
     })
   },
 
   setMyTeamName: (name) => set({ myTeamName: name }),
+
+  // Replace the available list, but never with an empty array (a failed or
+  // empty /draftboard fetch must not wipe a populated list).
+  setAvailablePlayers: (players) =>
+    set((s) =>
+      players && players.length > 0
+        ? { availablePlayers: players }
+        : s
+    ),
 
   setRecommendation: (rec) => {
     set({
@@ -122,7 +134,16 @@ export const useDraftStore = create((set, get) => ({
                 ? parseClockSeconds(bid.clock)
                 : s.currentNomination.secondsRemaining,
           }
-        : s.currentNomination,
+        : // No active nomination (e.g. the nomination event was missed or
+          // already cleared) — reconstruct a minimal one from the bid so the
+          // bid still shows instead of silently doing nothing.
+          {
+            playerName: bid.player_name ?? null,
+            posTeam: null,
+            currentBid: bid.current_bid,
+            clock: bid.clock ?? null,
+            secondsRemaining: parseClockSeconds(bid.clock),
+          },
     })),
 
   updateClock: (payload) =>
