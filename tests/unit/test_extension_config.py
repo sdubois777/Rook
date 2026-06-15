@@ -33,11 +33,17 @@ def test_get_api_base_returns_production_url():
 
 
 def test_manifest_background_path_has_no_dist_prefix():
-    """Background paths are dist-relative: the extension loads from dist/."""
+    """Background is a dist-relative MV3 service worker.
+
+    Chrome MV3 rejects "scripts" and "type" under background, and webpack
+    bundles to a single file, so only "service_worker" is present (Firefox
+    support via "scripts" is deferred).
+    """
     background = _manifest()["background"]
 
     assert background["service_worker"] == "background.js"
-    assert background["scripts"] == ["background.js"]
+    assert "scripts" not in background
+    assert "type" not in background
 
 
 def test_yahoo_auth_matches_sports_yahoo():
