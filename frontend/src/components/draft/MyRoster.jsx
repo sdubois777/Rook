@@ -1,7 +1,7 @@
 import { useDraftStore } from '../../stores/draft'
 import PositionBadge from '../shared/PositionBadge'
 
-const POSITION_SLOTS = {
+export const POSITION_SLOTS = {
   QB: 1,
   RB: 2,
   WR: 2,
@@ -10,6 +10,38 @@ const POSITION_SLOTS = {
   K: 1,
   DEF: 1,
   BN: 7,
+}
+
+// Where each position may live, in fill order. RB/WR/TE overflow into FLEX,
+// then everything overflows onto the bench — so a 3rd RB or an odd position
+// is still shown instead of silently vanishing.
+export const SLOT_PRIORITY = {
+  QB: ['QB', 'BN'],
+  RB: ['RB', 'FLEX', 'BN'],
+  WR: ['WR', 'FLEX', 'BN'],
+  TE: ['TE', 'FLEX', 'BN'],
+  K: ['K', 'BN'],
+  DEF: ['DEF', 'BN'],
+  FLEX: ['FLEX', 'BN'],
+}
+
+// Place a pick into the first non-full slot of its priority chain, falling
+// back to the bench. Mutates `grouped`.
+export function assignToSlot(pick, grouped, slots = POSITION_SLOTS) {
+  const pos = (pick.position || 'BN').toUpperCase()
+  const priority = SLOT_PRIORITY[pos] || ['BN']
+
+  for (const slotType of priority) {
+    const maxSlots = slots[slotType] || 0
+    const current = grouped[slotType] || []
+    if (current.length < maxSlots) {
+      if (!grouped[slotType]) grouped[slotType] = []
+      grouped[slotType].push(pick)
+      return
+    }
+  }
+  if (!grouped.BN) grouped.BN = []
+  grouped.BN.push(pick)
 }
 
 function getBudgetColor(remaining, total) {
@@ -39,12 +71,10 @@ export default function MyRoster() {
   const spent = totalBudget - displayBudget
   const budgetPct = Math.max(0, Math.min(100, (displayBudget / totalBudget) * 100))
 
-  // Group roster by position
+  // Assign each pick to a roster slot (with FLEX/BN overflow).
   const grouped = {}
   for (const pick of myRoster) {
-    const pos = pick.position || 'BN'
-    if (!grouped[pos]) grouped[pos] = []
-    grouped[pos].push(pick)
+    assignToSlot(pick, grouped, POSITION_SLOTS)
   }
 
   return (

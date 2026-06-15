@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { useDraftStore } from '../stores/draft'
 import { ACTION_STYLES } from '../components/draft/RecommendationPanel'
+import { assignToSlot, POSITION_SLOTS } from '../components/draft/MyRoster'
 
 // Mock the API module
 vi.mock('../api/draft', () => ({
@@ -33,6 +34,13 @@ vi.mock('../api/draft', () => ({
     },
   }),
   getOpponentBudgets: vi.fn().mockResolvedValue({ opponents: {} }),
+}))
+
+// Mock the draftboard API (DraftRoom loads players from it on mount)
+vi.mock('../api/draftboard', () => ({
+  fetchDraftboard: vi.fn().mockResolvedValue({
+    tiers: { 1: [{ id: 'd1', name: 'Mount Player', position: 'WR', ai_bid_ceiling: 20 }] },
+  }),
 }))
 
 // Mock WebSocket — captures instances so tests can drive onmessage.
@@ -769,6 +777,108 @@ describe('DraftRoom', () => {
     )
 
     expect(screen.getByText('$175')).toBeInTheDocument()
+  })
+
+  it('startDraft does not overwrite availablePlayers with an empty result', async () => {
+    const { getAvailablePlayers } = await import('../api/draft')
+    getAvailablePlayers.mockResolvedValueOnce({ tiers: {} }) // empty draftboard
+
+    useDraftStore.setState({
+      availablePlayers: [
+        { id: 'x', name: 'Existing Guy', position: 'RB' },
+      ],
+    })
+
+    await act(async () => {
+      await useDraftStore.getState().startDraft('Stephen')
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.phase).toBe('live')
+    expect(s.availablePlayers).toHaveLength(1) // not wiped
+    expect(s.availablePlayers[0].name).toBe('Existing Guy')
+  })
+
+  it('setAvailablePlayers ignores an empty array', () => {
+    useDraftStore.setState({
+      availablePlayers: [{ id: 'x', name: 'Keep Me', position: 'WR' }],
+    })
+    act(() => {
+      useDraftStore.getState().setAvailablePlayers([])
+    })
+    expect(useDraftStore.getState().availablePlayers).toHaveLength(1)
+  })
+
+  it('DraftRoom loads available players on mount from the draftboard', async () => {
+    // phase stays 'setup'; the mount effect still runs
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await waitFor(() => {
+      const list = useDraftStore.getState().availablePlayers
+      expect(list.length).toBeGreaterThan(0)
+      expect(list[0].name).toBe('Mount Player')
+    })
+  })
+
+  it('assignToSlot puts a 3rd RB into FLEX when RB slots are full', () => {
+    const grouped = {}
+    assignToSlot({ player_name: 'RB1', position: 'RB' }, grouped, POSITION_SLOTS)
+    assignToSlot({ player_name: 'RB2', position: 'RB' }, grouped, POSITION_SLOTS)
+    assignToSlot({ player_name: 'RB3', position: 'RB' }, grouped, POSITION_SLOTS)
+    expect(grouped.RB).toHaveLength(2)
+    expect(grouped.FLEX).toHaveLength(1)
+    expect(grouped.FLEX[0].player_name).toBe('RB3')
+  })
+
+  it('assignToSlot overflows to BN when RB and FLEX are full', () => {
+    const grouped = {}
+    // 2 RB (RB slots) + 1 RB (FLEX) + 1 more RB -> BN
+    for (const name of ['RB1', 'RB2', 'RB3', 'RB4']) {
+      assignToSlot({ player_name: name, position: 'RB' }, grouped, POSITION_SLOTS)
+    }
+    expect(grouped.RB).toHaveLength(2)
+    expect(grouped.FLEX).toHaveLength(1)
+    expect(grouped.BN).toHaveLength(1)
+    expect(grouped.BN[0].player_name).toBe('RB4')
+  })
+
+  it('updateBid reconstructs a nomination when none is active', () => {
+    useDraftStore.setState({ currentNomination: null, currentBid: null })
+    act(() => {
+      useDraftStore.getState().updateBid({
+        player_name: 'Jonathan Taylor',
+        current_bid: 30,
+        clock: '0:12',
+      })
+    })
+    const s = useDraftStore.getState()
+    expect(s.currentNomination).not.toBeNull()
+    expect(s.currentNomination.playerName).toBe('Jonathan Taylor')
+    expect(s.currentNomination.currentBid).toBe(30)
+    expect(s.currentNomination.secondsRemaining).toBe(12)
+  })
+
+  it('recordPick fills roster position from the available list when the pick has none', () => {
+    useDraftStore.setState({
+      myTeamName: 'Stephen',
+      myRoster: [],
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor', // no position on the pick
+        final_price: 40,
+        winner: 'Stephen',
+      })
+    })
+    const roster = useDraftStore.getState().myRoster
+    expect(roster).toHaveLength(1)
+    expect(roster[0].position).toBe('RB')
   })
 
   it('opponent tracker shows combo alerts', () => {

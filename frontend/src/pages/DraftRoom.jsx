@@ -1,5 +1,7 @@
+import { useEffect } from 'react'
 import { useDraftStore } from '../stores/draft'
 import useDraftSocket from '../hooks/useDraftSocket'
+import { fetchDraftboard } from '../api/draftboard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import DraftSetup from '../components/draft/DraftSetup'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
@@ -17,9 +19,29 @@ const WS_STATUS_LABEL = {
 export default function DraftRoom() {
   const phase = useDraftStore((s) => s.phase)
   const wsStatus = useDraftStore((s) => s.wsStatus)
+  const setAvailablePlayers = useDraftStore((s) => s.setAvailablePlayers)
 
   // Connect WebSocket
   useDraftSocket()
+
+  // Load the available-players list on mount, independent of draft engine
+  // state — so the list is populated even before "Start Draft", and a failed
+  // engine start can't leave it empty. setAvailablePlayers ignores empty results.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const board = await fetchDraftboard()
+        const players = Object.values(board?.tiers || {}).flat()
+        if (!cancelled) setAvailablePlayers(players)
+      } catch (e) {
+        console.error('DraftMind: failed to load draftboard:', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [setAvailablePlayers])
 
   if (phase === 'setup') {
     return (
