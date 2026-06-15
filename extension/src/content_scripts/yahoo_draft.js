@@ -13,36 +13,15 @@ import { parseDraftState, detectEvents } from './yahoo_draft_parse.mjs'
  * Yahoo player IDs of YOUR bids and nominations.
  *
  * Does NOT use WS interception — Yahoo's CSP blocks content-script
- * injection, so DOM polling + a main-world console.error hook is the
- * reliable alternative. The pure parsing/detection logic lives in
- * yahoo_draft_parse.mjs (unit-tested); this file is the browser glue.
+ * injection, so DOM polling is the reliable alternative. The console.error
+ * hook for YOUR own bid/nomination frames runs in the page's MAIN world via
+ * a separate manifest-declared content script (yahoo_draft_main.js, "world":
+ * "MAIN") — not an inline <script> tag, which Yahoo's CSP would block. This
+ * isolated-world file listens for the frames it forwards. The pure
+ * parsing/detection logic lives in yahoo_draft_parse.mjs (unit-tested).
  */
 
 const POLL_INTERVAL_MS = 300
-
-// ---------------------------------------------------------------------------
-// Main-world injection — intercept Yahoo's console.error draft events
-// ---------------------------------------------------------------------------
-
-function injectMainWorldScript() {
-  const script = document.createElement('script')
-  script.textContent = `
-    (function () {
-      const _origError = console.error
-      console.error = function (...args) {
-        if (Array.isArray(args[0]) && (args[0][0] === 'B' || args[0][0] === 'N')) {
-          window.dispatchEvent(
-            new CustomEvent('__yahoo_draft_action__', { detail: args[0] })
-          )
-        }
-        return _origError.apply(console, args)
-      }
-      window.__draftmind_intercepting__ = true
-    })();
-  `
-  ;(document.head || document.documentElement).appendChild(script)
-  script.remove()
-}
 
 // ---------------------------------------------------------------------------
 // Poller
@@ -125,8 +104,6 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
 // ---------------------------------------------------------------------------
 // Bootstrap — wait for the draft room to render, then start
 // ---------------------------------------------------------------------------
-
-injectMainWorldScript()
 
 function bootstrap() {
   if (document.querySelector('#draft')) {

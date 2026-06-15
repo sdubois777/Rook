@@ -31,6 +31,15 @@
         "https://football.fantasysports.yahoo.com/draftclient/*",
         "https://football.fantasysports.yahoo.com/*/draft*"
       ],
+      "js": ["yahoo_draft_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://football.fantasysports.yahoo.com/draftclient/*",
+        "https://football.fantasysports.yahoo.com/*/draft*"
+      ],
       "js": ["yahoo_draft.js"],
       "run_at": "document_start"
     },
