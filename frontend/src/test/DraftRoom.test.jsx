@@ -100,7 +100,7 @@ describe('DraftRoom', () => {
     )
     expect(screen.getByText('Start Draft Session')).toBeInTheDocument()
     expect(screen.getByText('Start Draft')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('e.g. team_1')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Stephen — exactly as in the draft room')).toBeInTheDocument()
   })
 
   it('start button calls API and transitions to live', async () => {
@@ -112,7 +112,7 @@ describe('DraftRoom', () => {
       </MemoryRouter>
     )
 
-    const input = screen.getByPlaceholderText('e.g. team_1')
+    const input = screen.getByPlaceholderText('Stephen — exactly as in the draft room')
     fireEvent.change(input, { target: { value: 'team_5' } })
 
     const button = screen.getByText('Start Draft')
@@ -678,6 +678,97 @@ describe('DraftRoom', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('recordPick deduplicates the same player (second event ignored)', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      myBudget: 200,
+      rosterSlotsRemaining: 16,
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    const pick = {
+      player_name: 'Jonathan Taylor',
+      final_price: 45,
+      winner: 'Stephen',
+    }
+
+    act(() => {
+      useDraftStore.getState().recordPick(pick)
+      // Duplicate delivery (e.g. double-mounted socket) — must be ignored
+      useDraftStore.getState().recordPick({ ...pick })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.picks).toHaveLength(1)
+    expect(s.myRoster).toHaveLength(1)
+    expect(s.myBudget).toBe(155) // decremented once, not twice
+  })
+
+  it('recordPick does not add to roster when myTeamName is not set', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      myRoster: [],
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor',
+        final_price: 45,
+        winner: 'Stephen',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.myRoster).toHaveLength(0)
+    expect(s.availablePlayers).toHaveLength(0) // still removed from available
+  })
+
+  it('MyRoster shows the live budget from teamsState when available', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      myBudget: 200, // stale store value
+      teamsState: {
+        Stephen: { budget: 137, slotsUsed: 4, totalSlots: 15 },
+        'Team 3': { budget: 90, slotsUsed: 6, totalSlots: 15 },
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <MyRoster />
+      </MemoryRouter>
+    )
+
+    // Live budget (137) wins over the stale store myBudget (200)
+    expect(screen.getByText('$137')).toBeInTheDocument()
+    expect(screen.getByText('$63')).toBeInTheDocument() // spent = 200 - 137
+  })
+
+  it('MyRoster falls back to myBudget when teamsState lacks your team', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      myBudget: 175,
+      teamsState: { 'Team 3': { budget: 90, slotsUsed: 6, totalSlots: 15 } },
+    })
+
+    render(
+      <MemoryRouter>
+        <MyRoster />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('$175')).toBeInTheDocument()
   })
 
   it('opponent tracker shows combo alerts', () => {
