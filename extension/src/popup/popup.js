@@ -37,6 +37,12 @@ function showTokenEntry() {
 async function showMainView() {
   const platforms = await getPlatformStatus()
   const { capture_mode } = await browser.storage.local.get(STORAGE_KEYS.CAPTURE_MODE)
+  const draft = await browser.storage.local.get([
+    STORAGE_KEYS.ACTIVE_DRAFT,
+    STORAGE_KEYS.DRAFT_PLATFORM,
+  ])
+  const draftActive = !!draft[STORAGE_KEYS.ACTIVE_DRAFT]
+  const draftPlatform = draft[STORAGE_KEYS.DRAFT_PLATFORM] || ''
 
   document.getElementById('app').innerHTML = `
     <div class="header">
@@ -48,6 +54,14 @@ async function showMainView() {
       <span class="check">Connected</span>
       <button class="btn-link" id="disconnect-btn">Disconnect</button>
     </div>
+
+    ${
+      draftActive
+        ? `<div class="section">
+      <div class="draft-active">🟢 Draft active — relaying ${draftPlatform} events</div>
+    </div>`
+        : ''
+    }
 
     <div class="section">
       <div class="label">Platforms</div>

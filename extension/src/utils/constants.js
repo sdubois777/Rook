@@ -14,7 +14,12 @@ export const STORAGE_KEYS = {
   ESPN_LEAGUE_ID: 'espn_league_id',
   YAHOO_SYNCED_AT: 'yahoo_synced_at',
   SLEEPER_SYNCED_AT: 'sleeper_synced_at',
+  ACTIVE_DRAFT: 'active_draft',
+  DRAFT_PLATFORM: 'draft_platform',
 }
+
+/** Clear the draft-active indicator after this long with no nominations. */
+export const DRAFT_INACTIVITY_MS = 5 * 60 * 1000
 
 export const MESSAGE_TYPES = {
   DRAFT_EVENT: 'DRAFT_EVENT',
