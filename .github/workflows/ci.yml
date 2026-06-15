@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    # Unit tests mock the database, Anthropic, nfl_data_py and Playwright
+    # (see tests/conftest.py) — nothing connects to a real service. So no
+    # Postgres service and no real secrets are required; these dummy values
+    # only exist to satisfy Settings() at import time (anthropic_api_key and
+    # secret_key are the two required-without-default fields in backend/config.py).
+    env:
+      ANTHROPIC_API_KEY: ci-dummy-anthropic-key
+      SECRET_KEY: ci-dummy-secret-key
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/draftmind_test
+      PLATFORM_TOKEN_ENCRYPTION_KEY: LLZjCZi34rSWa-KzVFzNpmWrsj4pMSKTv51SAJv8erU=
+      ENVIRONMENT: test
+      APP_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies (with dev extras for pytest)
+        run: uv sync --frozen --extra dev
+
+      - name: Run backend unit tests
+        run: uv run pytest tests/unit/ -x -q
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: pk_test_placeholder
+
+  extension:
+    name: Extension (node:test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install extension deps
+        run: npm ci
+        working-directory: extension
+
+      - name: Run extension tests
+        run: npm test
+        working-directory: extension
+
+      - name: Build extension
+        run: npm run build
+        working-directory: extension

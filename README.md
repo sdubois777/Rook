@@ -1,5 +1,7 @@
 # Fantasy Football AI Platform
 
+[![CI](https://github.com/sdubois777/FantasyManager/actions/workflows/ci.yml/badge.svg)](https://github.com/sdubois777/FantasyManager/actions/workflows/ci.yml)
+
 Full-season fantasy football management platform powered by AI agents. Built for Yahoo Fantasy auction drafts in a 12-team PPR league.
 
 The system builds independent player valuations from raw data using chain-of-reasoning AI agents, controls the Yahoo draft room in real time via browser automation, and provides in-season trade analysis, lineup optimization, and waiver wire recommendations.
