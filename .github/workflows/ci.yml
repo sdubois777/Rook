@@ -31,10 +31,10 @@ jobs:
       YAHOO_CLIENT_ID: ci-dummy-yahoo-client-id
       YAHOO_REDIRECT_URI: http://localhost:8000/auth/yahoo/callback
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.13'
 
@@ -51,10 +51,10 @@ jobs:
     name: Frontend (vitest + build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -78,10 +78,10 @@ jobs:
     name: Extension (node:test + build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: '22'
           cache: 'npm'
