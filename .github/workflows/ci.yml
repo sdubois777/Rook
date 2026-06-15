@@ -22,6 +22,14 @@ jobs:
       PLATFORM_TOKEN_ENCRYPTION_KEY: LLZjCZi34rSWa-KzVFzNpmWrsj4pMSKTv51SAJv8erU=
       ENVIRONMENT: test
       APP_URL: http://localhost:8000
+      # A few endpoint tests run the real auth/OAuth path (no dependency
+      # override), so they need these set the way .env provides them locally:
+      #  - CLERK_SECRET_KEY enables the Clerk auth path (any non-empty value);
+      #    no token is sent, so protected routes correctly return 401.
+      #  - YAHOO_* let /auth/yahoo/connect build a redirect instead of erroring.
+      CLERK_SECRET_KEY: sk_test_ci-dummy
+      YAHOO_CLIENT_ID: ci-dummy-yahoo-client-id
+      YAHOO_REDIRECT_URI: http://localhost:8000/auth/yahoo/callback
     steps:
       - uses: actions/checkout@v4
 
