@@ -47,7 +47,7 @@ async def test_draft_token_created_for_new_user():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/account/draft-token")
+            resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         token = resp.json()["draft_token"]
         assert token is not None
@@ -73,7 +73,7 @@ async def test_draft_token_stable_on_repeat_call():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/account/draft-token")
+            resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         assert resp.json()["draft_token"] == existing_token
         # Should NOT have committed (no change)
@@ -102,7 +102,7 @@ async def test_revoke_generates_new_token():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.post("/account/draft-token/revoke")
+            resp = await ac.post("/api/account/draft-token/revoke")
         assert resp.status_code == 200
         new_token = resp.json()["draft_token"]
         assert new_token != old_token

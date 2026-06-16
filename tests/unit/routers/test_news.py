@@ -58,7 +58,7 @@ async def test_get_news_feed(mock_signal):
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    resp = await _request(session, "/news")
+    resp = await _request(session, "/api/news")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -82,7 +82,7 @@ async def test_get_news_with_filters(mock_signal):
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    resp = await _request(session, "/news?team=KC&signal_type=injury_update&days=7")
+    resp = await _request(session, "/api/news?team=KC&signal_type=injury_update&days=7")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -102,7 +102,7 @@ async def test_get_news_empty():
 
     session.execute = AsyncMock(side_effect=[count_result, data_result])
 
-    resp = await _request(session, "/news")
+    resp = await _request(session, "/api/news")
 
     assert resp.status_code == 200
     data = resp.json()
