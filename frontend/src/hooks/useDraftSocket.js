@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useDraftStore } from '../stores/draft'
+import { useDraftStore, parseClockSeconds } from '../stores/draft'
 import { getRecommendation } from '../api/draft'
 
 const MAX_RECONNECT_DELAY = 10000
@@ -110,12 +110,30 @@ export default function useDraftSocket() {
               setBridgeStatus(data)
               break
             // Extension relay events (nested under data.payload)
-            case 'nomination':
-              // setNomination clears the stale recommendation ("Analyzing...");
-              // poll until the engine's fresh recommendation lands.
-              setNomination(data.payload)
-              scheduleRecommendationPolls(data.payload?.player_name)
+            case 'nomination': {
+              const payload = data.payload || {}
+              const currentNom = useDraftStore.getState().currentNomination
+              // Yahoo sometimes re-fires a nomination for the SAME player when
+              // the clock resets after bidding. Treat that as a clock refresh,
+              // not a new nomination — otherwise the bid snaps back to $1.
+              if (
+                currentNom?.playerName &&
+                currentNom.playerName === payload.player_name
+              ) {
+                if (payload.clock) {
+                  updateClock({
+                    clock: payload.clock,
+                    seconds_remaining: parseClockSeconds(payload.clock),
+                  })
+                }
+                break
+              }
+              // Genuinely new nominee: setNomination clears the stale
+              // recommendation ("Analyzing..."); poll until a fresh one lands.
+              setNomination(payload)
+              scheduleRecommendationPolls(payload.player_name)
               break
+            }
             case 'bid_update':
               updateBid(data.payload)
               break

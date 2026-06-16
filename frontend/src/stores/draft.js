@@ -164,18 +164,44 @@ export const useDraftStore = create((set, get) => ({
     const state = get()
     const pickName = (pick.player_name || '').toLowerCase()
 
-    // DEDUP: a player can only be drafted once, so a repeat of the same name
-    // is always a duplicate delivery (e.g. a double-mounted socket in dev, or
-    // a relay retry). Ignore it — otherwise the player is added to the roster
-    // twice and the available list is filtered on a second, stale pass.
+    // DEDUP (time-bounded): a duplicate delivery of the same pick (e.g. a
+    // double-mounted socket in dev, or a relay retry) arrives within a moment,
+    // so only ignore a same-name pick recorded in the last 2s. A stale pick
+    // left in state from a previous session must NOT block a fresh one.
+    const TWO_SECONDS = 2000
+    const now = Date.now()
     if (
       pickName &&
-      state.picks.some((p) => p.player_name?.toLowerCase() === pickName)
+      state.picks.some(
+        (p) =>
+          p.player_name?.toLowerCase() === pickName &&
+          now - (p.timestamp || 0) < TWO_SECONDS
+      )
     ) {
+      console.debug('DraftMind: dedup blocked duplicate pick:', pick.player_name)
       return
     }
 
-    const newPicks = [...state.picks, pick]
+    // Did we win this player? The relay carries `winner` (team display name);
+    // the engine path may set `is_yours`. Match winner against our team name.
+    const isYours =
+      pick.is_yours ||
+      (state.myTeamName &&
+        pick.winner &&
+        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
+
+    console.debug(
+      'DraftMind: recordPick',
+      pick.player_name,
+      '| winner:',
+      pick.winner,
+      '| myTeamName:',
+      state.myTeamName,
+      '| isYours:',
+      !!isYours,
+    )
+
+    const newPicks = [...state.picks, { ...pick, timestamp: now }]
 
     // Find the available entry (for position lookup) before removing it.
     const fromAvailable = state.availablePlayers.find(
@@ -201,14 +227,6 @@ export const useDraftStore = create((set, get) => ({
       currentNomination: null,
       ...(pick.teams_snapshot ? { teamsState: pick.teams_snapshot } : {}),
     }
-
-    // Did we win this player? The relay carries `winner` (team display name);
-    // the engine path may set `is_yours`. Match winner against our team name.
-    const isYours =
-      pick.is_yours ||
-      (state.myTeamName &&
-        pick.winner &&
-        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
 
     if (isYours) {
       const price = pick.final_price || pick.price || 0

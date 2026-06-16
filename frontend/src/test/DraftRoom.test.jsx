@@ -881,6 +881,94 @@ describe('DraftRoom', () => {
     expect(roster[0].position).toBe('RB')
   })
 
+  it('a re-nomination of the same player does not reset the bid', async () => {
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: {
+        playerName: 'Josh Allen',
+        posTeam: 'BUF – QB',
+        currentBid: 35,
+        clock: '0:20',
+        secondsRemaining: 20,
+      },
+      currentBid: { current_bid: 35, player_name: 'Josh Allen' },
+    })
+
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'nomination',
+          payload: { player_name: 'Josh Allen', opening_bid: 1, clock: '0:30' },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.currentBid).toBe(35) // NOT reset to 1
+    expect(s.currentNomination.clock).toBe('0:30') // clock refreshed
+  })
+
+  it('a nomination for a new player clears the rec and resets the bid', async () => {
+    useDraftStore.setState({
+      phase: 'live',
+      recommendation: { type: 'recommendation', player_name: 'Old', action: 'buy', bid_ceiling: 10 },
+      currentNomination: { playerName: 'Old Guy', currentBid: 40 },
+      currentBid: { current_bid: 40, player_name: 'Old Guy' },
+    })
+
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'nomination',
+          payload: { player_name: 'New Guy', opening_bid: 1, clock: '0:30' },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.playerName).toBe('New Guy')
+    expect(s.currentNomination.currentBid).toBe(1)
+    expect(s.recommendation).toBeNull()
+  })
+
+  it('recordPick dedup is time-bounded — a stale prior pick does not block', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      picks: [{ player_name: 'Josh Allen', timestamp: Date.now() - 3000 }], // 3s ago
+      availablePlayers: [
+        { id: 'p1', name: 'Josh Allen', position: 'QB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Josh Allen',
+        final_price: 36,
+        winner: 'Team 3',
+      })
+    })
+
+    // Recorded again because the prior pick is older than 2s
+    expect(useDraftStore.getState().picks).toHaveLength(2)
+  })
+
   it('opponent tracker shows combo alerts', () => {
     useDraftStore.setState({
       phase: 'live',
