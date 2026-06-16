@@ -89,6 +89,28 @@ export const useDraftStore = create((set, get) => ({
         : s
     ),
 
+  // Re-fetch the canonical available pool from /draftboard and subtract the
+  // players already drafted. recordPick removes players incrementally, but
+  // reloading keeps the list correct if events were missed or it drained —
+  // crucially WITHOUT re-adding drafted players (which a naive reload would do).
+  reloadAvailablePlayers: async () => {
+    try {
+      const board = await getAvailablePlayers()
+      const all = Object.values(board?.tiers || {}).flat()
+      if (all.length === 0) return // empty/failed fetch — keep current list
+      const picked = new Set(
+        get().picks.map((p) => (p.player_name || '').toLowerCase())
+      )
+      set({
+        availablePlayers: all.filter(
+          (p) => !picked.has((p.name || '').toLowerCase())
+        ),
+      })
+    } catch {
+      // network/auth error — keep the current list
+    }
+  },
+
   setRecommendation: (rec) => {
     set({
       recommendation: rec,
@@ -106,19 +128,32 @@ export const useDraftStore = create((set, get) => ({
   // A new player hit the block (extension nomination event). Show the card
   // immediately; the AI recommendation arrives a beat later from the engine.
   setNomination: (payload) =>
-    set({
-      currentNomination: {
-        playerName: payload.player_name,
-        posTeam: payload.pos_team,
-        currentBid: payload.opening_bid,
-        clock: payload.clock,
-        secondsRemaining: parseClockSeconds(payload.clock),
-      },
-      currentBid: {
-        current_bid: payload.opening_bid,
-        player_name: payload.player_name,
-      },
-      recommendation: null,
+    set((state) => {
+      // The backend sometimes emits a bid_update (the real bid) just BEFORE the
+      // nomination event, which carries opening_bid=1. Don't clobber a real,
+      // higher bid for the SAME player with the opening bid.
+      const sameHigherBid =
+        state.currentBid?.player_name === payload.player_name &&
+        state.currentBid?.current_bid > payload.opening_bid
+      const bidAmount = sameHigherBid
+        ? state.currentBid.current_bid
+        : payload.opening_bid
+      return {
+        currentNomination: {
+          playerName: payload.player_name,
+          posTeam: payload.pos_team,
+          currentBid: bidAmount,
+          clock: payload.clock,
+          secondsRemaining: parseClockSeconds(payload.clock),
+        },
+        currentBid: sameHigherBid
+          ? state.currentBid
+          : {
+              current_bid: payload.opening_bid,
+              player_name: payload.player_name,
+            },
+        recommendation: null,
+      }
     }),
 
   updateBid: (bid) =>
