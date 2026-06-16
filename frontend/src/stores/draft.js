@@ -89,28 +89,6 @@ export const useDraftStore = create((set, get) => ({
         : s
     ),
 
-  // Re-fetch the canonical available pool from /draftboard and subtract the
-  // players already drafted. recordPick removes players incrementally, but
-  // reloading keeps the list correct if events were missed or it drained —
-  // crucially WITHOUT re-adding drafted players (which a naive reload would do).
-  reloadAvailablePlayers: async () => {
-    try {
-      const board = await getAvailablePlayers()
-      const all = Object.values(board?.tiers || {}).flat()
-      if (all.length === 0) return // empty/failed fetch — keep current list
-      const picked = new Set(
-        get().picks.map((p) => (p.player_name || '').toLowerCase())
-      )
-      set({
-        availablePlayers: all.filter(
-          (p) => !picked.has((p.name || '').toLowerCase())
-        ),
-      })
-    } catch {
-      // network/auth error — keep the current list
-    }
-  },
-
   setRecommendation: (rec) => {
     set({
       recommendation: rec,
