@@ -11,10 +11,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // No rewrite — FastAPI now owns the /api prefix, so forward it as-is
+      // (matches production, where there is no proxy).
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/ws': {
         target: 'ws://localhost:8000',

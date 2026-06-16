@@ -69,7 +69,7 @@ async def test_get_watchlist():
     result_mock.scalars.return_value = scalars_mock
     session.execute = AsyncMock(return_value=result_mock)
 
-    resp = await _request(session, "GET", "/preferences/watchlist")
+    resp = await _request(session, "GET", "/api/preferences/watchlist")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -92,7 +92,7 @@ async def test_add_to_watchlist():
     )
 
     resp = await _request(
-        session, "POST", "/preferences/watchlist", json={"player_id": "player-2"}
+        session, "POST", "/api/preferences/watchlist", json={"player_id": "player-2"}
     )
 
     assert resp.status_code == 201
@@ -110,7 +110,7 @@ async def test_add_to_watchlist_duplicate():
     session.execute = AsyncMock(return_value=result_mock)
 
     resp = await _request(
-        session, "POST", "/preferences/watchlist", json={"player_id": "player-1"}
+        session, "POST", "/api/preferences/watchlist", json={"player_id": "player-1"}
     )
 
     assert resp.status_code == 409
@@ -125,7 +125,7 @@ async def test_remove_from_watchlist():
     session.execute = AsyncMock(return_value=result_mock)
     session.commit = AsyncMock()
 
-    resp = await _request(session, "DELETE", "/preferences/watchlist/player-1")
+    resp = await _request(session, "DELETE", "/api/preferences/watchlist/player-1")
 
     assert resp.status_code == 204
 
@@ -139,7 +139,7 @@ async def test_remove_from_watchlist_not_found():
     session.execute = AsyncMock(return_value=result_mock)
     session.commit = AsyncMock()
 
-    resp = await _request(session, "DELETE", "/preferences/watchlist/nonexistent")
+    resp = await _request(session, "DELETE", "/api/preferences/watchlist/nonexistent")
 
     assert resp.status_code == 404
 
@@ -157,7 +157,7 @@ async def test_get_strategy():
     result_mock.scalar_one_or_none.return_value = pref
     session.execute = AsyncMock(return_value=result_mock)
 
-    resp = await _request(session, "GET", "/preferences/strategy")
+    resp = await _request(session, "GET", "/api/preferences/strategy")
 
     assert resp.status_code == 200
     assert resp.json()["strategy"] == "hero_rb"
@@ -174,7 +174,7 @@ async def test_set_strategy():
     session.commit = AsyncMock()
 
     resp = await _request(
-        session, "PUT", "/preferences/strategy", json={"strategy": "zero_rb"}
+        session, "PUT", "/api/preferences/strategy", json={"strategy": "zero_rb"}
     )
 
     assert resp.status_code == 200
@@ -187,7 +187,7 @@ async def test_set_strategy_invalid():
     app.dependency_overrides[get_current_user] = _mock_user
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.put("/preferences/strategy", json={"strategy": "yolo"})
+            resp = await ac.put("/api/preferences/strategy", json={"strategy": "yolo"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 

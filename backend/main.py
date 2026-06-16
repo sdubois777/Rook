@@ -64,20 +64,36 @@ async def app_error_handler(request, exc: AppError):
 
 # ── Routers ─────────────────────────────────────────────────
 
-app.include_router(admin.router)
-app.include_router(assistant.router)
-app.include_router(auth.router)
+# Frontend-only routers are served under /api. The axios client prefixes every
+# request with /api; in production there is no proxy to strip it, so FastAPI
+# must own the prefix (in dev the Vite proxy forwards /api through unchanged).
+app.include_router(admin.router, prefix="/api")
+app.include_router(assistant.router, prefix="/api")
+app.include_router(draftboard.router, prefix="/api")
+app.include_router(league.router, prefix="/api")
+app.include_router(news.router, prefix="/api")
+app.include_router(pipeline.router, prefix="/api")
+app.include_router(players.router, prefix="/api")
+app.include_router(preferences.router, prefix="/api")
+app.include_router(teams.router, prefix="/api")
+app.include_router(account.router, prefix="/api")
+
+# Dual-consumer routers — mounted at BOTH the bare path and /api. The frontend
+# calls them via /api; external callers reach the same handlers at bare paths
+# that cannot carry the prefix:
+#   draft          — extension POSTs /draft/event; the WebSocket is /draft/ws/draft
+#   auth           — Yahoo's OAuth redirect_uri is the bare /auth/yahoo/callback
+#   league_connect — extension POSTs /leagues/connect/espn/callback and
+#                    /leagues/sync-platform/*
 app.include_router(draft.router)
-app.include_router(draftboard.router)
-app.include_router(league.router)
-app.include_router(news.router)
-app.include_router(pipeline.router)
-app.include_router(players.router)
-app.include_router(preferences.router)
-app.include_router(teams.router)
-app.include_router(account.router)
-app.include_router(webhooks.router)
+app.include_router(draft.router, prefix="/api")
+app.include_router(auth.router)
+app.include_router(auth.router, prefix="/api")
 app.include_router(league_connect.router)
+app.include_router(league_connect.router, prefix="/api")
+
+# External-only — Clerk posts here directly; never via the frontend. Bare only.
+app.include_router(webhooks.router)
 
 _scheduler = None
 
@@ -207,13 +223,24 @@ if FRONTEND_DIST.exists():
     async def icons():
         return FileResponse(FRONTEND_DIST / "icons.svg")
 
-    # Catch-all: serve index.html for any non-API route
-    # (React Router handles client-side routing)
+    # Catch-all: serve index.html for any non-API route (React Router handles
+    # client-side routing). Only genuine server-owned namespaces 404 here —
+    # everything else (including SPA deep links like /draftboard, /teams, /news,
+    # /admin, /draft-room) serves the app. Most API routers now live under /api;
+    # the bare entries are the dual-consumer/external paths. Trailing slashes
+    # keep page routes (/draft-room, /league-setup) from matching a namespace.
     _API_PREFIXES = (
-        "admin", "assistant", "auth", "draft", "draftboard",
-        "league", "leagues", "news", "pipeline", "players", "preferences",
-        "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/", "webhooks",
+        "api/",
+        "auth/",
+        "draft/",
+        "leagues/",
+        "webhooks/",
+        "ws/",
+        "assets/",
+        "health",
+        "docs",
+        "openapi.json",
+        "redoc",
     )
 
     @app.get("/{full_path:path}")
