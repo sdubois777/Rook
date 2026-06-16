@@ -132,6 +132,9 @@ export default function useDraftSocket() {
               // recommendation ("Analyzing..."); poll until a fresh one lands.
               setNomination(payload)
               scheduleRecommendationPolls(payload.player_name)
+              // Keep the available pool fresh through the draft — re-fetch and
+              // subtract drafted players (guards against drift / drain-to-zero).
+              useDraftStore.getState().reloadAvailablePlayers()
               break
             }
             case 'bid_update':
