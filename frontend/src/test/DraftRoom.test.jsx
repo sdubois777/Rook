@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { useDraftStore } from '../stores/draft'
@@ -78,13 +78,16 @@ function resetStore() {
     picks: [],
     opponentBudgets: {},
     comboAlerts: [],
+    teamPicks: {},
+    teamThreatScores: {},
+    selectedTeam: null,
     availablePlayers: [],
     availableFilter: { position: '', search: '' },
   })
 }
 
 // Lazy imports to avoid module-level issues
-let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker, NominationPanel, DraftRoom
+let DraftSetup, RecommendationPanel, MyRoster, AvailablePlayers, OpponentTracker, NominationPanel, TeamRosterPanel, DraftRoom
 
 beforeEach(async () => {
   resetStore()
@@ -96,6 +99,7 @@ beforeEach(async () => {
   AvailablePlayers = (await import('../components/draft/AvailablePlayers')).default
   OpponentTracker = (await import('../components/draft/OpponentTracker')).default
   NominationPanel = (await import('../components/draft/NominationPanel')).default
+  TeamRosterPanel = (await import('../components/draft/TeamRosterPanel')).default
   DraftRoom = (await import('../pages/DraftRoom')).default
 })
 
@@ -207,9 +211,11 @@ describe('DraftRoom', () => {
     expect(actionEl.className).toContain('text-slate-400')
   })
 
-  it('bid button calls placeBid with ceiling amount', async () => {
-    const { placeBid } = await import('../api/draft')
+  // NOTE: the redesigned RecommendationPanel is read-only — the bid and pass
+  // buttons were removed (you execute in Yahoo, DraftMind only advises), so the
+  // former "bid button calls placeBid" / "pass button confirms" tests are gone.
 
+  it('recommendation panel renders no bid or pass buttons', () => {
     useDraftStore.setState({
       phase: 'live',
       recommendation: {
@@ -239,65 +245,11 @@ describe('DraftRoom', () => {
       </MemoryRouter>
     )
 
-    const bidButton = screen.getByText('Bid $47')
-    await act(async () => {
-      fireEvent.click(bidButton)
-    })
-
-    expect(placeBid).toHaveBeenCalledWith(47)
-  })
-
-  it('pass button shows confirmation before calling API', async () => {
-    const { passNomination } = await import('../api/draft')
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-
-    useDraftStore.setState({
-      phase: 'live',
-      recommendation: {
-        action: 'buy',
-        bid_ceiling: 30,
-        player_name: 'Test Player',
-        position: 'TE',
-        confidence: 'low',
-        reasoning: 'Decent option',
-        system_value: 25,
-        market_value: 28,
-        active_flags: [],
-        opponent_alerts: [],
-        block_value: 0,
-        budget_allows_block: false,
-        budget_summary: {
-          your_remaining: 200,
-          spendable_on_this_player: 185,
-          roster_slots_remaining: 16,
-        },
-      },
-    })
-
-    render(
-      <MemoryRouter>
-        <RecommendationPanel />
-      </MemoryRouter>
-    )
-
-    const passButton = screen.getByText('Pass')
-    await act(async () => {
-      fireEvent.click(passButton)
-    })
-
-    // Confirm was called
-    expect(confirmSpy).toHaveBeenCalled()
-    // But API not called because we returned false
-    expect(passNomination).not.toHaveBeenCalled()
-
-    // Now confirm yes
-    confirmSpy.mockReturnValue(true)
-    await act(async () => {
-      fireEvent.click(passButton)
-    })
-
-    expect(passNomination).toHaveBeenCalled()
-    confirmSpy.mockRestore()
+    // The recommendation content still renders...
+    expect(screen.getByText('BUY')).toBeInTheDocument()
+    // ...but there are no action buttons.
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pass')).not.toBeInTheDocument()
   })
 
   it('my roster shows budget bar and drafted players', () => {
@@ -426,7 +378,7 @@ describe('DraftRoom', () => {
     expect(screen.getByText('Sam LaPorta')).toBeInTheDocument()
   })
 
-  it('nomination panel shows team budgets with a threat indicator', () => {
+  it('nomination panel shows a value indicator from bid vs system value', () => {
     useDraftStore.setState({
       phase: 'live',
       currentNomination: {
@@ -436,10 +388,8 @@ describe('DraftRoom', () => {
         clock: '0:19',
         secondsRemaining: 19,
       },
-      teamsState: {
-        'Team 3': { budget: 149, slotsUsed: 0, totalSlots: 15 },
-        Stephen: { budget: 9, slotsUsed: 6, totalSlots: 15 },
-      },
+      // bid 4 sits well under system 25 -> Undervalued
+      recommendation: { player_name: 'Sam LaPorta', system_value: 25, market_value: 28 },
     })
 
     render(
@@ -448,10 +398,10 @@ describe('DraftRoom', () => {
       </MemoryRouter>
     )
 
-    expect(screen.getByText('Team 3')).toBeInTheDocument()
-    expect(screen.getByText('Stephen')).toBeInTheDocument()
-    // Cash-heavy, few slots -> flagged; the small-budget team is not
-    expect(screen.getByTitle('High budget, few slots filled')).toBeInTheDocument()
+    expect(screen.getByText('Undervalued')).toBeInTheDocument()
+    // Team budgets no longer live in the nomination panel — they moved to the
+    // Team Rosters panel on the right.
+    expect(screen.queryByText('Team Budgets')).not.toBeInTheDocument()
   })
 
   it('recordPick removes a relayed (name-only) pick from available', () => {
@@ -1121,5 +1071,165 @@ describe('DraftRoom', () => {
     fireEvent.click(toggleButton)
 
     expect(screen.getByText('Recent Alerts')).toBeInTheDocument()
+  })
+
+  // --- Team Rosters panel (redesign) ---
+
+  it('teamPicks accumulates picks by winner', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'p1', name: 'CMC', position: 'RB', ai_bid_ceiling: 72 },
+        { id: 'p2', name: 'Puka Nacua', position: 'WR', ai_bid_ceiling: 60 },
+        { id: 'p3', name: 'Sauce Gardner', position: 'CB', ai_bid_ceiling: 5 },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({ player_name: 'CMC', final_price: 50, winner: 'Team 3' })
+      useDraftStore.getState().recordPick({ player_name: 'Puka Nacua', final_price: 40, winner: 'Team 3' })
+      useDraftStore.getState().recordPick({ player_name: 'Sauce Gardner', final_price: 3, winner: 'Team 7' })
+    })
+
+    const { teamPicks } = useDraftStore.getState()
+    expect(teamPicks['Team 3']).toHaveLength(2)
+    expect(teamPicks['Team 3'].map((p) => p.player_name)).toEqual(['CMC', 'Puka Nacua'])
+    expect(teamPicks['Team 7']).toHaveLength(1)
+  })
+
+  it('threatScore sums ai_bid_ceiling', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'p1', name: 'CMC', position: 'RB', ai_bid_ceiling: 72 },
+        { id: 'p2', name: 'Puka Nacua', position: 'WR', ai_bid_ceiling: 60 },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({ player_name: 'CMC', final_price: 50, winner: 'Team 3' })
+      useDraftStore.getState().recordPick({ player_name: 'Puka Nacua', final_price: 40, winner: 'Team 3' })
+    })
+
+    // Ceiling-based, not price-based: 72 + 60 = 132 (prices were 50 + 40 = 90).
+    expect(useDraftStore.getState().teamThreatScores['Team 3']).toBe(132)
+  })
+
+  it('teams sorted by threat score in dropdown', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      teamsState: {
+        'Team A': { budget: 50 },
+        'Team B': { budget: 50 },
+        'Team C': { budget: 50 },
+      },
+      teamThreatScores: { 'Team A': 50, 'Team B': 200, 'Team C': 120 },
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    const options = within(screen.getByLabelText('Select team')).getAllByRole('option')
+    const order = options.map((o) => o.textContent)
+    expect(order[0]).toContain('Team B') // highest threat first
+    expect(order[1]).toContain('Team C')
+    expect(order[2]).toContain('Team A')
+  })
+
+  it('my team always first in dropdown', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      teamsState: { Stephen: { budget: 50 }, 'Team B': { budget: 50 } },
+      teamThreatScores: { 'Team B': 200, Stephen: 10 }, // Team B more dangerous
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    const options = within(screen.getByLabelText('Select team')).getAllByRole('option')
+    // Despite Team B's higher threat, my team is pinned first.
+    expect(options[0].textContent).toContain('Stephen')
+    expect(options[0].textContent).toContain('(you)')
+  })
+
+  it('opponent roster shows name + price', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      selectedTeam: 'Team 3',
+      teamsState: { 'Team 3': { budget: 100, slotsUsed: 1, totalSlots: 16 } },
+      teamPicks: {
+        'Team 3': [{ player_name: 'CMC', price: 50, position: 'RB', ceiling: 72 }],
+      },
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('CMC')).toBeInTheDocument()
+    expect(screen.getByText('$50')).toBeInTheDocument()
+  })
+
+  it('high threat teams show warning indicator', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      selectedTeam: 'Team 3',
+      teamsState: { 'Team 3': { budget: 100 } },
+      teamThreatScores: { 'Team 3': 187 }, // >= 150 threshold
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText(/High threat/)).toBeInTheDocument()
+    expect(screen.getByText(/\$187 ceiling value/)).toBeInTheDocument()
+  })
+
+  it('TeamRosterPanel renders without picks', () => {
+    useDraftStore.setState({ phase: 'live', myTeamName: null })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Team Rosters')).toBeInTheDocument()
+    expect(screen.getByText('No picks yet')).toBeInTheDocument()
+  })
+
+  it('selectedTeam defaults to myTeamName', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      selectedTeam: null, // no explicit selection
+      teamsState: { Stephen: { budget: 150, slotsUsed: 1, totalSlots: 16 } },
+      myRoster: [{ player_id: '1', player_name: 'CMC', position: 'RB', price: 50 }],
+    })
+
+    render(
+      <MemoryRouter>
+        <TeamRosterPanel />
+      </MemoryRouter>
+    )
+
+    // Dropdown lands on my team, and my roster (with position slots) shows.
+    expect(screen.getByLabelText('Select team').value).toBe('Stephen')
+    expect(screen.getByText('CMC')).toBeInTheDocument()
   })
 })

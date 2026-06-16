@@ -6,9 +6,8 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import DraftSetup from '../components/draft/DraftSetup'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
 import NominationPanel from '../components/draft/NominationPanel'
-import MyRoster from '../components/draft/MyRoster'
 import AvailablePlayers from '../components/draft/AvailablePlayers'
-import OpponentTracker from '../components/draft/OpponentTracker'
+import TeamRosterPanel from '../components/draft/TeamRosterPanel'
 
 const WS_STATUS_LABEL = {
   connected: { text: 'Connected', color: 'bg-emerald-500' },
@@ -80,7 +79,7 @@ export default function DraftRoom() {
   const statusInfo = WS_STATUS_LABEL[wsStatus] || WS_STATUS_LABEL.disconnected
 
   return (
-    <div className="h-screen bg-[#0f1117] text-slate-200 flex flex-col">
+    <div className="h-screen bg-[#0f1117] text-slate-200 flex flex-col overflow-hidden">
       {/* Status bar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-[#161822] border-b border-[#2d3148]">
         <span className="text-sm font-medium text-slate-300">Draft Room</span>
@@ -90,10 +89,10 @@ export default function DraftRoom() {
         </div>
       </div>
 
-      {/* 4-zone grid */}
-      <div className="flex-1 grid grid-rows-[35fr_65fr] grid-cols-2 min-h-0">
-        {/* Zone 1: Recommendation */}
-        <div className="border-r border-b border-[#2d3148] min-h-0 overflow-hidden">
+      {/* 3-column layout — fills the viewport, only inner lists scroll */}
+      <div className="flex-1 grid grid-cols-[30%_40%_30%] min-h-0">
+        {/* LEFT: Recommendation */}
+        <div className="border-r border-[#2d3148] min-h-0 overflow-hidden">
           <ErrorBoundary
             fallback={
               <div className="h-full flex items-center justify-center p-4 text-red-400 text-sm">
@@ -105,24 +104,21 @@ export default function DraftRoom() {
           </ErrorBoundary>
         </div>
 
-        {/* Zone 2: Current Nomination */}
-        <div className="border-b border-[#2d3148] min-h-0 overflow-hidden">
-          <NominationPanel />
+        {/* CENTER: Nomination (fixed) over Available players (scrolls) */}
+        <div className="border-r border-[#2d3148] min-h-0 flex flex-col overflow-hidden">
+          <div className="h-[190px] shrink-0 border-b border-[#2d3148] overflow-hidden">
+            <NominationPanel />
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <AvailablePlayers />
+          </div>
         </div>
 
-        {/* Zone 3: My Roster */}
-        <div className="border-r border-[#2d3148] min-h-0 overflow-hidden">
-          <MyRoster />
-        </div>
-
-        {/* Zone 4: Available Players */}
+        {/* RIGHT: Team rosters */}
         <div className="min-h-0 overflow-hidden">
-          <AvailablePlayers />
+          <TeamRosterPanel />
         </div>
       </div>
-
-      {/* Opponent tracker (collapsible sidebar) */}
-      <OpponentTracker />
     </div>
   )
 }

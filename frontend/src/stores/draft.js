@@ -42,6 +42,15 @@ export const useDraftStore = create((set, get) => ({
   opponentBudgets: {},
   comboAlerts: [],
 
+  // All picks grouped by winning team name — drives the Team Rosters panel.
+  // { 'Stephen': [{ player_name, price, position, ceiling }], 'Team 3': [...] }
+  teamPicks: {},
+  // Sum of ai_bid_ceiling for each team's picks — the threat score.
+  // { 'Team 3': 187, 'Stephen': 142 }
+  teamThreatScores: {},
+  // Team currently shown in the roster panel; null = default to my team.
+  selectedTeam: null,
+
   // Available players
   availablePlayers: [],
   availableFilter: { position: '', search: '' },
@@ -235,10 +244,37 @@ export const useDraftStore = create((set, get) => ({
       return !(idMatch || nameMatch)
     })
 
+    // Group the pick under its winning team and recompute that team's threat
+    // score (sum of ai_bid_ceiling). Threat is ceiling-based, not price-based,
+    // so elite players flag a team even when bought cheaply.
+    const winner = pick.winner || 'Unknown'
+    const ceiling =
+      fromAvailable?.ai_bid_ceiling ??
+      fromAvailable?.recommended_bid_ceiling ??
+      null
+    const teamPicks = {
+      ...state.teamPicks,
+      [winner]: [
+        ...(state.teamPicks[winner] || []),
+        {
+          player_name: pick.player_name,
+          price: pick.final_price || pick.price || 0,
+          position: pick.position || fromAvailable?.position || null,
+          ceiling,
+        },
+      ],
+    }
+    const teamScore = teamPicks[winner].reduce(
+      (sum, p) => sum + (p.ceiling || 0),
+      0
+    )
+
     // Clear current recommendation + bid + nomination after pick confirmed
     const updates = {
       picks: newPicks,
       availablePlayers: newAvailable,
+      teamPicks,
+      teamThreatScores: { ...state.teamThreatScores, [winner]: teamScore },
       recommendation: null,
       currentBid: null,
       currentNomination: null,
@@ -292,4 +328,6 @@ export const useDraftStore = create((set, get) => ({
       availableFilter: { ...s.availableFilter, ...filter },
     }))
   },
+
+  setSelectedTeam: (teamName) => set({ selectedTeam: teamName }),
 }))

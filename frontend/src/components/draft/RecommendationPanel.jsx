@@ -1,5 +1,4 @@
 import { useDraftStore } from '../../stores/draft'
-import { placeBid, passNomination } from '../../api/draft'
 import PositionBadge from '../shared/PositionBadge'
 import FlagBadge from '../shared/FlagBadge'
 
@@ -58,23 +57,6 @@ export default function RecommendationPanel() {
 
   const style = ACTION_STYLES[rec.action] || ACTION_STYLES.pass
   const confStyle = CONFIDENCE_STYLES[rec.confidence] || CONFIDENCE_STYLES.low
-
-  const handleBid = async () => {
-    try {
-      await placeBid(rec.bid_ceiling)
-    } catch {
-      // Bid failed — bridge may not be connected
-    }
-  }
-
-  const handlePass = async () => {
-    if (!confirm('Pass on this player?')) return
-    try {
-      await passNomination()
-    } catch {
-      // Pass failed
-    }
-  }
 
   const budget = rec.budget_summary || {
     your_remaining: myBudget,
@@ -159,28 +141,8 @@ export default function RecommendationPanel() {
 
       {/* Elapsed */}
       {rec.elapsed_ms != null && (
-        <div className="text-[10px] text-slate-600 mb-3">{rec.elapsed_ms}ms</div>
+        <div className="text-[10px] text-slate-600">{rec.elapsed_ms}ms</div>
       )}
-
-      {/* Action buttons — pushed to bottom */}
-      <div className="mt-auto flex gap-2">
-        {rec.action !== 'pass' && (
-          <button
-            onClick={handleBid}
-            className="flex-1 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-500 transition-colors"
-          >
-            Bid ${rec.bid_ceiling}
-          </button>
-        )}
-        <button
-          onClick={handlePass}
-          className={`py-2.5 px-4 bg-[#1c1f2e] text-slate-400 border border-[#2d3148] rounded-lg hover:bg-[#222539] transition-colors ${
-            rec.action === 'pass' ? 'flex-1' : ''
-          }`}
-        >
-          Pass
-        </button>
-      </div>
     </div>
   )
 }
