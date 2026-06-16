@@ -1017,23 +1017,9 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().currentNomination.currentBid).toBe(5)
   })
 
-  it('reloadAvailablePlayers refetches and subtracts drafted players', async () => {
-    useDraftStore.setState({
-      picks: [{ player_name: "Ja'Marr Chase" }],
-      availablePlayers: [],
-    })
-    await act(async () => {
-      await useDraftStore.getState().reloadAvailablePlayers()
-    })
-    const names = useDraftStore.getState().availablePlayers.map((p) => p.name)
-    expect(names).toContain('Jonathan Taylor')
-    expect(names).toContain('Travis Kelce')
-    expect(names).not.toContain("Ja'Marr Chase") // already drafted
-  })
-
-  it('a new nomination reloads the available pool', async () => {
+  it('a nomination does NOT refetch the draftboard', async () => {
     const { getAvailablePlayers } = await import('../api/draft')
-    getAvailablePlayers.mockClear()
+    const { fetchDraftboard } = await import('../api/draftboard')
     useDraftStore.setState({ phase: 'live', currentNomination: null })
 
     render(
@@ -1041,7 +1027,11 @@ describe('DraftRoom', () => {
         <DraftRoom />
       </MemoryRouter>
     )
+    // Let the on-mount load run, then clear the spies so we only observe
+    // what the nomination itself triggers.
     await act(async () => { await Promise.resolve() })
+    getAvailablePlayers.mockClear()
+    fetchDraftboard.mockClear()
     const ws = MockWebSocket.instances.at(-1)
 
     act(() => {
@@ -1052,8 +1042,36 @@ describe('DraftRoom', () => {
         }),
       })
     })
+    await act(async () => { await Promise.resolve() })
 
-    await waitFor(() => expect(getAvailablePlayers).toHaveBeenCalled())
+    expect(getAvailablePlayers).not.toHaveBeenCalled()
+    expect(fetchDraftboard).not.toHaveBeenCalled()
+  })
+
+  it('available count is unchanged by a nomination and drops by one on a pick', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: null,
+      availablePlayers: [
+        { id: 'p1', name: 'Jonathan Taylor', position: 'RB', yahoo_player_id: 'y1' },
+        { id: 'p2', name: "Ja'Marr Chase", position: 'WR', yahoo_player_id: 'y2' },
+        { id: 'p3', name: 'Travis Kelce', position: 'TE', yahoo_player_id: 'y3' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().setNomination({
+        player_name: 'Jonathan Taylor', opening_bid: 1, clock: '0:30',
+      })
+    })
+    expect(useDraftStore.getState().availablePlayers).toHaveLength(3) // nomination: no change
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Jonathan Taylor', final_price: 40, winner: 'Team 3',
+      })
+    })
+    expect(useDraftStore.getState().availablePlayers).toHaveLength(2) // pick: -1
   })
 
   it('opponent tracker shows combo alerts', () => {

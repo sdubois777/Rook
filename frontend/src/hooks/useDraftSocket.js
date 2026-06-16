@@ -130,11 +130,10 @@ export default function useDraftSocket() {
               }
               // Genuinely new nominee: setNomination clears the stale
               // recommendation ("Analyzing..."); poll until a fresh one lands.
+              // The available list is loaded once by startDraft and maintained
+              // by recordPick filtering — do NOT refetch the draftboard here.
               setNomination(payload)
               scheduleRecommendationPolls(payload.player_name)
-              // Keep the available pool fresh through the draft — re-fetch and
-              // subtract drafted players (guards against drift / drain-to-zero).
-              useDraftStore.getState().reloadAvailablePlayers()
               break
             }
             case 'bid_update':
