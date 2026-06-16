@@ -32,10 +32,19 @@ export default function DraftRoom() {
     ;(async () => {
       try {
         const board = await fetchDraftboard()
-        const players = Object.values(board?.tiers || {}).flat()
+        const tiers = board?.tiers || {}
+        const players = Object.values(tiers).flat()
+        // Diagnostics: if this logs 0 players, the issue is the /draftboard
+        // response (empty data / auth / wrong shape), not the UI wiring.
+        console.debug(
+          'DraftMind: draftboard loaded —',
+          players.length,
+          'players; tier keys:',
+          Object.keys(tiers),
+        )
         if (!cancelled) setAvailablePlayers(players)
       } catch (e) {
-        console.error('DraftMind: failed to load draftboard:', e)
+        console.error('DraftMind: failed to load draftboard:', e?.response?.status, e)
       }
     })()
     return () => {

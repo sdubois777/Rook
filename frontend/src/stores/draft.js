@@ -89,6 +89,28 @@ export const useDraftStore = create((set, get) => ({
         : s
     ),
 
+  // Re-fetch the canonical available pool from /draftboard and subtract the
+  // players already drafted. recordPick removes players incrementally, but
+  // reloading keeps the list correct if events were missed or it drained —
+  // crucially WITHOUT re-adding drafted players (which a naive reload would do).
+  reloadAvailablePlayers: async () => {
+    try {
+      const board = await getAvailablePlayers()
+      const all = Object.values(board?.tiers || {}).flat()
+      if (all.length === 0) return // empty/failed fetch — keep current list
+      const picked = new Set(
+        get().picks.map((p) => (p.player_name || '').toLowerCase())
+      )
+      set({
+        availablePlayers: all.filter(
+          (p) => !picked.has((p.name || '').toLowerCase())
+        ),
+      })
+    } catch {
+      // network/auth error — keep the current list
+    }
+  },
+
   setRecommendation: (rec) => {
     set({
       recommendation: rec,
@@ -106,19 +128,32 @@ export const useDraftStore = create((set, get) => ({
   // A new player hit the block (extension nomination event). Show the card
   // immediately; the AI recommendation arrives a beat later from the engine.
   setNomination: (payload) =>
-    set({
-      currentNomination: {
-        playerName: payload.player_name,
-        posTeam: payload.pos_team,
-        currentBid: payload.opening_bid,
-        clock: payload.clock,
-        secondsRemaining: parseClockSeconds(payload.clock),
-      },
-      currentBid: {
-        current_bid: payload.opening_bid,
-        player_name: payload.player_name,
-      },
-      recommendation: null,
+    set((state) => {
+      // The backend sometimes emits a bid_update (the real bid) just BEFORE the
+      // nomination event, which carries opening_bid=1. Don't clobber a real,
+      // higher bid for the SAME player with the opening bid.
+      const sameHigherBid =
+        state.currentBid?.player_name === payload.player_name &&
+        state.currentBid?.current_bid > payload.opening_bid
+      const bidAmount = sameHigherBid
+        ? state.currentBid.current_bid
+        : payload.opening_bid
+      return {
+        currentNomination: {
+          playerName: payload.player_name,
+          posTeam: payload.pos_team,
+          currentBid: bidAmount,
+          clock: payload.clock,
+          secondsRemaining: parseClockSeconds(payload.clock),
+        },
+        currentBid: sameHigherBid
+          ? state.currentBid
+          : {
+              current_bid: payload.opening_bid,
+              player_name: payload.player_name,
+            },
+        recommendation: null,
+      }
     }),
 
   updateBid: (bid) =>
@@ -164,18 +199,44 @@ export const useDraftStore = create((set, get) => ({
     const state = get()
     const pickName = (pick.player_name || '').toLowerCase()
 
-    // DEDUP: a player can only be drafted once, so a repeat of the same name
-    // is always a duplicate delivery (e.g. a double-mounted socket in dev, or
-    // a relay retry). Ignore it — otherwise the player is added to the roster
-    // twice and the available list is filtered on a second, stale pass.
+    // DEDUP (time-bounded): a duplicate delivery of the same pick (e.g. a
+    // double-mounted socket in dev, or a relay retry) arrives within a moment,
+    // so only ignore a same-name pick recorded in the last 2s. A stale pick
+    // left in state from a previous session must NOT block a fresh one.
+    const TWO_SECONDS = 2000
+    const now = Date.now()
     if (
       pickName &&
-      state.picks.some((p) => p.player_name?.toLowerCase() === pickName)
+      state.picks.some(
+        (p) =>
+          p.player_name?.toLowerCase() === pickName &&
+          now - (p.timestamp || 0) < TWO_SECONDS
+      )
     ) {
+      console.debug('DraftMind: dedup blocked duplicate pick:', pick.player_name)
       return
     }
 
-    const newPicks = [...state.picks, pick]
+    // Did we win this player? The relay carries `winner` (team display name);
+    // the engine path may set `is_yours`. Match winner against our team name.
+    const isYours =
+      pick.is_yours ||
+      (state.myTeamName &&
+        pick.winner &&
+        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
+
+    console.debug(
+      'DraftMind: recordPick',
+      pick.player_name,
+      '| winner:',
+      pick.winner,
+      '| myTeamName:',
+      state.myTeamName,
+      '| isYours:',
+      !!isYours,
+    )
+
+    const newPicks = [...state.picks, { ...pick, timestamp: now }]
 
     // Find the available entry (for position lookup) before removing it.
     const fromAvailable = state.availablePlayers.find(
@@ -201,14 +262,6 @@ export const useDraftStore = create((set, get) => ({
       currentNomination: null,
       ...(pick.teams_snapshot ? { teamsState: pick.teams_snapshot } : {}),
     }
-
-    // Did we win this player? The relay carries `winner` (team display name);
-    // the engine path may set `is_yours`. Match winner against our team name.
-    const isYours =
-      pick.is_yours ||
-      (state.myTeamName &&
-        pick.winner &&
-        pick.winner.toLowerCase() === state.myTeamName.toLowerCase())
 
     if (isYours) {
       const price = pick.final_price || pick.price || 0
