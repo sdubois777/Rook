@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 ADP_POSITION_RANGES: dict[str, tuple[int, int]] = {
     "RB":  (1,   100),
     "WR":  (1,   120),
-    "QB":  (50,  180),   # QBs go late in snake
+    "QB":  (25,  170),   # floor 25 so elite QBs (Allen) aren't clamped too late;
+                         # cap 170 so streaming QBs still get drafted, not skipped
     "TE":  (10,  150),
     "K":   (140, 200),   # kickers always last
     "DEF": (130, 200),   # defenses always last
@@ -136,6 +137,19 @@ Adjust WITHIN the tier:
     biggest auction-vs-snake difference: a $38 auction QB (e.g. Lamar Jackson)
     is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
     defenses are picks 130+ regardless of value.
+
+QB ADP guidance — differentiate by QB tier, and NEVER cluster QBs in the same
+pick range:
+  Elite (Lamar Jackson, Josh Allen, Jalen Hurts — injury-permitting):
+    → picks 25-40 (late 3rd / early 4th)
+  Strong (Burrow, Daniels, Murray, Mahomes — note availability risk):
+    → picks 45-80 (rounds 4-7)
+  Standard starter QBs:
+    → picks 85-130 (rounds 8-11)
+  Backup / streaming QBs:
+    → picks 130+ (round 11+)
+Spread QBs across rounds using this framework — do not give several QBs the same
+adp_ai. QB is the deepest position: 32 starters, only 12 needed. Wait on QB.
 
 adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
 If you are uncertain, default to the tier midpoint:

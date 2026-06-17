@@ -567,6 +567,11 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   shortened seasons remains.
 - FULL_SEASON_ABSENCE detection implemented
   via games-based availability model.
+- BACKLOG: valuation_agent cache doesn't
+  version on prompt changes — prompt edits
+  require manual cache clear to take effect.
+  Add prompt_version to cache key hash like
+  player_profiles already does.
 
 ### SaaS / Auth
 - Clerk running in dev mode (pk_test_) in

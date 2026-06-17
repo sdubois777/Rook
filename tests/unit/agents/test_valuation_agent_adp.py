@@ -15,8 +15,9 @@ from backend.agents.valuation_agent import (
 
 
 def test_clamp_adp_qb_floored_late():
-    # QBs go late in snake — pick 5 is clamped up to the QB floor (50).
-    assert clamp_adp(5, "QB") == 50
+    # QBs go late in snake — pick 5 is clamped up to the QB floor (25). The
+    # floor is 25 (not 50) so elite QBs like Allen can land ~rd 3 where they go.
+    assert clamp_adp(5, "QB") == 25
 
 
 def test_clamp_adp_within_range_unchanged():
@@ -41,7 +42,8 @@ def test_clamp_adp_unknown_position_full_range():
 
 
 def test_adp_position_ranges_qb_def_k_late():
-    assert ADP_POSITION_RANGES["QB"][0] >= 50
+    # QB floor 25 keeps elite QBs from being clamped too late; K/DEF stay last.
+    assert ADP_POSITION_RANGES["QB"][0] == 25
     assert ADP_POSITION_RANGES["K"][0] >= 140
     assert ADP_POSITION_RANGES["DEF"][0] >= 130
 
@@ -72,3 +74,19 @@ def test_prompt_lists_adp_ai_before_bid_ceiling():
     # adp_ai must come early in the JSON schema so a truncated response still
     # includes it (it was last before, and Sonnet dropped it).
     assert SYSTEM_PROMPT.index('"adp_ai"') < SYSTEM_PROMPT.index('"ai_bid_ceiling"')
+
+
+def test_clamp_adp_qb_caps_at_170():
+    # Streaming QBs cap at 170 so they still get drafted, not skipped.
+    assert clamp_adp(250, "QB") == 170
+
+
+def test_prompt_has_qb_tier_differentiation():
+    # The model was clustering all QBs at ~38; the prompt must spread them by
+    # tier and tell it to wait on QB.
+    assert "QB ADP guidance" in SYSTEM_PROMPT
+    assert "picks 25-40" in SYSTEM_PROMPT  # elite
+    assert "picks 45-80" in SYSTEM_PROMPT  # strong
+    assert "picks 85-130" in SYSTEM_PROMPT  # standard starter
+    assert "Wait on QB" in SYSTEM_PROMPT
+    assert "NEVER cluster" in SYSTEM_PROMPT
