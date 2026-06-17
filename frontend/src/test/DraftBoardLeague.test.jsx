@@ -18,11 +18,13 @@ vi.mock('../api/draftboard', () => ({
           id: 'p1', name: 'Bijan Robinson', position: 'RB', team_abbr: 'ATL', tier: 1,
           ai_bid_ceiling: 80, market_value: 50, recommended_bid_ceiling: 80, ppr_points: 300,
           adp_ai: 3.0, adp_fantasypros: 1.5, adp_scoring: 'ppr', value_assessment: 'good_value',
+          adp_rank: 1, adp_diff: -1.5, snake_flag: 'TARGET', round_num: 1,
         },
         {
           id: 'p2', name: 'Josh Allen', position: 'QB', team_abbr: 'BUF', tier: 1,
           ai_bid_ceiling: 48, market_value: 27, recommended_bid_ceiling: 48, ppr_points: 400,
           adp_ai: 28.0, adp_fantasypros: 27.5, adp_scoring: 'ppr',
+          adp_rank: 14, adp_diff: -0.5, snake_flag: 'VALUE', round_num: 2,
         },
       ],
     },
@@ -36,7 +38,7 @@ function renderBoard(isSnake) {
     isSnake,
     isAuction: !isSnake,
     scoringFormat: 'ppr',
-    selectedLeague: { draft_type: isSnake ? 'snake' : 'auction' },
+    selectedLeague: { draft_type: isSnake ? 'snake' : 'auction', team_count: 12 },
     setSelectedLeague() {},
   }
   return render(
@@ -51,12 +53,13 @@ function renderBoard(isSnake) {
 describe('DraftBoard league toggle', () => {
   it('reads isSnake from context and shows ADP columns when snake', async () => {
     renderBoard(true)
-    expect(await screen.findByText('AI ADP')).toBeInTheDocument()
-    expect(screen.getByText('FP ADP')).toBeInTheDocument()
-    expect(screen.getByText('Diff')).toBeInTheDocument()
+    // headers repeat per round group, so allow multiples
+    expect((await screen.findAllByText('AI ADP')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('FP ADP').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Diff').length).toBeGreaterThan(0)
     expect(screen.queryByText('AI Ceil')).not.toBeInTheDocument()
-    // adp_ai value rendered (Bijan 3.0)
-    expect(screen.getByText('3.0')).toBeInTheDocument()
+    // FP ADP value rendered (Bijan 1.5, unique)
+    expect(screen.getByText('1.5')).toBeInTheDocument()
   })
 
   it('shows ceiling columns when auction', async () => {
@@ -66,11 +69,20 @@ describe('DraftBoard league toggle', () => {
     expect(screen.queryByText('AI ADP')).not.toBeInTheDocument()
   })
 
-  it('snake sorts by adp_ai ascending', async () => {
+  it('groups by round and shows snake flag badges when snake', async () => {
     renderBoard(true)
-    const bijan = await screen.findByText('Bijan Robinson') // adp_ai 3
-    const allen = screen.getByText('Josh Allen') // adp_ai 28
-    // Bijan must precede Allen in document order.
+    // round headers (Bijan rank 1 -> Round 1; Allen rank 14 -> Round 2 @ 12-team)
+    expect(await screen.findByText('Round 1')).toBeInTheDocument()
+    expect(screen.getByText('Round 2')).toBeInTheDocument()
+    // snake flag badges (not the auction PAY UP/NOMINATE)
+    expect(screen.getByText('TARGET')).toBeInTheDocument()
+    expect(screen.getByText('VALUE')).toBeInTheDocument()
+  })
+
+  it('snake orders by adp_rank ascending', async () => {
+    renderBoard(true)
+    const bijan = await screen.findByText('Bijan Robinson') // adp_rank 1
+    const allen = screen.getByText('Josh Allen') // adp_rank 14
     expect(
       bijan.compareDocumentPosition(allen) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()

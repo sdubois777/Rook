@@ -53,6 +53,8 @@ SORTABLE_COLUMNS = {
     "value_gap": Player.value_gap,
     "name": Player.name,
     "tier": Player.tier,
+    "adp_diff": Player.adp_diff,
+    "adp_rank": Player.adp_rank,
 }
 
 SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
@@ -199,6 +201,7 @@ class PlayerRepository(BaseRepository[Player]):
         team: str | None = None,
         flag: str | None = None,
         value_gap_dir: str | None = None,
+        snake_flag: str | None = None,
         sort: str = "bid_ceiling",
         order: str = "desc",
         page: int = 1,
@@ -223,6 +226,9 @@ class PlayerRepository(BaseRepository[Player]):
             query = query.where(Player.value_gap_signal == "market_overvalues")
         elif value_gap_dir == "aligned":
             query = query.where(Player.value_gap_signal == "aligned")
+
+        if snake_flag:
+            query = query.where(Player.snake_flag == snake_flag)
 
         if flag == "flagged":
             query = query.where(

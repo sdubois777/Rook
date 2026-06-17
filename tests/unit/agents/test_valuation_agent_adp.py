@@ -6,11 +6,17 @@ the model over-ranks at pick 5 gets pushed to the late QB floor.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from backend.agents.valuation_agent import (
     ADP_POSITION_RANGES,
     SYSTEM_PROMPT,
+    VALUATION_AGENT_VERSION,
     VALUATION_SCORING,
+    assign_adp_ranks,
+    classify_snake_flag,
     clamp_adp,
+    compute_adp_diff,
 )
 
 
@@ -79,6 +85,69 @@ def test_prompt_lists_adp_ai_before_bid_ceiling():
 def test_clamp_adp_qb_caps_at_170():
     # Streaming QBs cap at 170 so they still get drafted, not skipped.
     assert clamp_adp(250, "QB") == 170
+
+
+# --- snake polish: adp_diff, adp_rank, snake_flag ---
+
+def test_adp_diff_computed_correctly():
+    # consensus 18 - us 3 = +15 (we rate them 15 picks earlier than FP)
+    assert compute_adp_diff(18, 3) == 15.0
+    assert compute_adp_diff(3, 18) == -15.0
+    assert compute_adp_diff(None, 3) is None
+    assert compute_adp_diff(18, None) is None
+
+
+def test_adp_rank_sequential_1_to_n():
+    players = [SimpleNamespace(adp_rank=None) for _ in range(5)]
+    n = assign_adp_ranks(players)
+    assert n == 5
+    assert [p.adp_rank for p in players] == [1, 2, 3, 4, 5]
+
+
+def test_snake_flag_value_high_production():
+    # We rate them much earlier AND strong WR production -> VALUE
+    assert classify_snake_flag(20, 280, "WR") == "VALUE"
+
+
+def test_snake_flag_sleeper_low_production():
+    # We rate them much earlier BUT modest production -> SLEEPER
+    assert classify_snake_flag(20, 120, "WR") == "SLEEPER"
+
+
+def test_snake_flag_target_consensus():
+    assert classify_snake_flag(5, 280, "WR") == "TARGET"
+    assert classify_snake_flag(-10, 280, "WR") == "TARGET"
+
+
+def test_snake_flag_reach_negative_diff():
+    assert classify_snake_flag(-20, 280, "WR") == "REACH"
+
+
+def test_snake_flag_null_adp_defaults_target():
+    assert classify_snake_flag(None, 280, "WR") == "TARGET"
+
+
+def test_snake_flag_position_relative_production():
+    # A QB at 280 PPR is below-average -> SLEEPER even with a big diff;
+    # a TE at 180 clears the lower TE bar -> VALUE.
+    assert classify_snake_flag(20, 280, "QB") == "SLEEPER"
+    assert classify_snake_flag(20, 180, "TE") == "VALUE"
+
+
+def test_prompt_has_snake_flags_section():
+    assert "SNAKE DRAFT FLAGS" in SYSTEM_PROMPT
+    for flag in ("VALUE", "SLEEPER", "TARGET", "REACH"):
+        assert flag in SYSTEM_PROMPT
+    assert '"snake_flag"' in SYSTEM_PROMPT
+
+
+def test_prompt_auction_note_no_dollar_instruction():
+    # auction_note must be told to avoid dollar amounts (shared with snake).
+    assert "NO dollar amounts" in SYSTEM_PROMPT
+
+
+def test_valuation_agent_version_defined():
+    assert VALUATION_AGENT_VERSION == "v2"
 
 
 def test_prompt_has_qb_tier_differentiation():

@@ -9,8 +9,17 @@ import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
 import ValueComparisonBar from './shared/ValueComparisonBar'
 import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../lib/signals'
+import { useLeague } from '../context/LeagueContext'
+
+const SNAKE_FLAG_STYLE = {
+  VALUE: 'text-emerald-400 bg-emerald-500/15',
+  SLEEPER: 'text-purple-400 bg-purple-500/15',
+  TARGET: 'text-blue-400 bg-blue-500/15',
+  REACH: 'text-orange-400 bg-orange-500/15',
+}
 
 export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
+  const { isSnake } = useLeague()
   const close = useUIStore((s) => s.closePlayerDetail)
   const openPlayerDetail = onPlayerSelect || useUIStore((s) => s.openPlayerDetail)
   const isWatchlisted = usePreferencesStore((s) => s.watchlist.some((w) => w.player_id === playerId))
@@ -88,6 +97,39 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
 
             {/* Valuation */}
             <Section title="Valuation">
+              {/* Snake: ADP fields + flag, no dollar amounts */}
+              {isSnake && (
+                <>
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    <StatBox label="AI ADP" value={player.adp_rank != null ? `#${player.adp_rank}` : '--'} accent />
+                    <StatBox label="FP ADP" value={player.adp_fantasypros != null ? player.adp_fantasypros.toFixed(1) : '--'} />
+                    <StatBox
+                      label="Diff"
+                      value={
+                        player.adp_diff != null
+                          ? `${player.adp_diff > 0 ? '+' : ''}${player.adp_diff.toFixed(0)}`
+                          : '--'
+                      }
+                    />
+                  </div>
+                  {player.snake_flag && (
+                    <div className="mb-3">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${SNAKE_FLAG_STYLE[player.snake_flag] || 'text-slate-400 bg-slate-500/15'}`}>
+                        {player.snake_flag}
+                      </span>
+                    </div>
+                  )}
+                  {player.auction_note && (
+                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
+                      {player.auction_note}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {/* Auction: the dollar valuation block (hidden for snake leagues) */}
+              {!isSnake && (
+              <>
               <div className={`grid ${player.ai_bid_ceiling != null ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
                 <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
                 {player.ai_bid_ceiling != null && (
@@ -188,6 +230,8 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 systemValue={player.baseline_value}
                 marketValue={player.market_value}
               />
+              </>
+              )}
             </Section>
 
             {/* Projection */}

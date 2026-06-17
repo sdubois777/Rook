@@ -53,6 +53,14 @@ function getPlayerGap(p) {
     : null
 }
 
+// Snake flag badge colors: VALUE green, SLEEPER purple, TARGET blue, REACH orange.
+const SNAKE_FLAG_STYLE = {
+  VALUE: 'text-emerald-400 bg-emerald-500/15',
+  SLEEPER: 'text-purple-400 bg-purple-500/15',
+  TARGET: 'text-blue-400 bg-blue-500/15',
+  REACH: 'text-orange-400 bg-orange-500/15',
+}
+
 function sortPlayers(players, sortKey, sortOrder) {
   const sorted = [...players]
   const dir = sortOrder === 'asc' ? 1 : -1
@@ -68,6 +76,10 @@ function sortPlayers(players, sortKey, sortOrder) {
       case 'market': va = a.market_value ?? -Infinity; vb = b.market_value ?? -Infinity; break
       case 'ppr': va = a.ppr_points ?? -Infinity; vb = b.ppr_points ?? -Infinity; break
       case 'gap': va = getPlayerGap(a) ?? -Infinity; vb = getPlayerGap(b) ?? -Infinity; break
+      // Snake: nulls always sort last regardless of direction.
+      case 'adp_rank': va = a.adp_rank ?? Infinity; vb = b.adp_rank ?? Infinity; break
+      case 'adp_fantasypros': va = a.adp_fantasypros ?? Infinity; vb = b.adp_fantasypros ?? Infinity; break
+      case 'adp_diff': va = a.adp_diff ?? -Infinity; vb = b.adp_diff ?? -Infinity; break
       default: va = a.tier ?? 99; vb = b.tier ?? 99; break
     }
     if (typeof va === 'string') return va < vb ? -dir : va > vb ? dir : 0
@@ -141,8 +153,11 @@ function FlagsDropdown({ selected, onChange }) {
   )
 }
 
+const SNAKE_SORT_KEYS = ['adp_rank', 'adp_fantasypros', 'adp_diff']
+
 export default function DraftBoard() {
-  const { isSnake } = useLeague()
+  const { isSnake, selectedLeague } = useLeague()
+  const teamCount = selectedLeague?.team_count || 12
   const { isLoaded } = useAuth()
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
@@ -215,17 +230,19 @@ export default function DraftBoard() {
       filtered = filtered.filter((p) => isWatchlisted(p.id))
     }
 
-    // Snake: always a flat list ordered by AI ADP ascending (lower = earlier
-    // pick); players without an ADP sort last. Auction: the existing tier/sort.
     if (isSnake) {
-      return [...filtered].sort(
-        (a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity)
-      )
+      // Snake: sort by a snake column if one is selected, else default to
+      // adp_rank ascending (the draft order). Nulls sort last via sortPlayers.
+      const snakeKey = SNAKE_SORT_KEYS.includes(sortKey) ? sortKey : 'adp_rank'
+      const snakeDir = SNAKE_SORT_KEYS.includes(sortKey) ? sortOrder : 'asc'
+      return sortPlayers(filtered, snakeKey, snakeDir)
     }
     return sortPlayers(filtered, sortKey, sortOrder)
   }, [allPlayers, searchQuery, team, selectedFlags, showWatchlistOnly, watchlist, sortKey, sortOrder, isSnake])
 
-  // Snake never tier-groups (ADP is a continuous draft order, not tiers).
+  // Group by round when snake + sorted by adp_rank (the draft order); group by
+  // tier when auction + sorted by tier; otherwise a flat list.
+  const isRoundGroup = isSnake && (!SNAKE_SORT_KEYS.includes(sortKey) || sortKey === 'adp_rank')
   const isTierSort = !isSnake && sortKey === 'tier'
 
   const handleSort = (key, order) => {
@@ -309,33 +326,27 @@ export default function DraftBoard() {
 
           {isSnake ? (
             <>
-              {/* Snake: AI ADP / FP ADP / Diff (adp_ai - adp_fantasypros;
-                  negative = we rank earlier than consensus). */}
+              {/* Snake: AI ADP (clean rank) / FP ADP / Diff (adp_fantasypros -
+                  adp_ai; positive = we rate them earlier than consensus). */}
               <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
-                {p.adp_ai != null ? p.adp_ai.toFixed(1) : '--'}
+                {p.adp_rank != null ? p.adp_rank : '--'}
               </span>
               <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 {p.adp_fantasypros != null ? p.adp_fantasypros.toFixed(1) : '--'}
               </span>
-              {(() => {
-                const d =
-                  p.adp_ai != null && p.adp_fantasypros != null
-                    ? p.adp_ai - p.adp_fantasypros
-                    : null
-                return (
-                  <span
-                    className={`text-xs font-mono w-16 shrink-0 text-right ${
-                      d != null && d < -3
-                        ? 'text-emerald-400'
-                        : d != null && d > 3
-                        ? 'text-red-400'
-                        : 'text-slate-500'
-                    }`}
-                  >
-                    {d != null ? `${d > 0 ? '+' : ''}${d.toFixed(0)}` : '--'}
-                  </span>
-                )
-              })()}
+              <span
+                className={`text-xs font-mono w-16 shrink-0 text-right ${
+                  p.adp_diff != null && p.adp_diff > 3
+                    ? 'text-emerald-400'
+                    : p.adp_diff != null && p.adp_diff < -3
+                    ? 'text-red-400'
+                    : 'text-slate-500'
+                }`}
+              >
+                {p.adp_diff != null
+                  ? `${p.adp_diff > 0 ? '+' : ''}${p.adp_diff.toFixed(0)}`
+                  : '--'}
+              </span>
             </>
           ) : (
             <>
@@ -365,32 +376,46 @@ export default function DraftBoard() {
             </>
           )}
 
-          {/* Flags */}
+          {/* Flags — snake shows the snake_flag; auction shows the $ badges */}
           <div className="flex gap-1 ml-auto flex-wrap justify-end">
-            {p.pay_up_flag && (
-              <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                PAY UP
-              </span>
-            )}
-            {p.breakout_flag && (
-              <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                Breakout
-              </span>
-            )}
-            {p.nomination_target_flag && (
-              <span className="text-[10px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                NOMINATE
-              </span>
-            )}
-            {p.is_rookie && (
-              <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                Rookie
-              </span>
-            )}
-            {p.value_assessment && ['avoid', 'strong_avoid'].includes(p.value_assessment) && (
-              <span className="text-[10px] text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded-full font-medium">
-                Avoid
-              </span>
+            {isSnake ? (
+              p.snake_flag && (
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                    SNAKE_FLAG_STYLE[p.snake_flag] || 'text-slate-400 bg-slate-500/15'
+                  }`}
+                >
+                  {p.snake_flag}
+                </span>
+              )
+            ) : (
+              <>
+                {p.pay_up_flag && (
+                  <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                    PAY UP
+                  </span>
+                )}
+                {p.breakout_flag && (
+                  <span className="text-[10px] text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                    Breakout
+                  </span>
+                )}
+                {p.nomination_target_flag && (
+                  <span className="text-[10px] text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                    NOMINATE
+                  </span>
+                )}
+                {p.is_rookie && (
+                  <span className="text-[10px] text-cyan-400 bg-cyan-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                    Rookie
+                  </span>
+                )}
+                {p.value_assessment && ['avoid', 'strong_avoid'].includes(p.value_assessment) && (
+                  <span className="text-[10px] text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded-full font-medium">
+                    Avoid
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -407,9 +432,9 @@ export default function DraftBoard() {
         <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
         {isSnake ? (
           <>
-            <span className="w-20 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">AI ADP</span>
-            <span className="w-20 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">FP ADP</span>
-            <span className="w-16 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">Diff</span>
+            <SortableHeader label="AI ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" defaultOrder="asc" />
+            <SortableHeader label="FP ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" defaultOrder="asc" />
+            <SortableHeader label="Diff" sortKey="adp_diff" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" defaultOrder="desc" />
           </>
         ) : (
           <>
@@ -424,17 +449,21 @@ export default function DraftBoard() {
     </div>
   )
 
-  // Group sorted players by tier for tier-grouped view
+  // Grouped view: by round (snake) or tier (auction). Round size = team_count.
   const tierGroups = useMemo(() => {
-    if (!isTierSort) return null
+    if (!isTierSort && !isRoundGroup) return null
     const groups = {}
     for (const p of sortedPlayers) {
-      const key = String(p.tier ?? 0)
+      const key = isRoundGroup
+        ? String(p.adp_rank != null ? Math.floor((p.adp_rank - 1) / teamCount) + 1 : 0)
+        : String(p.tier ?? 0)
       if (!groups[key]) groups[key] = []
       groups[key].push(p)
     }
     return groups
-  }, [sortedPlayers, isTierSort])
+  }, [sortedPlayers, isTierSort, isRoundGroup, teamCount])
+
+  const groupLabel = isRoundGroup ? 'Round' : 'Tier'
 
   return (
     <div className="max-w-6xl">
@@ -522,11 +551,12 @@ export default function DraftBoard() {
         <div className="py-20 text-center text-slate-500">Loading draft board...</div>
       ) : sortedPlayers.length === 0 ? (
         <div className="py-20 text-center text-slate-500">No ranked players found.</div>
-      ) : isTierSort && tierGroups ? (
-        /* Tier-grouped view (default) */
+      ) : (isTierSort || isRoundGroup) && tierGroups ? (
+        /* Grouped view — rounds (snake) or tiers (auction) */
         <div className="space-y-4">
           {Object.keys(tierGroups).sort((a, b) => {
-            const dir = sortOrder === 'asc' ? 1 : -1
+            // Rounds always ascending; tiers respect the sort direction.
+            const dir = isRoundGroup ? 1 : sortOrder === 'asc' ? 1 : -1
             return (parseInt(a) - parseInt(b)) * dir
           }).map((tierKey) => {
             const players = tierGroups[tierKey]
@@ -535,7 +565,7 @@ export default function DraftBoard() {
               <div key={tierKey} className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
                 <div className="px-4 py-2.5 border-b border-[#2d3148] flex items-center justify-between">
                   <h3 className="text-sm font-medium text-slate-200">
-                    Tier {tierKey}
+                    {groupLabel} {tierKey}
                   </h3>
                   <span className="text-xs text-slate-500">{players.length} players</span>
                 </div>

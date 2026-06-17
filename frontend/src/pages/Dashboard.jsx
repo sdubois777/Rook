@@ -9,6 +9,7 @@ import { fetchLeagueTendencies, fetchUserLeagues } from '../api/league'
 import { fetchPlayerSummary } from '../api/players'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
+import { useLeague } from '../context/LeagueContext'
 import PositionBadge from '../components/shared/PositionBadge'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
 
@@ -40,10 +41,30 @@ export default function Dashboard() {
   const selectedLeagueId =
     pickedLeagueId ?? (leagues.length > 0 ? leagues[0].id : null)
 
-  // Top value gaps (undervalued)
+  const { isSnake } = useLeague()
+
+  // Top value gaps (undervalued) — auction
   const { data: valueData } = useQuery({
     queryKey: ['dashboard-values'],
     queryFn: () => fetchPlayers({ value_gap_dir: 'undervalued', sort: 'value_gap', order: 'desc', per_page: 10 }),
+    enabled: !isSnake,
+  })
+
+  // Snake ADP-differential lists (only fetched for snake leagues)
+  const { data: valuePicks } = useQuery({
+    queryKey: ['dashboard-snake-value'],
+    queryFn: () => fetchPlayers({ snake_flag: 'VALUE', sort: 'adp_diff', order: 'desc', per_page: 8 }),
+    enabled: isSnake,
+  })
+  const { data: reaches } = useQuery({
+    queryKey: ['dashboard-snake-reach'],
+    queryFn: () => fetchPlayers({ snake_flag: 'REACH', sort: 'adp_diff', order: 'asc', per_page: 8 }),
+    enabled: isSnake,
+  })
+  const { data: sleepers } = useQuery({
+    queryKey: ['dashboard-snake-sleeper'],
+    queryFn: () => fetchPlayers({ snake_flag: 'SLEEPER', sort: 'adp_diff', order: 'desc', per_page: 8 }),
+    enabled: isSnake,
   })
 
   // Recent signals
@@ -152,40 +173,73 @@ export default function Dashboard() {
           )}
         </DashboardCard>
 
-        {/* Top Value Gaps */}
-        <DashboardCard title="Top Value Gaps" icon={TrendingUp} iconColor="text-emerald-400">
-          {(valueData?.players || []).length === 0 ? (
-            <div className="text-sm text-slate-500 py-4">No value data yet.</div>
-          ) : (
-            <div className="space-y-1.5">
-              {(valueData?.players || [])
-                .filter((p) => p.ai_bid_ceiling != null && p.market_value != null)
-                .map((p) => ({ ...p, _aiGap: p.ai_bid_ceiling - p.market_value }))
-                .filter((p) => p._aiGap > 0)
-                .sort((a, b) => b._aiGap - a._aiGap)
-                .slice(0, 8)
-                .map((p) => (
-                <div
-                  key={p.id}
-                  onClick={() => openPlayerDetail(p.id)}
-                  className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
-                >
-                  <PositionBadge position={p.position} />
-                  <span className="text-slate-300 truncate flex-1">{p.name}</span>
-                  <span className="text-emerald-400 font-mono text-xs">
-                    +${p._aiGap.toFixed(0)}
-                  </span>
+        {/* Snake: ADP-differential lists. Auction: dollar value gaps. */}
+        {isSnake ? (
+          [
+            { title: 'Top Value Picks', icon: TrendingUp, color: 'text-emerald-400', data: valuePicks, empty: 'No value picks yet.' },
+            { title: 'Top Reaches to Avoid', icon: AlertTriangle, color: 'text-orange-400', data: reaches, empty: 'No reaches yet.' },
+            { title: 'Sleepers', icon: Star, color: 'text-purple-400', data: sleepers, empty: 'No sleepers yet.' },
+          ].map(({ title, icon, color, data, empty }) => (
+            <DashboardCard key={title} title={title} icon={icon} iconColor={color}>
+              {(data?.players || []).length === 0 ? (
+                <div className="text-sm text-slate-500 py-4">{empty}</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {data.players.map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => openPlayerDetail(p.id)}
+                      className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
+                    >
+                      <PositionBadge position={p.position} />
+                      <span className="text-slate-300 truncate flex-1">{p.name}</span>
+                      <span className="text-slate-500 font-mono text-[10px]">
+                        #{p.adp_rank ?? '--'} · FP {p.adp_fantasypros != null ? p.adp_fantasypros.toFixed(0) : '--'}
+                      </span>
+                      <span className={`font-mono text-xs ${p.adp_diff != null && p.adp_diff > 0 ? 'text-emerald-400' : 'text-orange-400'}`}>
+                        {p.adp_diff != null ? `${p.adp_diff > 0 ? '+' : ''}${p.adp_diff.toFixed(0)}` : '--'}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-              <button
-                onClick={() => navigate('/players')}
-                className="text-xs text-blue-400 hover:text-blue-300 mt-2"
-              >
-                View all players
-              </button>
-            </div>
-          )}
-        </DashboardCard>
+              )}
+            </DashboardCard>
+          ))
+        ) : (
+          <DashboardCard title="Top Value Gaps" icon={TrendingUp} iconColor="text-emerald-400">
+            {(valueData?.players || []).length === 0 ? (
+              <div className="text-sm text-slate-500 py-4">No value data yet.</div>
+            ) : (
+              <div className="space-y-1.5">
+                {(valueData?.players || [])
+                  .filter((p) => p.ai_bid_ceiling != null && p.market_value != null)
+                  .map((p) => ({ ...p, _aiGap: p.ai_bid_ceiling - p.market_value }))
+                  .filter((p) => p._aiGap > 0)
+                  .sort((a, b) => b._aiGap - a._aiGap)
+                  .slice(0, 8)
+                  .map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => openPlayerDetail(p.id)}
+                    className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
+                  >
+                    <PositionBadge position={p.position} />
+                    <span className="text-slate-300 truncate flex-1">{p.name}</span>
+                    <span className="text-emerald-400 font-mono text-xs">
+                      +${p._aiGap.toFixed(0)}
+                    </span>
+                  </div>
+                ))}
+                <button
+                  onClick={() => navigate('/players')}
+                  className="text-xs text-blue-400 hover:text-blue-300 mt-2"
+                >
+                  View all players
+                </button>
+              </div>
+            )}
+          </DashboardCard>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

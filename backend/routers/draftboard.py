@@ -61,6 +61,10 @@ class DraftBoardPlayer(BaseModel):
     adp_ai: Optional[float] = None
     adp_fantasypros: Optional[float] = None
     adp_scoring: Optional[str] = None
+    adp_rank: Optional[int] = None
+    adp_diff: Optional[float] = None
+    snake_flag: Optional[str] = None
+    round_num: Optional[int] = None  # (adp_rank-1)//team_count + 1
     flags: list[DraftBoardFlag] = []
     strategy_highlight: Optional[str] = None  # "primary" / "secondary" / "dimmed" / None
 
@@ -111,18 +115,31 @@ def _apply_strategy(player: DraftBoardPlayer, strategy: str) -> str | None:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+_SNAKE_TEAM_COUNT = 12  # rounds = (adp_rank - 1) // team_count + 1
+
+
 @router.get("", response_model=DraftBoardResponse)
 async def get_draftboard(
     position: Optional[str] = None,
     tier: Optional[int] = None,
     strategy: Optional[str] = None,
+    scoring_format: str = "ppr",
+    draft_type: str = "auction",
     _user=Depends(get_current_user),
 ):
-    """Ranked players grouped by tier with optional strategy highlighting."""
+    """Ranked players. Auction: grouped by tier, sorted by bid ceiling. Snake:
+    grouped by round, sorted by adp_rank (only players with an ADP rank)."""
+    is_snake = draft_type == "snake"
+
     async with AsyncSessionLocal() as session:
         query = (
             select(Player)
-            .where(Player.recommended_bid_ceiling.isnot(None))
+            # Snake needs a computed ADP rank; auction needs a bid ceiling.
+            .where(
+                Player.adp_rank.isnot(None)
+                if is_snake
+                else Player.recommended_bid_ceiling.isnot(None)
+            )
             .where(draftable_filter())
             .options(
                 selectinload(Player.dependencies),
@@ -137,10 +154,13 @@ async def get_draftboard(
         if tier is not None:
             query = query.where(Player.tier == tier)
 
-        query = query.order_by(
-            Player.tier.asc().nulls_last(),
-            Player.recommended_bid_ceiling.desc().nulls_last(),
-        )
+        if is_snake:
+            query = query.order_by(Player.adp_rank.asc().nulls_last())
+        else:
+            query = query.order_by(
+                Player.tier.asc().nulls_last(),
+                Player.recommended_bid_ceiling.desc().nulls_last(),
+            )
 
         result = await session.execute(query)
         players = result.scalars().all()
@@ -201,18 +221,23 @@ async def get_draftboard(
             adp_ai=float(p.adp_ai) if p.adp_ai is not None else None,
             adp_fantasypros=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
             adp_scoring=p.adp_scoring,
+            adp_rank=p.adp_rank,
+            adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
+            snake_flag=p.snake_flag,
+            round_num=(p.adp_rank - 1) // _SNAKE_TEAM_COUNT + 1 if p.adp_rank else None,
             flags=flags,
             strategy_highlight=None,
         )
 
-        # Apply strategy
-        if strategy and strategy in ("hero_rb", "zero_rb", "stars_and_scrubs", "balanced"):
+        # Apply strategy (auction only — snake has no strategy highlighting)
+        if not is_snake and strategy in ("hero_rb", "zero_rb", "stars_and_scrubs", "balanced"):
             dbp.strategy_highlight = _apply_strategy(dbp, strategy)
 
-        tier_key = str(p.tier or 0)
-        if tier_key not in tiers:
-            tiers[tier_key] = []
-        tiers[tier_key].append(dbp)
+        # Snake groups by round; auction groups by tier.
+        group_key = str(dbp.round_num or 0) if is_snake else str(p.tier or 0)
+        if group_key not in tiers:
+            tiers[group_key] = []
+        tiers[group_key].append(dbp)
         total += 1
 
     return DraftBoardResponse(

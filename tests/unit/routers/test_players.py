@@ -62,6 +62,10 @@ def _make_player(**overrides):
     p.auction_note = overrides.get("auction_note", None)
     p.pay_up_flag = overrides.get("pay_up_flag", False)
     p.nomination_target_flag = overrides.get("nomination_target_flag", False)
+    p.adp_rank = overrides.get("adp_rank", None)
+    p.adp_fantasypros = overrides.get("adp_fantasypros", None)
+    p.adp_diff = overrides.get("adp_diff", None)
+    p.snake_flag = overrides.get("snake_flag", None)
     return p
 
 
