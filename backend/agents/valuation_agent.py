@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 ADP_POSITION_RANGES: dict[str, tuple[int, int]] = {
     "RB":  (1,   100),
     "WR":  (1,   120),
-    "QB":  (50,  180),   # QBs go late in snake
+    "QB":  (25,  180),   # QBs go late — but the 2-3 elite ones (Allen) go ~rd 3,
+                         # so the floor is 25, not 50, or they'd be clamped too late
     "TE":  (10,  150),
     "K":   (140, 200),   # kickers always last
     "DEF": (130, 200),   # defenses always last

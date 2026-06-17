@@ -15,8 +15,9 @@ from backend.agents.valuation_agent import (
 
 
 def test_clamp_adp_qb_floored_late():
-    # QBs go late in snake — pick 5 is clamped up to the QB floor (50).
-    assert clamp_adp(5, "QB") == 50
+    # QBs go late in snake — pick 5 is clamped up to the QB floor (25). The
+    # floor is 25 (not 50) so elite QBs like Allen can land ~rd 3 where they go.
+    assert clamp_adp(5, "QB") == 25
 
 
 def test_clamp_adp_within_range_unchanged():
@@ -41,7 +42,8 @@ def test_clamp_adp_unknown_position_full_range():
 
 
 def test_adp_position_ranges_qb_def_k_late():
-    assert ADP_POSITION_RANGES["QB"][0] >= 50
+    # QB floor 25 keeps elite QBs from being clamped too late; K/DEF stay last.
+    assert ADP_POSITION_RANGES["QB"][0] == 25
     assert ADP_POSITION_RANGES["K"][0] >= 140
     assert ADP_POSITION_RANGES["DEF"][0] >= 130
 
