@@ -50,6 +50,13 @@ class Player(Base):
     market_value_confidence: Mapped[Optional[str]] = mapped_column(String(20))
     market_value_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    # ADP — average draft position for snake drafts (lower = earlier pick).
+    # adp_fantasypros: scraped consensus. adp_ai: valuation_agent's snake pick.
+    # adp_scoring: format the ADP was fetched for ("ppr" | "half_ppr" | "standard").
+    adp_fantasypros: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
+    adp_ai: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
+    adp_scoring: Mapped[Optional[str]] = mapped_column(String(10))
+
     # Derived fields — gap between system value and market value
     value_gap: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     value_gap_signal: Mapped[Optional[str]] = mapped_column(String(30))  # market_overvalues / market_undervalues / aligned
