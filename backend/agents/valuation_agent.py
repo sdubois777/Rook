@@ -70,6 +70,58 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
     lo, hi = ADP_POSITION_RANGES.get(position or "", (1, 200))
     return max(lo, min(round(float(adp_ai), 1), hi))
 
+
+# Bump to invalidate the valuation_agent cache (it keys on input_data, so the
+# version is folded into the key). Increment on any SYSTEM_PROMPT change.
+VALUATION_AGENT_VERSION = "v2"
+
+# Position-relative "strong production" PPR season totals — used to split a
+# we-rate-earlier player into VALUE (production justifies it) vs SLEEPER
+# (upside exceeds cost, but modest production for the position).
+_STRONG_PPR = {"QB": 320, "RB": 240, "WR": 240, "TE": 170}
+
+
+def compute_adp_diff(adp_fantasypros, adp_ai):
+    """Consensus minus us: positive => we rate the player EARLIER than FP."""
+    if adp_fantasypros is None or adp_ai is None:
+        return None
+    return float(adp_fantasypros) - float(adp_ai)
+
+
+def assign_adp_ranks(players) -> int:
+    """Assign adp_rank = 1..N to players already sorted by adp_ai ascending.
+
+    Mutates each player; returns the count ranked.
+    """
+    for rank, p in enumerate(players, start=1):
+        p.adp_rank = rank
+    return len(players)
+
+
+def classify_snake_flag(adp_diff, projected_ppr, position: str | None) -> str:
+    """Deterministic snake_flag from the ADP differential + production.
+
+    Sonnet assigns snake_flag in the prompt (with positional judgment); this is
+    the validated fallback when the model omits/returns an invalid value, and it
+    makes the flag logic unit-testable.
+
+      VALUE   — adp_diff >= 15 AND strong production for the position
+      SLEEPER — adp_diff >= 15 BUT modest production (upside > cost, late pick)
+      TARGET  — |adp_diff| < 15 (we agree with consensus), or no FP ADP
+      REACH   — adp_diff <= -15 (market values them well above us)
+    """
+    if adp_diff is None:
+        return "TARGET"
+    diff = float(adp_diff)
+    if diff <= -15:
+        return "REACH"
+    if diff >= 15:
+        strong = projected_ppr is not None and float(projected_ppr) >= _STRONG_PPR.get(
+            position or "", 240
+        )
+        return "VALUE" if strong else "SLEEPER"
+    return "TARGET"
+
 # System prompt
 # ---------------------------------------------------------------------------
 
@@ -88,9 +140,10 @@ adp_ai, even for elite players):
   "confidence_floor": integer — lowest you'd bid in a cautious room,
   "confidence_ceiling": integer — highest you'd go in an aggressive room,
   "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",
-  "auction_note": "string — 1-2 sentences of tactical advice for draft day",
+  "auction_note": "string — 1-2 sentences on the player's fantasy OUTLOOK: role, usage, production potential. Do NOT mention dollar amounts, bid prices, or auction strategy — this note appears in both auction AND snake contexts",
   "pay_up_flag": boolean — true if this player is clearly undervalued and worth paying above math ceiling,
-  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
+  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets,
+  "snake_flag": "string — one of: VALUE, SLEEPER, TARGET, REACH. SEE THE SNAKE DRAFT FLAGS SECTION BELOW"
 }
 
 You may also receive market context:
@@ -105,10 +158,11 @@ Rules:
 - confidence_floor must be < ai_bid_ceiling, confidence_ceiling must be > ai_bid_ceiling
 - pay_up_flag = true means: "If someone else bids near your ceiling, keep going — this player is special"
 - nomination_target_flag = true means: "Nominate this player early — opponents will overpay, draining their budget"
-- auction_note should reference the player's specific situation, not generic advice
-- Reference the prior season's consensus ADP to assess current value
+- auction_note must reference the player's specific situation (role / usage /
+  production), not generic advice, and contain NO dollar amounts or bid prices
+- Use market context (consensus ADP, prior price) to inform ai_bid_ceiling and
+  value_assessment — but keep dollar figures OUT of auction_note
 - NEVER say "your league paid" or "in your league" — this analysis is shared across all users
-- Say "consensus ADP was $X" or "the market typically prices this player at $X"
 - Value assessment considers: projection confidence, injury risk, schedule, dependency flags, positional scarcity
 - Max realistic bids: RB=$80, WR=$70, QB=$50, TE=$45. Never exceed these.
 
@@ -154,6 +208,27 @@ adp_ai. QB is the deepest position: 32 starters, only 12 needed. Wait on QB.
 adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
 If you are uncertain, default to the tier midpoint:
   Tier 1 → 6, Tier 2 → 24, Tier 3 → 54, Tier 4 → 96, Tier 5 → 150
+
+SNAKE DRAFT FLAGS (snake_flag):
+Assign snake_flag based on draft value for snake leagues. You have:
+  - adp_diff: our ADP minus FP consensus (positive = we rate them EARLIER than FP)
+  - projected_ppr: full-season projection
+  - position: QB/RB/WR/TE
+Positional PPR context (a WR at 280 is strong; a QB at 280 is below average):
+  QBs 300-450 · RBs 100-350 · WRs 100-350 · TEs 80-200
+
+  VALUE   — adp_diff >= 15 AND production is strong for the position. We rate
+            them significantly earlier than consensus AND they project well
+            enough to justify the early pick. Do NOT assign VALUE if production
+            doesn't justify an early selection, regardless of adp_diff.
+  SLEEPER — adp_diff >= 15 BUT production is modest for the position. We like
+            them more than consensus, but they're a depth/late pick whose
+            upside exceeds their draft cost — not an early target.
+  TARGET  — adp_diff within 14 picks either direction. We largely agree with
+            consensus; draft near their expected ADP.
+  REACH   — adp_diff <= -15. The market values them well above our system; let
+            others overpay.
+If adp_diff is null (no FP ADP data): assign TARGET.
 
 Output ONLY a JSON array. No commentary outside the JSON."""
 
@@ -264,11 +339,32 @@ class ValuationAgent(BaseAgent):
         # 4. Write results to DB
         await self._write_results(players, results_map)
 
+        # 5. Global re-rank by adp_ai (clean 1-N) across ALL players with an ADP.
+        await self._compute_adp_ranks()
+
         logger.info(
             "Valuation agent complete: %d processed, %d skipped",
             processed, skipped,
         )
         return {"processed": processed, "skipped": skipped}
+
+    async def _compute_adp_ranks(self) -> None:
+        """Assign adp_rank as a clean 1-N ordering by adp_ai ascending.
+
+        Runs after all players are written — it's a global ranking, so a player
+        only gets a rank if they have an adp_ai.
+        """
+        async with AsyncSessionLocal() as session:
+            players = (
+                await session.execute(
+                    select(Player)
+                    .where(Player.adp_ai.isnot(None))
+                    .order_by(Player.adp_ai.asc())
+                )
+            ).scalars().all()
+            count = assign_adp_ranks(players)
+            await session.commit()
+        logger.info("adp_rank computed for %d players", count)
 
     def _build_player_context(self, p: Player) -> dict:
         """Build context dict for a single player from pre-loaded ORM data."""
@@ -372,7 +468,12 @@ class ValuationAgent(BaseAgent):
             raw = await self.call_once(
                 system=SYSTEM_PROMPT,
                 user=user_content,
-                input_data={"players": [c["player_name"] for c in contexts]},
+                # version is part of the cache key, so a prompt change (version
+                # bump) invalidates cached results without a manual clear.
+                input_data={
+                    "players": [c["player_name"] for c in contexts],
+                    "version": VALUATION_AGENT_VERSION,
+                },
                 entity_id=entity_id,
                 model=model,
                 max_tokens=max_tokens,
@@ -435,6 +536,25 @@ class ValuationAgent(BaseAgent):
                 if adp_ai is not None:
                     db_player.adp_ai = adp_ai
                 db_player.adp_scoring = VALUATION_SCORING
+
+                # adp_diff = consensus - us (positive = we rate them earlier).
+                db_player.adp_diff = compute_adp_diff(
+                    db_player.adp_fantasypros, db_player.adp_ai
+                )
+
+                # snake_flag: Sonnet's value if valid, else the deterministic
+                # classifier from adp_diff + projected production.
+                projected_ppr = None
+                if player.profile and player.profile.clean_season_baseline:
+                    projected_ppr = player.profile.clean_season_baseline.get("ppr_points")
+                model_flag = result.get("snake_flag")
+                if model_flag in {"VALUE", "SLEEPER", "TARGET", "REACH"}:
+                    db_player.snake_flag = model_flag
+                else:
+                    db_player.snake_flag = classify_snake_flag(
+                        db_player.adp_diff, projected_ppr, db_player.position
+                    )
+
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
                 db_player.value_assessment = result.get("value_assessment")
