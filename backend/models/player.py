@@ -56,6 +56,12 @@ class Player(Base):
     adp_fantasypros: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
     adp_ai: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
     adp_scoring: Mapped[Optional[str]] = mapped_column(String(10))
+    # Snake-draft polish. adp_rank: clean 1-N ordering by adp_ai. adp_diff:
+    # adp_fantasypros - adp_ai (positive = we rate earlier than consensus).
+    # snake_flag: VALUE | SLEEPER | TARGET | REACH.
+    adp_rank: Mapped[Optional[int]] = mapped_column(Integer)
+    adp_diff: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 1))
+    snake_flag: Mapped[Optional[str]] = mapped_column(String(20))
 
     # Derived fields — gap between system value and market value
     value_gap: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
