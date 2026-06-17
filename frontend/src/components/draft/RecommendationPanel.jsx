@@ -1,4 +1,5 @@
 import { useDraftStore } from '../../stores/draft'
+import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
 import FlagBadge from '../shared/FlagBadge'
 
@@ -32,6 +33,7 @@ export default function RecommendationPanel() {
   const myBudget = useDraftStore((s) => s.myBudget)
   const spendable = useDraftStore((s) => s.spendable)
   const rosterSlotsRemaining = useDraftStore((s) => s.rosterSlotsRemaining)
+  const { isSnake } = useLeague()
 
   if (!rec) {
     // A nominee is on the block but the engine hasn't returned yet.
@@ -66,7 +68,9 @@ export default function RecommendationPanel() {
       <div className={`rounded-lg border p-3 ${style.bg} ${style.border}`}>
         <div className="flex items-center justify-between mb-1.5">
           <span className={`text-2xl font-bold ${style.text}`}>
-            {formatAction(rec.action, rec.bid_ceiling)}
+            {isSnake
+              ? `TARGET PICK ${rec.adp_ai != null ? Math.round(rec.adp_ai) : '--'}`
+              : formatAction(rec.action, rec.bid_ceiling)}
           </span>
           <span className={`text-xs px-2 py-0.5 rounded-full ${confStyle}`}>
             {rec.confidence}
@@ -104,16 +108,26 @@ export default function RecommendationPanel() {
         )}
       </div>
 
-      {/* Values + budget — single compact lines */}
-      <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
-        <span>Ceil <span className="text-blue-400">${rec.bid_ceiling}</span></span>
-        <span>Sys <span className="text-slate-300">${rec.system_value}</span></span>
-        <span>Mkt <span className="text-slate-300">${rec.market_value}</span></span>
-      </div>
-      <div className="flex gap-3 text-xs text-slate-500 mt-1">
-        <span>Budget <span className="text-slate-300 font-mono">${budget.your_remaining}</span></span>
-        <span>Spendable <span className="text-slate-300 font-mono">${budget.spendable_on_this_player}</span></span>
-      </div>
+      {/* Values + budget — single compact lines (auction $ vs snake ADP) */}
+      {isSnake ? (
+        <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
+          <span>AI ADP <span className="text-blue-400">{rec.adp_ai ?? '--'}</span></span>
+          <span>FP ADP <span className="text-slate-300">{rec.adp_fp ?? '--'}</span></span>
+          <span>Diff <span className="text-slate-300">{rec.adp_diff ?? '--'}</span></span>
+        </div>
+      ) : (
+        <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
+          <span>Ceil <span className="text-blue-400">${rec.bid_ceiling}</span></span>
+          <span>Sys <span className="text-slate-300">${rec.system_value}</span></span>
+          <span>Mkt <span className="text-slate-300">${rec.market_value}</span></span>
+        </div>
+      )}
+      {!isSnake && (
+        <div className="flex gap-3 text-xs text-slate-500 mt-1">
+          <span>Budget <span className="text-slate-300 font-mono">${budget.your_remaining}</span></span>
+          <span>Spendable <span className="text-slate-300 font-mono">${budget.spendable_on_this_player}</span></span>
+        </div>
+      )}
     </div>
   )
 }

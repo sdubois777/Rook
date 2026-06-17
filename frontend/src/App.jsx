@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react'
 import { usePreferencesStore } from './stores/preferences'
 import Layout from './components/layout/Layout'
+import { LeagueProvider } from './context/LeagueContext'
 import Landing from './pages/Landing'
 import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
@@ -75,11 +76,18 @@ function App() {
     </Routes>
   )
 
+  // LeagueProvider wraps both the full-screen draft room and the standard
+  // Layout routes, so the selected league is in context everywhere except the
+  // public landing/auth routes (which returned early above).
   if (isFullScreen) {
-    return routes
+    return <LeagueProvider>{routes}</LeagueProvider>
   }
 
-  return <Layout>{routes}</Layout>
+  return (
+    <LeagueProvider>
+      <Layout>{routes}</Layout>
+    </LeagueProvider>
+  )
 }
 
 export default App

@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useDraftStore } from '../../stores/draft'
+import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
 
 // Starter lineup this league fields (bench excluded — bench never drives a
@@ -52,6 +53,18 @@ export function getSuggestedTargets(
     .slice(0, 8)
 }
 
+// Snake equivalent: needed-position players sorted by AI ADP ascending (lower =
+// earlier pick = take sooner). Budget is irrelevant in snake; players without an
+// ADP yet sort last. Top 8.
+export function getSnakeTargets(myRoster, availablePlayers) {
+  const needed = neededPositions(myRoster)
+  return availablePlayers
+    .filter((p) => needed.has(p.position))
+    .slice()
+    .sort((a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity))
+    .slice(0, 8)
+}
+
 // Fallback when every starter slot is filled: best value still on the board
 // within budget, regardless of position.
 function getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining) {
@@ -62,7 +75,7 @@ function getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining) {
     .slice(0, 8)
 }
 
-function TargetRow({ player }) {
+function TargetRow({ player, isSnake }) {
   const ceiling = player.ai_bid_ceiling || 0
   const market = player.market_value || 0
   const isValue = ceiling - market > 5
@@ -70,11 +83,19 @@ function TargetRow({ player }) {
     <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#222539] transition-colors">
       <PositionBadge position={player.position} />
       <span className="text-sm text-slate-300 flex-1 truncate">{player.name}</span>
-      <span className="text-sm font-mono text-blue-400">${Math.round(ceiling)}</span>
-      {isValue && (
-        <span className="text-emerald-400 text-xs" title="Ceiling exceeds market by $5+">
-          ↑
+      {isSnake ? (
+        <span className="text-sm font-mono text-blue-400">
+          ADP {player.adp_ai != null ? player.adp_ai.toFixed(1) : '--'}
         </span>
+      ) : (
+        <>
+          <span className="text-sm font-mono text-blue-400">${Math.round(ceiling)}</span>
+          {isValue && (
+            <span className="text-emerald-400 text-xs" title="Ceiling exceeds market by $5+">
+              ↑
+            </span>
+          )}
+        </>
       )}
     </div>
   )
@@ -85,8 +106,13 @@ export default function SuggestedTargets() {
   const availablePlayers = useDraftStore((s) => s.availablePlayers)
   const myBudget = useDraftStore((s) => s.myBudget)
   const rosterSlotsRemaining = useDraftStore((s) => s.rosterSlotsRemaining)
+  const { isSnake } = useLeague()
 
   const { rows, allFilled } = useMemo(() => {
+    if (isSnake) {
+      // Snake: ADP-ranked needed positions (no budget constraint).
+      return { rows: getSnakeTargets(myRoster, availablePlayers), allFilled: false }
+    }
     const allFilled = neededPositions(myRoster).size === 0
     const rows = allFilled
       ? getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining)
@@ -97,7 +123,7 @@ export default function SuggestedTargets() {
           rosterSlotsRemaining
         )
     return { rows, allFilled }
-  }, [myRoster, availablePlayers, myBudget, rosterSlotsRemaining])
+  }, [myRoster, availablePlayers, myBudget, rosterSlotsRemaining, isSnake])
 
   return (
     <div className="h-full flex flex-col p-3">
@@ -118,7 +144,9 @@ export default function SuggestedTargets() {
             No targets available
           </div>
         ) : (
-          rows.map((p) => <TargetRow key={p.id || p.yahoo_player_id || p.name} player={p} />)
+          rows.map((p) => (
+            <TargetRow key={p.id || p.yahoo_player_id || p.name} player={p} isSnake={isSnake} />
+          ))
         )}
       </div>
     </div>

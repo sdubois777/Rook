@@ -1,5 +1,6 @@
 import { useMemo, useCallback } from 'react'
 import { useDraftStore } from '../../stores/draft'
+import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
 import SearchInput from '../shared/SearchInput'
 import { FilterSelect } from '../shared/FilterBar'
@@ -11,6 +12,7 @@ export default function AvailablePlayers() {
   const availablePlayers = useDraftStore((s) => s.availablePlayers)
   const filter = useDraftStore((s) => s.availableFilter)
   const setFilter = useDraftStore((s) => s.setAvailableFilter)
+  const { isSnake } = useLeague()
 
   const handleSearch = useCallback(
     (value) => setFilter({ search: value }),
@@ -33,13 +35,20 @@ export default function AvailablePlayers() {
       )
     }
 
-    // Sort by AI ceiling descending
+    if (isSnake) {
+      // Snake: sort by AI ADP ascending (lower = earlier pick = better);
+      // players without an ADP yet sort last.
+      return [...list].sort(
+        (a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity)
+      )
+    }
+    // Auction: sort by AI ceiling descending
     return [...list].sort((a, b) => {
       const ac = a.ai_bid_ceiling ?? a.recommended_bid_ceiling ?? 0
       const bc = b.ai_bid_ceiling ?? b.recommended_bid_ceiling ?? 0
       return bc - ac
     })
-  }, [availablePlayers, filter])
+  }, [availablePlayers, filter, isSnake])
 
   return (
     <div className="h-full flex flex-col p-4">
@@ -66,14 +75,24 @@ export default function AvailablePlayers() {
         />
       </div>
 
-      {/* Column headers */}
+      {/* Column headers — auction (dollars) vs snake (ADP) */}
       <div className="flex items-center gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-slate-600 border-b border-[#2d3148]">
         <span className="w-8">Pos</span>
         <span className="flex-1">Player</span>
         <span className="w-10">Team</span>
-        <span className="w-14 text-right">Ceiling</span>
-        <span className="w-14 text-right">Market</span>
-        <span className="w-10 text-right">Gap</span>
+        {isSnake ? (
+          <>
+            <span className="w-14 text-right">AI ADP</span>
+            <span className="w-14 text-right">FP ADP</span>
+            <span className="w-10 text-right">Diff</span>
+          </>
+        ) : (
+          <>
+            <span className="w-14 text-right">Ceiling</span>
+            <span className="w-14 text-right">Market</span>
+            <span className="w-10 text-right">Gap</span>
+          </>
+        )}
       </div>
 
       {/* Player list */}
@@ -83,6 +102,12 @@ export default function AvailablePlayers() {
           const market = p.market_value ?? null
           const gap =
             ceiling != null && market != null ? ceiling - market : null
+
+          // Snake metrics. Diff = our ADP minus consensus; NEGATIVE means we
+          // rank the player earlier than the market (we like them more).
+          const adpAi = p.adp_ai ?? null
+          const adpFp = p.adp_fantasypros ?? null
+          const adpDiff = adpAi != null && adpFp != null ? adpAi - adpFp : null
 
           return (
             <div
@@ -96,25 +121,51 @@ export default function AvailablePlayers() {
                 {p.name}
               </span>
               <span className="text-xs text-slate-600 w-10">{p.team_abbr}</span>
-              <span className="text-sm font-mono text-blue-400 w-14 text-right">
-                {ceiling != null ? `$${Math.round(ceiling)}` : '--'}
-              </span>
-              <span className="text-xs font-mono text-slate-500 w-14 text-right">
-                {market != null ? `$${Math.round(market)}` : '--'}
-              </span>
-              <span
-                className={`text-xs font-mono w-10 text-right ${
-                  gap != null && gap > 3
-                    ? 'text-emerald-400'
-                    : gap != null && gap < -3
-                    ? 'text-red-400'
-                    : 'text-slate-600'
-                }`}
-              >
-                {gap != null
-                  ? `${gap > 0 ? '+' : ''}${Math.round(gap)}`
-                  : '--'}
-              </span>
+              {isSnake ? (
+                <>
+                  <span className="text-sm font-mono text-blue-400 w-14 text-right">
+                    {adpAi != null ? adpAi.toFixed(1) : '--'}
+                  </span>
+                  <span className="text-xs font-mono text-slate-500 w-14 text-right">
+                    {adpFp != null ? adpFp.toFixed(1) : '--'}
+                  </span>
+                  <span
+                    className={`text-xs font-mono w-10 text-right ${
+                      adpDiff != null && adpDiff < -3
+                        ? 'text-emerald-400'
+                        : adpDiff != null && adpDiff > 3
+                        ? 'text-red-400'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    {adpDiff != null
+                      ? `${adpDiff > 0 ? '+' : ''}${adpDiff.toFixed(0)}`
+                      : '--'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-sm font-mono text-blue-400 w-14 text-right">
+                    {ceiling != null ? `$${Math.round(ceiling)}` : '--'}
+                  </span>
+                  <span className="text-xs font-mono text-slate-500 w-14 text-right">
+                    {market != null ? `$${Math.round(market)}` : '--'}
+                  </span>
+                  <span
+                    className={`text-xs font-mono w-10 text-right ${
+                      gap != null && gap > 3
+                        ? 'text-emerald-400'
+                        : gap != null && gap < -3
+                        ? 'text-red-400'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    {gap != null
+                      ? `${gap > 0 ? '+' : ''}${Math.round(gap)}`
+                      : '--'}
+                  </span>
+                </>
+              )}
             </div>
           )
         })}

@@ -11,6 +11,7 @@ import {
   UserCircle,
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
+import LeagueSelector from './LeagueSelector'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -44,6 +45,9 @@ export default function Sidebar() {
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
       </div>
+
+      {/* League selector — persistent across pages */}
+      <LeagueSelector />
 
       {/* Nav */}
       <nav className="flex-1 py-2">
