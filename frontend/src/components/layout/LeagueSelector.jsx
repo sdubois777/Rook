@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '@clerk/clerk-react'
 import { useLeague } from '../../context/LeagueContext'
 import { fetchUserLeagues } from '../../api/league'
 import { useUIStore } from '../../stores/ui'
@@ -12,10 +13,15 @@ function abbreviate(name) {
 
 export default function LeagueSelector() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
+  const { isLoaded, isSignedIn } = useAuth()
   const { selectedLeague, setSelectedLeague } = useLeague()
   const [leagues, setLeagues] = useState([])
 
   useEffect(() => {
+    // Gate on Clerk being ready — otherwise the fetch goes out tokenless on a
+    // hard refresh and 401s. (A transient 401 is still retried by the client
+    // interceptor.) Re-runs when auth becomes ready.
+    if (!isLoaded || !isSignedIn) return
     let cancelled = false
     fetchUserLeagues()
       .then((data) => {
@@ -31,12 +37,16 @@ export default function LeagueSelector() {
     return () => {
       cancelled = true
     }
-    // selectedLeague?.id intentionally omitted — run once on mount; re-running
-    // on selection change would fight the user's pick.
+    // selectedLeague?.id intentionally omitted — run once auth is ready;
+    // re-running on selection change would fight the user's pick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setSelectedLeague])
+  }, [isLoaded, isSignedIn, setSelectedLeague])
 
-  if (leagues.length === 0) return null
+  // Fall back to the saved league so the selector never renders empty before
+  // (or after a failed) fetch — the localStorage value is available immediately.
+  const options = leagues.length > 0 ? leagues : selectedLeague ? [selectedLeague] : []
+
+  if (options.length === 0) return null
 
   if (collapsed) {
     return (
@@ -61,12 +71,12 @@ export default function LeagueSelector() {
         aria-label="Select league"
         value={selectedLeague?.id || ''}
         onChange={(e) => {
-          const next = leagues.find((l) => l.id === e.target.value) || null
+          const next = options.find((l) => l.id === e.target.value) || null
           setSelectedLeague(next)
         }}
         className="w-full bg-[#1c1f2e] text-slate-200 border border-[#2d3148] rounded px-2 py-1.5 text-xs"
       >
-        {leagues.map((l) => (
+        {options.map((l) => (
           <option key={l.id} value={l.id}>
             {l.league_name || l.league_id}
           </option>

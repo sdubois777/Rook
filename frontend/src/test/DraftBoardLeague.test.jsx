@@ -5,6 +5,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { LeagueContext } from '../context/LeagueContext'
 import DraftBoard from '../pages/DraftBoard'
 
+// DraftBoard gates its query on Clerk's isLoaded — mock useAuth as ready.
+vi.mock('@clerk/clerk-react', () => ({
+  useAuth: () => ({ isLoaded: true, isSignedIn: true, getToken: async () => 'tok' }),
+}))
+
 vi.mock('../api/draftboard', () => ({
   fetchDraftboard: vi.fn().mockResolvedValue({
     tiers: {
@@ -74,9 +79,14 @@ describe('DraftBoard league toggle', () => {
 
 describe('App LeagueProvider structure', () => {
   it('wraps the router once, not twice', () => {
-    // vitest runs from the frontend/ dir; read the App source to guard against
-    // the dual-provider regression returning.
-    const src = readFileSync('src/App.jsx', 'utf-8')
+    // Read the App source to guard against the dual-provider regression. Tolerate
+    // being run from frontend/ (CI) or the repo root.
+    let src
+    try {
+      src = readFileSync('src/App.jsx', 'utf-8')
+    } catch {
+      src = readFileSync('frontend/src/App.jsx', 'utf-8')
+    }
     const count = (src.match(/<LeagueProvider>/g) || []).length
     expect(count).toBe(1)
   })

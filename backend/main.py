@@ -191,11 +191,31 @@ async def news_websocket(websocket: WebSocket):
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+# index.html must NEVER be cached, or a browser (Firefox especially) keeps
+# serving a stale shell that references an old, deleted bundle hash after a
+# deploy. The hashed assets it points to CAN be cached forever (immutable),
+# since their filename changes on every build.
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+class _ImmutableStaticFiles(StaticFiles):
+    """StaticFiles that marks content-hashed assets immutable for a year."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if FRONTEND_DIST.exists():
-    # Serve /assets (JS, CSS bundles)
+    # Serve /assets (content-hashed JS/CSS bundles) — safe to cache forever.
     app.mount(
         "/assets",
-        StaticFiles(directory=FRONTEND_DIST / "assets"),
+        _ImmutableStaticFiles(directory=FRONTEND_DIST / "assets"),
         name="assets",
     )
 
@@ -220,7 +240,9 @@ if FRONTEND_DIST.exists():
     async def serve_frontend(full_path: str):
         if full_path and any(full_path.startswith(p) for p in _API_PREFIXES):
             raise HTTPException(status_code=404)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        # Never cache the SPA shell — always hand the browser the latest bundle
+        # reference (the assets it points to are immutable + content-hashed).
+        return FileResponse(FRONTEND_DIST / "index.html", headers=_NO_CACHE_HEADERS)
 
 else:
     @app.get("/")

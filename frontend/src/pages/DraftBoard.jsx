@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useAuth } from '@clerk/clerk-react'
 import { Star, StarOff, Download, Printer, Search, X, ChevronDown } from 'lucide-react'
 import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
@@ -142,6 +143,7 @@ function FlagsDropdown({ selected, onChange }) {
 
 export default function DraftBoard() {
   const { isSnake } = useLeague()
+  const { isLoaded } = useAuth()
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
   const [team, setTeam] = useState('')
@@ -167,6 +169,8 @@ export default function DraftBoard() {
         strategy: strategy || undefined,
         position: position || undefined,
       }),
+    // Don't fetch until Clerk is ready, or the request goes out tokenless -> 401.
+    enabled: isLoaded,
   })
 
 

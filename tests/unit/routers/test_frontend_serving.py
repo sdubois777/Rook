@@ -48,6 +48,20 @@ async def test_unknown_path_serves_frontend():
         assert "text/html" in resp.headers["content-type"]
 
 
+@needs_frontend_build
+@pytest.mark.asyncio
+async def test_index_html_served_with_no_cache_headers():
+    """The SPA shell must be served no-cache so browsers never keep a stale
+    bundle reference after a deploy (the Firefox stale-bundle bug)."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in ("/", "/some/nested/route"):
+            resp = await client.get(path)
+            assert resp.status_code == 200
+            cc = resp.headers.get("cache-control", "")
+            assert "no-cache" in cc and "no-store" in cc, f"{path}: {cc!r}"
+
+
 @pytest.mark.asyncio
 async def test_health_includes_version():
     """Health check includes version field."""
