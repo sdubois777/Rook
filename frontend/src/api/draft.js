@@ -1,9 +1,13 @@
 import api from './client'
 import { fetchDraftboard } from './draftboard'
 
-export async function startDraft(teamId, draftRoomUrl) {
+export async function startDraft(teamId, draftRoomUrl, opts = {}) {
   const body = { your_team_id: teamId }
   if (draftRoomUrl) body.draft_room_url = draftRoomUrl
+  // From the selected league context — lets the engine pick the snake vs
+  // auction recommendation path (draft_type) and load league settings.
+  if (opts.leagueId) body.league_id = opts.leagueId
+  if (opts.draftType) body.draft_type = opts.draftType
   const { data } = await api.post('/draft/start', body)
   return data
 }

@@ -45,6 +45,14 @@
     },
     {
       "matches": [
+        "https://football.fantasysports.yahoo.com/draftclient/*",
+        "https://football.fantasysports.yahoo.com/*/draft*"
+      ],
+      "js": ["yahoo_snake_draft.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://football.fantasysports.yahoo.com/*"
       ],
       "js": ["yahoo_auth.js"],

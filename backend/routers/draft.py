@@ -69,6 +69,7 @@ class StartDraftRequest(BaseModel):
     your_team_id: str
     draft_room_url: str | None = None
     league_id: str | None = None  # user_leagues.id — loads budget/team_count
+    draft_type: str | None = None  # overrides the league's draft_type if provided
 
 
 class FrameRequest(BaseModel):
@@ -198,7 +199,11 @@ async def _record_pick(event: "DraftEventPayload") -> None:
     })
 
 
-async def _build_engine(your_team_id: str = "", league_id: str | None = None) -> None:
+async def _build_engine(
+    your_team_id: str = "",
+    league_id: str | None = None,
+    draft_type: str | None = None,
+) -> None:
     """Construct the DraftStateManager + LiveDraftEngine into module globals.
 
     Shared by POST /draft/start and the lazy-init path in POST /draft/event,
@@ -233,6 +238,10 @@ async def _build_engine(your_team_id: str = "", league_id: str | None = None) ->
             )
 
     config = DraftStateManager.config_from_user_league(user_league)
+    # Explicit request override wins over the league's stored draft_type (e.g.
+    # the frontend passing the selected league's type, or a manual snake start).
+    if draft_type:
+        config.draft_type = draft_type
     _state = DraftStateManager(config, your_team_id)
 
     resolver = DependencyResolver()
@@ -379,7 +388,7 @@ async def start_draft(req: StartDraftRequest):
             ),
         }
 
-    await _build_engine(req.your_team_id, req.league_id)
+    await _build_engine(req.your_team_id, req.league_id, req.draft_type)
 
     # No Playwright: the browser extension handles the draft room and relays
     # events via POST /draft/event. If a bridge was connected out-of-band via

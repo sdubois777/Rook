@@ -284,6 +284,10 @@ def test_recommendation_fires_under_2_seconds():
     mock_player.value_assessment = MCCONKEY_RECORD["value_assessment"]
     mock_player.id = "test-uuid"
     mock_player.injury_profile = None
+    mock_player.profile = None
+    mock_player.adp_ai = None
+    mock_player.adp_fantasypros = None
+    mock_player.adp_scoring = None
     mock_player.dependencies = []
     mock_result.scalar_one_or_none.return_value = mock_player
     mock_session.execute = AsyncMock(return_value=mock_result)
@@ -481,6 +485,10 @@ def test_manager_style_in_recommendation_context():
     mock_player.value_assessment = MCCONKEY_RECORD["value_assessment"]
     mock_player.id = "test-uuid"
     mock_player.injury_profile = None
+    mock_player.profile = None
+    mock_player.adp_ai = None
+    mock_player.adp_fantasypros = None
+    mock_player.adp_scoring = None
     mock_player.dependencies = []
     mock_result.scalar_one_or_none.return_value = mock_player
     mock_session.execute = AsyncMock(return_value=mock_result)

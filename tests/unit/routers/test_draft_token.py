@@ -539,7 +539,8 @@ async def test_start_draft_builds_engine_and_returns_ready():
             data = resp.json()
             assert data["status"] == "ready"
             assert data["mode"] == "extension"
-            build.assert_awaited_once_with("team_5", None)
+            # (your_team_id, league_id, draft_type) — draft_type omitted -> None
+            build.assert_awaited_once_with("team_5", None, None)
         finally:
             app.dependency_overrides.clear()
 

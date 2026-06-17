@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useDraftStore } from '../../stores/draft'
+import { useLeague } from '../../context/LeagueContext'
 
 export default function DraftSetup() {
   const [teamId, setTeamId] = useState('')
@@ -8,13 +9,19 @@ export default function DraftSetup() {
   const [error, setError] = useState(null)
 
   const startDraft = useDraftStore((s) => s.startDraft)
+  const { selectedLeague } = useLeague()
 
   const handleStart = async () => {
     if (!teamId.trim()) return
     setLoading(true)
     setError(null)
     try {
-      await startDraft(teamId.trim(), draftRoomUrl.trim() || undefined)
+      // Pass the selected league's type so the engine picks the snake vs
+      // auction path (and loads league settings via league_id).
+      await startDraft(teamId.trim(), draftRoomUrl.trim() || undefined, {
+        leagueId: selectedLeague?.id,
+        draftType: selectedLeague?.draft_type || 'auction',
+      })
     } catch (err) {
       setError(err.response?.data?.detail || err.message || 'Failed to start draft')
       setLoading(false)

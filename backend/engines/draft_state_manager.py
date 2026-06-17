@@ -30,6 +30,8 @@ class LeagueConfig:
     min_bid: int = 1
     team_count: int = 12
     roster_slots: dict[str, int] = field(default_factory=lambda: dict(_DEFAULT_ROSTER_SLOTS))
+    draft_type: str = "auction"   # "auction" | "snake"
+    scoring_format: str = "ppr"   # "ppr" | "half_ppr" | "standard"
 
     @property
     def total_roster_size(self) -> int:
@@ -77,6 +79,8 @@ class DraftStateManager:
             auction_budget=budget if draft_type == "auction" else 0,
             min_bid=1,
             team_count=team_count,
+            draft_type=draft_type,
+            scoring_format=getattr(league, "scoring", None) or "ppr",
         )
 
     def __init__(self, league_config: LeagueConfig, your_team_id: str):
@@ -116,6 +120,38 @@ class DraftStateManager:
         if bid_pid and player_id and bid_pid != player_id:
             return False
         return True
+
+    # --- League type accessors (drive the snake vs auction engine path) ---
+
+    @property
+    def draft_type(self) -> str:
+        return self.league_config.draft_type
+
+    @property
+    def scoring_format(self) -> str:
+        return self.league_config.scoring_format
+
+    @property
+    def is_snake(self) -> bool:
+        return self.league_config.draft_type == "snake"
+
+    @property
+    def is_auction(self) -> bool:
+        return self.league_config.draft_type == "auction"
+
+    def get_roster_summary(self) -> dict[str, list[dict]]:
+        """Your roster grouped by position — for snake roster-need reasoning.
+
+        { "RB": [{"player_name": ..., "price": ...}], "WR": [...], ... }
+        Price is included but irrelevant in snake; kept for a uniform shape.
+        """
+        summary: dict[str, list[dict]] = {}
+        for pick in self.your_roster:
+            pos = (pick.position or "UNK").upper()
+            summary.setdefault(pos, []).append(
+                {"player_name": pick.player_name, "price": pick.price}
+            )
+        return summary
 
     def record_pick(self, pick: DraftPick) -> None:
         """Called after every draft_pick event from the bridge."""

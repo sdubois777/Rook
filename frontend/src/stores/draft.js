@@ -58,8 +58,8 @@ export const useDraftStore = create((set, get) => ({
 
   // --- Actions ---
 
-  startDraft: async (teamId, draftRoomUrl) => {
-    const startResp = await apiStartDraft(teamId, draftRoomUrl)
+  startDraft: async (teamId, draftRoomUrl, opts = {}) => {
+    const startResp = await apiStartDraft(teamId, draftRoomUrl, opts)
 
     // Load initial state + available players in parallel
     const [state, board] = await Promise.all([
