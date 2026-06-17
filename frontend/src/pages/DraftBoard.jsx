@@ -4,6 +4,7 @@ import { Star, StarOff, Download, Printer, Search, X, ChevronDown } from 'lucide
 import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
+import { useLeague } from '../context/LeagueContext'
 import PositionBadge from '../components/shared/PositionBadge'
 import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
@@ -140,6 +141,7 @@ function FlagsDropdown({ selected, onChange }) {
 }
 
 export default function DraftBoard() {
+  const { isSnake } = useLeague()
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
   const [team, setTeam] = useState('')
@@ -209,10 +211,18 @@ export default function DraftBoard() {
       filtered = filtered.filter((p) => isWatchlisted(p.id))
     }
 
+    // Snake: always a flat list ordered by AI ADP ascending (lower = earlier
+    // pick); players without an ADP sort last. Auction: the existing tier/sort.
+    if (isSnake) {
+      return [...filtered].sort(
+        (a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity)
+      )
+    }
     return sortPlayers(filtered, sortKey, sortOrder)
-  }, [allPlayers, searchQuery, team, selectedFlags, showWatchlistOnly, watchlist, sortKey, sortOrder])
+  }, [allPlayers, searchQuery, team, selectedFlags, showWatchlistOnly, watchlist, sortKey, sortOrder, isSnake])
 
-  const isTierSort = sortKey === 'tier'
+  // Snake never tier-groups (ADP is a continuous draft order, not tiers).
+  const isTierSort = !isSnake && sortKey === 'tier'
 
   const handleSort = (key, order) => {
     setSortKey(key)
@@ -293,29 +303,63 @@ export default function DraftBoard() {
           </span>
           <span className="text-xs text-slate-500 w-12 shrink-0">{p.team_abbr}</span>
 
-          <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
-            {p.ai_bid_ceiling != null ? `$${p.ai_bid_ceiling}` : '--'}
-          </span>
-          <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
-            ${p.market_value?.toFixed(0) || '--'}
-          </span>
-          <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
-            {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
-          </span>
+          {isSnake ? (
+            <>
+              {/* Snake: AI ADP / FP ADP / Diff (adp_ai - adp_fantasypros;
+                  negative = we rank earlier than consensus). */}
+              <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+                {p.adp_ai != null ? p.adp_ai.toFixed(1) : '--'}
+              </span>
+              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+                {p.adp_fantasypros != null ? p.adp_fantasypros.toFixed(1) : '--'}
+              </span>
+              {(() => {
+                const d =
+                  p.adp_ai != null && p.adp_fantasypros != null
+                    ? p.adp_ai - p.adp_fantasypros
+                    : null
+                return (
+                  <span
+                    className={`text-xs font-mono w-16 shrink-0 text-right ${
+                      d != null && d < -3
+                        ? 'text-emerald-400'
+                        : d != null && d > 3
+                        ? 'text-red-400'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    {d != null ? `${d > 0 ? '+' : ''}${d.toFixed(0)}` : '--'}
+                  </span>
+                )
+              })()}
+            </>
+          ) : (
+            <>
+              <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+                {p.ai_bid_ceiling != null ? `$${p.ai_bid_ceiling}` : '--'}
+              </span>
+              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+                ${p.market_value?.toFixed(0) || '--'}
+              </span>
+              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+                {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
+              </span>
 
-          <span
-            className={`text-xs font-mono w-16 shrink-0 text-right ${
-              aiGap != null && aiGap > 3
-                ? 'text-emerald-400'
-                : aiGap != null && aiGap < -3
-                ? 'text-red-400'
-                : 'text-slate-500'
-            }`}
-          >
-            {aiGap != null
-              ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
-              : '--'}
-          </span>
+              <span
+                className={`text-xs font-mono w-16 shrink-0 text-right ${
+                  aiGap != null && aiGap > 3
+                    ? 'text-emerald-400'
+                    : aiGap != null && aiGap < -3
+                    ? 'text-red-400'
+                    : 'text-slate-500'
+                }`}
+              >
+                {aiGap != null
+                  ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
+                  : '--'}
+              </span>
+            </>
+          )}
 
           {/* Flags */}
           <div className="flex gap-1 ml-auto flex-wrap justify-end">
@@ -357,10 +401,20 @@ export default function DraftBoard() {
         <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
         <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-[220px] shrink-0" defaultOrder="asc" />
         <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
-        <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
-        <SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
-        <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
-        <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
+        {isSnake ? (
+          <>
+            <span className="w-20 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">AI ADP</span>
+            <span className="w-20 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">FP ADP</span>
+            <span className="w-16 shrink-0 text-right text-[10px] uppercase tracking-wider text-slate-500">Diff</span>
+          </>
+        ) : (
+          <>
+            <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+            <SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+            <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+            <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
+          </>
+        )}
         <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
       </div>
     </div>

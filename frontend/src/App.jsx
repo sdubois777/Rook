@@ -76,16 +76,12 @@ function App() {
     </Routes>
   )
 
-  // LeagueProvider wraps both the full-screen draft room and the standard
-  // Layout routes, so the selected league is in context everywhere except the
-  // public landing/auth routes (which returned early above).
-  if (isFullScreen) {
-    return <LeagueProvider>{routes}</LeagueProvider>
-  }
-
+  // ONE LeagueProvider wrapping every authenticated route, so the selected
+  // league is in a single shared context whether or not the sidebar is shown.
+  // The full-screen draft room just renders without the Layout chrome.
   return (
     <LeagueProvider>
-      <Layout>{routes}</Layout>
+      {isFullScreen ? routes : <Layout>{routes}</Layout>}
     </LeagueProvider>
   )
 }
