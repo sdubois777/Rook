@@ -2,8 +2,9 @@
 Sync FantasyPros ADP onto the players table (snake-draft support).
 
 Scrapes consensus ADP via backend.integrations.fantasypros.get_adp() and writes
-adp_fantasypros + adp_scoring, matching players by NORMALIZED name (FantasyPros
-names differ from Sleeper names in punctuation and generational suffixes).
+adp_fantasypros (FantasyPros' overall RANK, kept on the same integer scale as
+adp_ai) + adp_scoring, matching players by NORMALIZED name (FantasyPros names
+differ from Sleeper names in punctuation and generational suffixes).
 
 Standalone:  python scripts/sync_adp.py [--scoring ppr|half_ppr|standard]
 Also invoked by the pre-draft pipeline (before the agent phases).
@@ -62,8 +63,12 @@ def apply_adp(adp_data: list[dict], players: list, scoring_format: str) -> dict:
 
     matched = missed = 0
     for row in adp_data:
-        adp = row.get("adp")
-        if adp is None:
+        # Store FantasyPros' overall RANK (1, 2, 3...), not the AVG ADP (1.5,
+        # 3.0...). adp_ai is an overall rank too, so keeping both on the same
+        # integer scale makes the board's DIFF a clean pick difference
+        # (fp_rank - ai_rank) instead of comparing a rank against an average.
+        rank = row.get("rank")
+        if rank is None:
             continue
         candidates = index.get(normalize_name(row.get("name")), [])
         if len(candidates) > 1 and row.get("position"):
@@ -73,7 +78,7 @@ def apply_adp(adp_data: list[dict], players: list, scoring_format: str) -> dict:
                 candidates = narrowed
         if len(candidates) == 1:
             player = candidates[0]
-            player.adp_fantasypros = float(adp)
+            player.adp_fantasypros = float(rank)
             player.adp_scoring = scoring_format
             matched += 1
         else:
