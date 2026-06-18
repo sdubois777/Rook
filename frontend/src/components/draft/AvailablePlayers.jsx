@@ -36,10 +36,11 @@ export default function AvailablePlayers() {
     }
 
     if (isSnake) {
-      // Snake: sort by AI ADP ascending (lower = earlier pick = better);
-      // players without an ADP yet sort last.
+      // Snake: sort by AI ADP RANK ascending (clean 1..N — the value shown on
+      // the board). adp_ai is the raw clamped estimate with ties; adp_rank is
+      // the displayed rank. Players without a rank sort last.
       return [...list].sort(
-        (a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity)
+        (a, b) => (a.adp_rank ?? Infinity) - (b.adp_rank ?? Infinity)
       )
     }
     // Auction: sort by AI ceiling descending
@@ -103,11 +104,12 @@ export default function AvailablePlayers() {
           const gap =
             ceiling != null && market != null ? ceiling - market : null
 
-          // Snake metrics. Diff = our ADP minus consensus; NEGATIVE means we
-          // rank the player earlier than the market (we like them more).
-          const adpAi = p.adp_ai ?? null
+          // Snake metrics. AI ADP = the clean integer rank (adp_rank), shown on
+          // the board. Diff = adp_diff (fp_rank − adp_rank) computed server-side;
+          // POSITIVE means FP ranks them later than us (we like them more).
+          const adpRank = p.adp_rank ?? null
           const adpFp = p.adp_fantasypros ?? null
-          const adpDiff = adpAi != null && adpFp != null ? adpAi - adpFp : null
+          const adpDiff = p.adp_diff ?? null
 
           return (
             <div
@@ -124,16 +126,16 @@ export default function AvailablePlayers() {
               {isSnake ? (
                 <>
                   <span className="text-sm font-mono text-blue-400 w-14 text-right">
-                    {adpAi != null ? adpAi.toFixed(1) : '--'}
+                    {adpRank != null ? adpRank : '--'}
                   </span>
                   <span className="text-xs font-mono text-slate-500 w-14 text-right">
                     {adpFp != null ? adpFp.toFixed(1) : '--'}
                   </span>
                   <span
                     className={`text-xs font-mono w-10 text-right ${
-                      adpDiff != null && adpDiff < -3
+                      adpDiff != null && adpDiff > 3
                         ? 'text-emerald-400'
-                        : adpDiff != null && adpDiff > 3
+                        : adpDiff != null && adpDiff < -3
                         ? 'text-red-400'
                         : 'text-slate-600'
                     }`}

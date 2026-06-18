@@ -34,6 +34,11 @@ export default function useDraftSocket() {
   const addComboAlert = useDraftStore((s) => s.addComboAlert)
   const setBridgeStatus = useDraftStore((s) => s.setBridgeStatus)
   const setWsStatus = useDraftStore((s) => s.setWsStatus)
+  const setIsYourTurn = useDraftStore((s) => s.setIsYourTurn)
+  const setCurrentPick = useDraftStore((s) => s.setCurrentPick)
+  const setCurrentRound = useDraftStore((s) => s.setCurrentRound)
+  const setPicksUntilYourTurn = useDraftStore((s) => s.setPicksUntilYourTurn)
+  const recordSnakePick = useDraftStore((s) => s.recordSnakePick)
 
   useEffect(() => {
     // Recover any recommendation the engine generated before this client's
@@ -156,6 +161,26 @@ export default function useDraftSocket() {
             case 'teams_update':
               updateTeams(data.payload?.teams)
               break
+            // Snake draft (extension relay events, nested under data.payload)
+            case 'your_turn': {
+              const payload = data.payload || {}
+              setIsYourTurn(true)
+              setCurrentRound(payload.round ?? null)
+              setCurrentPick(payload.pick ?? null)
+              setPicksUntilYourTurn(0)
+              // Clear the stale rec; the best-available rec arrives separately.
+              setRecommendation(null)
+              break
+            }
+            case 'your_turn_soon':
+              setPicksUntilYourTurn(
+                data.payload?.picks_until_your_turn ?? null
+              )
+              if (data.payload?.round != null) setCurrentRound(data.payload.round)
+              break
+            case 'snake_pick':
+              recordSnakePick(data.payload || {})
+              break
           }
         } catch {
           // Ignore malformed messages
@@ -209,5 +234,10 @@ export default function useDraftSocket() {
     addComboAlert,
     setBridgeStatus,
     setWsStatus,
+    setIsYourTurn,
+    setCurrentPick,
+    setCurrentRound,
+    setPicksUntilYourTurn,
+    recordSnakePick,
   ])
 }

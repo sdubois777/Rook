@@ -1,46 +1,128 @@
 /**
- * Yahoo Snake Draft Room — DOM observer (pure, testable core).
+ * Pure parsing + event-detection helpers for the Yahoo SNAKE draft poller.
  *
- * STATUS: STUB — requires a live Yahoo snake mock-draft session to map the DOM.
+ * Kept free of any browser/DOM/network side effects so the logic is
+ * unit-testable in plain Node (see extension/test/yahoo_snake_draft.test.mjs).
+ * The content script (yahoo_snake_draft.js) supplies the live `#app` innerText
+ * and relays the detected events; everything here is a pure function.
  *
- * Snake draft DOM is completely different from auction:
- *   - no bid amounts, no per-player countdown clock
- *   - pick-by-pick rounds, an "on the clock" indicator
- *   - a draft board of available players
- *
- * For now this only LOGS the draft container's text so we can identify the
- * selectors needed for the real poller. Kept dependency-free (no DOM globals at
- * module load) so node:test can exercise it without a browser.
+ * Snake DOM (confirmed from a live June 2026 session) differs from auction:
+ *   - root is `#app` (not `#draft`), no bids, no per-player clock
+ *   - "Bart's Pick • You're up in 9 Picks • Round 7, Pick 84"  (someone else up)
+ *   - "YOUR TURN • ROUND 8, PICK 93"                            (you on the clock)
+ *   - "Last:\nJ. DOBBINS\n(RB · DEN)"                           (last pick made)
  */
 
-// Read the draft container's text (first 500 chars) or null if not present.
-export function snapshotDom(doc) {
-  const el = doc.querySelector('#draft, [class*="draft"]')
-  if (!el) return null
-  const text = el.innerText || el.textContent || ''
-  return text.substring(0, 500)
+/**
+ * Parse the snake draft state out of `#app` innerText.
+ *
+ * Returns { isYourTurn, yourRound, yourPick, currentPicker, currentRound,
+ * currentPick, picksUntilYourTurn, lastPick } or null when text is empty.
+ */
+export function parseSnakeState(text) {
+  if (!text) return null
+
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+
+  // YOUR TURN — "YOUR TURN • ROUND 8, PICK 93"
+  const yourTurnLine = lines.find((l) => l.toUpperCase().startsWith('YOUR TURN'))
+  const yourTurnMatch = yourTurnLine
+    ? yourTurnLine.match(/YOUR TURN\s*[•·]\s*ROUND\s+(\d+),\s*PICK\s+(\d+)/i)
+    : null
+  const isYourTurn = !!yourTurnMatch
+  const yourRound = yourTurnMatch ? parseInt(yourTurnMatch[1], 10) : null
+  const yourPick = yourTurnMatch ? parseInt(yourTurnMatch[2], 10) : null
+
+  // Someone else picking —
+  // "Bart's Pick • You're up in 9 Picks • Round 7, Pick 84"
+  const pickingLine = lines.find(
+    (l) => l.includes("'s Pick") && l.includes('Round')
+  )
+  const pickingMatch = pickingLine
+    ? pickingLine.match(/^(.+?)'s Pick.*Round\s+(\d+),\s*Pick\s+(\d+)/i)
+    : null
+  const currentPicker = pickingMatch ? pickingMatch[1] : null
+  const currentRound = pickingMatch ? parseInt(pickingMatch[2], 10) : yourRound
+  const currentPick = pickingMatch ? parseInt(pickingMatch[3], 10) : yourPick
+
+  // Picks until your turn — "You're up in 9 Picks"
+  const upInMatch = text.match(/You're up in (\d+) Pick/i)
+  const picksUntilYourTurn = upInMatch
+    ? parseInt(upInMatch[1], 10)
+    : isYourTurn
+    ? 0
+    : null
+
+  // Last pick made — "Last:\nJ. DOBBINS\n(RB · DEN)"
+  const lastIdx = lines.findIndex((l) => l === 'Last:')
+  let lastPick = null
+  if (lastIdx >= 0 && lines[lastIdx + 1]) {
+    const playerName = lines[lastIdx + 1]
+    const posTeam = lines[lastIdx + 2]
+      ? lines[lastIdx + 2].match(/\(([A-Z]+)\s*[·•]\s*([A-Z]+)\)/)
+      : null
+    lastPick = {
+      player_name: playerName,
+      position: posTeam ? posTeam[1] : null,
+      team: posTeam ? posTeam[2] : null,
+    }
+  }
+
+  return {
+    isYourTurn,
+    yourRound,
+    yourPick,
+    currentPicker,
+    currentRound,
+    currentPick,
+    picksUntilYourTurn,
+    lastPick,
+  }
 }
 
-// Activate the observer on the given window/document. Idempotent: returns true
-// if it activated this call, false if it was already running. Injectable
-// win/doc/log keep it testable.
-export function initSnakeObserver(win, doc, opts = {}) {
-  if (win.__draftmind_snake__) return false
-  win.__draftmind_snake__ = true
+/**
+ * Diff the previous tracked memory against the freshly parsed state and return
+ * the snake events to relay plus the updated memory.
+ *
+ * `prev` carries { wasYourTurn, lastPicksUntil }. Pure: callers thread `next`
+ * back in on the following tick. Pick events come from console.error (handled
+ * in the content script), not from here — this only watches turn/countdown.
+ */
+export function detectSnakeEvents(prev, curr) {
+  const events = []
+  const next = { ...prev }
+  if (!curr) return { events, next }
 
-  const intervalMs = opts.intervalMs || 2000
-  const log =
-    opts.log || ((...args) => win.console && win.console.log(...args))
+  // YOUR TURN — rising edge of the on-the-clock state.
+  if (curr.isYourTurn && !prev.wasYourTurn) {
+    events.push({
+      type: 'your_turn',
+      platform: 'yahoo',
+      payload: {
+        round: curr.yourRound,
+        pick: curr.yourPick,
+        picks_until_your_turn: 0,
+      },
+    })
+  }
 
-  log('DraftMind: snake draft observer active (STUB — DOM mapping pending)')
+  // PICK COMING SOON — fire once when exactly 2 picks away.
+  if (
+    !curr.isYourTurn &&
+    curr.picksUntilYourTurn === 2 &&
+    prev.lastPicksUntil !== 2
+  ) {
+    events.push({
+      type: 'your_turn_soon',
+      platform: 'yahoo',
+      payload: { picks_until_your_turn: 2, round: curr.currentRound },
+    })
+  }
 
-  let last = ''
-  win.setInterval(() => {
-    const snap = snapshotDom(doc)
-    if (!snap || snap === last) return
-    last = snap
-    log('DraftMind snake DOM snapshot:', snap)
-  }, intervalMs)
-
-  return true
+  next.wasYourTurn = curr.isYourTurn
+  next.lastPicksUntil = curr.picksUntilYourTurn
+  return { events, next }
 }

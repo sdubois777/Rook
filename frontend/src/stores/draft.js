@@ -30,6 +30,12 @@ export const useDraftStore = create((set, get) => ({
   currentNomination: null, // { playerName, posTeam, currentBid, clock, secondsRemaining }
   teamsState: {}, // live scraped team budgets from the extension poller
 
+  // Snake draft turn tracking (auction leaves these at their defaults)
+  isYourTurn: false,
+  currentPick: null,
+  currentRound: null,
+  picksUntilYourTurn: null,
+
   // Draft state
   myBudget: 200,
   myRoster: [],
@@ -102,8 +108,9 @@ export const useDraftStore = create((set, get) => ({
   setRecommendation: (rec) => {
     set({
       recommendation: rec,
-      // Update budget from recommendation if included
-      ...(rec.budget_summary
+      // Update budget from recommendation if included (rec may be null when
+      // clearing, e.g. on your_turn — guard the optional chain).
+      ...(rec?.budget_summary
         ? {
             myBudget: rec.budget_summary.your_remaining,
             spendable: rec.budget_summary.spendable_on_this_player,
@@ -301,6 +308,90 @@ export const useDraftStore = create((set, get) => ({
 
     set(updates)
   },
+
+  // --- Snake draft turn actions ---
+
+  setIsYourTurn: (val) => set({ isYourTurn: val }),
+  setCurrentPick: (pick) => set({ currentPick: pick }),
+  setCurrentRound: (round) => set({ currentRound: round }),
+  setPicksUntilYourTurn: (n) => set({ picksUntilYourTurn: n }),
+
+  // A snake pick was made (by anyone). Remove the player from the available
+  // list, track it under the winning team, and if it's ours, add to roster.
+  recordSnakePick: (pick) =>
+    set((state) => {
+      const pickName = normalizeName(pick.player_name || '')
+
+      // DEDUP: ignore a same-pick redelivery within 2s (double socket / retry).
+      const now = Date.now()
+      if (
+        pickName &&
+        state.picks.some(
+          (p) =>
+            normalizeName(p.player_name) === pickName &&
+            now - (p.timestamp || 0) < 2000
+        )
+      ) {
+        return state
+      }
+
+      const isYours =
+        pick.is_yours ||
+        (state.myTeamName &&
+          pick.picker &&
+          normalizeName(pick.picker) === normalizeName(state.myTeamName))
+
+      // Remove ONLY the drafted player — guard id checks so undefined !==
+      // undefined can't wipe the whole list (same lesson as auction recordPick).
+      const fromAvailable = state.availablePlayers.find(
+        (p) => pickName !== '' && normalizeName(p.name) === pickName
+      )
+      const newAvailable = state.availablePlayers.filter((p) => {
+        const idMatch =
+          pick.yahoo_player_id != null &&
+          p.yahoo_player_id === pick.yahoo_player_id
+        const nameMatch = pickName !== '' && normalizeName(p.name) === pickName
+        return !(idMatch || nameMatch)
+      })
+
+      const winner = pick.picker || 'Unknown'
+      const teamPicks = {
+        ...state.teamPicks,
+        [winner]: [
+          ...(state.teamPicks[winner] || []),
+          {
+            player_name: pick.player_name,
+            pick_number: pick.pick_number,
+            round: pick.round,
+            position: pick.position || fromAvailable?.position || null,
+          },
+        ],
+      }
+
+      const updates = {
+        picks: [...state.picks, { ...pick, timestamp: now }],
+        availablePlayers: newAvailable,
+        teamPicks,
+        // Someone just picked — it's no longer our turn until the next event.
+        isYourTurn: false,
+        recommendation: isYours ? null : state.recommendation,
+      }
+
+      if (isYours) {
+        updates.myRoster = [
+          ...state.myRoster,
+          {
+            player_id: pick.yahoo_player_id,
+            player_name: pick.player_name,
+            position: pick.position || fromAvailable?.position || null,
+            price: 0,
+          },
+        ]
+        updates.rosterSlotsRemaining = state.rosterSlotsRemaining - 1
+      }
+
+      return updates
+    }),
 
   addComboAlert: (alert) => {
     set((s) => ({ comboAlerts: [...s.comboAlerts, alert] }))

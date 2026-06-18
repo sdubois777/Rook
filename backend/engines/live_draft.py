@@ -116,6 +116,47 @@ OUTPUT FORMAT (JSON only, no markdown fences):
 """
 
 
+_SNAKE_YOUR_TURN_PROMPT = """You are an expert fantasy football snake draft advisor.
+
+The user is ON THE CLOCK. Recommend which player to draft from the available
+options — the single best pick given their roster and the board.
+
+KEY PRINCIPLE — Value vs Consensus (use adp_diff):
+  Positive adp_diff = we rate them earlier than FP consensus. You CAN wait on
+  these — the market won't take them for ~adp_diff more picks, so you may grab a
+  higher-consensus player now and still get them on the way back.
+  Negative adp_diff = consensus values them above us. Take them now or lose them.
+
+ROSTER CONSTRUCTION PRIORITY (PPR):
+  Rounds 1-3:   Elite RB/WR only
+  Rounds 4-6:   RB/WR/TE (Kelce tier)
+  Rounds 7-9:   Best available RB/WR/TE
+  Rounds 10-12: QB (unless an elite one is available)
+  Rounds 13+:   K, DEF, depth
+
+SCARCITY: if a position pool is draining, adjust up — don't wait on a position
+that's disappearing.
+
+FORBIDDEN: never mention specific injury diagnoses, body parts, or "chronic"
+language.
+
+OUTPUT FORMAT (JSON only, no markdown fences):
+{
+  "action": "draft",
+  "player_name": "<recommended player>",
+  "position": "<pos>",
+  "reasoning": "1-2 sentences",
+  "adp_rank": <number>,
+  "adp_fp": <fp consensus rank>,
+  "adp_diff": <diff>,
+  "can_wait": <true if adp_diff > 10>,
+  "wait_until_pick": <estimated pick they'll still be available, or null>,
+  "confidence": "high|medium|low",
+  "position_need": "high|medium|low"
+}
+"""
+
+
 class LiveDraftEngine:
     """
     Main orchestrator for live draft recommendations.
@@ -149,6 +190,8 @@ class LiveDraftEngine:
         event_type = event.get("type")
         if event_type == "nomination":
             await self.on_nomination(event)
+        elif event_type == "your_turn":
+            await self.on_your_turn(event)
         elif event_type == "draft_pick":
             await self.on_pick_confirmed(event)
         elif event_type == "bid_update":
@@ -611,5 +654,177 @@ class LiveDraftEngine:
             "position_need": data.get("position_need", "medium"),
             "confidence": data.get("confidence", "medium"),
             "tier": data.get("tier") if data.get("tier") is not None else player.get("tier"),
+            "elapsed_ms": 0,
+        }
+
+    # ------------------------------------------------------------------
+    # Snake — user on the clock (best-available recommendation)
+    # ------------------------------------------------------------------
+
+    async def on_your_turn(self, event: dict) -> None:
+        """User is on the clock in a snake draft.
+
+        Unlike a nomination (one specific player), the user picks from the whole
+        pool — so recommend the BEST AVAILABLE by roster need + ADP value. Uses
+        adp_diff to flag players we can wait on (consensus won't take them yet).
+        """
+        start = time.monotonic()
+        round_num = event.get("round")
+        pick_num = event.get("pick")
+
+        available = await self._get_top_available()
+        if not available:
+            message = {
+                "type": "recommendation",
+                "action": "wait",
+                "reasoning": "No ranked players available — manual evaluation needed.",
+                "confidence": "low",
+                "round": round_num,
+                "pick": pick_num,
+                "elapsed_ms": 0,
+            }
+            self.last_recommendation = message
+            await self.ws_manager.broadcast(message)
+            return
+
+        context = {
+            "round": round_num,
+            "pick": pick_num,
+            "my_roster": self.state.get_roster_summary(),
+            "top_available": available[:15],
+        }
+
+        prompt = self._build_your_turn_prompt(context)
+        response = await self._client.messages.create(
+            model=SONNET,
+            max_tokens=600,
+            system=_SNAKE_YOUR_TURN_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        rec = self._parse_your_turn_recommendation(
+            response.content[0].text, available[0], context
+        )
+        elapsed = (time.monotonic() - start) * 1000
+        rec["elapsed_ms"] = round(elapsed)
+        self.last_recommendation = rec
+        logger.info(
+            "Your-turn rec (R%s P%s) in %.0fms: %s %s",
+            round_num, pick_num, elapsed,
+            rec.get("action"), rec.get("player_name"),
+        )
+        await self.ws_manager.broadcast(rec)
+
+    async def _get_top_available(self) -> list[dict]:
+        """Top available skill players by adp_rank, excluding drafted ids."""
+        drafted = self.state.get_drafted_player_ids()
+        async with self._db_session_factory() as session:
+            stmt = (
+                select(Player)
+                .where(
+                    Player.adp_rank.isnot(None),
+                    Player.position.in_(["QB", "RB", "WR", "TE"]),
+                )
+                .order_by(Player.adp_rank.asc())
+                .limit(40)
+            )
+            result = await session.execute(stmt)
+            players = result.scalars().all()
+
+        out: list[dict] = []
+        for p in players:
+            if p.yahoo_player_id and p.yahoo_player_id in drafted:
+                continue
+            out.append({
+                "name": p.name,
+                "position": p.position,
+                "team": p.team_abbr,
+                "adp_rank": p.adp_rank,
+                "adp_fp": (
+                    float(p.adp_fantasypros)
+                    if p.adp_fantasypros is not None else None
+                ),
+                "adp_diff": float(p.adp_diff) if p.adp_diff is not None else None,
+                "snake_flag": p.snake_flag,
+                "tier": p.tier,
+            })
+        return out
+
+    def _build_your_turn_prompt(self, context: dict) -> str:
+        positions_filled = {
+            pos: len(players)
+            for pos, players in context["my_roster"].items()
+            if players
+        }
+
+        lines = []
+        for i, p in enumerate(context["top_available"], start=1):
+            diff = p.get("adp_diff")
+            diff_str = f"{diff:+.0f}" if diff is not None else "n/a"
+            lines.append(
+                f"  {i}. {p['name']} ({p['position']}) "
+                f"AI:{p['adp_rank']} FP:{p.get('adp_fp')} "
+                f"diff:{diff_str} [{p.get('snake_flag') or 'n/a'}]"
+            )
+        avail_str = "\n".join(lines)
+
+        return (
+            f"YOU ARE ON THE CLOCK\n"
+            f"Round: {context['round']}\n"
+            f"Pick: {context['pick']}\n\n"
+            f"Your current roster:\n{self._format_roster(positions_filled)}\n\n"
+            f"Top available players:\n{avail_str}\n\n"
+            f"Who should I draft with pick {context['pick']}? "
+            f"Consider value vs consensus — can I wait on any of these, or will "
+            f"they be gone by my next pick?"
+        )
+
+    def _parse_your_turn_recommendation(
+        self, text: str, top: dict, context: dict
+    ) -> dict:
+        try:
+            data = parse_json_output(text)
+            if not isinstance(data, dict):
+                raise ValueError("your-turn recommendation was not a JSON object")
+        except Exception:
+            logger.warning("Failed to parse your-turn recommendation: %s", text[:200])
+            data = {
+                "action": "draft",
+                "player_name": top.get("name"),
+                "position": top.get("position"),
+                "reasoning": text[:200],
+                "confidence": "low",
+            }
+
+        # Fall back to the top-ranked available player's ADP fields when the
+        # model omits them, so the UI always has value context to show.
+        adp_rank = data.get("adp_rank")
+        if adp_rank is None:
+            adp_rank = top.get("adp_rank")
+        adp_fp = data.get("adp_fp")
+        if adp_fp is None:
+            adp_fp = top.get("adp_fp")
+        adp_diff = data.get("adp_diff")
+        if adp_diff is None:
+            adp_diff = top.get("adp_diff")
+        can_wait = data.get("can_wait")
+        if can_wait is None:
+            can_wait = adp_diff is not None and float(adp_diff) > 10
+
+        return {
+            "type": "recommendation",
+            "action": data.get("action", "draft"),
+            "player_name": data.get("player_name") or top.get("name"),
+            "position": data.get("position") or top.get("position"),
+            "reasoning": data.get("reasoning", ""),
+            "adp_rank": adp_rank,
+            "adp_fp": adp_fp,
+            "adp_diff": adp_diff,
+            "can_wait": bool(can_wait),
+            "wait_until_pick": data.get("wait_until_pick"),
+            "position_need": data.get("position_need", "medium"),
+            "confidence": data.get("confidence", "medium"),
+            "round": context.get("round"),
+            "pick": context.get("pick"),
             "elapsed_ms": 0,
         }

@@ -7,8 +7,10 @@ import DraftSetup from '../components/draft/DraftSetup'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
 import SuggestedTargets from '../components/draft/SuggestedTargets'
 import NominationPanel from '../components/draft/NominationPanel'
+import SnakePanel from '../components/draft/SnakePanel'
 import AvailablePlayers from '../components/draft/AvailablePlayers'
 import TeamRosterPanel from '../components/draft/TeamRosterPanel'
+import { useLeague } from '../context/LeagueContext'
 
 const WS_STATUS_LABEL = {
   connected: { text: 'Connected', color: 'bg-emerald-500' },
@@ -20,6 +22,7 @@ export default function DraftRoom() {
   const phase = useDraftStore((s) => s.phase)
   const wsStatus = useDraftStore((s) => s.wsStatus)
   const setAvailablePlayers = useDraftStore((s) => s.setAvailablePlayers)
+  const { isSnake } = useLeague()
 
   // Connect WebSocket
   useDraftSocket()
@@ -113,7 +116,7 @@ export default function DraftRoom() {
         {/* CENTER: Nomination (fixed) over Available players (scrolls) */}
         <div className="border-r border-[#2d3148] min-h-0 flex flex-col overflow-hidden">
           <div className="h-[190px] shrink-0 border-b border-[#2d3148] overflow-hidden">
-            <NominationPanel />
+            {isSnake ? <SnakePanel /> : <NominationPanel />}
           </div>
           <div className="flex-1 min-h-0 overflow-hidden">
             <AvailablePlayers />

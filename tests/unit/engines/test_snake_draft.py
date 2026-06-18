@@ -177,3 +177,143 @@ def test_start_draft_request_accepts_draft_type():
     assert StartDraftRequest(your_team_id="Stephen", draft_type="snake").draft_type == "snake"
     # Still optional — defaults to None.
     assert StartDraftRequest(your_team_id="X").draft_type is None
+
+
+# --- on_your_turn (best-available snake recommendation) ----------------------
+
+YOUR_TURN_JSON = (
+    '{"action":"draft","player_name":"Bijan Robinson","position":"RB",'
+    '"reasoning":"Elite RB value at the turn.","adp_rank":1,"adp_fp":2,'
+    '"adp_diff":1,"can_wait":false,"wait_until_pick":null,'
+    '"confidence":"high","position_need":"high"}'
+)
+
+
+def _mock_available(name, pos, rank, fp, diff, flag, ypid):
+    p = MagicMock()
+    p.name = name
+    p.position = pos
+    p.team_abbr = "ATL"
+    p.adp_rank = rank
+    p.adp_fantasypros = Decimal(str(fp)) if fp is not None else None
+    p.adp_diff = Decimal(str(diff)) if diff is not None else None
+    p.snake_flag = flag
+    p.tier = 1
+    p.yahoo_player_id = ypid
+    return p
+
+
+def _your_turn_engine(sonnet_text, available):
+    state = DraftStateManager(_snake_config(), YOUR_TEAM)
+    ws = MagicMock()
+    ws.broadcast = AsyncMock()
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = available
+    session.execute = AsyncMock(return_value=result)
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=ctx)
+
+    resp = MagicMock()
+    resp.content = [MagicMock(text=sonnet_text)]
+    client = AsyncMock()
+    client.messages.create = AsyncMock(return_value=resp)
+
+    eng = LiveDraftEngine(
+        state=state,
+        resolver=DependencyResolver(),
+        threat_analyzer=OpponentThreatAnalyzer(),
+        db_session_factory=factory,
+        ws_manager=ws,
+    )
+    eng._client = client
+    return eng, ws, state
+
+
+def _sample_available():
+    return [
+        _mock_available("Bijan Robinson", "RB", 1, 2, 1, "TARGET", "nfl.p.100"),
+        _mock_available("Jahmyr Gibbs", "RB", 2, 1, -1, "TARGET", "nfl.p.101"),
+    ]
+
+
+def test_on_your_turn_builds_recommendation():
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    msg = ws.broadcast.call_args[0][0]
+    assert msg["type"] == "recommendation"
+    assert msg["action"] == "draft"
+    assert msg["player_name"] == "Bijan Robinson"
+    assert msg["round"] == 1 and msg["pick"] == 1
+    assert "bid_ceiling" not in msg  # snake, not auction
+
+
+def test_your_turn_event_triggers_snake_engine():
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.handle_event({"type": "your_turn", "round": 3, "pick": 28}))
+    msg = ws.broadcast.call_args[0][0]
+    assert msg["type"] == "recommendation"
+    assert msg["pick"] == 28
+
+
+def test_snake_rec_includes_can_wait():
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    assert "can_wait" in ws.broadcast.call_args[0][0]
+
+
+def test_snake_rec_includes_wait_until_pick():
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    assert "wait_until_pick" in ws.broadcast.call_args[0][0]
+
+
+def test_can_wait_inferred_from_adp_diff_when_omitted():
+    # Model omits can_wait; engine infers it from a large positive adp_diff.
+    j = '{"action":"draft","player_name":"X","position":"WR","reasoning":"y","confidence":"high"}'
+    avail = [_mock_available("Sleeper WR", "WR", 30, 55, 25, "VALUE", "nfl.p.200")]
+    eng, ws, _ = _your_turn_engine(j, avail)
+    asyncio.run(eng.on_your_turn({"round": 3, "pick": 30}))
+    assert ws.broadcast.call_args[0][0]["can_wait"] is True
+
+
+def test_on_your_turn_no_available_waits():
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, [])
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    msg = ws.broadcast.call_args[0][0]
+    assert msg["action"] == "wait"
+    # No Sonnet call when there's nothing to recommend.
+    eng._client.messages.create.assert_not_called()
+
+
+def test_on_your_turn_excludes_drafted_players():
+    from backend.engines.draft_state_manager import DraftPick
+
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    state.record_pick(DraftPick(player_id="nfl.p.100", team_id="Bart", price=0,
+                                player_name="Bijan Robinson", position="RB"))
+    available = asyncio.run(eng._get_top_available())
+    names = [p["name"] for p in available]
+    assert "Bijan Robinson" not in names  # already drafted
+    assert "Jahmyr Gibbs" in names
+
+
+def test_snake_pick_recorded_into_state():
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_pick_confirmed({
+        "type": "draft_pick", "player_id": "nfl.p.101", "team_id": "Bart",
+        "final_price": 0, "player_name": "Jahmyr Gibbs", "position": "RB",
+    }))
+    assert "nfl.p.101" in state.get_drafted_player_ids()
+
+
+def test_your_turn_prompt_has_value_vs_consensus():
+    from backend.engines.live_draft import _SNAKE_YOUR_TURN_PROMPT
+    p = _SNAKE_YOUR_TURN_PROMPT
+    assert "Value vs Consensus" in p
+    assert "can_wait" in p
+    assert "wait_until_pick" in p
+    assert "FORBIDDEN" in p

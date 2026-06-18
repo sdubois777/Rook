@@ -29,7 +29,9 @@ const PLAYER = {
   position: 'RB',
   team_abbr: 'ATL',
   adp_ai: 3.0,
+  adp_rank: 1, // clean integer rank shown as "AI ADP" (not the tied adp_ai float)
   adp_fantasypros: 4.0,
+  adp_diff: 3.0,
   ai_bid_ceiling: 60,
   market_value: 50,
   recommended_bid_ceiling: 60,
@@ -92,7 +94,8 @@ describe('AvailablePlayers league toggle', () => {
     expect(screen.getByText('AI ADP')).toBeInTheDocument()
     expect(screen.getByText('FP ADP')).toBeInTheDocument()
     expect(screen.queryByText('Ceiling')).not.toBeInTheDocument()
-    expect(screen.getByText('3.0')).toBeInTheDocument() // adp_ai rendered
+    expect(screen.getByText('1')).toBeInTheDocument() // adp_rank rendered (not adp_ai 3.0)
+    expect(screen.getByText('4.0')).toBeInTheDocument() // FP ADP rendered
   })
 
   it('shows dollar columns for auction', () => {

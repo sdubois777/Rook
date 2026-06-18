@@ -69,6 +69,10 @@ function resetStore() {
     currentBid: null,
     currentNomination: null,
     teamsState: {},
+    isYourTurn: false,
+    currentPick: null,
+    currentRound: null,
+    picksUntilYourTurn: null,
     myBudget: 200,
     myRoster: [],
     myTeamName: null,
@@ -1377,6 +1381,193 @@ describe('DraftRoom', () => {
     )
 
     draftApi.getRecommendation.mockResolvedValue(null) // restore module default
+  })
+
+  // --- Snake draft: your_turn, snake_pick, countdown ---
+
+  it('your_turn WS message sets isYourTurn and clears the recommendation', async () => {
+    useDraftStore.setState({
+      phase: 'live',
+      recommendation: { type: 'recommendation', player_name: 'Old', action: 'draft' },
+    })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'your_turn',
+          payload: { round: 8, pick: 93, picks_until_your_turn: 0 },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.isYourTurn).toBe(true)
+    expect(s.currentRound).toBe(8)
+    expect(s.currentPick).toBe(93)
+    expect(s.picksUntilYourTurn).toBe(0)
+    expect(s.recommendation).toBeNull()
+  })
+
+  it('your_turn_soon WS message sets the picks countdown', async () => {
+    useDraftStore.setState({ phase: 'live' })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'your_turn_soon',
+          payload: { picks_until_your_turn: 2, round: 7 },
+        }),
+      })
+    })
+
+    expect(useDraftStore.getState().picksUntilYourTurn).toBe(2)
+  })
+
+  it('recordSnakePick removes the player from available and tracks the team', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      isYourTurn: true,
+      availablePlayers: [
+        { id: 'p1', name: 'J. Dobbins', position: 'RB', yahoo_player_id: 'y1' },
+        { id: 'p2', name: 'Travis Kelce', position: 'TE', yahoo_player_id: 'y3' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'J. Dobbins',
+        yahoo_player_id: 'y1',
+        position: 'RB',
+        picker: 'Bart',
+        pick_number: 84,
+        round: 7,
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.availablePlayers.map((p) => p.name)).toEqual(['Travis Kelce'])
+    expect(s.teamPicks['Bart']).toHaveLength(1)
+    expect(s.teamPicks['Bart'][0].player_name).toBe('J. Dobbins')
+    // A pick ends your turn.
+    expect(s.isYourTurn).toBe(false)
+  })
+
+  it('recordSnakePick adds to your roster when you are the picker', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      rosterSlotsRemaining: 16,
+      myRoster: [],
+      availablePlayers: [
+        { id: 'p1', name: 'Bijan Robinson', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Bijan Robinson',
+        yahoo_player_id: 'y1',
+        position: 'RB',
+        picker: 'Stephen',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.myRoster.map((p) => p.player_name)).toContain('Bijan Robinson')
+    expect(s.rosterSlotsRemaining).toBe(15)
+  })
+
+  it('recordSnakePick never wipes the whole available list', () => {
+    // A pick whose name matches nothing must remove zero players, not all.
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'a', name: 'Josh Allen', position: 'QB' },
+        { id: 'b', name: 'Bijan Robinson', position: 'RB' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Nobody Here',
+        picker: 'Team 3',
+      })
+    })
+
+    expect(useDraftStore.getState().availablePlayers).toHaveLength(2)
+  })
+
+  it('SnakePanel shows YOUR TURN when on the clock', async () => {
+    const SnakePanel = (await import('../components/draft/SnakePanel')).default
+    useDraftStore.setState({
+      phase: 'live',
+      isYourTurn: true,
+      currentRound: 8,
+      currentPick: 93,
+    })
+    render(
+      <MemoryRouter>
+        <SnakePanel />
+      </MemoryRouter>
+    )
+    expect(screen.getByText('YOUR TURN')).toBeInTheDocument()
+    expect(screen.getByText('Round 8, Pick 93')).toBeInTheDocument()
+  })
+
+  it('SnakePanel shows the countdown when you are 2 picks away', async () => {
+    const SnakePanel = (await import('../components/draft/SnakePanel')).default
+    useDraftStore.setState({
+      phase: 'live',
+      isYourTurn: false,
+      picksUntilYourTurn: 2,
+      currentRound: 7,
+    })
+    render(
+      <MemoryRouter>
+        <SnakePanel />
+      </MemoryRouter>
+    )
+    expect(screen.getByText("You're up in 2 picks")).toBeInTheDocument()
+  })
+
+  it('AvailablePlayers shows adp_rank (not adp_ai) for snake leagues', async () => {
+    const { LeagueContext } = await import('../context/LeagueContext')
+    const AvailablePlayersCmp = (await import('../components/draft/AvailablePlayers')).default
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        // adp_ai is the tied float (4.0); adp_rank is the clean integer (1).
+        { id: 'p1', name: 'Bijan Robinson', position: 'RB', team_abbr: 'ATL',
+          adp_ai: 4.0, adp_rank: 1, adp_fantasypros: 2.0, adp_diff: 1.0 },
+      ],
+    })
+    render(
+      <MemoryRouter>
+        <LeagueContext.Provider
+          value={{ isSnake: true, isAuction: false, scoringFormat: 'ppr',
+                   selectedLeague: { draft_type: 'snake' }, setSelectedLeague() {} }}
+        >
+          <AvailablePlayersCmp />
+        </LeagueContext.Provider>
+      </MemoryRouter>
+    )
+    // Shows the integer rank, not the raw 4.0 adp_ai.
+    expect(screen.getByText('1')).toBeInTheDocument()
+    expect(screen.queryByText('4.0')).not.toBeInTheDocument()
   })
 
   it('rosterSlotsRemaining only decrements on isYours', () => {

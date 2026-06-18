@@ -77,7 +77,9 @@ class FrameRequest(BaseModel):
 
 
 class DraftEventPayload(BaseModel):
-    type: str        # nomination|bid_update|draft_pick|clock
+    # auction: nomination|bid_update|draft_pick|clock|my_bid|my_nomination
+    # snake:   your_turn|your_turn_soon|snake_pick
+    type: str
     platform: str    # yahoo|espn|sleeper
     payload: dict
 
@@ -117,6 +119,18 @@ async def relay_draft_event(
             )
             await _build_engine()
         await _trigger_nomination(event)
+    elif event.type == "your_turn":
+        # Snake: user on the clock — recommend best available. Lazily build the
+        # engine like a nomination so a redeploy mid-draft still yields a rec.
+        if _engine is None:
+            logger.warning(
+                "your_turn received with no live draft engine — lazily "
+                "initializing a default engine (a redeploy likely reset it)."
+            )
+            await _build_engine(draft_type="snake")
+        await _trigger_your_turn(event)
+    elif event.type == "snake_pick" and _engine is not None:
+        await _record_snake_pick(event)
     elif event.type == "draft_pick" and _engine is not None:
         await _record_pick(event)
     elif event.type == "my_bid" and _state is not None:
@@ -196,6 +210,33 @@ async def _record_pick(event: "DraftEventPayload") -> None:
         "final_price": final_price,
         "player_name": player_name,
         "position": player.position if player else "",
+    })
+
+
+async def _trigger_your_turn(event: "DraftEventPayload") -> None:
+    """Snake: user is on the clock — run the best-available recommendation."""
+    await _engine.on_your_turn({
+        "type": "your_turn",
+        "round": event.payload.get("round"),
+        "pick": event.payload.get("pick"),
+    })
+
+
+async def _record_snake_pick(event: "DraftEventPayload") -> None:
+    """Snake: record a confirmed pick into engine state.
+
+    The Yahoo console.error frame carries the real yahoo_player_id and the DOM
+    supplies the position, so no fuzzy name resolution is needed (snake-room
+    names are abbreviated like "J. DOBBINS" and would resolve poorly).
+    """
+    payload = event.payload
+    await _engine.on_pick_confirmed({
+        "type": "draft_pick",
+        "player_id": payload.get("yahoo_player_id", "") or "",
+        "team_id": payload.get("picker", "") or "",
+        "final_price": 0,
+        "player_name": payload.get("player_name", "") or "",
+        "position": payload.get("position", "") or "",
     })
 
 
