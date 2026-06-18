@@ -10,13 +10,14 @@ import SystemGradeBadge from './shared/SystemGradeBadge'
 import ValueComparisonBar from './shared/ValueComparisonBar'
 import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../lib/signals'
 import { useLeague } from '../context/LeagueContext'
-
-const SNAKE_FLAG_STYLE = {
-  VALUE: 'text-emerald-400 bg-emerald-500/15',
-  SLEEPER: 'text-purple-400 bg-purple-500/15',
-  TARGET: 'text-blue-400 bg-blue-500/15',
-  REACH: 'text-orange-400 bg-orange-500/15',
-}
+import {
+  getBidCeiling,
+  getDisplayAdp,
+  formatFpAdp,
+  formatAdpDiff,
+  getSnakeFlagClass,
+  getSnakeFlagLabel,
+} from '../utils/playerUtils'
 
 export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
   const { isSnake } = useLeague()
@@ -101,21 +102,14 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               {isSnake && (
                 <>
                   <div className="grid grid-cols-3 gap-3 mb-3">
-                    <StatBox label="AI ADP" value={player.adp_rank != null ? `#${player.adp_rank}` : '--'} accent />
-                    <StatBox label="FP ADP" value={player.adp_fantasypros != null ? player.adp_fantasypros.toFixed(1) : '--'} />
-                    <StatBox
-                      label="Diff"
-                      value={
-                        player.adp_diff != null
-                          ? `${player.adp_diff > 0 ? '+' : ''}${player.adp_diff.toFixed(0)}`
-                          : '--'
-                      }
-                    />
+                    <StatBox label="AI ADP" value={getDisplayAdp(player) != null ? `#${getDisplayAdp(player)}` : '--'} accent />
+                    <StatBox label="FP ADP" value={formatFpAdp(player)} />
+                    <StatBox label="Diff" value={formatAdpDiff(player)} />
                   </div>
-                  {player.snake_flag && (
+                  {getSnakeFlagLabel(player) && (
                     <div className="mb-3">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${SNAKE_FLAG_STYLE[player.snake_flag] || 'text-slate-400 bg-slate-500/15'}`}>
-                        {player.snake_flag}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSnakeFlagClass(player)}`}>
+                        {getSnakeFlagLabel(player)}
                       </span>
                     </div>
                   )}
@@ -130,10 +124,10 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               {/* Auction: the dollar valuation block (hidden for snake leagues) */}
               {!isSnake && (
               <>
-              <div className={`grid ${player.ai_bid_ceiling != null ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
+              <div className={`grid ${getBidCeiling(player) != null ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
                 <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
-                {player.ai_bid_ceiling != null && (
-                  <StatBox label="AI Ceiling" value={`$${player.ai_bid_ceiling}`} accent />
+                {getBidCeiling(player) != null && (
+                  <StatBox label="AI Ceiling" value={`$${getBidCeiling(player)}`} accent />
                 )}
                 <StatBox label="System" value={`$${player.baseline_value?.toFixed(0) || '--'}`} />
                 <StatBox
@@ -256,7 +250,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                       : player.profile.profile_source === 'college_comps' ? 'College Comp Profile'
                       : 'Historical'}
                   </span>
-                  {player.ai_bid_ceiling != null && player.profile.profile_source === 'college_comps' && (
+                  {getBidCeiling(player) != null && player.profile.profile_source === 'college_comps' && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
                       AI Calibrated
                     </span>

@@ -2,8 +2,10 @@ import PositionBadge from './PositionBadge'
 import FlagBadge from './FlagBadge'
 import ValueComparisonBar from './ValueComparisonBar'
 import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../../lib/signals'
+import { getBidCeiling } from '../../utils/playerUtils'
 
 export default function PlayerCardExpanded({ player, onClick }) {
+  const aiCeiling = getBidCeiling(player)
   return (
     <div
       onClick={() => onClick?.(player.id)}
@@ -31,9 +33,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
         {/* AI ceiling */}
         <div className="text-right w-16 shrink-0">
           <div className="text-sm text-purple-400 font-mono">
-            {player.ai_bid_ceiling != null
-              ? `$${player.ai_bid_ceiling}`
-              : '--'}
+            {aiCeiling != null ? `$${aiCeiling}` : '--'}
           </div>
           <div className="text-[10px] text-slate-500">AI ceil</div>
         </div>
@@ -60,9 +60,9 @@ export default function PlayerCardExpanded({ player, onClick }) {
 
         {/* Value gap — AI ceiling vs market */}
         <div className="w-24 shrink-0">
-          {player.ai_bid_ceiling != null && player.market_value != null ? (
+          {aiCeiling != null && player.market_value != null ? (
             <ValueComparisonBar
-              systemValue={player.ai_bid_ceiling}
+              systemValue={aiCeiling}
               marketValue={player.market_value}
             />
           ) : player.baseline_value != null && player.market_value != null ? (

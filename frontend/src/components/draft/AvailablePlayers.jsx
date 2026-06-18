@@ -5,6 +5,15 @@ import PositionBadge from '../shared/PositionBadge'
 import SearchInput from '../shared/SearchInput'
 import { FilterSelect } from '../shared/FilterBar'
 import { buildPositionOptions } from '../../lib/constants'
+import {
+  getBidCeiling,
+  getAdpDiff,
+  formatAdp,
+  formatFpAdp,
+  formatAdpDiff,
+  snakeSortComparator,
+  auctionSortComparator,
+} from '../../utils/playerUtils'
 
 const POSITION_OPTIONS = buildPositionOptions('All')
 
@@ -35,20 +44,9 @@ export default function AvailablePlayers() {
       )
     }
 
-    if (isSnake) {
-      // Snake: sort by AI ADP RANK ascending (clean 1..N — the value shown on
-      // the board). adp_ai is the raw clamped estimate with ties; adp_rank is
-      // the displayed rank. Players without a rank sort last.
-      return [...list].sort(
-        (a, b) => (a.adp_rank ?? Infinity) - (b.adp_rank ?? Infinity)
-      )
-    }
-    // Auction: sort by AI ceiling descending
-    return [...list].sort((a, b) => {
-      const ac = a.ai_bid_ceiling ?? a.recommended_bid_ceiling ?? 0
-      const bc = b.ai_bid_ceiling ?? b.recommended_bid_ceiling ?? 0
-      return bc - ac
-    })
+    // Snake sorts by adp_rank ascending; auction by AI ceiling descending —
+    // both via the shared comparators (single source of truth).
+    return [...list].sort(isSnake ? snakeSortComparator : auctionSortComparator)
   }, [availablePlayers, filter, isSnake])
 
   return (
@@ -99,17 +97,14 @@ export default function AvailablePlayers() {
       {/* Player list */}
       <div className="flex-1 overflow-y-auto">
         {filtered.map((p) => {
-          const ceiling = p.ai_bid_ceiling ?? p.recommended_bid_ceiling ?? null
+          const ceiling = getBidCeiling(p) ?? p.recommended_bid_ceiling ?? null
           const market = p.market_value ?? null
           const gap =
             ceiling != null && market != null ? ceiling - market : null
 
-          // Snake metrics. AI ADP = the clean integer rank (adp_rank), shown on
-          // the board. Diff = adp_diff (fp_rank − adp_rank) computed server-side;
-          // POSITIVE means FP ranks them later than us (we like them more).
-          const adpRank = p.adp_rank ?? null
-          const adpFp = p.adp_fantasypros ?? null
-          const adpDiff = p.adp_diff ?? null
+          // Snake metrics via playerUtils — AI ADP is the clean adp_rank, Diff
+          // is the server-computed adp_diff (positive = we like them more).
+          const adpDiff = getAdpDiff(p) // raw value drives the color thresholds
 
           return (
             <div
@@ -126,10 +121,10 @@ export default function AvailablePlayers() {
               {isSnake ? (
                 <>
                   <span className="text-sm font-mono text-blue-400 w-14 text-right">
-                    {adpRank != null ? adpRank : '--'}
+                    {formatAdp(p)}
                   </span>
                   <span className="text-xs font-mono text-slate-500 w-14 text-right">
-                    {adpFp != null ? adpFp.toFixed(1) : '--'}
+                    {formatFpAdp(p)}
                   </span>
                   <span
                     className={`text-xs font-mono w-10 text-right ${
@@ -140,9 +135,7 @@ export default function AvailablePlayers() {
                         : 'text-slate-600'
                     }`}
                   >
-                    {adpDiff != null
-                      ? `${adpDiff > 0 ? '+' : ''}${adpDiff.toFixed(0)}`
-                      : '--'}
+                    {formatAdpDiff(p)}
                   </span>
                 </>
               ) : (

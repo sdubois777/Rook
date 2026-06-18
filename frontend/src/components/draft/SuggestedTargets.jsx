@@ -2,6 +2,12 @@ import { useMemo } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
+import {
+  getBidCeiling,
+  formatAdp,
+  snakeSortComparator,
+  auctionSortComparator,
+} from '../../utils/playerUtils'
 
 // Starter lineup this league fields (bench excluded — bench never drives a
 // "need"). FLEX accepts RB/WR/TE.
@@ -47,9 +53,9 @@ export function getSuggestedTargets(
 
   return availablePlayers
     .filter(
-      (p) => needed.has(p.position) && (p.ai_bid_ceiling || 0) <= spendable
+      (p) => needed.has(p.position) && (getBidCeiling(p) || 0) <= spendable
     )
-    .sort((a, b) => (b.ai_bid_ceiling || 0) - (a.ai_bid_ceiling || 0))
+    .sort(auctionSortComparator)
     .slice(0, 8)
 }
 
@@ -61,7 +67,7 @@ export function getSnakeTargets(myRoster, availablePlayers) {
   return availablePlayers
     .filter((p) => needed.has(p.position))
     .slice()
-    .sort((a, b) => (a.adp_ai ?? Infinity) - (b.adp_ai ?? Infinity))
+    .sort(snakeSortComparator) // by adp_rank, NOT the tied adp_ai
     .slice(0, 8)
 }
 
@@ -70,13 +76,13 @@ export function getSnakeTargets(myRoster, availablePlayers) {
 function getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining) {
   const spendable = spendableFor(myBudget, rosterSlotsRemaining)
   return availablePlayers
-    .filter((p) => (p.ai_bid_ceiling || 0) <= spendable)
-    .sort((a, b) => (b.ai_bid_ceiling || 0) - (a.ai_bid_ceiling || 0))
+    .filter((p) => (getBidCeiling(p) || 0) <= spendable)
+    .sort(auctionSortComparator)
     .slice(0, 8)
 }
 
 function TargetRow({ player, isSnake }) {
-  const ceiling = player.ai_bid_ceiling || 0
+  const ceiling = getBidCeiling(player) || 0
   const market = player.market_value || 0
   const isValue = ceiling - market > 5
   return (
@@ -85,7 +91,7 @@ function TargetRow({ player, isSnake }) {
       <span className="text-sm text-slate-300 flex-1 truncate">{player.name}</span>
       {isSnake ? (
         <span className="text-sm font-mono text-blue-400">
-          ADP {player.adp_ai != null ? player.adp_ai.toFixed(1) : '--'}
+          ADP {formatAdp(player)}
         </span>
       ) : (
         <>

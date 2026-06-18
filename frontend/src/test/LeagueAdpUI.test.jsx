@@ -95,7 +95,7 @@ describe('AvailablePlayers league toggle', () => {
     expect(screen.getByText('FP ADP')).toBeInTheDocument()
     expect(screen.queryByText('Ceiling')).not.toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument() // adp_rank rendered (not adp_ai 3.0)
-    expect(screen.getByText('4.0')).toBeInTheDocument() // FP ADP rendered
+    expect(screen.getByText('4')).toBeInTheDocument() // FP ADP rendered as integer rank
   })
 
   it('shows dollar columns for auction', () => {
@@ -110,11 +110,12 @@ describe('AvailablePlayers league toggle', () => {
 })
 
 describe('SuggestedTargets snake ordering', () => {
-  it('sorts by ADP ascending for snake', () => {
+  it('sorts by adp_rank ascending for snake (not adp_ai)', () => {
+    // adp_ai is tied/misleading; ordering must follow adp_rank.
     const players = [
-      { id: 'a', name: 'A', position: 'RB', adp_ai: 30 },
-      { id: 'b', name: 'B', position: 'WR', adp_ai: 10 },
-      { id: 'c', name: 'C', position: 'TE', adp_ai: 20 },
+      { id: 'a', name: 'A', position: 'RB', adp_ai: 5, adp_rank: 30 },
+      { id: 'b', name: 'B', position: 'WR', adp_ai: 5, adp_rank: 10 },
+      { id: 'c', name: 'C', position: 'TE', adp_ai: 5, adp_rank: 20 },
     ]
     const out = getSnakeTargets([], players)
     expect(out.map((p) => p.name)).toEqual(['B', 'C', 'A'])

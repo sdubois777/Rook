@@ -2,6 +2,7 @@ import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
 import FlagBadge from '../shared/FlagBadge'
+import { getRecAdp, getRecFpAdp, getRecAdpDiff } from '../../utils/playerUtils'
 
 // Keys are LOWERCASE — the engine sends action as buy|bid_to|block|pass.
 export const ACTION_STYLES = {
@@ -69,7 +70,7 @@ export default function RecommendationPanel() {
         <div className="flex items-center justify-between mb-1.5">
           <span className={`text-2xl font-bold ${style.text}`}>
             {isSnake
-              ? `TARGET PICK ${rec.adp_ai != null ? Math.round(rec.adp_ai) : '--'}`
+              ? `TARGET PICK ${getRecAdp(rec) ?? '--'}`
               : formatAction(rec.action, rec.bid_ceiling)}
           </span>
           <span className={`text-xs px-2 py-0.5 rounded-full ${confStyle}`}>
@@ -111,9 +112,9 @@ export default function RecommendationPanel() {
       {/* Values + budget — single compact lines (auction $ vs snake ADP) */}
       {isSnake ? (
         <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
-          <span>AI ADP <span className="text-blue-400">{rec.adp_ai ?? '--'}</span></span>
-          <span>FP ADP <span className="text-slate-300">{rec.adp_fp ?? '--'}</span></span>
-          <span>Diff <span className="text-slate-300">{rec.adp_diff ?? '--'}</span></span>
+          <span>AI ADP <span className="text-blue-400">{getRecAdp(rec) ?? '--'}</span></span>
+          <span>FP ADP <span className="text-slate-300">{getRecFpAdp(rec) ?? '--'}</span></span>
+          <span>Diff <span className="text-slate-300">{getRecAdpDiff(rec) ?? '--'}</span></span>
         </div>
       ) : (
         <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">

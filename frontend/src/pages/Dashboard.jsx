@@ -12,6 +12,13 @@ import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
 import PositionBadge from '../components/shared/PositionBadge'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
+import {
+  getBidCeiling,
+  getAdpDiff,
+  formatAdp,
+  formatFpAdp,
+  formatAdpDiff,
+} from '../utils/playerUtils'
 
 function useCountdown() {
   const now = new Date()
@@ -194,10 +201,10 @@ export default function Dashboard() {
                       <PositionBadge position={p.position} />
                       <span className="text-slate-300 truncate flex-1">{p.name}</span>
                       <span className="text-slate-500 font-mono text-[10px]">
-                        #{p.adp_rank ?? '--'} · FP {p.adp_fantasypros != null ? p.adp_fantasypros.toFixed(0) : '--'}
+                        #{formatAdp(p)} · FP {formatFpAdp(p)}
                       </span>
-                      <span className={`font-mono text-xs ${p.adp_diff != null && p.adp_diff > 0 ? 'text-emerald-400' : 'text-orange-400'}`}>
-                        {p.adp_diff != null ? `${p.adp_diff > 0 ? '+' : ''}${p.adp_diff.toFixed(0)}` : '--'}
+                      <span className={`font-mono text-xs ${getAdpDiff(p) != null && getAdpDiff(p) > 0 ? 'text-emerald-400' : 'text-orange-400'}`}>
+                        {formatAdpDiff(p)}
                       </span>
                     </div>
                   ))}
@@ -212,8 +219,8 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-1.5">
                 {(valueData?.players || [])
-                  .filter((p) => p.ai_bid_ceiling != null && p.market_value != null)
-                  .map((p) => ({ ...p, _aiGap: p.ai_bid_ceiling - p.market_value }))
+                  .filter((p) => getBidCeiling(p) != null && p.market_value != null)
+                  .map((p) => ({ ...p, _aiGap: getBidCeiling(p) - p.market_value }))
                   .filter((p) => p._aiGap > 0)
                   .sort((a, b) => b._aiGap - a._aiGap)
                   .slice(0, 8)

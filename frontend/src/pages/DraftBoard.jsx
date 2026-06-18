@@ -11,6 +11,17 @@ import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
 import { buildPositionOptions } from '../lib/constants'
+import {
+  getBidCeiling,
+  getDisplayAdp,
+  getFpAdp,
+  getAdpDiff,
+  formatAdp,
+  formatFpAdp,
+  formatAdpDiff,
+  getSnakeFlagClass,
+  getSnakeFlagLabel,
+} from '../utils/playerUtils'
 
 const STRATEGY_OPTIONS = [
   { value: '', label: 'No Strategy' },
@@ -48,17 +59,8 @@ function getPlayerBadges(p) {
 }
 
 function getPlayerGap(p) {
-  return p.ai_bid_ceiling != null && p.market_value != null
-    ? p.ai_bid_ceiling - p.market_value
-    : null
-}
-
-// Snake flag badge colors: VALUE green, SLEEPER purple, TARGET blue, REACH orange.
-const SNAKE_FLAG_STYLE = {
-  VALUE: 'text-emerald-400 bg-emerald-500/15',
-  SLEEPER: 'text-purple-400 bg-purple-500/15',
-  TARGET: 'text-blue-400 bg-blue-500/15',
-  REACH: 'text-orange-400 bg-orange-500/15',
+  const ceiling = getBidCeiling(p)
+  return ceiling != null && p.market_value != null ? ceiling - p.market_value : null
 }
 
 function sortPlayers(players, sortKey, sortOrder) {
@@ -71,15 +73,15 @@ function sortPlayers(players, sortKey, sortOrder) {
       case 'tier': va = a.tier ?? 99; vb = b.tier ?? 99; break
       case 'name': va = a.name?.toLowerCase() ?? ''; vb = b.name?.toLowerCase() ?? ''; break
       case 'ceiling': va = a.recommended_bid_ceiling ?? -Infinity; vb = b.recommended_bid_ceiling ?? -Infinity; break
-      case 'ai_ceiling': va = a.ai_bid_ceiling ?? -Infinity; vb = b.ai_bid_ceiling ?? -Infinity; break
+      case 'ai_ceiling': va = getBidCeiling(a) ?? -Infinity; vb = getBidCeiling(b) ?? -Infinity; break
       case 'system': va = a.baseline_value ?? -Infinity; vb = b.baseline_value ?? -Infinity; break
       case 'market': va = a.market_value ?? -Infinity; vb = b.market_value ?? -Infinity; break
       case 'ppr': va = a.ppr_points ?? -Infinity; vb = b.ppr_points ?? -Infinity; break
       case 'gap': va = getPlayerGap(a) ?? -Infinity; vb = getPlayerGap(b) ?? -Infinity; break
       // Snake: nulls always sort last regardless of direction.
-      case 'adp_rank': va = a.adp_rank ?? Infinity; vb = b.adp_rank ?? Infinity; break
-      case 'adp_fantasypros': va = a.adp_fantasypros ?? Infinity; vb = b.adp_fantasypros ?? Infinity; break
-      case 'adp_diff': va = a.adp_diff ?? -Infinity; vb = b.adp_diff ?? -Infinity; break
+      case 'adp_rank': va = getDisplayAdp(a) ?? Infinity; vb = getDisplayAdp(b) ?? Infinity; break
+      case 'adp_fantasypros': va = getFpAdp(a) ?? Infinity; vb = getFpAdp(b) ?? Infinity; break
+      case 'adp_diff': va = getAdpDiff(a) ?? -Infinity; vb = getAdpDiff(b) ?? -Infinity; break
       default: va = a.tier ?? 99; vb = b.tier ?? 99; break
     }
     if (typeof va === 'string') return va < vb ? -dir : va > vb ? dir : 0
@@ -264,10 +266,11 @@ export default function DraftBoard() {
       const players = tiers[tierKey] || []
       lines.push(`--- TIER ${tierKey} ---`)
       for (const p of players) {
-        const ceiling = p.ai_bid_ceiling ?? p.recommended_bid_ceiling?.toFixed(0) ?? '--'
+        const aiCeiling = getBidCeiling(p)
+        const ceiling = aiCeiling ?? p.recommended_bid_ceiling?.toFixed(0) ?? '--'
         const market = p.market_value?.toFixed(0) ?? '--'
-        const gap = p.ai_bid_ceiling != null && p.market_value != null
-          ? (p.ai_bid_ceiling - p.market_value > 0 ? '+' : '') + (p.ai_bid_ceiling - p.market_value).toFixed(0)
+        const gap = aiCeiling != null && p.market_value != null
+          ? (aiCeiling - p.market_value > 0 ? '+' : '') + (aiCeiling - p.market_value).toFixed(0)
           : '--'
         lines.push(`${p.position.padEnd(3)} ${p.name.padEnd(22)} ${p.team_abbr.padEnd(5)} Ceil:$${ceiling.toString().padStart(3)}  Mkt:$${market.toString().padStart(3)}  Gap:${gap}`)
       }
@@ -329,32 +332,30 @@ export default function DraftBoard() {
 
           {isSnake ? (
             <>
-              {/* Snake: AI ADP (clean rank) / FP ADP / Diff (adp_fantasypros -
-                  adp_ai; positive = we rate them earlier than consensus). */}
+              {/* Snake: AI ADP (clean adp_rank) / FP ADP / Diff (fp_rank -
+                  adp_rank; positive = we rate them earlier than consensus). */}
               <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
-                {p.adp_rank != null ? p.adp_rank : '--'}
+                {formatAdp(p)}
               </span>
               <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
-                {p.adp_fantasypros != null ? p.adp_fantasypros.toFixed(1) : '--'}
+                {formatFpAdp(p)}
               </span>
               <span
                 className={`text-xs font-mono w-16 shrink-0 text-right ${
-                  p.adp_diff != null && p.adp_diff > 3
+                  getAdpDiff(p) != null && getAdpDiff(p) > 3
                     ? 'text-emerald-400'
-                    : p.adp_diff != null && p.adp_diff < -3
+                    : getAdpDiff(p) != null && getAdpDiff(p) < -3
                     ? 'text-red-400'
                     : 'text-slate-500'
                 }`}
               >
-                {p.adp_diff != null
-                  ? `${p.adp_diff > 0 ? '+' : ''}${p.adp_diff.toFixed(0)}`
-                  : '--'}
+                {formatAdpDiff(p)}
               </span>
             </>
           ) : (
             <>
               <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
-                {p.ai_bid_ceiling != null ? `$${p.ai_bid_ceiling}` : '--'}
+                {getBidCeiling(p) != null ? `$${getBidCeiling(p)}` : '--'}
               </span>
               <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 ${p.market_value?.toFixed(0) || '--'}
@@ -382,13 +383,11 @@ export default function DraftBoard() {
           {/* Flags — snake shows the snake_flag; auction shows the $ badges */}
           <div className="flex gap-1 ml-auto flex-wrap justify-end">
             {isSnake ? (
-              p.snake_flag && (
+              getSnakeFlagLabel(p) && (
                 <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                    SNAKE_FLAG_STYLE[p.snake_flag] || 'text-slate-400 bg-slate-500/15'
-                  }`}
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSnakeFlagClass(p)}`}
                 >
-                  {p.snake_flag}
+                  {getSnakeFlagLabel(p)}
                 </span>
               )
             ) : (
@@ -457,8 +456,9 @@ export default function DraftBoard() {
     if (!isTierSort && !isRoundGroup) return null
     const groups = {}
     for (const p of sortedPlayers) {
+      const rank = getDisplayAdp(p)
       const key = isRoundGroup
-        ? String(p.adp_rank != null ? Math.floor((p.adp_rank - 1) / teamCount) + 1 : 0)
+        ? String(rank != null ? Math.floor((rank - 1) / teamCount) + 1 : 0)
         : String(p.tier ?? 0)
       if (!groups[key]) groups[key] = []
       groups[key].push(p)

@@ -6,11 +6,13 @@
  * players within auction-noise gaps.
  */
 
+import { getBidCeiling } from '../utils/playerUtils'
+
 const BUY_ASSESSMENTS = ['elite_value', 'good_value']
 
 export function getDisplaySignal(player) {
   const price = player.market_value_league || 0
-  const gap = (player.ai_bid_ceiling || 0) - price
+  const gap = (getBidCeiling(player) || 0) - price
   const assessment = player.value_assessment
   const payUp = player.pay_up_flag
 

@@ -17,14 +17,14 @@ vi.mock('../api/draftboard', () => ({
         {
           id: 'p1', name: 'Bijan Robinson', position: 'RB', team_abbr: 'ATL', tier: 1,
           ai_bid_ceiling: 80, market_value: 50, recommended_bid_ceiling: 80, ppr_points: 300,
-          adp_ai: 3.0, adp_fantasypros: 1.5, adp_scoring: 'ppr', value_assessment: 'good_value',
-          adp_rank: 1, adp_diff: -1.5, snake_flag: 'TARGET', round_num: 1,
+          adp_ai: 3.0, adp_fantasypros: 5, adp_scoring: 'ppr', value_assessment: 'good_value',
+          adp_rank: 1, adp_diff: -4, snake_flag: 'TARGET', round_num: 1,
         },
         {
           id: 'p2', name: 'Josh Allen', position: 'QB', team_abbr: 'BUF', tier: 1,
           ai_bid_ceiling: 48, market_value: 27, recommended_bid_ceiling: 48, ppr_points: 400,
-          adp_ai: 28.0, adp_fantasypros: 27.5, adp_scoring: 'ppr',
-          adp_rank: 14, adp_diff: -0.5, snake_flag: 'VALUE', round_num: 2,
+          adp_ai: 28.0, adp_fantasypros: 9, adp_scoring: 'ppr',
+          adp_rank: 14, adp_diff: -5, snake_flag: 'VALUE', round_num: 2,
         },
       ],
     },
@@ -58,8 +58,8 @@ describe('DraftBoard league toggle', () => {
     expect(screen.getAllByText('FP ADP').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Diff').length).toBeGreaterThan(0)
     expect(screen.queryByText('AI Ceil')).not.toBeInTheDocument()
-    // FP ADP value rendered (Bijan 1.5, unique)
-    expect(screen.getByText('1.5')).toBeInTheDocument()
+    // FP ADP value rendered (Bijan fp_rank 5, unique)
+    expect(screen.getByText('5')).toBeInTheDocument()
   })
 
   it('shows ceiling columns when auction', async () => {
