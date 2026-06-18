@@ -180,6 +180,10 @@ export default function useDraftSocket() {
               break
             case 'snake_pick':
               recordSnakePick(data.payload || {})
+              // Any pick (yours or otherwise) ends the on-the-clock state until
+              // the next your_turn event arrives.
+              setIsYourTurn(false)
+              setPicksUntilYourTurn(null)
               break
           }
         } catch {

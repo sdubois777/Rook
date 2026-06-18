@@ -341,18 +341,16 @@ export const useDraftStore = create((set, get) => ({
           pick.picker &&
           normalizeName(pick.picker) === normalizeName(state.myTeamName))
 
-      // Remove ONLY the drafted player — guard id checks so undefined !==
-      // undefined can't wipe the whole list (same lesson as auction recordPick).
-      const fromAvailable = state.availablePlayers.find(
-        (p) => pickName !== '' && normalizeName(p.name) === pickName
-      )
-      const newAvailable = state.availablePlayers.filter((p) => {
-        const idMatch =
-          pick.yahoo_player_id != null &&
-          p.yahoo_player_id === pick.yahoo_player_id
-        const nameMatch = pickName !== '' && normalizeName(p.name) === pickName
-        return !(idMatch || nameMatch)
-      })
+      // Match the picked player by UUID id (backend enriches snake_pick with the
+      // canonical id from yahoo_player_id), then yahoo_player_id, then normalized
+      // name. Guard each so undefined === undefined can't wipe the whole list.
+      const matchesPick = (p) =>
+        (pick.id != null && p.id === pick.id) ||
+        (pick.yahoo_player_id != null && p.yahoo_player_id === pick.yahoo_player_id) ||
+        (pickName !== '' && normalizeName(p.name) === pickName)
+
+      const fromAvailable = state.availablePlayers.find(matchesPick)
+      const newAvailable = state.availablePlayers.filter((p) => !matchesPick(p))
 
       const winner = pick.picker || 'Unknown'
       const teamPicks = {

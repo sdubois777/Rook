@@ -126,3 +126,21 @@ export function detectSnakeEvents(prev, curr) {
   next.lastPicksUntil = curr.picksUntilYourTurn
   return { events, next }
 }
+
+/**
+ * Build the snake_pick relay payload from a Yahoo console.error ['0'] frame
+ * (['0', league, draft, pick_number, yahoo_player_id]) and the current parsed
+ * state. Yahoo logs the ['0'] frame only for YOUR OWN picks (same as ['B']/['N']
+ * in auction), so the pick is always attributed to you. Pure/testable.
+ */
+export function buildSnakePickPayload(frame, state) {
+  return {
+    pick_number: frame[3],
+    yahoo_player_id: String(frame[4]),
+    player_name: state?.lastPick?.player_name || null,
+    position: state?.lastPick?.position || null,
+    picker: 'You',
+    is_yours: true,
+    round: state?.currentRound ?? null,
+  }
+}

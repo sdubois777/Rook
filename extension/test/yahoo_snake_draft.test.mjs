@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import {
   parseSnakeState,
   detectSnakeEvents,
+  buildSnakePickPayload,
 } from '../src/content_scripts/yahoo_snake_draft_observer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -115,4 +116,26 @@ test('detectSnakeEvents emits nothing when far from your pick', () => {
   )
   const r = detectSnakeEvents({ wasYourTurn: false, lastPicksUntil: null }, far)
   assert.equal(r.events.length, 0)
+})
+
+// ['0', league, draft, pick_number, yahoo_player_id] — your own pick frame.
+const PICK_FRAME = ['0', 'l1', 'd1', 84, 'nfl.p.123']
+
+test('buildSnakePickPayload marks the pick is_yours true', () => {
+  const state = parseSnakeState(YOUR_TURN)
+  const p = buildSnakePickPayload(PICK_FRAME, state)
+  assert.equal(p.is_yours, true)
+})
+
+test('buildSnakePickPayload sets picker to You', () => {
+  const p = buildSnakePickPayload(PICK_FRAME, parseSnakeState(YOUR_TURN))
+  assert.equal(p.picker, 'You')
+})
+
+test('buildSnakePickPayload carries pick number and yahoo id', () => {
+  const p = buildSnakePickPayload(PICK_FRAME, parseSnakeState(SOMEONE_ELSE))
+  assert.equal(p.pick_number, 84)
+  assert.equal(p.yahoo_player_id, 'nfl.p.123')
+  // player_name comes from the "Last:" line (abbreviated — backend resolves it).
+  assert.equal(p.player_name, 'J. DOBBINS')
 })

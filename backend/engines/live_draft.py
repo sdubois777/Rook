@@ -709,11 +709,38 @@ class LiveDraftEngine:
         rec["elapsed_ms"] = round(elapsed)
         self.last_recommendation = rec
         logger.info(
-            "Your-turn rec (R%s P%s) in %.0fms: %s %s",
+            "Your-turn rec built (R%s P%s) in %.0fms: player=%s action=%s",
             round_num, pick_num, elapsed,
-            rec.get("action"), rec.get("player_name"),
+            rec.get("player_name"), rec.get("action"),
         )
-        await self.ws_manager.broadcast(rec)
+
+        # Broadcast an EXPLICIT payload rather than spreading rec — guarantees
+        # the UI always receives the full recommendation shape, and surfaces a
+        # loud error if the recommendation ever came back empty.
+        if rec and rec.get("player_name"):
+            await self.ws_manager.broadcast({
+                "type": "recommendation",
+                "action": rec.get("action"),
+                "player_name": rec.get("player_name"),
+                "reasoning": rec.get("reasoning"),
+                "adp_rank": rec.get("adp_rank"),
+                "adp_fp": rec.get("adp_fp"),
+                "adp_diff": rec.get("adp_diff"),
+                "can_wait": rec.get("can_wait"),
+                "wait_until_pick": rec.get("wait_until_pick"),
+                "confidence": rec.get("confidence"),
+                "position": rec.get("position"),
+                "position_need": rec.get("position_need"),
+                "round": rec.get("round"),
+                "pick": rec.get("pick"),
+                "elapsed_ms": rec.get("elapsed_ms"),
+            })
+        else:
+            logger.error(
+                "on_your_turn: recommendation is empty (R%s P%s) — the Sonnet "
+                "call or parse may have failed",
+                round_num, pick_num,
+            )
 
     async def _get_top_available(self) -> list[dict]:
         """Top available skill players by adp_rank, excluding drafted ids."""

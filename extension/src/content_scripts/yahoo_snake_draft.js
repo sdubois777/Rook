@@ -4,6 +4,7 @@ import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
 import {
   parseSnakeState,
   detectSnakeEvents,
+  buildSnakePickPayload,
 } from './yahoo_snake_draft_observer.mjs'
 
 /**
@@ -77,7 +78,6 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
   if (!Array.isArray(data) || data[0] !== '0') return
 
   const pickNumber = data[3]
-  const yahooPlayerId = String(data[4])
 
   // Guard against the same frame firing twice.
   if (pickNumber === lastPickNumber) return
@@ -91,14 +91,7 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
     await postDraftEvent({
       type: 'snake_pick',
       platform: 'yahoo',
-      payload: {
-        pick_number: pickNumber,
-        yahoo_player_id: yahooPlayerId,
-        player_name: state?.lastPick?.player_name || null,
-        position: state?.lastPick?.position || null,
-        picker: state?.currentPicker || 'unknown',
-        round: state?.currentRound ?? null,
-      },
+      payload: buildSnakePickPayload(data, state),
     })
   } catch {
     // Ignore relay failures — the next poll keeps state moving

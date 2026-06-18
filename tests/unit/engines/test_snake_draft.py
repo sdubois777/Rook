@@ -317,3 +317,27 @@ def test_your_turn_prompt_has_value_vs_consensus():
     assert "can_wait" in p
     assert "wait_until_pick" in p
     assert "FORBIDDEN" in p
+
+
+def test_on_your_turn_broadcasts_full_payload():
+    # The broadcast must carry the full recommendation, never an empty dict.
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    msg = ws.broadcast.call_args[0][0]
+    assert msg != {}
+    for key in (
+        "type", "action", "player_name", "reasoning", "adp_rank", "adp_fp",
+        "adp_diff", "can_wait", "wait_until_pick", "confidence", "position",
+        "position_need", "round", "pick", "elapsed_ms",
+    ):
+        assert key in msg, f"missing {key} in broadcast payload"
+    assert msg["player_name"] == "Bijan Robinson"
+
+
+def test_on_your_turn_skips_broadcast_on_empty_rec():
+    # If the parsed recommendation has no player_name, the guard must skip the
+    # broadcast (and log) rather than push an empty card to the UI.
+    eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    eng._parse_your_turn_recommendation = lambda *a, **k: {"type": "recommendation"}
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    ws.broadcast.assert_not_called()

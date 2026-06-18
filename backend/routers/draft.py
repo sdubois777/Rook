@@ -129,7 +129,9 @@ async def relay_draft_event(
             )
             await _build_engine(draft_type="snake")
         await _trigger_your_turn(event)
-    elif event.type == "snake_pick" and _engine is not None:
+    elif event.type == "snake_pick":
+        # Enrich the payload (canonical name + UUID id) regardless of engine
+        # state, so the UI can always match and remove the picked player.
         await _record_snake_pick(event)
     elif event.type == "draft_pick" and _engine is not None:
         await _record_pick(event)
@@ -222,22 +224,51 @@ async def _trigger_your_turn(event: "DraftEventPayload") -> None:
     })
 
 
-async def _record_snake_pick(event: "DraftEventPayload") -> None:
-    """Snake: record a confirmed pick into engine state.
+async def _resolve_player_by_yahoo_id(yahoo_player_id: str):
+    """Look up a Player by its Yahoo id (the console.error frame's id)."""
+    if not yahoo_player_id:
+        return None
+    from sqlalchemy import select
+    from backend.database import AsyncSessionLocal
+    from backend.models.player import Player
 
-    The Yahoo console.error frame carries the real yahoo_player_id and the DOM
-    supplies the position, so no fuzzy name resolution is needed (snake-room
-    names are abbreviated like "J. DOBBINS" and would resolve poorly).
+    async with AsyncSessionLocal() as session:
+        return (
+            await session.execute(
+                select(Player).where(Player.yahoo_player_id == yahoo_player_id)
+            )
+        ).scalar_one_or_none()
+
+
+async def _record_snake_pick(event: "DraftEventPayload") -> None:
+    """Snake: enrich the pick payload and record it into engine state.
+
+    The Yahoo console.error ['0'] frame carries the real yahoo_player_id, but the
+    DOM 'Last:' name is abbreviated ("J. DOBBINS") and draftboard rows have a
+    UUID id + full name with NO yahoo_player_id — so neither id nor name matching
+    works on the frontend as-is. Resolve the canonical Player by yahoo_player_id
+    (same id the auction my_bid recovery relies on) and write the full name +
+    UUID id + position back onto the payload IN PLACE, so the subsequent
+    broadcast relays data the UI can match.
     """
     payload = event.payload
-    await _engine.on_pick_confirmed({
-        "type": "draft_pick",
-        "player_id": payload.get("yahoo_player_id", "") or "",
-        "team_id": payload.get("picker", "") or "",
-        "final_price": 0,
-        "player_name": payload.get("player_name", "") or "",
-        "position": payload.get("position", "") or "",
-    })
+    ypid = payload.get("yahoo_player_id", "") or ""
+
+    player = await _resolve_player_by_yahoo_id(ypid)
+    if player is not None:
+        payload["id"] = str(player.id)
+        payload["player_name"] = player.name
+        payload["position"] = player.position or payload.get("position") or ""
+
+    if _engine is not None:
+        await _engine.on_pick_confirmed({
+            "type": "draft_pick",
+            "player_id": ypid,
+            "team_id": payload.get("picker", "") or "",
+            "final_price": 0,
+            "player_name": payload.get("player_name", "") or "",
+            "position": payload.get("position", "") or "",
+        })
 
 
 async def _build_engine(

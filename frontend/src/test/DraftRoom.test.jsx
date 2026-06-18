@@ -1511,6 +1511,101 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().availablePlayers).toHaveLength(2)
   })
 
+  it('snake_pick WS message resets isYourTurn to false', async () => {
+    useDraftStore.setState({ phase: 'live', isYourTurn: true, picksUntilYourTurn: 0 })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'snake_pick',
+          payload: { player_name: 'Bijan Robinson', is_yours: true, picker: 'You' },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.isYourTurn).toBe(false)
+    expect(s.picksUntilYourTurn).toBeNull()
+  })
+
+  it('recordSnakePick adds to roster when is_yours (no team-name match needed)', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null, // is_yours flag alone must suffice
+      rosterSlotsRemaining: 16,
+      myRoster: [],
+      availablePlayers: [
+        { id: 'u7', name: 'J.K. Dobbins', position: 'RB', yahoo_player_id: 'y1' },
+      ],
+    })
+
+    act(() => {
+      // Backend-enriched payload: canonical id + full name.
+      useDraftStore.getState().recordSnakePick({
+        id: 'u7',
+        player_name: 'J.K. Dobbins',
+        position: 'RB',
+        is_yours: true,
+        picker: 'You',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.myRoster.map((p) => p.player_name)).toContain('J.K. Dobbins')
+    expect(s.rosterSlotsRemaining).toBe(15)
+    expect(s.availablePlayers).toHaveLength(0)
+  })
+
+  it('recordSnakePick removes from available by enriched UUID id', () => {
+    // Draftboard rows have a UUID id but no yahoo_player_id; the backend enriches
+    // the pick with that id, so id-matching must remove the right player.
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'uuid-1', name: 'J.K. Dobbins', position: 'RB' },
+        { id: 'uuid-2', name: 'Bijan Robinson', position: 'RB' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        id: 'uuid-1',
+        player_name: 'J. DOBBINS', // abbreviated — name wouldn't match
+        picker: 'You',
+        is_yours: true,
+      })
+    })
+
+    expect(useDraftStore.getState().availablePlayers.map((p) => p.name)).toEqual(['Bijan Robinson'])
+  })
+
+  it('recordSnakePick removes from available by full normalized name', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      availablePlayers: [
+        { id: 'a', name: 'Bijan Robinson', position: 'RB' },
+        { id: 'b', name: 'Josh Allen', position: 'QB' },
+      ],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Bijan Robinson', // enriched full name from backend
+        picker: 'You',
+        is_yours: true,
+      })
+    })
+
+    expect(useDraftStore.getState().availablePlayers.map((p) => p.name)).toEqual(['Josh Allen'])
+  })
+
   it('SnakePanel shows YOUR TURN when on the clock', async () => {
     const SnakePanel = (await import('../components/draft/SnakePanel')).default
     useDraftStore.setState({
