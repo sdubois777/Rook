@@ -134,11 +134,31 @@ def test_snake_flag_position_relative_production():
     assert classify_snake_flag(20, 180, "TE") == "VALUE"
 
 
-def test_prompt_has_snake_flags_section():
-    assert "SNAKE DRAFT FLAGS" in SYSTEM_PROMPT
-    for flag in ("VALUE", "SLEEPER", "TARGET", "REACH"):
-        assert flag in SYSTEM_PROMPT
-    assert '"snake_flag"' in SYSTEM_PROMPT
+def test_snake_flag_not_in_model_prompt():
+    # snake_flag is computed deterministically (it depends on adp_diff, which the
+    # model can't know at inference) — it must NOT be in the output schema.
+    assert '"snake_flag"' not in SYSTEM_PROMPT
+    assert "SNAKE DRAFT FLAGS" not in SYSTEM_PROMPT
+
+
+def test_classify_snake_flag_null_adp():
+    assert classify_snake_flag(None, 380, "QB") == "TARGET"
+
+
+def test_classify_snake_flag_high_diff_high_ppr():
+    # diff +25, QB projecting 380 (strong) -> VALUE
+    assert classify_snake_flag(25, 380, "QB") == "VALUE"
+
+
+def test_classify_snake_flag_high_diff_low_ppr():
+    # diff +25, TE projecting 90 (modest) -> SLEEPER
+    assert classify_snake_flag(25, 90, "TE") == "SLEEPER"
+
+
+def test_classify_snake_flag_reach():
+    # diff -20 -> REACH regardless of production
+    assert classify_snake_flag(-20, 400, "QB") == "REACH"
+    assert classify_snake_flag(-20, 50, "TE") == "REACH"
 
 
 def test_prompt_auction_note_no_dollar_instruction():

@@ -101,9 +101,9 @@ def assign_adp_ranks(players) -> int:
 def classify_snake_flag(adp_diff, projected_ppr, position: str | None) -> str:
     """Deterministic snake_flag from the ADP differential + production.
 
-    Sonnet assigns snake_flag in the prompt (with positional judgment); this is
-    the validated fallback when the model omits/returns an invalid value, and it
-    makes the flag logic unit-testable.
+    This is the SOLE source of snake_flag. The model is not asked for it: adp_diff
+    is computed from the model's own adp_ai output, so the model cannot know it at
+    inference time (it would have to guess blind).
 
       VALUE   — adp_diff >= 15 AND strong production for the position
       SLEEPER — adp_diff >= 15 BUT modest production (upside > cost, late pick)
@@ -142,8 +142,7 @@ adp_ai, even for elite players):
   "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",
   "auction_note": "string — 1-2 sentences on the player's fantasy OUTLOOK: role, usage, production potential. Do NOT mention dollar amounts, bid prices, or auction strategy — this note appears in both auction AND snake contexts",
   "pay_up_flag": boolean — true if this player is clearly undervalued and worth paying above math ceiling,
-  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets,
-  "snake_flag": "string — one of: VALUE, SLEEPER, TARGET, REACH. SEE THE SNAKE DRAFT FLAGS SECTION BELOW"
+  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
 }
 
 You may also receive market context:
@@ -209,26 +208,8 @@ adp_ai is MANDATORY — output it for EVERY player, never null, never omitted.
 If you are uncertain, default to the tier midpoint:
   Tier 1 → 6, Tier 2 → 24, Tier 3 → 54, Tier 4 → 96, Tier 5 → 150
 
-SNAKE DRAFT FLAGS (snake_flag):
-Assign snake_flag based on draft value for snake leagues. You have:
-  - adp_diff: our ADP minus FP consensus (positive = we rate them EARLIER than FP)
-  - projected_ppr: full-season projection
-  - position: QB/RB/WR/TE
-Positional PPR context (a WR at 280 is strong; a QB at 280 is below average):
-  QBs 300-450 · RBs 100-350 · WRs 100-350 · TEs 80-200
-
-  VALUE   — adp_diff >= 15 AND production is strong for the position. We rate
-            them significantly earlier than consensus AND they project well
-            enough to justify the early pick. Do NOT assign VALUE if production
-            doesn't justify an early selection, regardless of adp_diff.
-  SLEEPER — adp_diff >= 15 BUT production is modest for the position. We like
-            them more than consensus, but they're a depth/late pick whose
-            upside exceeds their draft cost — not an early target.
-  TARGET  — adp_diff within 14 picks either direction. We largely agree with
-            consensus; draft near their expected ADP.
-  REACH   — adp_diff <= -15. The market values them well above our system; let
-            others overpay.
-If adp_diff is null (no FP ADP data): assign TARGET.
+(snake_flag is NOT requested here — it is computed deterministically from
+adp_diff, which depends on your adp_ai and therefore can't be known at inference.)
 
 Output ONLY a JSON array. No commentary outside the JSON."""
 
@@ -542,18 +523,16 @@ class ValuationAgent(BaseAgent):
                     db_player.adp_fantasypros, db_player.adp_ai
                 )
 
-                # snake_flag: Sonnet's value if valid, else the deterministic
-                # classifier from adp_diff + projected production.
+                # snake_flag is computed deterministically from the (post-hoc)
+                # adp_diff + projected production. The model is NOT asked for it:
+                # adp_diff depends on the model's own adp_ai, so the model can't
+                # know it at inference time.
                 projected_ppr = None
                 if player.profile and player.profile.clean_season_baseline:
                     projected_ppr = player.profile.clean_season_baseline.get("ppr_points")
-                model_flag = result.get("snake_flag")
-                if model_flag in {"VALUE", "SLEEPER", "TARGET", "REACH"}:
-                    db_player.snake_flag = model_flag
-                else:
-                    db_player.snake_flag = classify_snake_flag(
-                        db_player.adp_diff, projected_ppr, db_player.position
-                    )
+                db_player.snake_flag = classify_snake_flag(
+                    db_player.adp_diff, projected_ppr, db_player.position
+                )
 
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
