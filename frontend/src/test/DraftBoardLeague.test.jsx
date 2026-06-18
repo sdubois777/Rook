@@ -32,13 +32,13 @@ vi.mock('../api/draftboard', () => ({
   }),
 }))
 
-function renderBoard(isSnake) {
+function renderBoard(isSnake, teamCount = 12) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const value = {
     isSnake,
     isAuction: !isSnake,
     scoringFormat: 'ppr',
-    selectedLeague: { draft_type: isSnake ? 'snake' : 'auction', team_count: 12 },
+    selectedLeague: { draft_type: isSnake ? 'snake' : 'auction', team_count: teamCount },
     setSelectedLeague() {},
   }
   return render(
@@ -86,6 +86,33 @@ describe('DraftBoard league toggle', () => {
     expect(
       bijan.compareDocumentPosition(allen) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
+  })
+
+  it('floors teamCount to 8 for a single-team test league', async () => {
+    // team_count=1 would put adp_rank 14 in Round 14 (every player its own
+    // round). Floored to 8, ceil(14/8)=2 — Allen lands in Round 2, not Round 14.
+    renderBoard(true, 1)
+    expect(await screen.findByText('Round 1')).toBeInTheDocument()
+    expect(screen.getByText('Round 2')).toBeInTheDocument()
+    expect(screen.queryByText('Round 14')).not.toBeInTheDocument()
+  })
+
+  it('uses the actual team count for real leagues', async () => {
+    // 16-team league: ceil(14/16)=1 — both players collapse into Round 1.
+    renderBoard(true, 16)
+    expect(await screen.findByText('Round 1')).toBeInTheDocument()
+    expect(screen.queryByText('Round 2')).not.toBeInTheDocument()
+  })
+
+  it('hides the auction budget header for snake leagues', async () => {
+    renderBoard(true)
+    await screen.findByText('Round 1')
+    expect(screen.queryByText(/Budget: \$200/)).not.toBeInTheDocument()
+  })
+
+  it('shows the auction budget header for auction leagues', async () => {
+    renderBoard(false)
+    expect(await screen.findByText(/Budget: \$200/)).toBeInTheDocument()
   })
 })
 

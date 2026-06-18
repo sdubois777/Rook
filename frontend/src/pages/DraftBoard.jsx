@@ -157,7 +157,10 @@ const SNAKE_SORT_KEYS = ['adp_rank', 'adp_fantasypros', 'adp_diff']
 
 export default function DraftBoard() {
   const { isSnake, selectedLeague } = useLeague()
-  const teamCount = selectedLeague?.team_count || 12
+  // Floor at 8: a snake league with fewer than 8 teams isn't a real league. The
+  // test league has team_count=1, which would otherwise put every player in
+  // their own round (round = ceil(adp_rank / teamCount)).
+  const teamCount = Math.max(selectedLeague?.team_count || 12, 8)
   const { isLoaded } = useAuth()
   const [strategy, setStrategy] = useState('')
   const [position, setPosition] = useState('')
@@ -480,12 +483,14 @@ export default function DraftBoard() {
         </div>
       </div>
 
-      {/* Budget bar */}
-      <div className="flex items-center gap-4 bg-[#161822] rounded-lg border border-[#2d3148] px-4 py-2.5 mb-3 text-sm no-print">
-        <span className="text-slate-200 font-medium">Budget: $200</span>
-        <span className="text-slate-400">Skill starters: <span className="text-blue-400 font-mono">$185</span></span>
-        <span className="text-slate-500 text-xs">(Bench + K + DEF: $15)</span>
-      </div>
+      {/* Budget bar — auction only. Snake has no budget. */}
+      {!isSnake && (
+        <div className="flex items-center gap-4 bg-[#161822] rounded-lg border border-[#2d3148] px-4 py-2.5 mb-3 text-sm no-print">
+          <span className="text-slate-200 font-medium">Budget: $200</span>
+          <span className="text-slate-400">Skill starters: <span className="text-blue-400 font-mono">$185</span></span>
+          <span className="text-slate-500 text-xs">(Bench + K + DEF: $15)</span>
+        </div>
+      )}
 
 
       <FilterBar>
