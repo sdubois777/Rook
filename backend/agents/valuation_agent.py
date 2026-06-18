@@ -80,12 +80,28 @@ VALUATION_AGENT_VERSION = "v2"
 # (upside exceeds cost, but modest production for the position).
 _STRONG_PPR = {"QB": 320, "RB": 240, "WR": 240, "TE": 170}
 
+# Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
+# meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
+# runs 1..~410, so the two rank lists diverge in length and deep players get
+# nonsense diffs (e.g. -350). Past the window we neutralize the flag to TARGET.
+DRAFTABLE_WINDOW = 180
 
-def compute_adp_diff(adp_fantasypros, adp_ai):
-    """Consensus minus us: positive => we rate the player EARLIER than FP."""
-    if adp_fantasypros is None or adp_ai is None:
+
+def compute_adp_diff(adp_fantasypros, adp_rank):
+    """FP rank minus our rank — both clean 1-N integer ranks.
+
+    adp_fantasypros is FantasyPros' overall rank; adp_rank is our 1-N ordering
+    (the value shown as "AI ADP" on the board). Computing against adp_rank (not
+    adp_ai) keeps the board's DIFF consistent with both displayed columns —
+    adp_ai has heavy ties (Bijan/Gibbs/Chase all 4.0) that made the diff
+    disagree with the rank shown next to it.
+
+    Positive => FP ranks the player LATER than we do (we like them more —
+    potential value). Negative => market values them above us (potential reach).
+    """
+    if adp_fantasypros is None or adp_rank is None:
         return None
-    return float(adp_fantasypros) - float(adp_ai)
+    return float(adp_fantasypros) - float(adp_rank)
 
 
 def assign_adp_ranks(players) -> int:
@@ -98,7 +114,7 @@ def assign_adp_ranks(players) -> int:
     return len(players)
 
 
-def classify_snake_flag(adp_diff, projected_ppr, position: str | None) -> str:
+def classify_snake_flag(adp_diff, projected_ppr, position: str | None, adp_rank=None) -> str:
     """Deterministic snake_flag from the ADP differential + production.
 
     This is the SOLE source of snake_flag. The model is not asked for it: adp_diff
@@ -107,9 +123,14 @@ def classify_snake_flag(adp_diff, projected_ppr, position: str | None) -> str:
 
       VALUE   — adp_diff >= 15 AND strong production for the position
       SLEEPER — adp_diff >= 15 BUT modest production (upside > cost, late pick)
-      TARGET  — |adp_diff| < 15 (we agree with consensus), or no FP ADP
+      TARGET  — |adp_diff| < 15 (we agree with consensus), or no FP ADP, or the
+                player is beyond the draftable window (diff is rank-scale noise)
       REACH   — adp_diff <= -15 (market values them well above us)
     """
+    # Past the draftable window the rank-list lengths diverge, so the diff is
+    # noise — neutralize to TARGET even though the raw adp_diff is still stored.
+    if adp_rank is not None and adp_rank > DRAFTABLE_WINDOW:
+        return "TARGET"
     if adp_diff is None:
         return "TARGET"
     diff = float(adp_diff)
@@ -330,10 +351,12 @@ class ValuationAgent(BaseAgent):
         return {"processed": processed, "skipped": skipped}
 
     async def _compute_adp_ranks(self) -> None:
-        """Assign adp_rank as a clean 1-N ordering by adp_ai ascending.
+        """Assign adp_rank (clean 1-N by adp_ai), then derive adp_diff + snake_flag.
 
         Runs after all players are written — it's a global ranking, so a player
-        only gets a rank if they have an adp_ai.
+        only gets a rank if they have an adp_ai. adp_diff = fp_rank - adp_rank
+        (both clean ranks) and snake_flag is derived from that diff, so both must
+        be computed here, after adp_rank exists — not in _write_results.
         """
         async with AsyncSessionLocal() as session:
             players = (
@@ -341,11 +364,24 @@ class ValuationAgent(BaseAgent):
                     select(Player)
                     .where(Player.adp_ai.isnot(None))
                     .order_by(Player.adp_ai.asc())
+                    .options(selectinload(Player.profile))
                 )
             ).scalars().all()
             count = assign_adp_ranks(players)
+
+            for p in players:
+                p.adp_diff = compute_adp_diff(p.adp_fantasypros, p.adp_rank)
+                projected_ppr = None
+                if p.profile and p.profile.clean_season_baseline:
+                    projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
+                # adp_diff keeps the raw rank gap (for display); the flag is
+                # neutralized past the draftable window via adp_rank.
+                p.snake_flag = classify_snake_flag(
+                    p.adp_diff, projected_ppr, p.position, p.adp_rank
+                )
+
             await session.commit()
-        logger.info("adp_rank computed for %d players", count)
+        logger.info("adp_rank + adp_diff + snake_flag computed for %d players", count)
 
     def _build_player_context(self, p: Player) -> dict:
         """Build context dict for a single player from pre-loaded ORM data."""
@@ -518,21 +554,10 @@ class ValuationAgent(BaseAgent):
                     db_player.adp_ai = adp_ai
                 db_player.adp_scoring = VALUATION_SCORING
 
-                # adp_diff = consensus - us (positive = we rate them earlier).
-                db_player.adp_diff = compute_adp_diff(
-                    db_player.adp_fantasypros, db_player.adp_ai
-                )
-
-                # snake_flag is computed deterministically from the (post-hoc)
-                # adp_diff + projected production. The model is NOT asked for it:
-                # adp_diff depends on the model's own adp_ai, so the model can't
-                # know it at inference time.
-                projected_ppr = None
-                if player.profile and player.profile.clean_season_baseline:
-                    projected_ppr = player.profile.clean_season_baseline.get("ppr_points")
-                db_player.snake_flag = classify_snake_flag(
-                    db_player.adp_diff, projected_ppr, db_player.position
-                )
+                # adp_diff + snake_flag are computed in _compute_adp_ranks(),
+                # AFTER adp_rank is assigned — the diff is fp_rank - adp_rank, and
+                # adp_rank is a global ordering that isn't known until every
+                # player has been written.
 
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")

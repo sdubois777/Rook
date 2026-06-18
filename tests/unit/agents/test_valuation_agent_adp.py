@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from backend.agents.valuation_agent import (
     ADP_POSITION_RANGES,
+    DRAFTABLE_WINDOW,
     SYSTEM_PROMPT,
     VALUATION_AGENT_VERSION,
     VALUATION_SCORING,
@@ -102,6 +103,70 @@ def test_adp_rank_sequential_1_to_n():
     n = assign_adp_ranks(players)
     assert n == 5
     assert [p.adp_rank for p in players] == [1, 2, 3, 4, 5]
+
+
+# --- adp_diff computed from adp_rank, not adp_ai (the displayed-column fix) ---
+
+def _top_tied_players():
+    # Real prod shape: three players TIED on adp_ai=4.0 but distinct fp ranks.
+    # After assign_adp_ranks they get clean ranks 1, 2, 3 (the "AI ADP" shown).
+    return [
+        SimpleNamespace(name="Bijan", adp_ai=4.0, adp_rank=None, adp_fantasypros=2.0),
+        SimpleNamespace(name="Gibbs", adp_ai=4.0, adp_rank=None, adp_fantasypros=1.0),
+        SimpleNamespace(name="Chase", adp_ai=4.0, adp_rank=None, adp_fantasypros=3.0),
+    ]
+
+
+def test_adp_diff_computed_from_adp_rank_not_adp_ai():
+    players = _top_tied_players()
+    assign_adp_ranks(players)  # ranks 1, 2, 3
+    diffs = {p.name: compute_adp_diff(p.adp_fantasypros, p.adp_rank) for p in players}
+    assert diffs == {"Bijan": 1.0, "Gibbs": -1.0, "Chase": 0.0}
+
+
+def test_adp_diff_positive_when_fp_ranks_later():
+    # Amon-Ra: fp_rank 7, our rank 4 -> FP ranks him LATER -> +3 (we like him more)
+    assert compute_adp_diff(7, 4) == 3.0
+
+
+def test_adp_diff_negative_when_fp_ranks_earlier():
+    # CMC: fp_rank 6, our rank 7 -> FP ranks him EARLIER -> -1 (market likes him more)
+    assert compute_adp_diff(6, 7) == -1.0
+
+
+def test_bijan_adp_diff_is_plus_one_not_minus_two():
+    # The canonical regression: Bijan shows AI ADP=1 (adp_rank), FP ADP=2.
+    # Diff against adp_rank(1) = +1 (correct, matches the board).
+    assert compute_adp_diff(2, 1) == 1.0
+    # Diff against adp_ai(4) = -2 (the OLD bug — must NOT be what we compute).
+    assert compute_adp_diff(2, 4) == -2.0
+
+
+# --- draftable-window guard: deep players can't produce flag noise ---
+
+def test_draftable_window_is_180():
+    assert DRAFTABLE_WINDOW == 180
+
+
+def test_snake_flag_neutralized_beyond_draftable_window():
+    # Mike Evans artifact: huge negative diff but adp_rank 414 (round ~35).
+    # Past the window the diff is rank-scale noise -> TARGET, not REACH.
+    assert classify_snake_flag(-359, 240, "WR", adp_rank=414) == "TARGET"
+    # A big positive diff out past the window is also neutralized.
+    assert classify_snake_flag(200, 300, "WR", adp_rank=500) == "TARGET"
+
+
+def test_snake_flag_within_window_still_classifies():
+    # Inside the window the normal thresholds apply.
+    assert classify_snake_flag(-20, 240, "WR", adp_rank=30) == "REACH"
+    assert classify_snake_flag(20, 280, "WR", adp_rank=30) == "VALUE"
+    # Right at the boundary (180) is still draftable.
+    assert classify_snake_flag(-20, 240, "WR", adp_rank=180) == "REACH"
+
+
+def test_snake_flag_window_guard_optional():
+    # adp_rank defaults to None -> no window guard (back-compat with old callers).
+    assert classify_snake_flag(-20, 240, "WR") == "REACH"
 
 
 def test_snake_flag_value_high_production():
