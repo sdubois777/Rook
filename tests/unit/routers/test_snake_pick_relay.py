@@ -57,6 +57,22 @@ def test_record_snake_pick_unresolved_keeps_raw_payload(monkeypatch):
     assert payload["player_name"] == "X. UNKNOWN"
 
 
+def test_record_snake_pick_records_name_for_exclusion(monkeypatch):
+    # The enriched (canonical) name is recorded into state so the engine can
+    # exclude it from your-turn recommendations.
+    player = SimpleNamespace(id="uuid-7", name="Christian McCaffrey", position="RB")
+    monkeypatch.setattr(draft, "_resolve_player", AsyncMock(return_value=player))
+    monkeypatch.setattr(draft, "_engine", AsyncMock())
+    state = AsyncMock()
+    state.record_snake_pick = lambda name: setattr(state, "_recorded", name)
+    monkeypatch.setattr(draft, "_state", state)
+
+    payload = {"yahoo_player_id": "x", "player_name": "C. MCCAFFREY", "picker": "You"}
+    asyncio.run(draft._record_snake_pick(_event(payload)))
+
+    assert state._recorded == "Christian McCaffrey"  # the canonical name
+
+
 def test_record_snake_pick_no_engine_still_enriches(monkeypatch):
     # A redeploy may wipe the engine; enrichment must still run for the UI.
     player = SimpleNamespace(id="uuid-9", name="Bijan Robinson", position="RB")

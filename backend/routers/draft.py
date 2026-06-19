@@ -246,6 +246,11 @@ async def _record_snake_pick(event: "DraftEventPayload") -> None:
     else:
         logger.warning("Snake pick: could not resolve player name %r", abbreviated)
 
+    # Track the (now canonical) name so the engine excludes it from your-turn
+    # recommendations — the snake pick's id can't be matched against our DB.
+    if _state is not None:
+        _state.record_snake_pick(payload.get("player_name", "") or abbreviated)
+
     if _engine is not None:
         await _engine.on_pick_confirmed({
             "type": "draft_pick",

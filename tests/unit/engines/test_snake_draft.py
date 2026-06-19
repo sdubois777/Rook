@@ -60,6 +60,37 @@ def test_draft_state_manager_is_auction():
     assert s.is_snake is False
 
 
+# --- drafted-name tracking (engine excludes drafted from recommendations) ----
+
+def test_record_snake_pick_tracks_name():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Jahmyr Gibbs")
+    assert s.is_drafted("Jahmyr Gibbs") is True
+
+
+def test_is_drafted_normalized_match():
+    # Abbreviated DOM name matches the full pool name via first-initial+last.
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Jahmyr Gibbs")
+    assert s.is_drafted("J. Gibbs") is True       # abbreviated -> full
+    s.record_snake_pick("C. McCaffrey")
+    assert s.is_drafted("Christian McCaffrey") is True  # full -> abbreviated
+
+
+def test_is_drafted_false_for_undrafted():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Jahmyr Gibbs")
+    assert s.is_drafted("Bijan Robinson") is False
+    assert s.is_drafted("J. Cook") is False  # same initial, different last name
+
+
+def test_record_snake_pick_ignores_empty():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("")
+    s.record_snake_pick(None)
+    assert s.is_drafted("") is False
+
+
 # --- engine harness ----------------------------------------------------------
 
 def _mock_player(adp_ai=14.0):
@@ -290,15 +321,32 @@ def test_on_your_turn_no_available_waits():
 
 
 def test_on_your_turn_excludes_drafted_players():
-    from backend.engines.draft_state_manager import DraftPick
-
     eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
-    state.record_pick(DraftPick(player_id="nfl.p.100", team_id="Bart", price=0,
-                                player_name="Bijan Robinson", position="RB"))
+    # Drafted players are excluded by NAME (snake ids don't match our DB).
+    state.record_snake_pick("Bijan Robinson")
     available = asyncio.run(eng._get_top_available())
     names = [p["name"] for p in available]
     assert "Bijan Robinson" not in names  # already drafted
     assert "Jahmyr Gibbs" in names
+
+
+def test_on_your_turn_excludes_abbreviated_drafted_name():
+    # The snake DOM sends "B. Robinson"; the pool has "Bijan Robinson".
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    state.record_snake_pick("B. Robinson")
+    names = [p["name"] for p in asyncio.run(eng._get_top_available())]
+    assert "Bijan Robinson" not in names
+
+
+def test_on_your_turn_recommendation_skips_drafted():
+    # Full path: draft the top player, then the your-turn rec must not name it.
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    state.record_snake_pick("Bijan Robinson")
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    # The model was given only non-drafted players; Bijan isn't in the prompt.
+    prompt = eng._client.messages.create.await_args.kwargs["messages"][0]["content"]
+    assert "Bijan Robinson" not in prompt
+    assert "Jahmyr Gibbs" in prompt
 
 
 def test_snake_pick_recorded_into_state():
