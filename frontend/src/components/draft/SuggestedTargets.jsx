@@ -5,39 +5,17 @@ import PositionBadge from '../shared/PositionBadge'
 import {
   getBidCeiling,
   formatAdp,
-  snakeSortComparator,
+  neededPositions,
+  getSnakeTargets,
+  snakeUrgencyLabel,
   auctionSortComparator,
 } from '../../utils/playerUtils'
-
-// Starter lineup this league fields (bench excluded — bench never drives a
-// "need"). FLEX accepts RB/WR/TE.
-export const STARTER_SLOTS = { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, K: 1, DEF: 1 }
 
 // Keep $1 in reserve for every roster slot still to fill after this one, so a
 // suggestion never recommends spending money you legally must keep.
 function spendableFor(myBudget, rosterSlotsRemaining) {
   const slotsLeft = rosterSlotsRemaining || 1
   return Math.max(myBudget - (slotsLeft - 1), 0)
-}
-
-// Which starter positions does this roster still need? FLEX opens RB/WR/TE.
-export function neededPositions(myRoster) {
-  const filledSlots = {}
-  for (const pick of myRoster) {
-    const pos = pick.position || 'BN'
-    filledSlots[pos] = (filledSlots[pos] || 0) + 1
-  }
-
-  const needed = new Set()
-  for (const [pos, count] of Object.entries(STARTER_SLOTS)) {
-    if ((filledSlots[pos] || 0) < count) needed.add(pos)
-  }
-  if ((filledSlots['FLEX'] || 0) < 1) {
-    needed.add('RB')
-    needed.add('WR')
-    needed.add('TE')
-  }
-  return needed
 }
 
 // Best available players for the positions still needed, within budget,
@@ -59,18 +37,6 @@ export function getSuggestedTargets(
     .slice(0, 8)
 }
 
-// Snake equivalent: needed-position players sorted by AI ADP ascending (lower =
-// earlier pick = take sooner). Budget is irrelevant in snake; players without an
-// ADP yet sort last. Top 8.
-export function getSnakeTargets(myRoster, availablePlayers) {
-  const needed = neededPositions(myRoster)
-  return availablePlayers
-    .filter((p) => needed.has(p.position))
-    .slice()
-    .sort(snakeSortComparator) // by adp_rank, NOT the tied adp_ai
-    .slice(0, 8)
-}
-
 // Fallback when every starter slot is filled: best value still on the board
 // within budget, regardless of position.
 function getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining) {
@@ -81,18 +47,24 @@ function getValuePicks(availablePlayers, myBudget, rosterSlotsRemaining) {
     .slice(0, 8)
 }
 
-function TargetRow({ player, isSnake }) {
+function TargetRow({ player, isSnake, totalTeams }) {
   const ceiling = getBidCeiling(player) || 0
   const market = player.market_value || 0
   const isValue = ceiling - market > 5
+  const urgency = isSnake ? snakeUrgencyLabel(player, totalTeams) : null
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#222539] transition-colors">
       <PositionBadge position={player.position} />
       <span className="text-sm text-slate-300 flex-1 truncate">{player.name}</span>
       {isSnake ? (
-        <span className="text-sm font-mono text-blue-400">
-          ADP {formatAdp(player)}
-        </span>
+        <>
+          <span className="text-sm font-mono text-blue-400">ADP {formatAdp(player)}</span>
+          {urgency && (
+            <span className={`text-[11px] font-medium ${urgency.className}`}>
+              {urgency.text}
+            </span>
+          )}
+        </>
       ) : (
         <>
           <span className="text-sm font-mono text-blue-400">${Math.round(ceiling)}</span>
@@ -112,12 +84,18 @@ export default function SuggestedTargets() {
   const availablePlayers = useDraftStore((s) => s.availablePlayers)
   const myBudget = useDraftStore((s) => s.myBudget)
   const rosterSlotsRemaining = useDraftStore((s) => s.rosterSlotsRemaining)
-  const { isSnake } = useLeague()
+  const currentPick = useDraftStore((s) => s.currentPick)
+  const { isSnake, selectedLeague } = useLeague()
+  const totalTeams = selectedLeague?.team_count || 12
 
   const { rows, allFilled } = useMemo(() => {
     if (isSnake) {
-      // Snake: ADP-ranked needed positions (no budget constraint).
-      return { rows: getSnakeTargets(myRoster, availablePlayers), allFilled: false }
+      // Snake: urgency-ranked needed positions (will they be gone by your next
+      // pick?), using the current pick + team count. No budget constraint.
+      return {
+        rows: getSnakeTargets(myRoster, availablePlayers, currentPick, totalTeams),
+        allFilled: false,
+      }
     }
     const allFilled = neededPositions(myRoster).size === 0
     const rows = allFilled
@@ -129,7 +107,7 @@ export default function SuggestedTargets() {
           rosterSlotsRemaining
         )
     return { rows, allFilled }
-  }, [myRoster, availablePlayers, myBudget, rosterSlotsRemaining, isSnake])
+  }, [myRoster, availablePlayers, myBudget, rosterSlotsRemaining, isSnake, currentPick, totalTeams])
 
   return (
     <div className="h-full flex flex-col p-3">
@@ -151,7 +129,12 @@ export default function SuggestedTargets() {
           </div>
         ) : (
           rows.map((p) => (
-            <TargetRow key={p.id || p.yahoo_player_id || p.name} player={p} isSnake={isSnake} />
+            <TargetRow
+              key={p.id || p.yahoo_player_id || p.name}
+              player={p}
+              isSnake={isSnake}
+              totalTeams={totalTeams}
+            />
           ))
         )}
       </div>
