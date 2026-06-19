@@ -70,7 +70,8 @@ test('webpack builds the yahoo_draft_main entry', () => {
 test('yahoo_snake_draft_main.js intercepts console.error and sets the flag', () => {
   const src = read('src/content_scripts/yahoo_snake_draft_main.js')
   assert.match(src, /console\.error/)
-  assert.match(src, /__yahoo_snake_pick__/)
+  // The '0' frame is now a content-free trigger, not a data carrier.
+  assert.match(src, /__yahoo_pick_made__/)
   assert.match(src, /window\.__draftmind_snake__\s*=\s*true/)
   // Snake picks are the '0' frame.
   assert.match(src, /\[0\]\s*===\s*'0'/)
@@ -95,14 +96,14 @@ test('yahoo_snake_draft.js (DOM poller) stays in the ISOLATED world', () => {
   assert.notEqual(entry.world, 'MAIN')
 })
 
-test('snake poller listens for the MAIN-world pick event, not direct console.error', () => {
+test('snake poller listens for the MAIN-world pick trigger, not direct console.error', () => {
   const src = read('src/content_scripts/yahoo_snake_draft.js')
-  assert.match(src, /__yahoo_snake_pick__/)
+  assert.match(src, /__yahoo_pick_made__/)
   // It must NOT wrap console.error itself (it's in the ISOLATED world).
   assert.doesNotMatch(src, /console\.error\s*=/)
 })
 
-test('snake main IIFE forwards a 0 frame and sets __draftmind_snake__', () => {
+test('snake main IIFE fires the pick trigger on a 0 frame and sets the flag', () => {
   const src = read('src/content_scripts/yahoo_snake_draft_main.js')
   const dispatched = []
   const fakeWin = { dispatchEvent: (e) => dispatched.push(e) }
@@ -118,11 +119,10 @@ test('snake main IIFE forwards a 0 frame and sets __draftmind_snake__', () => {
 
   assert.equal(fakeWin.__draftmind_snake__, true)
 
-  // A '0' (snake pick) frame is forwarded across the world boundary.
+  // A '0' frame fires a content-free trigger (the poller reads the Picks panel).
   fakeConsole.error(['0', 'lg', 'dr', 84, 'nfl.p.1'])
   assert.equal(dispatched.length, 1)
-  assert.equal(dispatched[0].type, '__yahoo_snake_pick__')
-  assert.deepEqual(dispatched[0].detail, ['0', 'lg', 'dr', 84, 'nfl.p.1'])
+  assert.equal(dispatched[0].type, '__yahoo_pick_made__')
 
   // Unrelated console.error output is NOT forwarded.
   fakeConsole.error('a normal error string')
