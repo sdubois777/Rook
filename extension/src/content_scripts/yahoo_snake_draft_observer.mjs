@@ -19,6 +19,18 @@ const VALID_POSITIONS = new Set([
 ])
 
 /**
+ * Find the "Picks" tab button among a list of button-like elements. The pick
+ * cards only render once the Picks tab is active, so the content script clicks
+ * this. Pure: takes the array of buttons (content script passes the live ones).
+ */
+export function findPicksButton(buttons) {
+  return (
+    (buttons || []).find((b) => (b && b.innerText ? b.innerText : '').trim() === 'Picks') ||
+    null
+  )
+}
+
+/**
  * Parse pick cards into an ordered pick list.
  *
  * Each card's innerText (confirmed live) is newline-separated:

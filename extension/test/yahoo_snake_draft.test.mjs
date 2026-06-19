@@ -8,6 +8,7 @@ import {
   parseSnakeState,
   detectSnakeEvents,
   parsePickCards,
+  findPicksButton,
 } from '../src/content_scripts/yahoo_snake_draft_observer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -182,7 +183,8 @@ test('getAllPicks queries the pick-card selector and parses via parsePickCards',
 })
 
 test('pollPicksPanel reads the cards (getAllPicks), not #app innerText', () => {
-  assert.match(snakeSrc, /for \(const pick of getAllPicks\(\)\)/)
+  assert.match(snakeSrc, /const picks = getAllPicks\(\)/)
+  assert.match(snakeSrc, /for \(const pick of picks\)/)
   // The old text-based parsePicks is gone.
   assert.doesNotMatch(snakeSrc, /parsePicks\(/)
 })
@@ -191,4 +193,47 @@ test('a MutationObserver watches the picks container for new cards', () => {
   assert.match(snakeSrc, /PICK_CONTAINER_SELECTOR/)
   assert.match(snakeSrc, /new MutationObserver\(\(\)\s*=>\s*\{\s*pollPicksPanel\(\)/)
   assert.match(snakeSrc, /childList: true/)
+})
+
+// --- Picks-tab auto-click (cards only render while the tab is active) -------
+
+test('findPicksButton returns the button whose text is Picks', () => {
+  const buttons = [
+    { innerText: 'Available' },
+    { innerText: '  Picks  ' }, // whitespace tolerated
+    { innerText: 'Rosters' },
+  ]
+  assert.equal(findPicksButton(buttons), buttons[1])
+})
+
+test('findPicksButton returns null when no Picks button exists', () => {
+  assert.equal(findPicksButton([{ innerText: 'Available' }]), null)
+  assert.equal(findPicksButton([]), null)
+  assert.equal(findPicksButton(null), null)
+})
+
+test('findPicksButton does not match a partial label', () => {
+  // "Picks (40)" is not the tab button — only an exact "Picks" is.
+  assert.equal(findPicksButton([{ innerText: 'Picks (40)' }]), null)
+})
+
+test('clickPicksTab finds the Picks button via findPicksButton and clicks it', () => {
+  assert.match(snakeSrc, /findPicksButton\(Array\.from\(document\.querySelectorAll\('button'\)\)\)/)
+  assert.match(snakeSrc, /btn\.click\(\)/)
+})
+
+test('init retries clicking the Picks tab until the button is found', () => {
+  // startWhenPicksReady: click succeeds -> start poller; else retry in 1s.
+  assert.match(snakeSrc, /function startWhenPicksReady/)
+  assert.match(snakeSrc, /setTimeout\(startWhenPicksReady, 1000\)/)
+  assert.match(snakeSrc, /setTimeout\(startPoller, 500\)/)
+})
+
+test('pollPicksPanel re-clicks the Picks tab when 0 cards after known picks', () => {
+  assert.match(
+    snakeSrc,
+    /picks\.length === 0 && sentPickNumbers\.size > 0/
+  )
+  // The guard re-clicks and returns before trying to relay.
+  assert.match(snakeSrc, /clickPicksTab\(\)\s*\n\s*return/)
 })

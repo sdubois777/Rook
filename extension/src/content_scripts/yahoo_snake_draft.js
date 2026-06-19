@@ -5,6 +5,7 @@ import {
   parseSnakeState,
   detectSnakeEvents,
   parsePickCards,
+  findPicksButton,
 } from './yahoo_snake_draft_observer.mjs'
 
 /**
@@ -51,6 +52,19 @@ function getAllPicks() {
   return parsePickCards(Array.from(cards, (el) => el.innerText))
 }
 
+/**
+ * The pick cards only render while the "Picks" tab is active. Click it.
+ * Returns true if the button was found and clicked.
+ */
+function clickPicksTab() {
+  const btn = findPicksButton(Array.from(document.querySelectorAll('button')))
+  if (btn) {
+    btn.click()
+    return true
+  }
+  return false
+}
+
 function markDraftActive() {
   browser.storage.local.set({
     [STORAGE_KEYS.ACTIVE_DRAFT]: true,
@@ -64,7 +78,16 @@ function markDraftActive() {
 
 /** Read the pick cards and relay any picks we haven't sent yet. */
 async function pollPicksPanel() {
-  for (const pick of getAllPicks()) {
+  const picks = getAllPicks()
+
+  // 0 cards but we've already seen picks means the user switched away from the
+  // Picks tab — re-click it and let the next poll read the re-rendered cards.
+  if (picks.length === 0 && sentPickNumbers.size > 0) {
+    clickPicksTab()
+    return
+  }
+
+  for (const pick of picks) {
     if (sentPickNumbers.has(pick.pick_number)) continue
     sentPickNumbers.add(pick.pick_number)
     markDraftActive()
@@ -145,18 +168,29 @@ window.addEventListener('__yahoo_pick_made__', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Bootstrap — wait for the snake room (#app) to render, then start
+// Bootstrap — wait for the snake room (#app), click the Picks tab so the pick
+// cards render, then start polling.
 // ---------------------------------------------------------------------------
+
+// Click the Picks tab (retrying until the button exists), then start the poller
+// once the cards have had a moment to render.
+function startWhenPicksReady() {
+  if (clickPicksTab()) {
+    setTimeout(startPoller, 500)
+  } else {
+    setTimeout(startWhenPicksReady, 1000)
+  }
+}
 
 function bootstrap() {
   if (document.querySelector('#app')) {
-    startPoller()
+    startWhenPicksReady()
     return
   }
   const observer = new MutationObserver(() => {
     if (document.querySelector('#app')) {
       observer.disconnect()
-      startPoller()
+      startWhenPicksReady()
     }
   })
   observer.observe(document.documentElement, { childList: true, subtree: true })
