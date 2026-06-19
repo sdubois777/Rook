@@ -91,6 +91,86 @@ def test_record_snake_pick_ignores_empty():
     assert s.is_drafted("") is False
 
 
+# --- your-roster tracking (is_yours) for snake recommendations ---------------
+
+def test_record_snake_pick_tracks_yours():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Bijan Robinson", position="RB", pick_number=1, round_num=1, is_yours=True)
+    roster = s.get_my_roster()
+    assert len(roster) == 1
+    assert roster[0] == {
+        "player_name": "Bijan Robinson", "position": "RB", "pick_number": 1, "round": 1,
+    }
+
+
+def test_record_snake_pick_ignores_others():
+    # An opponent's pick (is_yours=False) is excluded from recs but NOT my roster.
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Jahmyr Gibbs", position="RB", is_yours=False)
+    assert s.get_my_roster() == []
+    assert s.is_drafted("Jahmyr Gibbs") is True  # still excluded from recs
+
+
+def test_get_my_roster_returns_your_picks():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    s.record_snake_pick("Bijan Robinson", position="RB", is_yours=True)
+    s.record_snake_pick("CeeDee Lamb", position="WR", is_yours=True)
+    assert [p["player_name"] for p in s.get_my_roster()] == ["Bijan Robinson", "CeeDee Lamb"]
+    # Returns a copy — mutating it doesn't corrupt internal state.
+    s.get_my_roster().append({"player_name": "X"})
+    assert len(s.get_my_roster()) == 2
+
+
+def test_format_roster_needs_empty():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    needs = s.format_roster_needs([])
+    for pos in ("QB", "RB", "WR", "TE", "K", "DEF", "FLEX"):
+        assert pos in needs
+
+
+def test_format_roster_needs_partial():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    roster = [
+        {"position": "RB"}, {"position": "RB"},  # RB filled (2)
+        {"position": "QB"},                       # QB filled
+    ]
+    needs = s.format_roster_needs(roster)
+    assert "QB" not in needs       # filled
+    assert "RB: need" not in needs  # filled
+    assert "WR" in needs            # still needed
+    assert "TE" in needs
+    assert "FLEX" in needs
+
+
+def test_format_roster_needs_all_filled():
+    s = DraftStateManager(_snake_config(), YOUR_TEAM)
+    roster = [
+        {"position": "QB"}, {"position": "RB"}, {"position": "RB"},
+        {"position": "WR"}, {"position": "WR"}, {"position": "TE"},
+        {"position": "RB"},  # surplus RB fills FLEX (6 RB/WR/TE > base 5)
+        {"position": "K"}, {"position": "DEF"},
+    ]
+    assert s.format_roster_needs(roster) == "All starters filled — draft for depth/upside"
+
+
+def test_on_your_turn_prompt_has_roster():
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    state.record_snake_pick("CeeDee Lamb", position="WR", round_num=1, is_yours=True)
+    asyncio.run(eng.on_your_turn({"round": 2, "pick": 14}))
+    prompt = eng._client.messages.create.await_args.kwargs["messages"][0]["content"]
+    assert "YOUR ROSTER (1 picks)" in prompt
+    assert "CeeDee Lamb" in prompt
+
+
+def test_on_your_turn_prompt_has_needs():
+    eng, ws, state = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
+    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
+    prompt = eng._client.messages.create.await_args.kwargs["messages"][0]["content"]
+    assert "POSITIONS STILL NEEDED" in prompt
+    # Empty roster -> QB is among the needs.
+    assert "QB: need" in prompt
+
+
 # --- engine harness ----------------------------------------------------------
 
 def _mock_player(adp_ai=14.0):

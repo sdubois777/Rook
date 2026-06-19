@@ -104,12 +104,61 @@ class DraftStateManager:
         # recommendations by NAME instead. See is_drafted().
         self._drafted_names: set[str] = set()
 
-    def record_snake_pick(self, player_name: str) -> None:
-        """Track a drafted player's name so it's excluded from recommendations."""
+        # YOUR snake picks, tracked from the snake_pick is_yours flag. Can't use
+        # your_roster here: snake picks arrive with team_id="You" (the Picks-panel
+        # label), which never equals your_team_id (your team name), so record_pick
+        # never files them. The is_yours flag is the reliable signal.
+        self._my_picks: list[dict] = []
+
+    def record_snake_pick(
+        self,
+        player_name: str,
+        position: str | None = None,
+        pick_number: int | None = None,
+        round_num: int | None = None,
+        is_yours: bool = False,
+    ) -> None:
+        """Track a snake pick: add its name to the drafted set (for exclusion),
+        and — when it's yours — append it to your roster (for recommendations)."""
         if player_name:
             from backend.agents.roster_changes import _norm_name
 
             self._drafted_names.add(_norm_name(player_name))
+        if is_yours and player_name:
+            self._my_picks.append({
+                "player_name": player_name,
+                "position": position,
+                "pick_number": pick_number,
+                "round": round_num,
+            })
+
+    def get_my_roster(self) -> list[dict]:
+        """Your snake picks in draft order (player_name/position/pick_number/round)."""
+        return self._my_picks.copy()
+
+    def format_roster_needs(self, roster: list[dict]) -> str:
+        """Human-readable list of starter positions still unfilled.
+
+        FLEX is filled by a surplus RB/WR/TE beyond their base starter slots.
+        """
+        base = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
+        filled: dict[str, int] = {}
+        for pick in roster:
+            pos = (pick.get("position") or "BN").upper()
+            filled[pos] = filled.get(pos, 0) + 1
+
+        needs: list[str] = []
+        for pos, count in base.items():
+            have = filled.get(pos, 0)
+            if have < count:
+                needs.append(f"{pos}: need {count - have} more")
+
+        # FLEX (RB/WR/TE): filled once you have one MORE than the base RB+WR+TE.
+        flex_eligible = sum(filled.get(p, 0) for p in ("RB", "WR", "TE"))
+        if flex_eligible < base["RB"] + base["WR"] + base["TE"] + 1:
+            needs.append("FLEX: 1 more (RB/WR/TE)")
+
+        return "\n".join(needs) if needs else "All starters filled — draft for depth/upside"
 
     def is_drafted(self, player_name: str) -> bool:
         """True if this player has already been drafted.

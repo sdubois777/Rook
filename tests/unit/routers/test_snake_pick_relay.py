@@ -64,13 +64,19 @@ def test_record_snake_pick_records_name_for_exclusion(monkeypatch):
     monkeypatch.setattr(draft, "_resolve_player", AsyncMock(return_value=player))
     monkeypatch.setattr(draft, "_engine", AsyncMock())
     state = AsyncMock()
-    state.record_snake_pick = lambda name: setattr(state, "_recorded", name)
+    state.record_snake_pick = lambda **kw: setattr(state, "_recorded", kw)
     monkeypatch.setattr(draft, "_state", state)
 
-    payload = {"yahoo_player_id": "x", "player_name": "C. MCCAFFREY", "picker": "You"}
+    payload = {
+        "yahoo_player_id": "x", "player_name": "C. MCCAFFREY", "picker": "You",
+        "is_yours": True, "pick_number": 12, "round": 1,
+    }
     asyncio.run(draft._record_snake_pick(_event(payload)))
 
-    assert state._recorded == "Christian McCaffrey"  # the canonical name
+    # Recorded under the canonical name, with the is_yours flag carried through.
+    assert state._recorded["player_name"] == "Christian McCaffrey"
+    assert state._recorded["is_yours"] is True
+    assert state._recorded["pick_number"] == 12
 
 
 def test_record_snake_pick_no_engine_still_enriches(monkeypatch):

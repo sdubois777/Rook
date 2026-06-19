@@ -690,7 +690,9 @@ class LiveDraftEngine:
         context = {
             "round": round_num,
             "pick": pick_num,
-            "my_roster": self.state.get_roster_summary(),
+            # YOUR picks (tracked via the snake_pick is_yours flag) — get_roster_
+            # summary() reads your_roster, which snake picks never populate.
+            "my_roster": self.state.get_my_roster(),
             "top_available": available[:15],
         }
 
@@ -781,12 +783,17 @@ class LiveDraftEngine:
             })
         return out
 
+    def _format_my_roster(self, roster: list[dict]) -> str:
+        if not roster:
+            return "No picks yet"
+        return "\n".join(
+            f"  R{p.get('round') if p.get('round') is not None else '?'}: "
+            f"{p.get('player_name')} ({p.get('position') or '?'})"
+            for p in roster
+        )
+
     def _build_your_turn_prompt(self, context: dict) -> str:
-        positions_filled = {
-            pos: len(players)
-            for pos, players in context["my_roster"].items()
-            if players
-        }
+        my_roster = context["my_roster"]
 
         lines = []
         for i, p in enumerate(context["top_available"], start=1):
@@ -798,16 +805,20 @@ class LiveDraftEngine:
                 f"diff:{diff_str} [{p.get('snake_flag') or 'n/a'}]"
             )
         avail_str = "\n".join(lines)
+        roster_str = self._format_my_roster(my_roster)
+        needs_str = self.state.format_roster_needs(my_roster)
 
         return (
             f"YOU ARE ON THE CLOCK\n"
             f"Round: {context['round']}\n"
             f"Pick: {context['pick']}\n\n"
-            f"Your current roster:\n{self._format_roster(positions_filled)}\n\n"
-            f"Top available players:\n{avail_str}\n\n"
-            f"Who should I draft with pick {context['pick']}? "
-            f"Consider value vs consensus — can I wait on any of these, or will "
-            f"they be gone by my next pick?"
+            f"YOUR ROSTER ({len(my_roster)} picks):\n{roster_str}\n\n"
+            f"POSITIONS STILL NEEDED:\n{needs_str}\n\n"
+            f"TOP AVAILABLE (by AI ADP):\n{avail_str}\n\n"
+            f"Recommend who to draft at pick {context['pick']}. Prioritize "
+            f"filling urgent roster needs. If a player has a high adp_diff (we "
+            f"rate them well above consensus), they may last another round — fill "
+            f"a more urgent need now instead."
         )
 
     def _parse_your_turn_recommendation(
