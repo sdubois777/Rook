@@ -7,12 +7,16 @@ import { dirname, join } from 'node:path'
 import {
   parseSnakeState,
   detectSnakeEvents,
-  parsePicks,
+  parsePickCards,
 } from '../src/content_scripts/yahoo_snake_draft_observer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const manifest = JSON.parse(
   readFileSync(join(__dirname, '..', 'manifest.json'), 'utf-8')
+)
+const snakeSrc = readFileSync(
+  join(__dirname, '..', 'src', 'content_scripts', 'yahoo_snake_draft.js'),
+  'utf-8'
 )
 
 // Representative #app innerText snapshots from a live June 2026 snake session.
@@ -22,36 +26,14 @@ const SOMEONE_ELSE = [
 
 const YOUR_TURN = ['YOUR TURN • ROUND 8, PICK 93'].join('\n')
 
-// Confirmed "Picks" panel structure: pick# / team / player / position / nfl,
-// then 1-4 upcoming-order team names (noise) before the next pick number.
-const PICKS_PANEL = [
-  'Draft Room',
-  'Picks',
-  '1',
-  'You',
-  'J. Chase',
-  'WR',
-  'Cin',
-  'Quy', // noise (upcoming order)
-  'Nick', // noise
-  '2',
-  'Quy',
-  'B. Robinson',
-  'RB',
-  'Atl',
-  'Mike joined', // joined noise — must be filtered
-  '3',
-  'Nick',
-  'J. Cook III',
-  'RB',
-  'Buf',
-  '4', // snake reversal: Nick picks again back-to-back
-  'Nick',
-  'P. Nacua',
-  'WR',
-  'LAR',
-  'Bart left', // left noise — must be filtered
-].join('\n')
+// Each pick CARD's innerText (confirmed live): pick# / team / player / position
+// / nfl / "Bye N"(optional). parsePickCards takes the array of card texts the
+// content script collects via querySelectorAll.
+const PICK_CARDS = [
+  '3\nNick\nJ. Cook III\nRB\nBuf\nBye 12', // out of order on purpose
+  '1\nYou\nJ. Chase\nWR\nCin\nBye 10',
+  '2\nQuy\nB. Robinson\nRB\nAtl', // no Bye line
+]
 
 test('yahoo_snake_draft.js in manifest matches the Yahoo draft URL', () => {
   const cs = manifest.content_scripts.find((c) =>
@@ -132,10 +114,10 @@ test('detectSnakeEvents no longer emits pick events (parsePicks owns those)', ()
   assert.equal(r.events.filter((e) => e.type === 'snake_pick').length, 0)
 })
 
-// --- parsePicks (the complete Picks-panel history) --------------------------
+// --- parsePickCards (the pure core of getAllPicks) --------------------------
 
-test('parsePicks extracts pick 1 correctly', () => {
-  const picks = parsePicks(PICKS_PANEL)
+test('parsePickCards returns pick number, team, and player', () => {
+  const picks = parsePickCards(PICK_CARDS)
   assert.deepEqual(picks[0], {
     pick_number: 1,
     team: 'You',
@@ -146,47 +128,67 @@ test('parsePicks extracts pick 1 correctly', () => {
   })
 })
 
-test('parsePicks marks YOUR team (You) is_yours true', () => {
-  assert.equal(parsePicks(PICKS_PANEL)[0].is_yours, true)
+test('parsePickCards marks is_yours true when the team is You', () => {
+  const picks = parsePickCards(PICK_CARDS)
+  assert.equal(picks.find((p) => p.pick_number === 1).is_yours, true)
+  assert.equal(picks.find((p) => p.pick_number === 2).is_yours, false)
 })
 
-test('parsePicks marks an opponent is_yours false', () => {
-  const quy = parsePicks(PICKS_PANEL).find((p) => p.team === 'Quy')
-  assert.equal(quy.is_yours, false)
+test('parsePickCards filters cards with an invalid position', () => {
+  const cards = ['5\nQuy\nSome Name\nNOTAPOS\nAtl', '1\nYou\nJ. Chase\nWR\nCin']
+  const picks = parsePickCards(cards)
+  assert.equal(picks.length, 1)
+  assert.equal(picks[0].pick_number, 1)
 })
 
-test('parsePicks filters joined/left noise (4 real picks)', () => {
-  const picks = parsePicks(PICKS_PANEL)
-  assert.equal(picks.length, 4)
-  assert.ok(!picks.some((p) => p.player_name.includes('joined')))
-  assert.ok(!picks.some((p) => p.player_name.includes('left')))
+test('parsePickCards sorts by pick number', () => {
+  // Input order is 3, 1, 2 — output must be 1, 2, 3.
+  assert.deepEqual(
+    parsePickCards(PICK_CARDS).map((p) => p.pick_number),
+    [1, 2, 3]
+  )
 })
 
-test('parsePicks skips the upcoming-order lines between picks', () => {
-  // Quy/Nick appear as noise after pick 1 but must not become picks.
-  const nums = parsePicks(PICKS_PANEL).map((p) => p.pick_number)
-  assert.deepEqual(nums, [1, 2, 3, 4])
+test('parsePickCards handles a missing nfl_team', () => {
+  const picks = parsePickCards(['7\nNick\nX. Player\nQB'])
+  assert.equal(picks.length, 1)
+  assert.equal(picks[0].nfl_team, null)
 })
 
-test('parsePicks handles back-to-back teams (snake reversal)', () => {
-  const picks = parsePicks(PICKS_PANEL)
-  assert.equal(picks[2].team, 'Nick')
-  assert.equal(picks[3].team, 'Nick') // Nick picks again at the turn
-})
-
-test('parsePicks preserves a III suffix in the player name', () => {
-  const cook = parsePicks(PICKS_PANEL).find((p) => p.pick_number === 3)
+test('parsePickCards preserves a III suffix in the player name', () => {
+  const cook = parsePickCards(PICK_CARDS).find((p) => p.pick_number === 3)
   assert.equal(cook.player_name, 'J. Cook III')
 })
 
-test('parsePicks returns [] when there is no Picks header', () => {
-  assert.deepEqual(parsePicks('Draft Room\nfoo\nbar'), [])
-  assert.deepEqual(parsePicks(''), [])
+test('parsePickCards skips cards whose first line is not a pure pick number', () => {
+  // "Round 4" / stat columns must not be read as a pick number.
+  assert.deepEqual(parsePickCards(['Round 4\nNick\nX. Player\nQB\nBuf']), [])
+  assert.deepEqual(parsePickCards(['12.5\nNick\nX. Player\nQB\nBuf']), [])
 })
 
-test('parsePicks ignores a number not followed by a valid position', () => {
-  // "5 / Quy / Something / Bye 9 / ..." — "Bye 9" is filtered, but even a junk
-  // position field must not yield a pick.
-  const junk = ['Picks', '5', 'Quy', 'Some Name', 'NOTAPOS', 'Atl'].join('\n')
-  assert.deepEqual(parsePicks(junk), [])
+test('parsePickCards returns [] on empty/short input', () => {
+  assert.deepEqual(parsePickCards([]), [])
+  assert.deepEqual(parsePickCards(null), [])
+  assert.deepEqual(parsePickCards(['1\nYou\nJ. Chase']), []) // < 4 parts
+})
+
+// --- content-script wiring (CSS selector + MutationObserver) ----------------
+
+test('getAllPicks queries the pick-card selector and parses via parsePickCards', () => {
+  assert.match(snakeSrc, /querySelectorAll\(PICK_CARD_SELECTOR\)/)
+  assert.match(snakeSrc, /parsePickCards\(/)
+  // The distinctive pick-card class is part of the selector.
+  assert.match(snakeSrc, /ys-colors-surface-accent/)
+})
+
+test('pollPicksPanel reads the cards (getAllPicks), not #app innerText', () => {
+  assert.match(snakeSrc, /for \(const pick of getAllPicks\(\)\)/)
+  // The old text-based parsePicks is gone.
+  assert.doesNotMatch(snakeSrc, /parsePicks\(/)
+})
+
+test('a MutationObserver watches the picks container for new cards', () => {
+  assert.match(snakeSrc, /PICK_CONTAINER_SELECTOR/)
+  assert.match(snakeSrc, /new MutationObserver\(\(\)\s*=>\s*\{\s*pollPicksPanel\(\)/)
+  assert.match(snakeSrc, /childList: true/)
 })

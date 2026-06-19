@@ -13,67 +13,54 @@
  *   - the "Picks" panel holds the COMPLETE, ordered pick history (parsePicks)
  */
 
-// Defensive positions kept so a misparsed line can't masquerade as a pick.
+// Defensive positions kept so a misparsed card can't masquerade as a pick.
 const VALID_POSITIONS = new Set([
   'QB', 'RB', 'WR', 'TE', 'K', 'DEF', 'DST', 'DB', 'LB', 'DL',
 ])
 
 /**
- * Parse the complete draft history from Yahoo's "Picks" panel.
+ * Parse pick cards into an ordered pick list.
  *
- * Confirmed structure (live session): after the "Picks" header, each pick is
- * five lines — a PURE INTEGER pick number, then team, player, position, nfl_team
- * — followed by 1-4 upcoming-team-order lines (noise) before the next pick
- * number. YOUR team is always shown as "You". Scan for pure integers; read the
- * next four lines as a pick; validate the position field; skip everything else.
+ * Each card's innerText (confirmed live) is newline-separated:
+ *   parts[0] = pick number (integer)   parts[3] = position (QB/RB/WR/TE/...)
+ *   parts[1] = team ("You" for yours)  parts[4] = NFL team abbreviation
+ *   parts[2] = player name             parts[5] = "Bye {N}" (optional)
  *
- * Pure/testable: takes the `#app` innerText, returns an ordered list of picks.
+ * Pure/testable: takes an array of card innerText strings (the content script
+ * collects these via querySelectorAll on the pick-card CSS selector — that DOM
+ * read is the only impure part and lives in yahoo_snake_draft.js). The CSS
+ * selector targets the cards directly, so this avoids the false positives the
+ * old #app innerText scan hit (expert ranks, stat columns, other integers).
  */
-export function parsePicks(appText) {
-  if (!appText) return []
-
-  const lines = appText
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(
-      (l) =>
-        l.length > 0 &&
-        !l.endsWith(' joined') &&
-        !l.endsWith(' left') &&
-        !l.startsWith('Bye ')
-    )
-
-  const picksIdx = lines.findIndex((l) => l === 'Picks')
-  if (picksIdx === -1) return []
-
-  const body = lines.slice(picksIdx + 1)
+export function parsePickCards(cardTexts) {
   const picks = []
-  let i = 0
-  while (i < body.length) {
-    const num = parseInt(body[i], 10)
-    // A pick starts at a PURE integer (the pick number). Team names and player
-    // names never stringify back to themselves as an integer.
-    if (!Number.isNaN(num) && num > 0 && String(num) === body[i]) {
-      const team = body[i + 1]
-      const player = body[i + 2]
-      const position = body[i + 3]
-      const nflTeam = body[i + 4]
-      if (team && player && position && VALID_POSITIONS.has(position)) {
-        picks.push({
-          pick_number: num,
-          team,
-          player_name: player,
-          position,
-          nfl_team: nflTeam || null,
-          is_yours: team === 'You',
-        })
-        i += 5
-        continue
-      }
+  for (const text of cardTexts || []) {
+    const parts = (text || '')
+      .trim()
+      .split('\n')
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+    if (parts.length < 4) continue
+
+    const pickNum = parseInt(parts[0], 10)
+    // parts[0] must be PURELY the pick number (not "Round 4" or a stat).
+    if (Number.isNaN(pickNum) || pickNum <= 0 || String(pickNum) !== parts[0]) {
+      continue
     }
-    i += 1
+    const position = parts[3]
+    if (!VALID_POSITIONS.has(position)) continue
+
+    picks.push({
+      pick_number: pickNum,
+      team: parts[1],
+      player_name: parts[2],
+      position,
+      nfl_team: parts[4] || null,
+      is_yours: parts[1] === 'You',
+    })
   }
-  return picks
+  // DOM order should already be correct, but sort defensively by pick number.
+  return picks.sort((a, b) => a.pick_number - b.pick_number)
 }
 
 /**

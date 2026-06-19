@@ -4,30 +4,39 @@ import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
 import {
   parseSnakeState,
   detectSnakeEvents,
-  parsePicks,
+  parsePickCards,
 } from './yahoo_snake_draft_observer.mjs'
 
 /**
  * Yahoo Snake Draft Room — DOM Poller
  *
- * Reads draft state from `#app` innerText every 500ms and relays snake events
- * to the backend via POST /draft/event:
+ * Relays snake events to the backend via POST /draft/event:
  *   - your_turn / your_turn_soon — turn + countdown, from parseSnakeState
- *   - snake_pick — EVERY pick (yours and opponents), parsed from the complete
- *     "Picks" panel history (parsePicks), deduped by pick number
+ *   - snake_pick — EVERY pick (yours and opponents), read from the pick CARDS
+ *     via a CSS selector (parsePickCards), deduped by pick number
  *
- * Pick detection reads the Picks panel rather than the single "Last:" line or
- * the console.error ['0'] frame (which only fires for your own picks and only
- * exposes a Yahoo-internal id we can't resolve). The ['0'] frame is kept ONLY
- * as a low-latency trigger to poll the panel immediately after a pick lands.
+ * Pick cards are targeted with a CSS selector instead of scanning #app
+ * innerText: the panel text is full of other integers (expert ranks, stat
+ * columns) that confused the old text parser. The selector hits the cards
+ * directly. A MutationObserver on the scroll container fires the moment a card
+ * is appended; the 500ms interval and the ['0'] console frame are fallbacks.
  *
  * Pure parse logic lives in yahoo_snake_draft_observer.mjs (unit-tested); this
- * file owns the DOM read and the loop. The auction poller keys on `#draft` and
- * this one on `#app`, so both can be registered on the same URL.
+ * file owns the DOM reads and the loop.
  */
 
 const POLL_INTERVAL_MS = 500
 const TOTAL_TEAMS = 12 // round = ceil(pick_number / TOTAL_TEAMS); 12 for our leagues
+
+// Each pick is a card with this exact stack of Yahoo atomic classes (confirmed
+// live — 93 picks). The selector escapes (, ), and -- for querySelectorAll.
+const PICK_CARD_SELECTOR =
+  '.D\\(f\\).Fld\\(r\\).Ai\\(c\\).Gp\\(8px\\).Bdrs\\(8px\\).P\\(12px\\)' +
+  '.Bgc\\(--ys-colors-surface-accent\\)'
+
+// The scroll container the cards are appended to (for the MutationObserver).
+const PICK_CONTAINER_SELECTOR =
+  '.Fxg\\(1\\).Ovy\\(a\\).Ovx\\(h\\).D\\(f\\).Fxd\\(c\\).Gp\\(4px\\).Pb\\(16px\\)'
 
 let active = false
 let inactivityTimer = null
@@ -35,6 +44,12 @@ let inactivityTimer = null
 // Pick numbers already relayed — the panel holds the FULL history, so we only
 // post picks we haven't sent yet (each pick number is unique).
 const sentPickNumbers = new Set()
+
+/** Read every pick card from the DOM and parse it (DOM read + pure parse). */
+function getAllPicks() {
+  const cards = document.querySelectorAll(PICK_CARD_SELECTOR)
+  return parsePickCards(Array.from(cards, (el) => el.innerText))
+}
 
 function markDraftActive() {
   browser.storage.local.set({
@@ -47,11 +62,9 @@ function markDraftActive() {
   }, DRAFT_INACTIVITY_MS)
 }
 
-/** Parse the Picks panel and relay any picks we haven't sent yet. */
+/** Read the pick cards and relay any picks we haven't sent yet. */
 async function pollPicksPanel() {
-  const text = document.querySelector('#app')?.innerText
-  if (!text) return
-  for (const pick of parsePicks(text)) {
+  for (const pick of getAllPicks()) {
     if (sentPickNumbers.has(pick.pick_number)) continue
     sentPickNumbers.add(pick.pick_number)
     markDraftActive()
@@ -100,6 +113,23 @@ function startPoller() {
     }
     await pollPicksPanel()
   }, POLL_INTERVAL_MS)
+
+  startPicksObserver()
+}
+
+// A MutationObserver on the picks scroll container fires the instant a new card
+// is appended — no polling delay. The 500ms interval is the fallback. Retries
+// until the container exists (it renders after the room loads).
+function startPicksObserver() {
+  const container = document.querySelector(PICK_CONTAINER_SELECTOR)
+  if (!container) {
+    setTimeout(startPicksObserver, 2000)
+    return
+  }
+  const observer = new MutationObserver(() => {
+    pollPicksPanel()
+  })
+  observer.observe(container, { childList: true, subtree: false })
 }
 
 // ---------------------------------------------------------------------------
