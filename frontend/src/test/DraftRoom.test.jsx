@@ -1663,6 +1663,62 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().availablePlayers.map((p) => p.name)).toEqual(['Bijan Robinson'])
   })
 
+  it('recordSnakePick normalizes "You" to myTeamName for the team key', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      rosterSlotsRemaining: 16,
+      myRoster: [],
+      teamPicks: {},
+      availablePlayers: [{ id: 'a', name: 'Bijan Robinson', position: 'RB' }],
+    })
+
+    act(() => {
+      // The Picks panel labels your team "You".
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Bijan Robinson', position: 'RB',
+        picker: 'You', is_yours: true, pick_number: 1, round: 1,
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(Object.keys(s.teamPicks)).toEqual(['Stephen']) // not "You"
+    expect(s.teamPicks['Stephen']).toHaveLength(1)
+  })
+
+  it('recordSnakePick collapses "You" and myTeamName into one team entry', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: 'Stephen',
+      rosterSlotsRemaining: 16,
+      myRoster: [],
+      teamPicks: {},
+      availablePlayers: [
+        { id: 'a', name: 'Bijan Robinson', position: 'RB' },
+        { id: 'b', name: 'Puka Nacua', position: 'WR' },
+      ],
+    })
+
+    act(() => {
+      // First pick labeled "You"; second labeled with the real team name.
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Bijan Robinson', position: 'RB',
+        picker: 'You', is_yours: true, pick_number: 1, round: 1,
+      })
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Puka Nacua', position: 'WR',
+        picker: 'Stephen', is_yours: false, pick_number: 25, round: 3,
+      })
+    })
+
+    const s = useDraftStore.getState()
+    // One team key, two picks — no "You"/"Stephen" duplicate dropdown entries.
+    expect(Object.keys(s.teamPicks)).toEqual(['Stephen'])
+    expect(s.teamPicks['Stephen'].map((p) => p.player_name)).toEqual([
+      'Bijan Robinson', 'Puka Nacua',
+    ])
+  })
+
   it('recordSnakePick removes from available by full normalized name', () => {
     useDraftStore.setState({
       phase: 'live',

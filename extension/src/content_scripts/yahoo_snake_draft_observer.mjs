@@ -10,8 +10,71 @@
  *   - root is `#app` (not `#draft`), no bids, no per-player clock
  *   - "Bart's Pick • You're up in 9 Picks • Round 7, Pick 84"  (someone else up)
  *   - "YOUR TURN • ROUND 8, PICK 93"                            (you on the clock)
- *   - "Last:\nJ. DOBBINS\n(RB · DEN)"                           (last pick made)
+ *   - the "Picks" panel holds the COMPLETE, ordered pick history (parsePicks)
  */
+
+// Defensive positions kept so a misparsed line can't masquerade as a pick.
+const VALID_POSITIONS = new Set([
+  'QB', 'RB', 'WR', 'TE', 'K', 'DEF', 'DST', 'DB', 'LB', 'DL',
+])
+
+/**
+ * Parse the complete draft history from Yahoo's "Picks" panel.
+ *
+ * Confirmed structure (live session): after the "Picks" header, each pick is
+ * five lines — a PURE INTEGER pick number, then team, player, position, nfl_team
+ * — followed by 1-4 upcoming-team-order lines (noise) before the next pick
+ * number. YOUR team is always shown as "You". Scan for pure integers; read the
+ * next four lines as a pick; validate the position field; skip everything else.
+ *
+ * Pure/testable: takes the `#app` innerText, returns an ordered list of picks.
+ */
+export function parsePicks(appText) {
+  if (!appText) return []
+
+  const lines = appText
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l.length > 0 &&
+        !l.endsWith(' joined') &&
+        !l.endsWith(' left') &&
+        !l.startsWith('Bye ')
+    )
+
+  const picksIdx = lines.findIndex((l) => l === 'Picks')
+  if (picksIdx === -1) return []
+
+  const body = lines.slice(picksIdx + 1)
+  const picks = []
+  let i = 0
+  while (i < body.length) {
+    const num = parseInt(body[i], 10)
+    // A pick starts at a PURE integer (the pick number). Team names and player
+    // names never stringify back to themselves as an integer.
+    if (!Number.isNaN(num) && num > 0 && String(num) === body[i]) {
+      const team = body[i + 1]
+      const player = body[i + 2]
+      const position = body[i + 3]
+      const nflTeam = body[i + 4]
+      if (team && player && position && VALID_POSITIONS.has(position)) {
+        picks.push({
+          pick_number: num,
+          team,
+          player_name: player,
+          position,
+          nfl_team: nflTeam || null,
+          is_yours: team === 'You',
+        })
+        i += 5
+        continue
+      }
+    }
+    i += 1
+  }
+  return picks
+}
 
 /**
  * Parse the snake draft state out of `#app` innerText.
@@ -88,8 +151,9 @@ export function parseSnakeState(text) {
  * the snake events to relay plus the updated memory.
  *
  * `prev` carries { wasYourTurn, lastPicksUntil }. Pure: callers thread `next`
- * back in on the following tick. Pick events come from console.error (handled
- * in the content script), not from here — this only watches turn/countdown.
+ * back in on the following tick. This watches turn/countdown ONLY — the full
+ * pick history (yours and opponents) comes from parsePicks(), which is far more
+ * reliable than the single "Last:" line ever was.
  */
 export function detectSnakeEvents(prev, curr) {
   const events = []
@@ -122,47 +186,7 @@ export function detectSnakeEvents(prev, curr) {
     })
   }
 
-  // OPPONENT PICK — the "Last:" player changed. The console.error ['0'] frame
-  // only fires for YOUR picks, so DOM polling is the only way to see everyone
-  // else's. is_yours:false; the content script suppresses any pick we already
-  // relayed as our own via the ['0'] handler (dedup by name).
-  const lastName = curr.lastPick ? curr.lastPick.player_name : null
-  if (lastName && lastName !== prev.lastSeenPickName) {
-    events.push({
-      type: 'snake_pick',
-      platform: 'yahoo',
-      payload: {
-        pick_number: curr.currentPick,
-        player_name: lastName,
-        position: curr.lastPick.position,
-        team: curr.lastPick.team,
-        picker: curr.currentPicker || 'unknown',
-        is_yours: false,
-        round: curr.currentRound,
-      },
-    })
-  }
-
   next.wasYourTurn = curr.isYourTurn
   next.lastPicksUntil = curr.picksUntilYourTurn
-  next.lastSeenPickName = lastName != null ? lastName : prev.lastSeenPickName
   return { events, next }
-}
-
-/**
- * Build the snake_pick relay payload from a Yahoo console.error ['0'] frame
- * (['0', league, draft, pick_number, yahoo_player_id]) and the current parsed
- * state. Yahoo logs the ['0'] frame only for YOUR OWN picks (same as ['B']/['N']
- * in auction), so the pick is always attributed to you. Pure/testable.
- */
-export function buildSnakePickPayload(frame, state) {
-  return {
-    pick_number: frame[3],
-    yahoo_player_id: String(frame[4]),
-    player_name: state?.lastPick?.player_name || null,
-    position: state?.lastPick?.position || null,
-    picker: 'You',
-    is_yours: true,
-    round: state?.currentRound ?? null,
-  }
 }
