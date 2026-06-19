@@ -9,10 +9,12 @@
  * across the world boundary via a window CustomEvent.
  *
  * Intercepts Yahoo's own console.error pick logging:
- *   ['0', league, draft, pick_number, yahoo_player_id] -> a snake pick
+ *   ['0', league, draft, pick_number, yahoo_player_id] -> a pick just landed
  *
- * Yahoo logs the ['0'] frame only for YOUR OWN picks (same as ['B']/['N'] in
- * auction). Dispatched as '__yahoo_snake_pick__' for the isolated poller.
+ * The frame's DATA isn't used (its id is Yahoo-internal and only fires for your
+ * own picks). It's a low-latency SIGNAL only: dispatch a content-free
+ * '__yahoo_pick_made__' so the isolated poller re-reads the Picks panel (the
+ * source of truth) immediately instead of waiting for the next 500ms tick.
  */
 ;(function () {
   if (window.__draftmind_snake__) return
@@ -20,9 +22,7 @@
   const _origError = console.error
   console.error = function (...args) {
     if (Array.isArray(args[0]) && args[0][0] === '0') {
-      window.dispatchEvent(
-        new CustomEvent('__yahoo_snake_pick__', { detail: args[0] })
-      )
+      window.dispatchEvent(new CustomEvent('__yahoo_pick_made__'))
     }
     return _origError.apply(console, args)
   }

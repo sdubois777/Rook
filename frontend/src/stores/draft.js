@@ -355,7 +355,10 @@ export const useDraftStore = create((set, get) => ({
       const fromAvailable = state.availablePlayers.find(matchesPick)
       const newAvailable = state.availablePlayers.filter((p) => !matchesPick(p))
 
-      const winner = pick.picker || 'Unknown'
+      // Collapse the Picks-panel's "You" (and any picker that resolves to us)
+      // into one consistent team key, so the roster dropdown shows a single
+      // entry per team instead of "You" / "Stephen" / "unknown" duplicates.
+      const winner = isYours ? state.myTeamName || 'You' : pick.picker || 'Unknown'
       const teamPicks = {
         ...state.teamPicks,
         [winner]: [

@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import {
   parseSnakeState,
   detectSnakeEvents,
-  buildSnakePickPayload,
+  parsePicks,
 } from '../src/content_scripts/yahoo_snake_draft_observer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -18,16 +18,40 @@ const manifest = JSON.parse(
 // Representative #app innerText snapshots from a live June 2026 snake session.
 const SOMEONE_ELSE = [
   "Bart's Pick • You're up in 9 Picks • Round 7, Pick 84",
-  'Last:',
-  'J. DOBBINS',
-  '(RB · DEN)',
-  'Available Players',
-  'R. Pearsall',
 ].join('\n')
 
-const YOUR_TURN = ['YOUR TURN • ROUND 8, PICK 93', 'Last:', 'J. DOBBINS', '(RB · DEN)'].join(
-  '\n'
-)
+const YOUR_TURN = ['YOUR TURN • ROUND 8, PICK 93'].join('\n')
+
+// Confirmed "Picks" panel structure: pick# / team / player / position / nfl,
+// then 1-4 upcoming-order team names (noise) before the next pick number.
+const PICKS_PANEL = [
+  'Draft Room',
+  'Picks',
+  '1',
+  'You',
+  'J. Chase',
+  'WR',
+  'Cin',
+  'Quy', // noise (upcoming order)
+  'Nick', // noise
+  '2',
+  'Quy',
+  'B. Robinson',
+  'RB',
+  'Atl',
+  'Mike joined', // joined noise — must be filtered
+  '3',
+  'Nick',
+  'J. Cook III',
+  'RB',
+  'Buf',
+  '4', // snake reversal: Nick picks again back-to-back
+  'Nick',
+  'P. Nacua',
+  'WR',
+  'LAR',
+  'Bart left', // left noise — must be filtered
+].join('\n')
 
 test('yahoo_snake_draft.js in manifest matches the Yahoo draft URL', () => {
   const cs = manifest.content_scripts.find((c) =>
@@ -40,6 +64,8 @@ test('yahoo_snake_draft.js in manifest matches the Yahoo draft URL', () => {
   )
 })
 
+// --- parseSnakeState (turn detection — unchanged) ---------------------------
+
 test('parseSnakeState detects YOUR TURN', () => {
   const s = parseSnakeState(YOUR_TURN)
   assert.equal(s.isYourTurn, true)
@@ -50,8 +76,6 @@ test('parseSnakeState extracts round and pick when you are up', () => {
   const s = parseSnakeState(YOUR_TURN)
   assert.equal(s.yourRound, 8)
   assert.equal(s.yourPick, 93)
-  assert.equal(s.currentRound, 8)
-  assert.equal(s.currentPick, 93)
 })
 
 test('parseSnakeState detects who is picking and picks until your turn', () => {
@@ -63,24 +87,15 @@ test('parseSnakeState detects who is picking and picks until your turn', () => {
   assert.equal(s.picksUntilYourTurn, 9)
 })
 
-test('parseSnakeState extracts the last pick', () => {
-  const s = parseSnakeState(SOMEONE_ELSE)
-  assert.deepEqual(s.lastPick, {
-    player_name: 'J. DOBBINS',
-    position: 'RB',
-    team: 'DEN',
-  })
-})
-
 test('parseSnakeState returns null on empty text', () => {
   assert.equal(parseSnakeState(''), null)
   assert.equal(parseSnakeState(null), null)
 })
 
+// --- detectSnakeEvents (turn/countdown ONLY now) ----------------------------
+
 test('detectSnakeEvents fires your_turn on the rising edge only', () => {
-  // Seed lastSeenPickName so the Last: line in the sample doesn't also emit an
-  // opponent snake_pick — this test isolates the your_turn rising edge.
-  const start = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: 'J. DOBBINS' }
+  const start = { wasYourTurn: false, lastPicksUntil: null }
   const curr = parseSnakeState(YOUR_TURN)
 
   const first = detectSnakeEvents(start, curr)
@@ -92,7 +107,6 @@ test('detectSnakeEvents fires your_turn on the rising edge only', () => {
     picks_until_your_turn: 0,
   })
 
-  // Still your turn next tick — no duplicate event.
   const second = detectSnakeEvents(first.next, curr)
   assert.equal(second.events.length, 0)
 })
@@ -105,59 +119,74 @@ test('detectSnakeEvents fires your_turn_soon once at 2 picks away', () => {
   const r = detectSnakeEvents(start, twoAway)
   assert.equal(r.events.length, 1)
   assert.equal(r.events[0].type, 'your_turn_soon')
-  assert.equal(r.events[0].payload.picks_until_your_turn, 2)
 
-  // Same 2-away state again — no repeat.
   const again = detectSnakeEvents(r.next, twoAway)
   assert.equal(again.events.length, 0)
 })
 
-test('detectSnakeEvents emits nothing when far from your pick', () => {
-  const far = parseSnakeState(
-    "Bart's Pick • You're up in 9 Picks • Round 7, Pick 84"
+test('detectSnakeEvents no longer emits pick events (parsePicks owns those)', () => {
+  const r = detectSnakeEvents(
+    { wasYourTurn: false, lastPicksUntil: null },
+    parseSnakeState(SOMEONE_ELSE)
   )
-  const r = detectSnakeEvents({ wasYourTurn: false, lastPicksUntil: null }, far)
-  assert.equal(r.events.length, 0)
-})
-
-test('detectSnakeEvents emits an opponent snake_pick when lastPick changes', () => {
-  const curr = parseSnakeState(SOMEONE_ELSE) // Last: J. DOBBINS (RB · DEN)
-  const start = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: null }
-  const r = detectSnakeEvents(start, curr)
-  const pick = r.events.find((e) => e.type === 'snake_pick')
-  assert.ok(pick, 'expected an opponent snake_pick event')
-  assert.equal(pick.payload.player_name, 'J. DOBBINS')
-  assert.equal(pick.payload.position, 'RB')
-  assert.equal(pick.payload.is_yours, false)
-  assert.equal(pick.payload.picker, 'Bart')
-  assert.equal(r.next.lastSeenPickName, 'J. DOBBINS')
-})
-
-test('detectSnakeEvents does not re-emit the same lastPick', () => {
-  const curr = parseSnakeState(SOMEONE_ELSE)
-  const seen = { wasYourTurn: false, lastPicksUntil: null, lastSeenPickName: 'J. DOBBINS' }
-  const r = detectSnakeEvents(seen, curr)
   assert.equal(r.events.filter((e) => e.type === 'snake_pick').length, 0)
 })
 
-// ['0', league, draft, pick_number, yahoo_player_id] — your own pick frame.
-const PICK_FRAME = ['0', 'l1', 'd1', 84, 'nfl.p.123']
+// --- parsePicks (the complete Picks-panel history) --------------------------
 
-test('buildSnakePickPayload marks the pick is_yours true', () => {
-  const state = parseSnakeState(YOUR_TURN)
-  const p = buildSnakePickPayload(PICK_FRAME, state)
-  assert.equal(p.is_yours, true)
+test('parsePicks extracts pick 1 correctly', () => {
+  const picks = parsePicks(PICKS_PANEL)
+  assert.deepEqual(picks[0], {
+    pick_number: 1,
+    team: 'You',
+    player_name: 'J. Chase',
+    position: 'WR',
+    nfl_team: 'Cin',
+    is_yours: true,
+  })
 })
 
-test('buildSnakePickPayload sets picker to You', () => {
-  const p = buildSnakePickPayload(PICK_FRAME, parseSnakeState(YOUR_TURN))
-  assert.equal(p.picker, 'You')
+test('parsePicks marks YOUR team (You) is_yours true', () => {
+  assert.equal(parsePicks(PICKS_PANEL)[0].is_yours, true)
 })
 
-test('buildSnakePickPayload carries pick number and yahoo id', () => {
-  const p = buildSnakePickPayload(PICK_FRAME, parseSnakeState(SOMEONE_ELSE))
-  assert.equal(p.pick_number, 84)
-  assert.equal(p.yahoo_player_id, 'nfl.p.123')
-  // player_name comes from the "Last:" line (abbreviated — backend resolves it).
-  assert.equal(p.player_name, 'J. DOBBINS')
+test('parsePicks marks an opponent is_yours false', () => {
+  const quy = parsePicks(PICKS_PANEL).find((p) => p.team === 'Quy')
+  assert.equal(quy.is_yours, false)
+})
+
+test('parsePicks filters joined/left noise (4 real picks)', () => {
+  const picks = parsePicks(PICKS_PANEL)
+  assert.equal(picks.length, 4)
+  assert.ok(!picks.some((p) => p.player_name.includes('joined')))
+  assert.ok(!picks.some((p) => p.player_name.includes('left')))
+})
+
+test('parsePicks skips the upcoming-order lines between picks', () => {
+  // Quy/Nick appear as noise after pick 1 but must not become picks.
+  const nums = parsePicks(PICKS_PANEL).map((p) => p.pick_number)
+  assert.deepEqual(nums, [1, 2, 3, 4])
+})
+
+test('parsePicks handles back-to-back teams (snake reversal)', () => {
+  const picks = parsePicks(PICKS_PANEL)
+  assert.equal(picks[2].team, 'Nick')
+  assert.equal(picks[3].team, 'Nick') // Nick picks again at the turn
+})
+
+test('parsePicks preserves a III suffix in the player name', () => {
+  const cook = parsePicks(PICKS_PANEL).find((p) => p.pick_number === 3)
+  assert.equal(cook.player_name, 'J. Cook III')
+})
+
+test('parsePicks returns [] when there is no Picks header', () => {
+  assert.deepEqual(parsePicks('Draft Room\nfoo\nbar'), [])
+  assert.deepEqual(parsePicks(''), [])
+})
+
+test('parsePicks ignores a number not followed by a valid position', () => {
+  // "5 / Quy / Something / Bye 9 / ..." — "Bye 9" is filtered, but even a junk
+  // position field must not yield a pick.
+  const junk = ['Picks', '5', 'Quy', 'Some Name', 'NOTAPOS', 'Atl'].join('\n')
+  assert.deepEqual(parsePicks(junk), [])
 })

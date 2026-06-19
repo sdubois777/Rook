@@ -4,7 +4,7 @@ import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
 import {
   parseSnakeState,
   detectSnakeEvents,
-  buildSnakePickPayload,
+  parsePicks,
 } from './yahoo_snake_draft_observer.mjs'
 
 /**
@@ -12,27 +12,29 @@ import {
  *
  * Reads draft state from `#app` innerText every 500ms and relays snake events
  * to the backend via POST /draft/event:
- *   - your_turn       — you're on the clock (triggers a Sonnet recommendation)
- *   - your_turn_soon  — you're 2 picks away (UI alert only)
- *   - snake_pick      — each pick made, via Yahoo's console.error ['0', ...] log
+ *   - your_turn / your_turn_soon — turn + countdown, from parseSnakeState
+ *   - snake_pick — EVERY pick (yours and opponents), parsed from the complete
+ *     "Picks" panel history (parsePicks), deduped by pick number
  *
- * Mirrors yahoo_draft.js (auction): pure parse/detect logic lives in
- * yahoo_snake_draft_observer.mjs (unit-tested); this file owns the DOM read,
- * the 500ms loop, and the console.error pick hook. The auction poller keys on
- * `#draft` and this one on `#app`, so both can be registered on the same URL —
- * only the matching draft type's container exists at runtime.
+ * Pick detection reads the Picks panel rather than the single "Last:" line or
+ * the console.error ['0'] frame (which only fires for your own picks and only
+ * exposes a Yahoo-internal id we can't resolve). The ['0'] frame is kept ONLY
+ * as a low-latency trigger to poll the panel immediately after a pick lands.
+ *
+ * Pure parse logic lives in yahoo_snake_draft_observer.mjs (unit-tested); this
+ * file owns the DOM read and the loop. The auction poller keys on `#draft` and
+ * this one on `#app`, so both can be registered on the same URL.
  */
 
 const POLL_INTERVAL_MS = 500
+const TOTAL_TEAMS = 12 // round = ceil(pick_number / TOTAL_TEAMS); 12 for our leagues
 
 let active = false
 let inactivityTimer = null
-let lastPickNumber = null
 
-// Player names we relayed as OUR OWN picks (via the ['0'] frame). The DOM
-// poller also sees these picks in the "Last:" line and would re-send them as
-// opponent picks — suppress those. Names auto-expire after a few seconds.
-const recentYourPickNames = new Set()
+// Pick numbers already relayed — the panel holds the FULL history, so we only
+// post picks we haven't sent yet (each pick number is unique).
+const sentPickNumbers = new Set()
 
 function markDraftActive() {
   browser.storage.local.set({
@@ -45,6 +47,35 @@ function markDraftActive() {
   }, DRAFT_INACTIVITY_MS)
 }
 
+/** Parse the Picks panel and relay any picks we haven't sent yet. */
+async function pollPicksPanel() {
+  const text = document.querySelector('#app')?.innerText
+  if (!text) return
+  for (const pick of parsePicks(text)) {
+    if (sentPickNumbers.has(pick.pick_number)) continue
+    sentPickNumbers.add(pick.pick_number)
+    markDraftActive()
+    try {
+      await postDraftEvent({
+        type: 'snake_pick',
+        platform: 'yahoo',
+        payload: {
+          pick_number: pick.pick_number,
+          player_name: pick.player_name,
+          position: pick.position,
+          nfl_team: pick.nfl_team,
+          picker: pick.team,
+          is_yours: pick.is_yours,
+          round: Math.ceil(pick.pick_number / TOTAL_TEAMS),
+        },
+      })
+    } catch {
+      // Network hiccup — forget so the next poll retries this pick.
+      sentPickNumbers.delete(pick.pick_number)
+    }
+  }
+}
+
 function startPoller() {
   if (active) return
   active = true
@@ -55,68 +86,32 @@ function startPoller() {
   setInterval(async () => {
     const text = document.querySelector('#app')?.innerText
     const state = parseSnakeState(text)
-    if (!state) return
-
-    const { events, next } = detectSnakeEvents(memory, state)
-    memory = next
-
-    for (const event of events) {
-      // Opponent pick from the DOM: skip if we already relayed it as our own
-      // via the ['0'] frame (same player name from the same "Last:" line).
-      if (
-        event.type === 'snake_pick' &&
-        recentYourPickNames.has(event.payload.player_name)
-      ) {
-        continue
-      }
-      if (event.type === 'your_turn') markDraftActive()
-      try {
-        await postDraftEvent(event)
-      } catch {
-        // Network hiccup — drop this event, keep polling
+    if (state) {
+      const { events, next } = detectSnakeEvents(memory, state)
+      memory = next
+      for (const event of events) {
+        if (event.type === 'your_turn') markDraftActive()
+        try {
+          await postDraftEvent(event)
+        } catch {
+          // Network hiccup — drop this event, keep polling
+        }
       }
     }
+    await pollPicksPanel()
   }, POLL_INTERVAL_MS)
 }
 
 // ---------------------------------------------------------------------------
-// Snake pick frames — Yahoo logs every snake pick to console.error as
-//   ['0', league, draft, pick_number, yahoo_player_id]
-// This content script runs in the ISOLATED world and can't see the page's
-// console, so the interception happens in yahoo_snake_draft_main.js (MAIN
-// world), which forwards the frame across the boundary as '__yahoo_snake_pick__'.
+// ['0'] frame — Yahoo logs a console.error ['0', ...] when a pick lands. The
+// MAIN-world script (yahoo_snake_draft_main.js) forwards it as a content-free
+// '__yahoo_pick_made__' trigger; we use it only to poll the Picks panel
+// IMMEDIATELY (lower latency than waiting for the next 500ms tick). The frame's
+// own data is NOT used — the Picks panel is the source of truth.
 // ---------------------------------------------------------------------------
 
-window.addEventListener('__yahoo_snake_pick__', async (event) => {
-  const data = event.detail
-  if (!Array.isArray(data) || data[0] !== '0') return
-
-  const pickNumber = data[3]
-
-  // Guard against the same frame firing twice.
-  if (pickNumber === lastPickNumber) return
-  lastPickNumber = pickNumber
-
-  // Best-effort player name from the "Last:" line.
-  const state = parseSnakeState(document.querySelector('#app')?.innerText)
-
-  // Remember this name so the DOM poller doesn't re-send it as an opponent pick.
-  const pickedName = state?.lastPick?.player_name
-  if (pickedName) {
-    recentYourPickNames.add(pickedName)
-    setTimeout(() => recentYourPickNames.delete(pickedName), 5000)
-  }
-
-  markDraftActive()
-  try {
-    await postDraftEvent({
-      type: 'snake_pick',
-      platform: 'yahoo',
-      payload: buildSnakePickPayload(data, state),
-    })
-  } catch {
-    // Ignore relay failures — the next poll keeps state moving
-  }
+window.addEventListener('__yahoo_pick_made__', () => {
+  pollPicksPanel()
 })
 
 // ---------------------------------------------------------------------------
