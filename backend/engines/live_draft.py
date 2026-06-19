@@ -743,8 +743,12 @@ class LiveDraftEngine:
             )
 
     async def _get_top_available(self) -> list[dict]:
-        """Top available skill players by adp_rank, excluding drafted ids."""
-        drafted = self.state.get_drafted_player_ids()
+        """Top available skill players by adp_rank, excluding drafted players.
+
+        Excludes by NAME (state.is_drafted), since the snake pick id is a
+        Yahoo-internal id that doesn't match our DB yahoo_player_id. Pulls 60 so
+        enough remain after removing already-drafted players for a top-15 list.
+        """
         async with self._db_session_factory() as session:
             stmt = (
                 select(Player)
@@ -753,14 +757,14 @@ class LiveDraftEngine:
                     Player.position.in_(["QB", "RB", "WR", "TE"]),
                 )
                 .order_by(Player.adp_rank.asc())
-                .limit(40)
+                .limit(60)
             )
             result = await session.execute(stmt)
             players = result.scalars().all()
 
         out: list[dict] = []
         for p in players:
-            if p.yahoo_player_id and p.yahoo_player_id in drafted:
+            if self.state.is_drafted(p.name):
                 continue
             out.append({
                 "name": p.name,

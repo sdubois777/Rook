@@ -98,6 +98,44 @@ class DraftStateManager:
         # poller couldn't attribute (winner='unknown'). None until you bid.
         self.last_my_bid: dict | None = None
 
+        # Normalized names of every drafted player (snake). The snake_pick
+        # player_id is a Yahoo-internal id that doesn't match our DB
+        # yahoo_player_id, so the engine excludes drafted players from
+        # recommendations by NAME instead. See is_drafted().
+        self._drafted_names: set[str] = set()
+
+    def record_snake_pick(self, player_name: str) -> None:
+        """Track a drafted player's name so it's excluded from recommendations."""
+        if player_name:
+            from backend.agents.roster_changes import _norm_name
+
+            self._drafted_names.add(_norm_name(player_name))
+
+    def is_drafted(self, player_name: str) -> bool:
+        """True if this player has already been drafted.
+
+        Matches on the normalized name, and is abbreviation-aware (the snake DOM
+        sends "J. Gibbs" but the recommendation pool has "Jahmyr Gibbs"): a
+        same-last-name + same-first-initial match counts, in either direction.
+        """
+        from backend.agents.roster_changes import _norm_name
+
+        key = _norm_name(player_name or "")
+        if not key:
+            return False
+        if key in self._drafted_names:
+            return True
+
+        parts = key.split()
+        if len(parts) < 2:
+            return False
+        last, initial = parts[-1], parts[0][:1]
+        for drafted in self._drafted_names:
+            dp = drafted.split()
+            if len(dp) >= 2 and dp[-1] == last and dp[0][:1] == initial:
+                return True
+        return False
+
     def record_my_bid(self, player_id: str, amount: int) -> None:
         """Remember your latest bid so an unattributed sale can be recovered."""
         self.last_my_bid = {"player_id": player_id or "", "amount": amount}
