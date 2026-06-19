@@ -19,6 +19,9 @@ import {
   getRecFpAdp,
   getRecAdpDiff,
   matchesPickName,
+  getSnakeTargets,
+  snakeUrgencyLabel,
+  neededPositions,
 } from '../utils/playerUtils'
 
 // adp_ai (4.0, tied) vs adp_rank (1, clean) — the bug this module prevents.
@@ -159,6 +162,29 @@ describe('playerUtils — matchesPickName (abbreviated DOM names)', () => {
     expect(matchesPickName('', 'C. MCCAFFREY')).toBe(false)
     expect(matchesPickName('Bijan Robinson', '')).toBe(false)
   })
+
+  // Multi-part first initials (A.J., D.K., C.J. ...): normalizeName drops the
+  // periods so "A.J." -> "aj", and "aj"[0] === "a" matches Yahoo's "A.".
+  it.each([
+    ['A.J. Brown', 'A. Brown'],
+    ['D.K. Metcalf', 'D. Metcalf'],
+    ['D.J. Moore', 'D. Moore'],
+    ['C.J. Stroud', 'C. Stroud'],
+    ['T.J. Hockenson', 'T. Hockenson'],
+    ['J.K. Dobbins', 'J. Dobbins'],
+  ])('matches %s against %s', (full, abbr) => {
+    expect(matchesPickName(full, abbr)).toBe(true)
+  })
+
+  it('rejects a different last name (A.J. Brown vs D. Brown)', () => {
+    expect(matchesPickName('A.J. Brown', 'D. Brown')).toBe(false)
+  })
+
+  it('does NOT match a compound last name to a single one', () => {
+    // "Amon-Ra St. Brown" -> "amon ra st brown" (hyphen maps to space), whose
+    // last name is "ra st brown", != "brown" — so "A. Brown" must NOT match it.
+    expect(matchesPickName('Amon-Ra St. Brown', 'A. Brown')).toBe(false)
+  })
 })
 
 describe('playerUtils — recommendation shape', () => {
@@ -175,6 +201,86 @@ describe('playerUtils — recommendation shape', () => {
 
   it('getRecAdpDiff reads adp_diff', () => {
     expect(getRecAdpDiff({ adp_diff: -2 })).toBe(-2)
+  })
+})
+
+describe('getSnakeTargets — urgency-aware suggested targets', () => {
+  it('filters to needed positions', () => {
+    const roster = [{ position: 'QB' }] // QB filled
+    const players = [
+      { id: 'q', name: 'QB Guy', position: 'QB', adp_rank: 5 },
+      { id: 'r', name: 'RB Guy', position: 'RB', adp_rank: 6 },
+    ]
+    const out = getSnakeTargets(roster, players, 1, 12).map((p) => p.name)
+    expect(out).toContain('RB Guy')
+    expect(out).not.toContain('QB Guy') // QB slot already filled
+  })
+
+  it('scores urgency high when FP ADP is near the current pick', () => {
+    const near = { id: 'n', name: 'Near', position: 'RB', adp_rank: 30, adp_fantasypros: 25 }
+    const far = { id: 'f', name: 'Far', position: 'RB', adp_rank: 31, adp_fantasypros: 200 }
+    // Current pick 20: Near goes ~pick 25 (within a round) -> urgent first.
+    const out = getSnakeTargets([], [far, near], 20, 12)
+    expect(out[0].name).toBe('Near')
+  })
+
+  it('reduces urgency for a high adp_diff (market sleeping on them)', () => {
+    const sleeper = { id: 's', name: 'Sleeper', position: 'RB', adp_rank: 30, adp_fantasypros: 25, adp_diff: 25 }
+    const urgent = { id: 'u', name: 'Urgent', position: 'WR', adp_rank: 31, adp_fantasypros: 25, adp_diff: 0 }
+    // Both gone-soon (+100), but sleeper -30 for diff>20 -> urgent ranks first.
+    const out = getSnakeTargets([], [sleeper, urgent], 20, 12)
+    expect(out[0].name).toBe('Urgent')
+  })
+
+  it('sorts by urgency, then by adp_rank', () => {
+    // Equal urgency (both far, no diff) -> tiebreak adp_rank ascending.
+    const a = { id: 'a', name: 'A', position: 'RB', adp_rank: 30, adp_fantasypros: 200 }
+    const b = { id: 'b', name: 'B', position: 'WR', adp_rank: 10, adp_fantasypros: 200 }
+    expect(getSnakeTargets([], [a, b], 1, 12).map((p) => p.name)).toEqual(['B', 'A'])
+  })
+
+  it('falls back to all available when no needed-position players exist', () => {
+    const roster = [{ position: 'K' }] // K filled; needed = QB/RB/WR/TE/DEF/FLEX
+    const players = [{ id: 'k', name: 'Kicker2', position: 'K', adp_rank: 140 }]
+    // No needed-position candidate -> show best available anyway.
+    expect(getSnakeTargets(roster, players, 1, 12).map((p) => p.name)).toContain('Kicker2')
+  })
+
+  it('returns [] for an empty board', () => {
+    expect(getSnakeTargets([], [], 1, 12)).toEqual([])
+  })
+})
+
+describe('snakeUrgencyLabel', () => {
+  it('is Now within one round', () => {
+    expect(snakeUrgencyLabel({ _picksUntilGone: 10 }, 12).text).toBe('Now')
+  })
+  it('is Soon within two rounds', () => {
+    expect(snakeUrgencyLabel({ _picksUntilGone: 20 }, 12).text).toBe('Soon')
+  })
+  it('is Wait when far but adp_diff is high', () => {
+    expect(snakeUrgencyLabel({ _picksUntilGone: 100, adp_diff: 15 }, 12).text).toBe('Wait')
+  })
+  it('is null when far and adp_diff is low', () => {
+    expect(snakeUrgencyLabel({ _picksUntilGone: 100, adp_diff: 0 }, 12)).toBeNull()
+  })
+})
+
+describe('getSnakeTargets lives in playerUtils (single source of truth)', () => {
+  it('is exported from playerUtils', () => {
+    expect(typeof getSnakeTargets).toBe('function')
+    expect(typeof neededPositions).toBe('function')
+  })
+
+  it('is NOT defined inline in SuggestedTargets.jsx', () => {
+    let src
+    try {
+      src = readFileSync('src/components/draft/SuggestedTargets.jsx', 'utf-8')
+    } catch {
+      src = readFileSync('frontend/src/components/draft/SuggestedTargets.jsx', 'utf-8')
+    }
+    expect(src).not.toMatch(/(export\s+)?function getSnakeTargets/)
+    expect(src).toMatch(/import\s*\{[^}]*getSnakeTargets[^}]*\}\s*from\s*'\.\.\/\.\.\/utils\/playerUtils'/)
   })
 })
 

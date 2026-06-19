@@ -77,6 +77,99 @@ export function auctionSortComparator(a, b) {
   return (b?.ai_bid_ceiling ?? 0) - (a?.ai_bid_ceiling ?? 0)
 }
 
+// --- Snake suggested targets (urgency-aware) --------------------------------
+
+// Starter lineup this league fields (bench excluded). FLEX accepts RB/WR/TE.
+export const STARTER_SLOTS = { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, K: 1, DEF: 1 }
+
+/** Starter positions a roster still needs. FLEX opens RB/WR/TE. */
+export function neededPositions(myRoster) {
+  const filled = {}
+  for (const p of myRoster || []) {
+    const pos = p.position || 'BN'
+    filled[pos] = (filled[pos] || 0) + 1
+  }
+  const needed = new Set()
+  for (const [pos, count] of Object.entries(STARTER_SLOTS)) {
+    if ((filled[pos] || 0) < count) needed.add(pos)
+  }
+  if ((filled.FLEX || 0) < 1) {
+    needed.add('RB')
+    needed.add('WR')
+    needed.add('TE')
+  }
+  return needed
+}
+
+/**
+ * How many picks until a player is likely gone, given the CURRENT pick and team
+ * count: roughly fp consensus rank minus the current overall pick.
+ */
+export function picksUntilGone(player, currentPick) {
+  return (getFpAdp(player) ?? 999) - (currentPick || 1)
+}
+
+/**
+ * Urgency score for a snake target: higher = draft sooner. A player likely gone
+ * before your next turn is urgent; a high adp_diff (market is sleeping on them,
+ * so they'll last) lowers urgency; tier-1 players are always urgent.
+ */
+export function snakeUrgencyScore(player, currentPick, totalTeams = 12) {
+  const teams = totalTeams || 12
+  const untilGone = picksUntilGone(player, currentPick)
+  const adpDiff = getAdpDiff(player) ?? 0
+  const adpRank = getDisplayAdp(player) ?? 999
+
+  let score = 0
+  if (untilGone <= teams) score += 100 // gone before your next pick
+  else if (untilGone <= teams * 2) score += 50 // gone within two turns
+
+  if (adpDiff > 20) score -= 30 // market sleeping — you can wait
+  else if (adpDiff > 10) score -= 15
+
+  if (adpRank <= 12) score += 50 // tier-1 always urgent
+  return score
+}
+
+/**
+ * Suggested snake targets: needed-position players ranked by urgency (will they
+ * be gone before your next pick?), tie-broken by adp_rank. Falls back to best
+ * available when every starter slot is filled. Top 8.
+ */
+export function getSnakeTargets(myRoster, availablePlayers, currentPick, totalTeams = 12) {
+  if (!availablePlayers?.length) return []
+
+  const needed = neededPositions(myRoster)
+  let candidates = availablePlayers.filter((p) => needed.has(p.position))
+  if (candidates.length === 0) candidates = [...availablePlayers] // starters full
+
+  return candidates
+    .map((p) => ({
+      ...p,
+      _urgency: snakeUrgencyScore(p, currentPick, totalTeams),
+      _picksUntilGone: picksUntilGone(p, currentPick),
+    }))
+    .sort((a, b) =>
+      b._urgency !== a._urgency
+        ? b._urgency - a._urgency
+        : (getDisplayAdp(a) ?? 999) - (getDisplayAdp(b) ?? 999)
+    )
+    .slice(0, 8)
+}
+
+/**
+ * The urgency badge for a target row: Now (gone within a round), Soon (within
+ * two), Wait (market sleeping — high adp_diff), or null.
+ */
+export function snakeUrgencyLabel(target, totalTeams = 12) {
+  const teams = totalTeams || 12
+  const untilGone = target?._picksUntilGone ?? picksUntilGone(target, 1)
+  if (untilGone <= teams) return { text: 'Now', className: 'text-red-400' }
+  if (untilGone <= teams * 2) return { text: 'Soon', className: 'text-amber-400' }
+  if ((getAdpDiff(target) ?? 0) > 10) return { text: 'Wait', className: 'text-emerald-400' }
+  return null
+}
+
 // --- Snake flag badge -------------------------------------------------------
 
 const SNAKE_FLAG_CONFIG = {

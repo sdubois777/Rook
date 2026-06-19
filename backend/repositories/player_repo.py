@@ -146,10 +146,15 @@ class PlayerRepository(BaseRepository[Player]):
             if _norm_name(c.name) == normalized:
                 return c
 
-        # 3. First-initial + last name (Sam LaPorta -> Samuel LaPorta)
+        # 3. First-initial + FULL last name (Sam LaPorta -> Samuel LaPorta;
+        #    "A. Brown" -> "A.J. Brown", but NOT "Amon-Ra St. Brown"). The last
+        #    name must match in FULL (every token after the first), not just the
+        #    final token — otherwise "A. Brown" wrongly matches the high-ceiling
+        #    "Amon-Ra St. Brown" (both end in "brown") and resolves the pick to
+        #    the wrong player.
         for c in candidates:
             cn = _norm_name(c.name).split()
-            if len(cn) >= 2 and cn[-1] == last and cn[0][:1] == first[:1]:
+            if len(cn) >= 2 and cn[1:] == parts[1:] and cn[0][:1] == first[:1]:
                 return c
 
         # 4. Best-ceiling contains-match fallback

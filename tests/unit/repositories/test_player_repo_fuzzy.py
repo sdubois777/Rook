@@ -93,6 +93,40 @@ async def test_fuzzy_abbreviated_no_candidates_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_find_by_name_fuzzy_aj_brown():
+    # "A. Brown" must resolve to A.J. Brown — NOT the higher-ceiling Amon-Ra St.
+    # Brown (both end in "brown"). Amon-Ra is listed first (ceiling-desc order).
+    amon = _player("Amon-Ra St. Brown", position="WR", ypid="nfl_a", ceiling=80)
+    ajb = _player("A.J. Brown", position="WR", ypid="nfl_b", ceiling=55)
+    repo = _repo([_exact_result(None), _candidates_result([amon, ajb])])
+    assert await repo.find_by_name_fuzzy("A. Brown") is ajb
+
+
+@pytest.mark.asyncio
+async def test_first_initial_last_match_dk_metcalf():
+    # Multi-initial DB name without periods: "D. Metcalf" -> "DK Metcalf".
+    dk = _player("DK Metcalf", position="WR", ypid="nfl_d", ceiling=55)
+    repo = _repo([_exact_result(None), _candidates_result([dk])])
+    assert await repo.find_by_name_fuzzy("D. Metcalf") is dk
+
+
+@pytest.mark.asyncio
+async def test_first_initial_last_match_compound_last_name():
+    # When the pick carries the full compound last name, it still resolves.
+    amon = _player("Amon-Ra St. Brown", position="WR", ypid="nfl_a", ceiling=80)
+    repo = _repo([_exact_result(None), _candidates_result([amon])])
+    assert await repo.find_by_name_fuzzy("A. St. Brown") is amon
+
+
+@pytest.mark.asyncio
+async def test_first_initial_last_match_false_diff_last():
+    # Different last name -> no step-3 match; only candidate is returned by the
+    # step-4 contains fallback, so guard with a candidate that shares no last name.
+    repo = _repo([_exact_result(None), _candidates_result([])])  # ilike finds none
+    assert await repo.find_by_name_fuzzy("A. Brown") is None
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_no_candidates_returns_none():
     repo = _repo([_exact_result(None), _candidates_result([])])
     assert await repo.find_by_name_fuzzy("Nonexistent Player") is None

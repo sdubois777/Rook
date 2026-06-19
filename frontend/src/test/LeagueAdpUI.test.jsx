@@ -8,7 +8,8 @@ import {
 } from '../context/LeagueContext'
 import AvailablePlayers from '../components/draft/AvailablePlayers'
 import RecommendationPanel from '../components/draft/RecommendationPanel'
-import { getSnakeTargets } from '../components/draft/SuggestedTargets'
+import SuggestedTargets from '../components/draft/SuggestedTargets'
+import { getSnakeTargets } from '../utils/playerUtils'
 
 const SNAKE = {
   isSnake: true,
@@ -119,6 +120,22 @@ describe('SuggestedTargets snake ordering', () => {
     ]
     const out = getSnakeTargets([], players)
     expect(out.map((p) => p.name)).toEqual(['B', 'C', 'A'])
+  })
+
+  it('uses currentPick from the store to flag urgency (Now badge)', () => {
+    useDraftStore.setState({
+      myRoster: [],
+      availablePlayers: [
+        // FP rank 25; with the current pick at 20 it goes within a round -> Now.
+        { id: 'n', name: 'Near Guy', position: 'RB', adp_rank: 30, adp_fantasypros: 25 },
+      ],
+      currentPick: 20,
+      myBudget: 200,
+      rosterSlotsRemaining: 16,
+    })
+    render(withLeague(<SuggestedTargets />, SNAKE))
+    expect(screen.getByText('Near Guy')).toBeInTheDocument()
+    expect(screen.getByText('Now')).toBeInTheDocument()
   })
 })
 
