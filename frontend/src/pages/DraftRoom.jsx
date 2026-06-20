@@ -93,10 +93,13 @@ export default function DraftRoom() {
         </div>
       </div>
 
-      {/* 3-column layout — fills the viewport, only inner lists scroll */}
-      <div className="flex-1 grid grid-cols-[30%_40%_30%] min-h-0">
+      {/* 3-column layout on desktop (fills the viewport, only inner lists
+          scroll). On mobile the three zones stack and the whole area scrolls —
+          live drafting is a desktop-extension flow, so this is "usable", not
+          optimized. */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[30%_40%_30%] min-h-0 overflow-y-auto lg:overflow-hidden">
         {/* LEFT: compact Recommendation card over Suggested Targets (scrolls) */}
-        <div className="border-r border-[#2d3148] min-h-0 flex flex-col overflow-hidden">
+        <div className="border-b lg:border-b-0 lg:border-r border-[#2d3148] min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
           <div className="shrink-0 border-b border-[#2d3148]">
             <ErrorBoundary
               fallback={
@@ -114,7 +117,7 @@ export default function DraftRoom() {
         </div>
 
         {/* CENTER: Nomination (fixed) over Available players (scrolls) */}
-        <div className="border-r border-[#2d3148] min-h-0 flex flex-col overflow-hidden">
+        <div className="border-b lg:border-b-0 lg:border-r border-[#2d3148] min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
           <div className="h-[190px] shrink-0 border-b border-[#2d3148] overflow-hidden">
             {isSnake ? <SnakePanel /> : <NominationPanel />}
           </div>
@@ -124,7 +127,7 @@ export default function DraftRoom() {
         </div>
 
         {/* RIGHT: Team rosters */}
-        <div className="min-h-0 overflow-hidden">
+        <div className="min-h-[70vh] lg:min-h-0 overflow-hidden">
           <TeamRosterPanel />
         </div>
       </div>

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Swords,
   UserCircle,
+  X,
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import LeagueSelector from './LeagueSelector'
@@ -22,25 +23,43 @@ const navItems = [
 ]
 
 
-export default function Sidebar() {
+// `mobileOpen` / `onClose` drive the off-canvas drawer on small screens; they
+// are no-ops at lg, where the sidebar is the existing fixed desktop rail. The
+// desktop `collapsed` toggle (Zustand) only applies at lg.
+export default function Sidebar({ mobileOpen = false, onClose }) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggle = useUIStore((s) => s.toggleSidebar)
+  // Labels/brand hide only when desktop-collapsed; on mobile the drawer is full
+  // width so they always show.
+  const labelHidden = collapsed ? 'lg:hidden' : ''
   return (
     <aside
-      className={`fixed top-0 left-0 h-full bg-[#161822] border-r border-[#2d3148] flex flex-col transition-all duration-200 z-40 ${
-        collapsed ? 'w-16' : 'w-56'
+      className={`fixed top-0 left-0 h-full bg-[#161822] border-r border-[#2d3148] flex flex-col transition-transform duration-200 w-64 z-50 ${
+        mobileOpen ? 'translate-x-0' : '-translate-x-full'
+      } lg:translate-x-0 lg:z-40 lg:transition-all ${
+        collapsed ? 'lg:w-16' : 'lg:w-56'
       }`}
     >
       {/* Header */}
       <div className="flex items-center h-14 px-4 border-b border-[#2d3148]">
-        {!collapsed && (
-          <span className="text-blue-400 font-semibold text-sm tracking-wide">
-            Rook
-          </span>
-        )}
+        <span
+          className={`text-blue-400 font-semibold text-sm tracking-wide ${labelHidden}`}
+        >
+          Rook
+        </span>
+        {/* Mobile close (drawer) */}
+        <button
+          onClick={onClose}
+          aria-label="Close navigation"
+          className="lg:hidden ml-auto flex items-center justify-center min-h-11 min-w-11 text-slate-400 hover:text-slate-200"
+        >
+          <X size={20} />
+        </button>
+        {/* Desktop collapse toggle */}
         <button
           onClick={toggle}
-          className="ml-auto text-slate-400 hover:text-slate-200 p-1"
+          aria-label="Toggle sidebar"
+          className="hidden lg:block ml-auto text-slate-400 hover:text-slate-200 p-1"
         >
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
@@ -56,8 +75,9 @@ export default function Sidebar() {
             key={to}
             to={to}
             end={to === '/'}
+            onClick={onClose}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+              `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
                 isActive
                   ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-[#1c1f2e]'
@@ -65,15 +85,16 @@ export default function Sidebar() {
             }
           >
             <Icon size={18} />
-            {!collapsed && <span>{label}</span>}
+            <span className={labelHidden}>{label}</span>
           </NavLink>
         ))}
 
         {/* Draft Room — full-screen live draft */}
         <NavLink
           to="/draft-room"
+          onClick={onClose}
           className={({ isActive }) =>
-            `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+            `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
               isActive
                 ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
                 : 'text-amber-400 hover:text-amber-300 hover:bg-[#1c1f2e]'
@@ -81,7 +102,7 @@ export default function Sidebar() {
           }
         >
           <Swords size={18} />
-          {!collapsed && <span>Draft Room</span>}
+          <span className={labelHidden}>Draft Room</span>
         </NavLink>
       </nav>
 
@@ -89,9 +110,9 @@ export default function Sidebar() {
       <div className="p-4 border-t border-[#2d3148]">
         <div className="flex items-center gap-2">
           <UserButton afterSignOutUrl="/sign-in" />
-          {!collapsed && (
-            <span className="text-xs text-slate-400 truncate">My Account</span>
-          )}
+          <span className={`text-xs text-slate-400 truncate ${labelHidden}`}>
+            My Account
+          </span>
         </div>
       </div>
     </aside>
