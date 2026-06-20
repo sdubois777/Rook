@@ -107,7 +107,7 @@ export default function Dashboard() {
   return (
     <div className="max-w-6xl">
       {/* Countdown bar */}
-      <div className="bg-gradient-to-r from-blue-600/20 to-blue-500/10 border border-blue-500/20 rounded-lg px-6 py-4 mb-6 flex items-center justify-between">
+      <div className="bg-gradient-to-r from-blue-600/20 to-blue-500/10 border border-blue-500/20 rounded-lg px-4 sm:px-6 py-4 mb-6 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Clock size={20} className="text-blue-400" />
           <div>

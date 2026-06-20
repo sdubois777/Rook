@@ -48,24 +48,13 @@ export default function LeagueSelector() {
 
   if (options.length === 0) return null
 
-  if (collapsed) {
-    return (
-      <div className="px-2 py-2 border-b border-[#2d3148] flex justify-center">
-        <span
-          title={selectedLeague?.league_name || 'No league'}
-          className="text-[10px] font-semibold text-blue-300 bg-[#1c1f2e] rounded px-1.5 py-1"
-        >
-          {abbreviate(selectedLeague?.league_name)}
-        </span>
-      </div>
-    )
-  }
-
   const meta = selectedLeague
     ? `${selectedLeague.draft_type} · ${selectedLeague.scoring} · ${selectedLeague.team_count}-tm`
     : null
 
-  return (
+  // Full dropdown — always used on mobile (the drawer is full-width, so the
+  // desktop "collapsed" rail concept doesn't apply there).
+  const fullSelector = (
     <div className="px-3 py-2 border-b border-[#2d3148]">
       <select
         aria-label="Select league"
@@ -89,4 +78,24 @@ export default function LeagueSelector() {
       )}
     </div>
   )
+
+  // Desktop-collapsed rail: show the initials chip only at lg; the mobile drawer
+  // still gets the full dropdown.
+  if (collapsed) {
+    return (
+      <>
+        <div className="hidden lg:flex px-2 py-2 border-b border-[#2d3148] justify-center">
+          <span
+            title={selectedLeague?.league_name || 'No league'}
+            className="text-[10px] font-semibold text-blue-300 bg-[#1c1f2e] rounded px-1.5 py-1"
+          >
+            {abbreviate(selectedLeague?.league_name)}
+          </span>
+        </div>
+        <div className="lg:hidden">{fullSelector}</div>
+      </>
+    )
+  }
+
+  return fullSelector
 }

@@ -325,19 +325,22 @@ export default function DraftBoard() {
           onClick={() => openPlayerDetail(p.id)}
         >
           <span className="w-9 shrink-0"><PositionBadge position={p.position} /></span>
-          <span className="text-sm font-medium text-slate-200 w-[220px] shrink-0 truncate">
+          {/* Player name flexes on mobile, fixed width at lg (desktop layout). */}
+          <span className="text-sm font-medium text-slate-200 flex-1 min-w-0 lg:flex-none lg:w-[220px] truncate">
             {p.name}
           </span>
-          <span className="text-xs text-slate-500 w-12 shrink-0">{p.team_abbr}</span>
+          {/* Team hidden on phones (revealed at sm). */}
+          <span className="hidden sm:block text-xs text-slate-500 w-12 shrink-0">{p.team_abbr}</span>
 
           {isSnake ? (
             <>
               {/* Snake: AI ADP (clean adp_rank) / FP ADP / Diff (fp_rank -
-                  adp_rank; positive = we rate them earlier than consensus). */}
-              <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+                  adp_rank; positive = we rate them earlier than consensus).
+                  Diff is the core signal — always visible. */}
+              <span className="hidden sm:block text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
                 {formatAdp(p)}
               </span>
-              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+              <span className="hidden md:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 {formatFpAdp(p)}
               </span>
               <span
@@ -354,13 +357,15 @@ export default function DraftBoard() {
             </>
           ) : (
             <>
-              <span className="text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+              {/* Auction: AI Ceil / Market / PPR progressively revealed;
+                  Gap is the core signal — always visible. */}
+              <span className="hidden sm:block text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
                 {getBidCeiling(p) != null ? `$${getBidCeiling(p)}` : '--'}
               </span>
-              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+              <span className="hidden md:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 ${p.market_value?.toFixed(0) || '--'}
               </span>
-              <span className="text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
+              <span className="hidden lg:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
               </span>
 
@@ -430,19 +435,19 @@ export default function DraftBoard() {
       <span className="w-[14px] shrink-0" />
       <div className="flex items-center gap-3 flex-1 min-w-0">
         <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
-        <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-[220px] shrink-0" defaultOrder="asc" />
-        <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
+        <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="flex-1 min-w-0 lg:flex-none lg:w-[220px]" defaultOrder="asc" />
+        <span className="hidden sm:block w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
         {isSnake ? (
           <>
-            <SortableHeader label="AI ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" defaultOrder="asc" />
-            <SortableHeader label="FP ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" defaultOrder="asc" />
+            <span className="hidden sm:block w-20 shrink-0"><SortableHeader label="AI ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
+            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="FP ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
             <SortableHeader label="Diff" sortKey="adp_diff" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" defaultOrder="desc" />
           </>
         ) : (
           <>
-            <SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
-            <SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
-            <SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-20 shrink-0" align="right" />
+            <span className="hidden sm:block w-20 shrink-0"><SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
+            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
+            <span className="hidden lg:block w-20 shrink-0"><SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
           </>
         )}
