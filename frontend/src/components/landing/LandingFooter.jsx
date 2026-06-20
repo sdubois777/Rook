@@ -24,10 +24,10 @@ export default function LandingFooter() {
       {/* Bottom bar */}
       <div className="border-t border-gray-800/50 py-6 px-4 sm:px-6">
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-600">
-          <span>&copy; {new Date().getFullYear()} DraftMind. All rights reserved.</span>
+          <span>&copy; {new Date().getFullYear()} Rook. All rights reserved.</span>
           <div className="flex gap-6">
             <Link to="/pricing" className="hover:text-gray-400 transition-colors">Pricing</Link>
-            <a href="mailto:support@draftmind.app" className="hover:text-gray-400 transition-colors">Contact</a>
+            <a href="mailto:support@rookff.com" className="hover:text-gray-400 transition-colors">Contact</a>
           </div>
         </div>
       </div>

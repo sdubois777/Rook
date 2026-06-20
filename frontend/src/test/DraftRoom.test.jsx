@@ -216,7 +216,7 @@ describe('DraftRoom', () => {
   })
 
   // NOTE: the redesigned RecommendationPanel is read-only — the bid and pass
-  // buttons were removed (you execute in Yahoo, DraftMind only advises), so the
+  // buttons were removed (you execute in Yahoo, Rook only advises), so the
   // former "bid button calls placeBid" / "pass button confirms" tests are gone.
 
   it('recommendation panel renders no bid or pass buttons', () => {

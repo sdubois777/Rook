@@ -15,7 +15,7 @@
  * The DOM pollers in the isolated world work independently of this file.
  */
 ;(function () {
-  if (window.__draftmind_intercepting__) return
+  if (window.__rook_intercepting__) return
 
   const FORWARDED = new Set(['B', 'N'])
   const _origError = console.error
@@ -27,5 +27,5 @@
     }
     return _origError.apply(console, args)
   }
-  window.__draftmind_intercepting__ = true
+  window.__rook_intercepting__ = true
 })()

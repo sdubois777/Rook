@@ -17,7 +17,7 @@
  * source of truth) immediately instead of waiting for the next 500ms tick.
  */
 ;(function () {
-  if (window.__draftmind_snake__) return
+  if (window.__rook_snake__) return
 
   const _origError = console.error
   console.error = function (...args) {
@@ -26,5 +26,5 @@
     }
     return _origError.apply(console, args)
   }
-  window.__draftmind_snake__ = true
+  window.__rook_snake__ = true
 })()

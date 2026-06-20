@@ -2,7 +2,7 @@
  * Returns the bookmarklet code string.
  * User saves this as a browser bookmark.
  * When clicked on ESPN Fantasy, extracts cookies
- * and redirects to DraftMind automatically.
+ * and redirects to Rook automatically.
  */
 export function getBookmarkletCode(appUrl) {
   const code = `

@@ -3,11 +3,11 @@ import { useState } from 'react'
 const ITEMS = [
   {
     q: 'How is this different from FantasyPros Premium?',
-    a: 'FantasyPros aggregates expert consensus rankings. DraftMind uses AI agents that reason about cause-and-effect — role changes, scheme fits, injury risk, and schedule difficulty — to find players the consensus is mispricing. It\'s the difference between "experts say he\'s ranked 12th" and "here\'s why he\'s undervalued in YOUR league."',
+    a: 'FantasyPros aggregates expert consensus rankings. Rook uses AI agents that reason about cause-and-effect — role changes, scheme fits, injury risk, and schedule difficulty — to find players the consensus is mispricing. It\'s the difference between "experts say he\'s ranked 12th" and "here\'s why he\'s undervalued in YOUR league."',
   },
   {
     q: 'Does it work for snake drafts?',
-    a: 'Yes. DraftMind supports both auction and snake draft formats. The valuation engine adapts pick values and recommendations to your draft type.',
+    a: 'Yes. Rook supports both auction and snake draft formats. The valuation engine adapts pick values and recommendations to your draft type.',
   },
   {
     q: 'What leagues and platforms are supported?',
@@ -15,7 +15,7 @@ const ITEMS = [
   },
   {
     q: 'How accurate are the projections?',
-    a: 'In 2025 season backtesting, DraftMind achieved 74.1% signal accuracy, 93% buy signal accuracy, and a 0.88 correlation between projected and actual PPR points. Real results, not hand-picked examples.',
+    a: 'In 2025 season backtesting, Rook achieved 74.1% signal accuracy, 93% buy signal accuracy, and a 0.88 correlation between projected and actual PPR points. Real results, not hand-picked examples.',
   },
   {
     q: 'Is my league data private?',

@@ -364,7 +364,7 @@ function EspnConnect({ onConnected, onBack }) {
         onClick={(e) => e.preventDefault()}
         draggable
       >
-        DraftMind ESPN Connect
+        Rook ESPN Connect
       </a>
 
       <p className="text-sm text-gray-500 mt-3 mb-6">

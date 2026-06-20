@@ -146,7 +146,7 @@ The assistant references actual system values, bid ceilings, dependency flags, a
 - [x] **Stage 22: Pipeline Admin UI** — Status dashboard, manual triggers, cost reports (8/10 spec items)
 - [x] **Stage 25: SaaS Foundation** — LeagueConfig, user/credit/league models, middleware, exception handlers
 - [x] **Stage 26: User Auth** — Clerk JWT verification, webhook lifecycle, protected routes, account dashboard
-- [x] **Stage 27: Landing Page** — DraftMind marketing site with hero, validation stats, pricing, FAQ
+- [x] **Stage 27: Landing Page** — Rook marketing site with hero, validation stats, pricing, FAQ
 - [x] **Stage 28: League Sync** — Yahoo/ESPN/Sleeper multi-user, Fernet encryption, league setup wizard
 
 ### Remaining

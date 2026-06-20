@@ -9,7 +9,7 @@ export async function getDraftToken() {
 export async function postDraftEvent(event) {
   const token = await getDraftToken()
   if (!token) {
-    console.debug('DraftMind: no draft token — skipping')
+    console.debug('Rook: no draft token — skipping')
     return false
   }
   try {
@@ -23,7 +23,7 @@ export async function postDraftEvent(event) {
     })
     return resp.ok
   } catch (err) {
-    console.debug('DraftMind: draft event failed', err)
+    console.debug('Rook: draft event failed', err)
     return false
   }
 }
