@@ -54,12 +54,13 @@ async def recompute() -> None:
                 projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
 
             # adp_diff keeps the raw rank gap (for display); the flag is
-            # neutralized past the draftable window via adp_rank.
+            # neutralized past the draftable window on EITHER our rank or FP's.
             flag = classify_snake_flag(
                 adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
                 projected_ppr=float(projected_ppr) if projected_ppr is not None else None,
                 position=p.position,
                 adp_rank=p.adp_rank,
+                fp_rank=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
             )
             p.snake_flag = flag
             flag_counts[flag] = flag_counts.get(flag, 0) + 1

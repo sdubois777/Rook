@@ -37,10 +37,15 @@ async def recompute():
             projected_ppr = None
             if p.profile and p.profile.clean_season_baseline:
                 projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
+            # Pass adp_rank AND fp_rank so the two-sided draftable window is
+            # applied here exactly as in the pipeline (this previously omitted
+            # adp_rank, silently skipping the window guard).
             flag = classify_snake_flag(
                 adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
                 projected_ppr=float(projected_ppr) if projected_ppr is not None else None,
                 position=p.position,
+                adp_rank=p.adp_rank,
+                fp_rank=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
             )
             p.snake_flag = flag
             counts[flag] = counts.get(flag, 0) + 1

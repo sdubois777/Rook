@@ -171,6 +171,37 @@ def test_snake_flag_window_guard_optional():
     assert classify_snake_flag(-20, 240, "WR") == "REACH"
 
 
+# --- two-sided window: deep FantasyPros rank can't produce flag noise either ---
+
+def test_snake_flag_neutralized_when_fp_rank_beyond_window():
+    # The Singletary/Ford/Davis class: our adp_rank is inside the window but FP's
+    # overall rank is undraftably deep (~400+), inflating the diff into a bogus
+    # SLEEPER. The fp-side guard neutralizes it to TARGET.
+    assert (
+        classify_snake_flag(306, 120, "RB", adp_rank=99, fp_rank=405) == "TARGET"
+    )
+    # A big positive diff with a real, draftable fp_rank still classifies normally.
+    assert (
+        classify_snake_flag(20, 120, "RB", adp_rank=30, fp_rank=50) == "SLEEPER"
+    )
+    assert (
+        classify_snake_flag(20, 280, "WR", adp_rank=30, fp_rank=50) == "VALUE"
+    )
+
+
+def test_snake_flag_fp_rank_at_boundary_still_classifies():
+    # fp_rank exactly at the window (180) is still draftable -> normal thresholds.
+    assert (
+        classify_snake_flag(20, 280, "WR", adp_rank=30, fp_rank=180) == "VALUE"
+    )
+
+
+def test_snake_flag_fp_rank_guard_optional():
+    # fp_rank defaults to None -> fp-side guard inert (back-compat; this is the
+    # path the no-fp_rank unit calls above exercise).
+    assert classify_snake_flag(20, 280, "WR", adp_rank=30) == "VALUE"
+
+
 def test_snake_flag_value_high_production():
     # We rate them much earlier AND strong WR production -> VALUE
     assert classify_snake_flag(20, 280, "WR") == "VALUE"

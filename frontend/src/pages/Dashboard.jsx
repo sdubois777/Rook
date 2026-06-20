@@ -57,20 +57,23 @@ export default function Dashboard() {
     enabled: !isSnake,
   })
 
-  // Snake ADP-differential lists (only fetched for snake leagues)
+  // Snake ADP-differential lists (only fetched for snake leagues).
+  // Sort by adp_rank asc (actionability), NOT |adp_diff|: a value/sleeper at the
+  // soonest pick is more useful than a larger diff buried deep, and reaches only
+  // matter early (a reach at #178 we've already faded isn't actionable).
   const { data: valuePicks } = useQuery({
     queryKey: ['dashboard-snake-value'],
-    queryFn: () => fetchPlayers({ snake_flag: 'VALUE', sort: 'adp_diff', order: 'desc', per_page: 8 }),
+    queryFn: () => fetchPlayers({ snake_flag: 'VALUE', sort: 'adp_rank', order: 'asc', per_page: 8 }),
     enabled: isSnake,
   })
   const { data: reaches } = useQuery({
     queryKey: ['dashboard-snake-reach'],
-    queryFn: () => fetchPlayers({ snake_flag: 'REACH', sort: 'adp_diff', order: 'asc', per_page: 8 }),
+    queryFn: () => fetchPlayers({ snake_flag: 'REACH', sort: 'adp_rank', order: 'asc', per_page: 8 }),
     enabled: isSnake,
   })
   const { data: sleepers } = useQuery({
     queryKey: ['dashboard-snake-sleeper'],
-    queryFn: () => fetchPlayers({ snake_flag: 'SLEEPER', sort: 'adp_diff', order: 'desc', per_page: 8 }),
+    queryFn: () => fetchPlayers({ snake_flag: 'SLEEPER', sort: 'adp_rank', order: 'asc', per_page: 8 }),
     enabled: isSnake,
   })
 

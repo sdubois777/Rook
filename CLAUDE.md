@@ -645,6 +645,24 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
       a real /draft/event relay.
 - [ ] A few low-tier QBs (Tua, Purdy) get
       adp_ai ~38, slightly early.
+- [x] Snake signal quality: two-sided draftable
+      window in classify_snake_flag (fp_rank >
+      WINDOW now neutralizes to TARGET, not just
+      adp_rank) — killed ~27 bogus deep-FP
+      SLEEPERs (Singletary fp405 etc). Dashboard
+      panels now sort by adp_rank asc
+      (actionability) not |adp_diff|. adp_diff /
+      can_wait semantics unchanged. Recompute via
+      scripts/recompute_adp_diff.py (no pipeline
+      run). recompute_snake_flags.py latent bug
+      (skipped the window) fixed too.
+- [ ] Positional-bias investigation (SEPARATE):
+      VALUE panel skews TE-heavy (5/6 TEs),
+      SLEEPER skews RB-heavy. May indicate a real
+      positional bias in adp_ai vs FP consensus
+      (TE _STRONG_PPR=170 bar vs where FP ranks
+      TEs). Do NOT band-aid with per-position
+      capping — investigate the model first.
 
 ### Stages Remaining
 - [~] Stage 29: Snake draft — data/UI/engine

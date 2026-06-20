@@ -120,7 +120,9 @@ def assign_adp_ranks(players) -> int:
     return len(players)
 
 
-def classify_snake_flag(adp_diff, projected_ppr, position: str | None, adp_rank=None) -> str:
+def classify_snake_flag(
+    adp_diff, projected_ppr, position: str | None, adp_rank=None, fp_rank=None
+) -> str:
     """Deterministic snake_flag from the ADP differential + production.
 
     This is the SOLE source of snake_flag. The model is not asked for it: adp_diff
@@ -133,9 +135,18 @@ def classify_snake_flag(adp_diff, projected_ppr, position: str | None, adp_rank=
                 player is beyond the draftable window (diff is rank-scale noise)
       REACH   — adp_diff <= -15 (market values them well above us)
     """
-    # Past the draftable window the rank-list lengths diverge, so the diff is
-    # noise — neutralize to TARGET even though the raw adp_diff is still stored.
+    # Two-sided draftable window. A value/sleeper/reach only exists relative to a
+    # REAL consensus position INSIDE the draft. Past the window on EITHER side the
+    # diff is rank-scale noise and not actionable:
+    #   - adp_rank > window: our own rank is deeper than the draft (round ~16+).
+    #   - fp_rank  > window: FantasyPros' overall table runs to ~410, so a deep
+    #     fp_rank (e.g. 405) means "FP doesn't meaningfully rank this player",
+    #     which inflated diffs (e.g. +306) into bogus SLEEPER flags.
+    # Either way we neutralize to TARGET; the raw adp_diff is still stored for
+    # display, and adp_diff/can_wait semantics are unchanged.
     if adp_rank is not None and adp_rank > DRAFTABLE_WINDOW:
+        return "TARGET"
+    if fp_rank is not None and fp_rank > DRAFTABLE_WINDOW:
         return "TARGET"
     if adp_diff is None:
         return "TARGET"
@@ -391,9 +402,13 @@ class ValuationAgent(BaseAgent):
                 if p.profile and p.profile.clean_season_baseline:
                     projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
                 # adp_diff keeps the raw rank gap (for display); the flag is
-                # neutralized past the draftable window via adp_rank.
+                # neutralized past the draftable window on EITHER our rank or FP's.
                 p.snake_flag = classify_snake_flag(
-                    p.adp_diff, projected_ppr, p.position, p.adp_rank
+                    p.adp_diff,
+                    projected_ppr,
+                    p.position,
+                    p.adp_rank,
+                    float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
                 )
 
             await session.commit()
