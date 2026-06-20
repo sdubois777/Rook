@@ -80,7 +80,7 @@ async def test_history_seasons_with_data_returns_summaries():
     ]
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, f"/league/history/seasons?league_id={uuid.uuid4()}")
+    resp = await _request(session, f"/api/league/history/seasons?league_id={uuid.uuid4()}")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -98,7 +98,7 @@ async def test_history_seasons_with_null_spend_coerces_to_zero():
     result.all.return_value = [_summary_row(2023, 10, None, "manual")]
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, f"/league/history/seasons?league_id={uuid.uuid4()}")
+    resp = await _request(session, f"/api/league/history/seasons?league_id={uuid.uuid4()}")
 
     assert resp.status_code == 200
     assert resp.json()[0]["total_spent"] == 0
@@ -112,7 +112,7 @@ async def test_history_seasons_with_no_data_returns_empty_list():
     result.all.return_value = []
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, f"/league/history/seasons?league_id={uuid.uuid4()}")
+    resp = await _request(session, f"/api/league/history/seasons?league_id={uuid.uuid4()}")
 
     assert resp.status_code == 200
     assert resp.json() == []
@@ -145,7 +145,7 @@ async def test_history_season_with_picks_returns_draft_results():
     result.scalars.return_value = scalars
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, f"/league/history/2025?league_id={uuid.uuid4()}")
+    resp = await _request(session, f"/api/league/history/2025?league_id={uuid.uuid4()}")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -171,7 +171,7 @@ async def test_history_season_with_no_records_returns_404():
     result.scalars.return_value = scalars
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, f"/league/history/2019?league_id={uuid.uuid4()}")
+    resp = await _request(session, f"/api/league/history/2019?league_id={uuid.uuid4()}")
 
     assert resp.status_code == 404
     assert "2019" in resp.json()["detail"]

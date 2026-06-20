@@ -65,20 +65,30 @@ async def app_error_handler(request, exc: AppError):
 
 # ── Routers ─────────────────────────────────────────────────
 
-app.include_router(admin.router)
-app.include_router(assistant.router)
-app.include_router(auth.router)
-app.include_router(draft.router)
-app.include_router(draftboard.router)
-app.include_router(league.router)
-app.include_router(news.router)
-app.include_router(pipeline.router)
-app.include_router(players.router)
-app.include_router(preferences.router)
-app.include_router(teams.router)
-app.include_router(account.router)
-app.include_router(webhooks.router)
-app.include_router(league_connect.router)
+# All API routers are served under /api so the root path namespace is free for
+# the SPA (React Router paths like /draftboard, /account no longer collide with
+# same-named API routers). The browser-extension and frontend clients both call
+# /api/* now. EXCEPTION: webhooks stays at /webhooks — it's Clerk's configured
+# endpoint (external consumer, no frontend collision); moving it would require a
+# coordinated Clerk dashboard change.
+for _router in (
+    admin.router,
+    assistant.router,
+    auth.router,
+    draft.router,
+    draftboard.router,
+    league.router,
+    news.router,
+    pipeline.router,
+    players.router,
+    preferences.router,
+    teams.router,
+    account.router,
+    league_connect.router,
+):
+    app.include_router(_router, prefix="/api")
+
+app.include_router(webhooks.router)  # /webhooks/clerk — Clerk-configured, stays at root
 
 _scheduler = None
 
@@ -229,12 +239,13 @@ if FRONTEND_DIST.exists():
         return FileResponse(FRONTEND_DIST / "icons.svg")
 
     # Catch-all: serve index.html for any non-API route
-    # (React Router handles client-side routing)
+    # (React Router handles client-side routing). With every router under /api,
+    # the only non-SPA paths are /api/*, the app-level /ws + /health, the docs,
+    # the static mounts, and the root-mounted /webhooks.
     _API_PREFIXES = (
-        "admin", "assistant", "auth", "draft", "draftboard",
-        "league", "leagues", "news", "pipeline", "players", "preferences",
-        "teams", "health", "docs", "openapi.json", "redoc",
-        "ws/", "api/", "webhooks",
+        "api/", "ws/", "webhooks", "health",
+        "docs", "redoc", "openapi.json",
+        "assets/", "favicon.svg", "icons.svg",
     )
 
     @app.get("/{full_path:path}")

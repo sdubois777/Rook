@@ -35,7 +35,7 @@ async def test_yahoo_connect_redirects():
             base_url="http://test",
             follow_redirects=False,
         ) as ac:
-            resp = await ac.get("/auth/yahoo/connect")
+            resp = await ac.get("/api/auth/yahoo/connect")
         # Should be a redirect to Yahoo
         assert resp.status_code in (302, 307)
         location = resp.headers.get("location", "")
@@ -56,7 +56,7 @@ async def test_state_param_encodes_user_id():
             base_url="http://test",
             follow_redirects=False,
         ) as ac:
-            resp = await ac.get("/auth/yahoo/connect")
+            resp = await ac.get("/api/auth/yahoo/connect")
         location = resp.headers.get("location", "")
         # Extract state param
         assert "state=" in location
@@ -80,7 +80,7 @@ async def test_callback_without_state_raises_error():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/auth/yahoo/callback?code=abc")
+            resp = await ac.get("/api/auth/yahoo/callback?code=abc")
         # No state → ValidationError (422)
         assert resp.status_code == 422
     finally:
@@ -100,7 +100,7 @@ async def test_callback_with_invalid_state_redirects_with_error():
             follow_redirects=False,
         ) as ac:
             resp = await ac.get(
-                "/auth/yahoo/callback?code=abc&state=not-valid-base64!!!"
+                "/api/auth/yahoo/callback?code=abc&state=not-valid-base64!!!"
             )
         assert resp.status_code == 302
         assert "error=invalid_state" in resp.headers.get("location", "")
@@ -149,7 +149,7 @@ async def test_state_param_decoded_on_callback():
                 follow_redirects=False,
             ) as ac:
                 resp = await ac.get(
-                    f"/auth/yahoo/callback?code=test_code&state={state}"
+                    f"/api/auth/yahoo/callback?code=test_code&state={state}"
                 )
             # Should redirect to /league-setup?platform=yahoo
             assert resp.status_code == 302
@@ -187,7 +187,7 @@ async def test_get_yahoo_leagues_requires_connection():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 400
             assert resp.json()["action"] == "connect"
         finally:
@@ -229,7 +229,7 @@ async def test_get_yahoo_leagues_returns_list():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 200
             data = resp.json()
             assert len(data["leagues"]) == 1
@@ -274,7 +274,7 @@ async def test_get_yahoo_leagues_auto_refreshes_expired_token():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.get("/auth/yahoo/leagues")
+                resp = await ac.get("/api/auth/yahoo/leagues")
             assert resp.status_code == 200
 
             # Refresh was called
@@ -329,7 +329,7 @@ async def test_get_yahoo_league_settings_endpoint():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.get(
-                    "/auth/yahoo/league-settings?league_key=470.l.12345"
+                    "/api/auth/yahoo/league-settings?league_key=470.l.12345"
                 )
             assert resp.status_code == 200
             data = resp.json()
@@ -356,7 +356,7 @@ async def test_league_settings_requires_league_key():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/auth/yahoo/league-settings")
+            resp = await ac.get("/api/auth/yahoo/league-settings")
         assert resp.status_code == 422
     finally:
         app.dependency_overrides.clear()
@@ -382,7 +382,7 @@ async def test_yahoo_disconnect_removes_credentials():
                 transport=ASGITransport(app=app),
                 base_url="http://test",
             ) as ac:
-                resp = await ac.delete("/auth/yahoo/disconnect")
+                resp = await ac.delete("/api/auth/yahoo/disconnect")
             assert resp.status_code == 200
             assert resp.json()["status"] == "disconnected"
             mock_repo.disconnect.assert_called_once_with(
@@ -429,7 +429,7 @@ async def test_callback_casts_user_id_to_uuid():
                 follow_redirects=False,
             ) as ac:
                 resp = await ac.get(
-                    f"/auth/yahoo/callback?code=c&state={state}"
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
                 )
             assert resp.status_code == 302
 
@@ -470,7 +470,7 @@ async def test_callback_missing_user_redirects_with_retry():
                 follow_redirects=False,
             ) as ac:
                 resp = await ac.get(
-                    f"/auth/yahoo/callback?code=c&state={state}"
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
                 )
             assert resp.status_code == 302
             location = resp.headers.get("location", "")
@@ -518,7 +518,7 @@ async def test_callback_integrity_error_redirects_with_retry():
                 follow_redirects=False,
             ) as ac:
                 resp = await ac.get(
-                    f"/auth/yahoo/callback?code=c&state={state}"
+                    f"/api/auth/yahoo/callback?code=c&state={state}"
                 )
             # Should NOT be 500 — should redirect gracefully
             assert resp.status_code == 302
@@ -547,7 +547,7 @@ async def test_callback_with_non_uuid_state_redirects():
             follow_redirects=False,
         ) as ac:
             resp = await ac.get(
-                f"/auth/yahoo/callback?code=c&state={bad_state}"
+                f"/api/auth/yahoo/callback?code=c&state={bad_state}"
             )
         assert resp.status_code == 302
         assert "error=invalid_state" in resp.headers.get("location", "")

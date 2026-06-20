@@ -94,7 +94,7 @@ async def test_list_players():
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players")
+            resp = await ac.get("/api/players")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
@@ -126,7 +126,7 @@ async def test_search_players():
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players/search?q=chase")
+            resp = await ac.get("/api/players/search?q=chase")
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -140,7 +140,7 @@ async def test_search_players():
 async def test_search_players_requires_query():
     """GET /players/search without q returns 422."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.get("/players/search")
+        resp = await ac.get("/api/players/search")
 
     assert resp.status_code == 422
 
@@ -168,7 +168,7 @@ async def test_player_summary():
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get("/players/summary")
+            resp = await ac.get("/api/players/summary")
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -217,7 +217,7 @@ async def test_get_player_detail():
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get(f"/players/{player_id}")
+            resp = await ac.get(f"/api/players/{player_id}")
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -240,7 +240,7 @@ async def test_get_player_not_found():
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.get(f"/players/{fake_id}")
+            resp = await ac.get(f"/api/players/{fake_id}")
     finally:
         app.dependency_overrides.pop(get_db, None)
 

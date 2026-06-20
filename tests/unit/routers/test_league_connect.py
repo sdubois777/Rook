@@ -71,7 +71,7 @@ async def test_connect_sleeper_validates_username():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/leagues/connect/sleeper",
+                    "/api/leagues/connect/sleeper",
                     json={"username": "nonexistent", "league_id": "123"},
                 )
             assert resp.status_code == 404
@@ -96,7 +96,7 @@ async def test_espn_callback_requires_cookies():
             follow_redirects=False,
         ) as ac:
             # Missing espn_s2 and swid params
-            resp = await ac.get("/leagues/connect/espn/callback")
+            resp = await ac.get("/api/leagues/connect/espn/callback")
         # FastAPI will return 422 for missing required query params
         assert resp.status_code == 422
     finally:
@@ -122,7 +122,7 @@ async def test_espn_callback_requires_auth():
             follow_redirects=False,
         ) as ac:
             resp = await ac.get(
-                "/leagues/connect/espn/callback"
+                "/api/leagues/connect/espn/callback"
                 "?espn_s2=test_cookie&swid=test_swid"
             )
         assert resp.status_code == 401
@@ -160,7 +160,7 @@ async def test_invalid_espn_cookies_raise_app_error():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/leagues/connect/espn",
+                    "/api/leagues/connect/espn",
                     json={
                         "league_id": "12345",
                         "espn_s2": "bad_cookie",
@@ -222,7 +222,7 @@ async def test_espn_connect_detects_snake_draft():
                     base_url="http://test",
                 ) as ac:
                     resp = await ac.post(
-                        "/leagues/connect/espn",
+                        "/api/leagues/connect/espn",
                         json={
                             "league_id": "999",
                             "espn_s2": "cookie",
@@ -261,7 +261,7 @@ async def test_league_status_returns_info():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.get(
-                    f"/leagues/{league.id}/status"
+                    f"/api/leagues/{league.id}/status"
                 )
             assert resp.status_code == 200
             data = resp.json()
@@ -296,7 +296,7 @@ async def test_delete_league_hard_deletes_row():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.delete(f"/leagues/{league.id}")
+            resp = await ac.delete(f"/api/leagues/{league.id}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "deleted"
         # Verify db.delete was called with the league
@@ -335,7 +335,7 @@ async def test_delete_cascades_auction_history():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.delete(f"/leagues/{league.id}")
+            resp = await ac.delete(f"/api/leagues/{league.id}")
         assert resp.status_code == 200
         # At least one DELETE statement for auction history
         delete_stmts = [s for s in executed_stmts if "DELETE" in s.upper()]
@@ -365,7 +365,7 @@ async def test_delete_requires_ownership():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.delete(f"/leagues/{fake_id}")
+            resp = await ac.delete(f"/api/leagues/{fake_id}")
         assert resp.status_code == 404
     finally:
         app.dependency_overrides.clear()
@@ -395,7 +395,7 @@ async def test_finished_league_still_deletable():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.delete(f"/leagues/{league.id}")
+            resp = await ac.delete(f"/api/leagues/{league.id}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "deleted"
     finally:
