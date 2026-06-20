@@ -418,7 +418,7 @@ fantasy-football-ai/
   Live draft = tier entitlement (not credit cost)
   9 auth tests, user_id scoped preferences, real email from Clerk API
   - Stripe not implemented
-- [x] Stage 27: Landing Page — DraftMind marketing site
+- [x] Stage 27: Landing Page — Rook marketing site
   Public landing at /, pricing at /pricing, 9 components, dark theme
   Hero, social proof, how-it-works, validation stats, feature comparison,
   3-tier pricing table, FAQ accordion, footer CTA, SEO meta tags
@@ -562,7 +562,7 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 ### Extension
 - Yahoo passive sync removed — Yahoo CSP
   blocks content script injection in both
-  Chrome and Firefox. window.__draftmind__
+  Chrome and Firefox. window.__rook__
   detection still works for LeagueSetup.
 - my_nomination/my_bid console.error events
   relayed to UI but not yet folded into

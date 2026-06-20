@@ -16,7 +16,7 @@ async function init() {
 function showTokenEntry() {
   document.getElementById('app').innerHTML = `
     <div class="header">
-      <h1>DraftMind</h1>
+      <h1>Rook</h1>
       <div class="dot dot-red"></div>
     </div>
     <div class="section">
@@ -46,7 +46,7 @@ async function showMainView() {
 
   document.getElementById('app').innerHTML = `
     <div class="header">
-      <h1>DraftMind</h1>
+      <h1>Rook</h1>
       <div class="dot dot-green"></div>
     </div>
 
@@ -101,7 +101,7 @@ async function showMainView() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `draftmind-frames-${Date.now()}.json`
+    a.download = `rook-frames-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
   })

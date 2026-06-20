@@ -29,10 +29,10 @@ export default function FeatureComparison() {
     <section className="py-20 px-4 sm:px-6">
       <div className="max-w-4xl mx-auto">
         <h2 className="text-3xl sm:text-4xl font-bold text-white text-center mb-4">
-          Why DraftMind?
+          Why Rook?
         </h2>
         <p className="text-gray-400 text-center mb-12 max-w-xl mx-auto">
-          Every tool shows you the same consensus. DraftMind shows you what the
+          Every tool shows you the same consensus. Rook shows you what the
           consensus is missing.
         </p>
 
@@ -42,7 +42,7 @@ export default function FeatureComparison() {
               <tr className="border-b border-gray-800">
                 <th className="text-left py-3 px-4 text-gray-400 font-medium" />
                 <th className="py-3 px-4 text-center text-white font-semibold">
-                  DraftMind
+                  Rook
                 </th>
                 <th className="py-3 px-4 text-center text-gray-400 font-medium">
                   FantasyPros

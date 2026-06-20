@@ -40,14 +40,14 @@ export default function DraftRoom() {
         // Diagnostics: if this logs 0 players, the issue is the /draftboard
         // response (empty data / auth / wrong shape), not the UI wiring.
         console.debug(
-          'DraftMind: draftboard loaded —',
+          'Rook: draftboard loaded —',
           players.length,
           'players; tier keys:',
           Object.keys(tiers),
         )
         if (!cancelled) setAvailablePlayers(players)
       } catch (e) {
-        console.error('DraftMind: failed to load draftboard:', e?.response?.status, e)
+        console.error('Rook: failed to load draftboard:', e?.response?.status, e)
       }
     })()
     return () => {

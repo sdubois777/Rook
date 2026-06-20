@@ -27,7 +27,7 @@ export const MESSAGE_TYPES = {
 }
 
 /** CustomEvent dispatched by the page-world WS interceptor. */
-export const WS_FRAME_EVENT = '__draftmind_ws_frame__'
+export const WS_FRAME_EVENT = '__rook_ws_frame__'
 
 /** How many captured frames to keep in storage (debug capture mode). */
 export const MAX_CAPTURED_FRAMES = 50

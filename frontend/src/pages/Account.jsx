@@ -62,7 +62,7 @@ function DraftTokenSection({ token, onRevoke }) {
     <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
       <h2 className="text-lg font-semibold mb-2">Browser Extension</h2>
       <p className="text-sm text-gray-400 mb-4">
-        Paste this token into the DraftMind extension popup to connect.
+        Paste this token into the Rook extension popup to connect.
       </p>
       <div className="flex items-center gap-2">
         <code className="flex-1 bg-gray-800 text-gray-300 text-sm px-3 py-2 rounded-lg font-mono truncate">

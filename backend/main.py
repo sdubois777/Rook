@@ -18,9 +18,9 @@ from backend.websocket.manager import news_ws_manager
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Fantasy Football AI Platform",
+    title="Rook",
     version="0.1.0",
-    description="AI-powered fantasy football management system",
+    description="Rook — AI-powered fantasy football management system",
 )
 
 # Middleware — order matters (outermost first, innermost last)

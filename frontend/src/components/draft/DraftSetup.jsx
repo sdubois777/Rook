@@ -46,7 +46,7 @@ export default function DraftSetup() {
             />
             <p className="text-xs text-slate-600 mt-1">
               Must match your team name in the draft room's team list exactly —
-              this is how DraftMind detects the players you win.
+              this is how Rook detects the players you win.
             </p>
           </div>
 
