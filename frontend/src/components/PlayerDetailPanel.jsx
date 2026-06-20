@@ -50,7 +50,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
       />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-[480px] bg-[#161822] border-l border-[#2d3148] z-50 overflow-y-auto shadow-2xl animate-slide-in">
+      <div className="fixed top-0 right-0 h-full w-full sm:w-[480px] max-w-full bg-[#161822] border-l border-[#2d3148] z-50 overflow-y-auto shadow-2xl animate-slide-in">
         {/* Header */}
         <div className="sticky top-0 bg-[#161822] border-b border-[#2d3148] px-5 py-4 flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
@@ -124,7 +124,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               {/* Auction: the dollar valuation block (hidden for snake leagues) */}
               {!isSnake && (
               <>
-              <div className={`grid ${getBidCeiling(player) != null ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
+              <div className={`grid ${getBidCeiling(player) != null ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
                 <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
                 {getBidCeiling(player) != null && (
                   <StatBox label="AI Ceiling" value={`$${getBidCeiling(player)}`} accent />
