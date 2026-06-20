@@ -139,12 +139,14 @@ export default function TeamDetail() {
           </h3>
         </div>
 
-        <div className="grid grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-[#2d3148]">
+        {/* Responsive column-hiding: Pos/Player + Gap (value signal) + Flag
+            always show; Tier + Ceiling at sm; Market at lg (desktop exact). */}
+        <div className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-[#2d3148]">
           <span>Pos</span>
           <span>Player</span>
-          <span>Tier</span>
-          <span className="text-right">Ceiling</span>
-          <span className="text-right">Market</span>
+          <span className="hidden sm:block">Tier</span>
+          <span className="hidden sm:block text-right">Ceiling</span>
+          <span className="hidden lg:block text-right">Market</span>
           <span className="text-right">Gap</span>
           <span>Flag</span>
         </div>
@@ -153,15 +155,15 @@ export default function TeamDetail() {
           <div
             key={p.id}
             onClick={() => openPlayerDetail(p.id)}
-            className="grid grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2.5 items-center hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
+            className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2.5 items-center hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
           >
             <PositionBadge position={p.position} />
-            <span className="text-sm text-slate-200 font-medium">{p.name}</span>
-            <span className="text-xs text-slate-400">T{p.tier || '?'}</span>
-            <span className="text-sm text-blue-400 font-mono text-right">
+            <span className="text-sm text-slate-200 font-medium truncate">{p.name}</span>
+            <span className="hidden sm:block text-xs text-slate-400">T{p.tier || '?'}</span>
+            <span className="hidden sm:block text-sm text-blue-400 font-mono text-right">
               {p.recommended_bid_ceiling != null ? `$${p.recommended_bid_ceiling.toFixed(0)}` : '--'}
             </span>
-            <span className="text-sm text-slate-300 font-mono text-right">
+            <span className="hidden lg:block text-sm text-slate-300 font-mono text-right">
               {p.market_value != null ? `$${p.market_value.toFixed(0)}` : '--'}
             </span>
             <span className={`text-sm font-mono text-right ${
