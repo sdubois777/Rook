@@ -126,4 +126,4 @@ if (document.readyState === 'loading') {
 }
 
 // Signal extension presence to the page
-window.__draftmind__ = true
+window.__rook__ = true

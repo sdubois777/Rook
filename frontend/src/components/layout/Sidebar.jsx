@@ -35,7 +35,7 @@ export default function Sidebar() {
       <div className="flex items-center h-14 px-4 border-b border-[#2d3148]">
         {!collapsed && (
           <span className="text-blue-400 font-semibold text-sm tracking-wide">
-            Fantasy Manager
+            Rook
           </span>
         )}
         <button

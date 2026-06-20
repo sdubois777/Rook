@@ -18,7 +18,7 @@ import {
 
 /** Inject the WS interceptor into the page (MAIN) world. Idempotent. */
 export function injectInterceptor() {
-  if (window.__draftmind_intercepting__) return
+  if (window.__rook_intercepting__) return
   const script = document.createElement('script')
   script.textContent = INTERCEPTOR_CODE
   ;(document.head || document.documentElement).appendChild(script)
@@ -51,7 +51,7 @@ export function listenForFrames(platform, parseFrame) {
     } catch (err) {
       // Service worker may be asleep or the extension reloading —
       // log for debugging, never break the host page.
-      console.debug(`DraftMind: draft event relay failed (${platform})`, err)
+      console.debug(`Rook: draft event relay failed (${platform})`, err)
     }
   })
 }

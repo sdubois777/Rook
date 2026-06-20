@@ -14,7 +14,7 @@ test('yahoo_draft_main.js exists and intercepts console.error', () => {
   const src = read('src/content_scripts/yahoo_draft_main.js')
   assert.match(src, /console\.error/)
   assert.match(src, /__yahoo_draft_action__/)
-  assert.match(src, /__draftmind_intercepting__/)
+  assert.match(src, /__rook_intercepting__/)
 })
 
 test('manifest injects yahoo_draft_main.js into the MAIN world for the draft room', () => {
@@ -58,7 +58,7 @@ test('DOM poller core is independent of the MAIN-world interceptor', () => {
 
   const isolated = read('src/content_scripts/yahoo_draft.js')
   assert.match(isolated, /detectEvents/)
-  assert.match(isolated, /window\.__draftmind__\s*=\s*true/)
+  assert.match(isolated, /window\.__rook__\s*=\s*true/)
 })
 
 test('webpack builds the yahoo_draft_main entry', () => {
@@ -72,7 +72,7 @@ test('yahoo_snake_draft_main.js intercepts console.error and sets the flag', () 
   assert.match(src, /console\.error/)
   // The '0' frame is now a content-free trigger, not a data carrier.
   assert.match(src, /__yahoo_pick_made__/)
-  assert.match(src, /window\.__draftmind_snake__\s*=\s*true/)
+  assert.match(src, /window\.__rook_snake__\s*=\s*true/)
   // Snake picks are the '0' frame.
   assert.match(src, /\[0\]\s*===\s*'0'/)
 })
@@ -117,7 +117,7 @@ test('snake main IIFE fires the pick trigger on a 0 frame and sets the flag', ()
   // Execute the IIFE with injected globals (no real browser needed).
   new Function('window', 'console', 'CustomEvent', src)(fakeWin, fakeConsole, FakeCustomEvent)
 
-  assert.equal(fakeWin.__draftmind_snake__, true)
+  assert.equal(fakeWin.__rook_snake__, true)
 
   // A '0' frame fires a content-free trigger (the poller reads the Picks panel).
   fakeConsole.error(['0', 'lg', 'dr', 84, 'nfl.p.1'])

@@ -1,17 +1,17 @@
-# DraftMind Browser Extension
+# Rook Browser Extension
 
-Chrome MV3 / Firefox 109+ extension for DraftMind fantasy football platform.
+Chrome MV3 / Firefox 109+ extension for Rook fantasy football platform.
 
 ## Features
 
 - **ESPN cookie extraction** — Automatically captures `espn_s2` and `SWID` cookies when you visit ESPN Fantasy, replacing the manual bookmarklet
-- **Live draft relay** — Intercepts WebSocket frames from Yahoo/ESPN/Sleeper draft rooms and forwards them to the DraftMind backend
+- **Live draft relay** — Intercepts WebSocket frames from Yahoo/ESPN/Sleeper draft rooms and forwards them to the Rook backend
 - **Passive sync** — Triggers league data sync when you visit any connected fantasy platform (30-minute debounce)
 - **Capture mode** — Debug toggle that stores raw WS frames locally for parser development
 
 ## Setup
 
-1. Get your draft token from **Account > Browser Extension** in the DraftMind app
+1. Get your draft token from **Account > Browser Extension** in the Rook app
 2. Install the extension (see below)
 3. Click the extension icon and paste your draft token
 4. Visit your fantasy platform — the extension syncs automatically

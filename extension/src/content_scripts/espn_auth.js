@@ -3,7 +3,7 @@ import { MESSAGE_TYPES, STORAGE_KEYS } from '../utils/constants.js'
 import { triggerPassiveSync } from '../utils/passive_sync.js'
 
 // Signal extension presence to React app
-window.__draftmind__ = true
+window.__rook__ = true
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', run)
@@ -39,7 +39,7 @@ async function extractAndSendCookies() {
       payload: { espn_s2, swid, league_id },
     })
   } catch (err) {
-    console.debug('DraftMind: ESPN cookie relay failed', err)
+    console.debug('Rook: ESPN cookie relay failed', err)
   }
 
   await browser.storage.local.set({

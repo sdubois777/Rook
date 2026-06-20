@@ -203,5 +203,5 @@ if (document.readyState === 'loading') {
 }
 
 // Presence flag for the ISOLATED-world poller. The page-detectable
-// __draftmind_snake__ flag is set by yahoo_snake_draft_main.js in the MAIN world.
-window.__draftmind_snake_poller__ = true
+// __rook_snake__ flag is set by yahoo_snake_draft_main.js in the MAIN world.
+window.__rook_snake_poller__ = true

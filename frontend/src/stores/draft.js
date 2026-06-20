@@ -77,7 +77,7 @@ export const useDraftStore = create((set, get) => ({
     // Flatten tiers into a single list
     const tiers = board?.tiers || {}
     const players = Object.values(tiers).flat()
-    console.debug('DraftMind: draftboard players loaded:', players.length)
+    console.debug('Rook: draftboard players loaded:', players.length)
 
     set({
       phase: 'live',
@@ -211,7 +211,7 @@ export const useDraftStore = create((set, get) => ({
           now - (p.timestamp || 0) < TWO_SECONDS
       )
     ) {
-      console.debug('DraftMind: dedup blocked duplicate pick:', pick.player_name)
+      console.debug('Rook: dedup blocked duplicate pick:', pick.player_name)
       return
     }
 
@@ -224,7 +224,7 @@ export const useDraftStore = create((set, get) => ({
         normalizeName(pick.winner) === normalizeName(state.myTeamName))
 
     console.debug(
-      'DraftMind: recordPick',
+      'Rook: recordPick',
       pick.player_name,
       '| winner:',
       pick.winner,

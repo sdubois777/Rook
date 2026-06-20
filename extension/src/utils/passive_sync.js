@@ -12,7 +12,7 @@ export async function triggerPassiveSync(platform) {
   const lastSync = result[key] || 0
 
   if (Date.now() - lastSync < SYNC_DEBOUNCE_MS) {
-    console.debug(`DraftMind: sync debounced for ${platform}`)
+    console.debug(`Rook: sync debounced for ${platform}`)
     return
   }
 
@@ -26,10 +26,10 @@ export async function triggerPassiveSync(platform) {
     )
     if (resp.ok) {
       await browser.storage.local.set({ [key]: Date.now() })
-      console.debug(`DraftMind: passive sync ok for ${platform}`)
+      console.debug(`Rook: passive sync ok for ${platform}`)
     }
   } catch (err) {
     // Always silent fail — never interrupt user
-    console.debug(`DraftMind: passive sync failed for ${platform}`, err)
+    console.debug(`Rook: passive sync failed for ${platform}`, err)
   }
 }

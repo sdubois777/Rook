@@ -380,7 +380,7 @@ async def connect_bridge(req: ConnectRequest):
     if not PLAYWRIGHT_AVAILABLE:
         raise HTTPException(
             status_code=503,
-            detail="Playwright not available — use the DraftMind browser extension",
+            detail="Playwright not available — use the Rook browser extension",
         )
 
     if _bridge and getattr(_bridge, "_connected", False):
@@ -442,7 +442,7 @@ async def start_draft(req: StartDraftRequest):
     """
     Create DraftStateManager + LiveDraftEngine and mark the engine ready.
 
-    No server-side browser is launched: the DraftMind browser extension drives
+    No server-side browser is launched: the Rook browser extension drives
     the Yahoo draft room and relays events via POST /draft/event. The legacy
     Playwright bridge is intentionally not connected here (Yahoo's CSP blocks
     it and Chromium need not be installed).
@@ -453,7 +453,7 @@ async def start_draft(req: StartDraftRequest):
             "mode": "extension",
             "team_name": req.your_team_id,
             "message": (
-                "Draft engine already running. Make sure the DraftMind "
+                "Draft engine already running. Make sure the Rook "
                 "extension is active on the Yahoo draft page."
             ),
         }
@@ -472,7 +472,7 @@ async def start_draft(req: StartDraftRequest):
         "mode": "extension",
         "team_name": req.your_team_id,
         "message": (
-            "Draft engine ready. Make sure the DraftMind extension is "
+            "Draft engine ready. Make sure the Rook extension is "
             "active on the Yahoo draft page."
         ),
     }

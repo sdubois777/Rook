@@ -50,16 +50,16 @@ to another user.
 
 ### How ESPN auth works
 
-The DraftMind browser extension (see `extension/`) runs a content
+The Rook browser extension (see `extension/`) runs a content
 script on `fantasy.espn.com` that automatically reads `espn_s2`
 and `SWID` from `document.cookie` (neither is httpOnly) and POSTs
 them to the backend via `POST /leagues/connect/espn/callback`.
 
 The user experience:
-1. Install the DraftMind extension
+1. Install the Rook extension
 2. Visit any ESPN Fantasy page while logged in
 3. Extension detects cookies and sends them automatically
-4. Return to DraftMind — ESPN shows as connected
+4. Return to Rook — ESPN shows as connected
 
 **Fallback for users without the extension:**
 Manual cookie entry is still supported via the league setup wizard
@@ -524,7 +524,7 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         cookies = await repo.get_espn_cookies(league.user_id)
         if not cookies:
             raise AppError(
-                "ESPN not connected — install the DraftMind extension "
+                "ESPN not connected — install the Rook extension "
                 "and visit ESPN Fantasy, or enter cookies manually",
                 {"platform": "espn", "action": "connect_extension"},
             )
@@ -548,7 +548,7 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
             if resp.status_code == 401:
                 raise AppError(
                     "ESPN cookies expired — please reconnect via the "
-                    "DraftMind extension or manual entry",
+                    "Rook extension or manual entry",
                     {
                         "platform": "espn",
                         "action": "reconnect",
@@ -991,12 +991,12 @@ export async function triggerPassiveSync(platform) {
                 [storageKey]: now
             })
             console.debug(
-                `DraftMind: passive sync triggered for ${platform}`
+                `Rook: passive sync triggered for ${platform}`
             )
         }
     } catch (err) {
         // Silent fail — passive sync should never interrupt the user
-        console.debug(`DraftMind: passive sync failed for ${platform}`, err)
+        console.debug(`Rook: passive sync failed for ${platform}`, err)
     }
 }
 
@@ -1440,7 +1440,7 @@ Step 2: Connect (platform-specific)
 
   ESPN — extension NOT installed:
     ┌─────────────────────────────────────────┐
-    │  Install the DraftMind Extension        │
+    │  Install the Rook Extension        │
     │  for automatic ESPN connection.         │
     │                                         │
     │  [Install Chrome Extension →]           │
@@ -1482,11 +1482,11 @@ Step 5: Importing...
 ### Extension detection
 
 ```jsx
-// Extension injects window.__draftmind__ = true when loaded
+// Extension injects window.__rook__ = true when loaded
 const [extensionInstalled, setExtensionInstalled] = useState(false)
 
 useEffect(() => {
-  setExtensionInstalled(!!window.__draftmind__)
+  setExtensionInstalled(!!window.__rook__)
 }, [])
 ```
 
