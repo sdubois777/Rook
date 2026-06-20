@@ -65,7 +65,19 @@ async def test_cors_still_allows_web_origins():
 
 
 @pytest.mark.asyncio
+async def test_cors_allows_rookff_custom_domain():
+    """The Rook custom domain (apex + www) is allowed."""
+    for origin in ("https://rookff.com", "https://www.rookff.com"):
+        resp = await _preflight(origin, request_headers="authorization")
+        assert resp.status_code == 200, f"preflight rejected for {origin}"
+        assert resp.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.asyncio
 async def test_cors_rejects_unknown_origin():
     """Arbitrary web origins are still refused."""
     resp = await _preflight("https://evil.example.com")
+    assert "access-control-allow-origin" not in resp.headers
+    # A lookalike must not slip through the rookff.com alternative.
+    resp = await _preflight("https://notrookff.com.evil.com")
     assert "access-control-allow-origin" not in resp.headers

@@ -38,6 +38,7 @@ app.add_middleware(
         r"|http://localhost(:\d+)?"
         r"|https://fantasymanager-production"
         r"\.up\.railway\.app"
+        r"|https://(www\.)?rookff\.com"
         r"|https://football\.fantasysports\.yahoo\.com"
         r"|https://fantasysports\.yahoo\.com"
         r"|https://.*\.yahoo\.com"
