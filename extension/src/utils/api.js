@@ -29,9 +29,10 @@ export async function postDraftEvent(event) {
 }
 
 export function getApiBase() {
-  // Extension always talks to production.
-  // There is no "dev mode" for an extension
-  // running in a real browser against real
-  // Yahoo/ESPN pages.
-  return 'https://fantasymanager-production.up.railway.app'
+  // Extension always talks to production. There is no "dev mode" for an
+  // extension running in a real browser against real Yahoo/ESPN pages. The API
+  // is served under /api (the root namespace is the SPA), so endpoints are
+  // /api/draft/event etc. (Host stays the Railway URL until rookff.com DNS
+  // is live.)
+  return 'https://fantasymanager-production.up.railway.app/api'
 }

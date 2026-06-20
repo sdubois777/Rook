@@ -3,9 +3,10 @@ import { useDraftStore, parseClockSeconds } from '../stores/draft'
 import { getRecommendation } from '../api/draft'
 
 const MAX_RECONNECT_DELAY = 10000
-// Backend WS endpoint is /draft/ws/draft (prefix="/draft", path="/ws/draft")
-// In dev, connect directly to backend. In prod, use relative path.
-const WS_PATH = '/draft/ws/draft'
+// Backend WS endpoint is /api/draft/ws/draft (the draft router is mounted under
+// /api, prefix="/draft", path="/ws/draft"). Dev connects directly to the
+// backend; prod uses a relative path on the same origin.
+const WS_PATH = '/api/draft/ws/draft'
 
 function getWsUrl() {
   if (import.meta.env.DEV) {

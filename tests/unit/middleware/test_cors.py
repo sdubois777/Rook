@@ -15,7 +15,7 @@ from backend.main import app
 async def _preflight(origin: str, request_headers: str = "x-draft-token"):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         return await ac.options(
-            "/leagues/sync-platform/yahoo",
+            "/api/leagues/sync-platform/yahoo",
             headers={
                 "Origin": origin,
                 "Access-Control-Request-Method": "POST",

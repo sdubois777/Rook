@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { apiClient } from '../api/client'
+import { apiClient, API_BASE } from '../api/client'
 import { fetchYahooConnectUrl } from '../api/league'
 import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
 import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
-const API_URL = import.meta.env.VITE_API_URL || '/api'
+// Single source of truth for the API base (includes /api) — see api/client.js.
+const API_URL = API_BASE
 
 const PLATFORMS = [
   { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },

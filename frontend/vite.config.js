@@ -11,10 +11,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // The backend now serves the API under /api, so forward /api/* as-is
+      // (no rewrite). /ws is the app-level news WebSocket (stays at root).
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/ws': {
         target: 'ws://localhost:8000',

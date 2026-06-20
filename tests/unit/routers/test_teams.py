@@ -71,7 +71,7 @@ async def test_list_teams(mock_team_system):
 
     session.execute = AsyncMock(side_effect=[result1, result2])
 
-    resp = await _request(session, "/teams")
+    resp = await _request(session, "/api/teams")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -98,7 +98,7 @@ async def test_get_team_detail(mock_team_system):
 
     session.execute = AsyncMock(side_effect=[result1, result2])
 
-    resp = await _request(session, "/teams/kc")
+    resp = await _request(session, "/api/teams/kc")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -114,6 +114,6 @@ async def test_get_team_not_found():
     result.scalar_one_or_none.return_value = None
     session.execute = AsyncMock(return_value=result)
 
-    resp = await _request(session, "/teams/XXX")
+    resp = await _request(session, "/api/teams/XXX")
 
     assert resp.status_code == 404

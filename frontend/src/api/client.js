@@ -1,6 +1,12 @@
 import axios from 'axios'
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api'
+// The API is served under /api (so the root namespace is free for the SPA).
+// VITE_API_URL is the base DOMAIN (e.g. https://rookff.com) — append /api here
+// so the Railway env var stays a plain domain. In dev (no VITE_API_URL) the
+// Vite proxy forwards /api to the backend.
+export const API_BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api'
 
 const api = axios.create({
   baseURL: API_BASE,

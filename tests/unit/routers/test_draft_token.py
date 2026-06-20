@@ -47,7 +47,7 @@ async def test_draft_token_created_for_new_user():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/account/draft-token")
+            resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         token = resp.json()["draft_token"]
         assert token is not None
@@ -73,7 +73,7 @@ async def test_draft_token_stable_on_repeat_call():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.get("/account/draft-token")
+            resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         assert resp.json()["draft_token"] == existing_token
         # Should NOT have committed (no change)
@@ -102,7 +102,7 @@ async def test_revoke_generates_new_token():
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as ac:
-            resp = await ac.post("/account/draft-token/revoke")
+            resp = await ac.post("/api/account/draft-token/revoke")
         assert resp.status_code == 200
         new_token = resp.json()["draft_token"]
         assert new_token != old_token
@@ -138,7 +138,7 @@ async def test_draft_event_rejects_invalid_token():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "nomination",
                         "platform": "yahoo",
@@ -178,7 +178,7 @@ async def test_draft_event_relays_to_ws_manager():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "nomination",
                         "platform": "yahoo",
@@ -236,7 +236,7 @@ async def test_nomination_triggers_engine():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "nomination",
                         "platform": "yahoo",
@@ -287,7 +287,7 @@ async def test_bid_update_relayed_without_engine_call():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "bid_update",
                         "platform": "yahoo",
@@ -340,7 +340,7 @@ async def test_draft_pick_recorded():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "draft_pick",
                         "platform": "yahoo",
@@ -399,7 +399,7 @@ async def test_nomination_lazy_inits_engine_when_none():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "nomination",
                         "platform": "yahoo",
@@ -449,7 +449,7 @@ async def test_nomination_skips_lazy_init_when_engine_exists():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "nomination",
                         "platform": "yahoo",
@@ -498,7 +498,7 @@ async def test_draft_pick_does_not_lazy_init():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/event",
+                    "/api/draft/event",
                     json={
                         "type": "draft_pick",
                         "platform": "yahoo",
@@ -532,7 +532,7 @@ async def test_start_draft_builds_engine_and_returns_ready():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/draft/start",
+                    "/api/draft/start",
                     json={"your_team_id": "team_5"},
                 )
             assert resp.status_code == 200
@@ -564,7 +564,7 @@ async def test_sync_platform_skips_sleeper():
             base_url="http://test",
         ) as ac:
             resp = await ac.post(
-                "/leagues/sync-platform/sleeper",
+                "/api/leagues/sync-platform/sleeper",
                 headers={"X-Draft-Token": "any"},
             )
         assert resp.status_code == 200
@@ -595,7 +595,7 @@ async def test_sync_platform_skips_invalid_token():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/leagues/sync-platform/yahoo",
+                    "/api/leagues/sync-platform/yahoo",
                     headers={"X-Draft-Token": "invalid"},
                 )
             assert resp.status_code == 200
@@ -634,7 +634,7 @@ async def test_sync_platform_skips_no_leagues():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/leagues/sync-platform/espn",
+                    "/api/leagues/sync-platform/espn",
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
@@ -681,7 +681,7 @@ async def test_sync_platform_syncs_all_user_leagues():
                 base_url="http://test",
             ) as ac:
                 resp = await ac.post(
-                    "/leagues/sync-platform/yahoo",
+                    "/api/leagues/sync-platform/yahoo",
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
