@@ -29,3 +29,18 @@ async def test_csp_skipped_for_docs():
         resp = await ac.get("/docs")
 
     assert "Content-Security-Policy" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_csp_allows_clerk_production_domain():
+    """The Clerk production FAPI domain (clerk.rookff.com) is trusted in every
+    Clerk directive — script/style/connect/frame/font — so the production Clerk
+    instance loads on the custom domain."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get("/health")
+
+    csp = resp.headers["Content-Security-Policy"]
+    # Both apex and wildcard, alongside the existing dev domains.
+    assert csp.count("https://clerk.rookff.com") >= 5
+    assert csp.count("https://*.clerk.rookff.com") >= 5
+    assert "https://*.clerk.accounts.dev" in csp  # dev domains kept
