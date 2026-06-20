@@ -63,14 +63,19 @@ async def _get(path: str):
 
 async def _assert_spa_not_api(path: str):
     """A SPA path must serve index.html (200 text/html, no-cache) when a dist is
-    built, or 404 when it isn't — but it must NEVER return API JSON."""
+    built, or a plain 404 when it isn't (FastAPI's default 404 is JSON — that's
+    fine, it's "not found", not the API's data). It must NEVER be a 200 with API
+    JSON, which was the bug."""
     resp = await _get(path)
-    assert resp.status_code in (200, 404)
     ctype = resp.headers.get("content-type", "")
-    assert "application/json" not in ctype
+    assert not (resp.status_code == 200 and "application/json" in ctype), (
+        f"{path} returned a 200 API JSON response instead of the SPA shell"
+    )
     if resp.status_code == 200:
         assert "text/html" in ctype
         assert "no-cache" in resp.headers.get("cache-control", "").lower()
+    else:
+        assert resp.status_code == 404  # no built frontend in this env
 
 
 @pytest.mark.asyncio
