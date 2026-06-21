@@ -494,7 +494,16 @@ async def start_draft(req: StartDraftRequest, user: User = Depends(get_current_u
 
     (require_feature("live_draft") will gate this endpoint — out of scope here.)
     """
-    if session_manager.get_warm(user.id) is not None:
+    # Short-circuit ONLY when there's a genuinely RESUMABLE draft (active + a
+    # recent event) — the same gate /state uses, so the two never disagree. Keying
+    # on warm-presence instead was a regression: a just-abandoned mock's warm
+    # session lingers in memory (not reaped for hours), so /start returned "already
+    # running" without refreshing the row, then /state's recency gate 409'd the
+    # stale row ("engine not started"). is_resumable also covers a cold-but-recent
+    # draft after a redeploy (warm gone) — so /start won't wipe a live draft either.
+    # Not resumable (stale/abandoned, or none) → fall through and create fresh,
+    # which overwrites the stale DB row + replaces any lingering warm session.
+    if await session_manager.is_resumable(user.id, RESUME_WINDOW_SECONDS):
         return {
             "status": "ready",
             "mode": "extension",

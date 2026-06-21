@@ -37,13 +37,16 @@ def _fake_session():
     return SimpleNamespace(engine=AsyncMock(), state=MagicMock())
 
 
-def _fake_manager(*, session=None, created=None, warm=None):
+def _fake_manager(*, session=None, created=None, warm=None, resumable=False):
     mgr = MagicMock()
     mgr.get_or_rehydrate = AsyncMock(return_value=session)
     mgr.create = AsyncMock(return_value=created if created is not None else session)
     mgr.persist = AsyncMock()
     mgr.end = AsyncMock()
     mgr.get_warm = MagicMock(return_value=warm)
+    # /draft/start short-circuits on RESUMABILITY (recent active draft), not warm
+    # presence — so the start tests drive this flag.
+    mgr.is_resumable = AsyncMock(return_value=resumable)
     return mgr
 
 
@@ -449,10 +452,12 @@ async def test_start_draft_creates_session_for_user():
 
 
 @pytest.mark.asyncio
-async def test_start_draft_idempotent_when_session_warm():
-    """POST /draft/start with an already-warm session does NOT recreate it."""
+async def test_start_draft_idempotent_when_session_resumable():
+    """CHANGED: /draft/start short-circuits on RESUMABILITY (a recent active
+    draft), not warm presence. A resumable session is NOT recreated (don't wipe a
+    live draft); a stale-but-warm one IS recreated (see the regression test)."""
     user = _make_user()
-    mgr = _fake_manager(warm=_fake_session())
+    mgr = _fake_manager(resumable=True, warm=_fake_session())
     from backend.core.dependencies import get_current_user
 
     app.dependency_overrides[get_current_user] = lambda: user
@@ -467,6 +472,53 @@ async def test_start_draft_idempotent_when_session_warm():
             assert resp.json()["status"] == "ready"
             mgr.create.assert_not_awaited()
             build.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_start_recreates_stale_but_warm_session_then_state_200():
+    """PROD REGRESSION (#100/#101): a just-abandoned mock's warm session lingers
+    in memory while its DB row goes stale (past the resume window). Pressing Start
+    must CREATE a fresh draft — NOT short-circuit on the stale warm session and
+    then 409 on /state ("engine not started").
+
+    Uses the REAL manager + in-memory store with a backdated updated_at (the real
+    runtime path the prior /start mocks didn't exercise — keying on warm presence
+    vs DB recency). FAILS before the fix (short-circuit → /state 409), passes after
+    (create fresh → /state 200).
+    """
+    from backend.core.dependencies import get_current_user
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+    from backend.services.draft_session import DraftSessionManager, InMemorySessionStore
+
+    user = _make_user()
+    store = InMemorySessionStore()
+
+    async def factory(state, key):
+        return AsyncMock()
+
+    mgr = DraftSessionManager(store, factory)
+    # Prior abandoned draft: still WARM in memory, but its DB row is stale.
+    await mgr.create(user.id, DraftStateManager(LeagueConfig(auction_budget=200), "old_team"))
+    store._records[user.id]["updated_at"] = (
+        store._records[user.id]["updated_at"].replace(year=2000)
+    )
+    assert mgr.get_warm(user.id) is not None              # warm session lingers
+    assert await mgr.is_resumable(user.id, 3600) is False  # but stale → not resumable
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    with patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._bridge", None
+    ):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                start = await ac.post("/api/draft/start", json={"your_team_id": "team_new"})
+                assert start.status_code == 200
+                assert start.json()["status"] == "ready"
+                # The fresh draft is now resumable → /state 200, not the 409 regression.
+                st = await ac.get("/api/draft/state")
+                assert st.status_code == 200
         finally:
             app.dependency_overrides.clear()
 
