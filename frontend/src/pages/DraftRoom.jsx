@@ -22,29 +22,35 @@ export default function DraftRoom() {
   const phase = useDraftStore((s) => s.phase)
   const wsStatus = useDraftStore((s) => s.wsStatus)
   const setAvailablePlayers = useDraftStore((s) => s.setAvailablePlayers)
+  const rehydrate = useDraftStore((s) => s.rehydrate)
   const { isSnake } = useLeague()
 
   // Connect WebSocket
   useDraftSocket()
 
-  // Load the available-players list on mount, independent of draft engine
-  // state — so the list is populated even before "Start Draft", and a failed
-  // engine start can't leave it empty. setAvailablePlayers ignores empty results.
+  // On mount: if a backend draft session is active (e.g. a PAGE REFRESH reset the
+  // in-memory store), rehydrate the full view from the server — rosters, budgets,
+  // opponents, the drafted-filtered available list, AND the current suggested
+  // pick. If there's no active draft, fall through to loading the raw draftboard
+  // pool for the setup/browse view. (Skip when already 'live' from in-app nav, so
+  // we don't disturb a healthy in-memory session.)
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      if (useDraftStore.getState().phase === 'live') return
+
+      let hydrated = false
+      try {
+        hydrated = await rehydrate()
+      } catch (e) {
+        console.error('Rook: draft rehydrate failed:', e?.response?.status, e)
+      }
+      if (cancelled || hydrated) return // rehydrate set the filtered available list
+
+      // No active draft → load the raw pool so setup/browse has players.
       try {
         const board = await fetchDraftboard()
-        const tiers = board?.tiers || {}
-        const players = Object.values(tiers).flat()
-        // Diagnostics: if this logs 0 players, the issue is the /draftboard
-        // response (empty data / auth / wrong shape), not the UI wiring.
-        console.debug(
-          'Rook: draftboard loaded —',
-          players.length,
-          'players; tier keys:',
-          Object.keys(tiers),
-        )
+        const players = Object.values(board?.tiers || {}).flat()
         if (!cancelled) setAvailablePlayers(players)
       } catch (e) {
         console.error('Rook: failed to load draftboard:', e?.response?.status, e)
@@ -53,7 +59,7 @@ export default function DraftRoom() {
     return () => {
       cancelled = true
     }
-  }, [setAvailablePlayers])
+  }, [rehydrate, setAvailablePlayers])
 
   if (phase === 'setup') {
     return (

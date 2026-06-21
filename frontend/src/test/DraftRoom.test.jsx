@@ -763,8 +763,13 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().availablePlayers).toHaveLength(1)
   })
 
-  it('DraftRoom loads available players on mount from the draftboard', async () => {
-    // phase stays 'setup'; the mount effect still runs
+  it('DraftRoom loads the raw draftboard pool on mount when there is NO active draft', async () => {
+    // CHANGED (refresh-rehydrate fix): mount now first attempts rehydrate().
+    // With no active backend session (/draft/state -> 409) it returns false and
+    // falls through to loading the raw draftboard pool ('Mount Player').
+    const { getDraftState } = await import('../api/draft')
+    getDraftState.mockRejectedValueOnce({ response: { status: 409 } })
+
     render(
       <MemoryRouter>
         <DraftRoom />

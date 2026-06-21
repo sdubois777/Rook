@@ -3,10 +3,17 @@ import {
   startDraft as apiStartDraft,
   getDraftState,
   getAvailablePlayers,
+  getOpponentBudgets,
+  getRecommendation,
   endDraft as apiEndDraft,
 } from '../api/draft'
 import { normalizeName } from '../utils/names'
 import { matchesPickName } from '../utils/playerUtils'
+
+// Your team name is needed to attribute future picks after a page-refresh
+// rehydrate (the backend /draft/state doesn't return your_team_id). Persist it
+// at draft start so a reload can restore it without a backend change.
+const TEAM_KEY = 'rook_draft_team'
 
 /** Total seconds remaining from a "M:SS" clock string ("0:19" -> 19). */
 export function parseClockSeconds(clock) {
@@ -79,11 +86,17 @@ export const useDraftStore = create((set, get) => ({
     const players = Object.values(tiers).flat()
     console.debug('Rook: draftboard players loaded:', players.length)
 
+    const myTeamName = startResp?.team_name || teamId || null
+    // Persist for page-refresh rehydration (see rehydrate()).
+    try {
+      if (myTeamName) localStorage.setItem(TEAM_KEY, myTeamName)
+    } catch { /* localStorage unavailable — non-fatal */ }
+
     set({
       phase: 'live',
       // Team name used to detect picks you win — prefer the backend echo,
       // fall back to the id entered at setup.
-      myTeamName: startResp?.team_name || teamId || null,
+      myTeamName,
       myBudget: state.your_remaining_budget,
       myRoster: state.your_roster || [],
       rosterSlotsRemaining: state.roster_slots_remaining,
@@ -416,8 +429,118 @@ export const useDraftStore = create((set, get) => ({
     })
   },
 
+  // Full frontend rehydration after a PAGE REFRESH (the backend session is intact
+  // via #96; the in-memory store reset to empty). Composes the existing GETs —
+  // /draft/state (your roster + budget), /draft/opponents (their rosters +
+  // budgets + threat), /draft/recommendation (the suggested pick) — and rebuilds
+  // the available list from the draftboard pool minus everyone already drafted.
+  //
+  // Returns true if an active backend draft was found and the store hydrated;
+  // false (no active session → /state 409) so the caller falls through to setup.
+  // Idempotent: safe to call when already 'live' (it just re-syncs a snapshot).
+  rehydrate: async () => {
+    let state
+    try {
+      state = await getDraftState()
+    } catch (e) {
+      if (e?.response?.status === 409) return false // no active draft
+      throw e
+    }
+
+    // Pull opponents + recommendation + the board pool in parallel. Each is
+    // best-effort: a failure degrades gracefully rather than aborting the whole
+    // rehydrate (rosters/budget from /state still come back).
+    const [opponents, rec, board] = await Promise.all([
+      getOpponentBudgets().catch(() => ({ opponents: {} })),
+      getRecommendation().catch(() => null),
+      getAvailablePlayers().catch(() => null),
+    ])
+
+    // Rebuild opponents → teamPicks / threat / budgets, and collect drafted names.
+    const teamPicks = {}
+    const teamThreatScores = {}
+    const opponentBudgets = {}
+    const draftedNames = new Set()
+    for (const [teamId, info] of Object.entries(opponents?.opponents || {})) {
+      teamPicks[teamId] = (info.roster || []).map((p) => ({
+        player_name: p.player_name,
+        position: p.position,
+        price: p.price,
+        ceiling: null,
+      }))
+      teamThreatScores[teamId] = info.threat_score || 0
+      opponentBudgets[teamId] = info.budget
+      for (const p of info.roster || []) draftedNames.add(normalizeName(p.player_name))
+    }
+
+    // Your roster → drafted set + your own team-picks entry (team name from
+    // localStorage; /state doesn't return your_team_id).
+    const myRoster = state.your_roster || []
+    for (const p of myRoster) draftedNames.add(normalizeName(p.player_name))
+    let myTeamName = get().myTeamName
+    try {
+      myTeamName = localStorage.getItem(TEAM_KEY) || myTeamName
+    } catch { /* ignore */ }
+    if (myTeamName && myRoster.length > 0) {
+      teamPicks[myTeamName] = myRoster.map((p) => ({
+        player_name: p.player_name,
+        position: p.position,
+        price: p.price,
+        ceiling: null,
+      }))
+    }
+
+    // Available = draftboard pool minus everyone drafted. Fall back to the
+    // already-loaded list if the board fetch failed.
+    const pool = Object.values(board?.tiers || {}).flat()
+    const basePool = pool.length > 0 ? pool : get().availablePlayers
+    const availablePlayers = basePool.filter(
+      (p) => !draftedNames.has(normalizeName(p.name))
+    )
+
+    set({
+      phase: 'live',
+      myTeamName: myTeamName || get().myTeamName,
+      myBudget: state.your_remaining_budget,
+      myRoster,
+      rosterSlotsRemaining: state.roster_slots_remaining,
+      spendable: state.spendable_on_next_player,
+      positionalCounts: state.positional_counts || {},
+      opponentBudgets,
+      teamPicks,
+      teamThreatScores,
+      ...(availablePlayers.length > 0 ? { availablePlayers } : {}),
+    })
+
+    // Re-fetch the CURRENT recommendation (the suggested pick) — first-class, not
+    // a stale/placeholder. The backend value is computed against the live state,
+    // identical to what a fresh pick would yield. If there's no active nomination
+    // it returns no_recommendation and we leave the panel empty (correct).
+    if (rec && rec.type === 'recommendation') {
+      set({ recommendation: rec })
+      // Recover the nominee card from the rec so it isn't blank; the live bid and
+      // clock repopulate on the next WS bid_update/clock tick.
+      if (rec.player_name) {
+        set((s) => ({
+          currentNomination: s.currentNomination || {
+            playerName: rec.player_name,
+            posTeam: null,
+            currentBid: null,
+            clock: null,
+            secondsRemaining: null,
+          },
+        }))
+      }
+    }
+
+    return true
+  },
+
   endDraft: async () => {
     await apiEndDraft()
+    try {
+      localStorage.removeItem(TEAM_KEY)
+    } catch { /* ignore */ }
     set({ phase: 'ended' })
   },
 

@@ -130,6 +130,11 @@ export default function useDraftSocket() {
             if (rec?.type === 'recommendation') setRecommendation(rec)
           })
           .catch(() => {})
+        // Lightweight budget/roster resync on reconnect — picks may have landed
+        // while disconnected. Intentionally NOT a full rehydrate: it won't rebuild
+        // teamPicks/available, so it can't fight the live event stream. (Full
+        // rehydrate is mount-only — the page-refresh recovery path.)
+        useDraftStore.getState().refreshState().catch(() => {})
       }
 
       ws.onmessage = (event) => {
