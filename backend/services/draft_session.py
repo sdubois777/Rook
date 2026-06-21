@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql import func
 
@@ -58,6 +58,15 @@ class SessionStore(Protocol):
         self, user_id: uuid.UUID, snapshot: dict, draft_type: Optional[str]
     ) -> None: ...
     async def delete(self, user_id: uuid.UUID) -> None: ...
+    # True iff an active session exists AND its last EVENT (updated_at, advanced
+    # only by save/persist) is within max_idle_seconds — the "plausibly still
+    # live" gate for auto-resume on a page refresh.
+    async def is_resumable(
+        self, user_id: uuid.UUID, max_idle_seconds: int
+    ) -> bool: ...
+    # Durably deactivate rows whose last event is older than ttl_seconds (cold
+    # abandoned drafts the warm-memory reaper never touches). Returns the count.
+    async def deactivate_stale(self, ttl_seconds: int) -> int: ...
 
 
 class DbSessionStore:
@@ -114,24 +123,83 @@ class DbSessionStore:
                 row.is_active = False
                 await session.commit()
 
+    async def is_resumable(
+        self, user_id: uuid.UUID, max_idle_seconds: int
+    ) -> bool:
+        # Compare against the DB's own clock (updated_at is server now()), so the
+        # recency check is independent of any app/DB clock skew.
+        cutoff = func.now() - timedelta(seconds=int(max_idle_seconds))
+        async with self._session_factory() as session:
+            found = (
+                await session.execute(
+                    select(DraftSession.id).where(
+                        DraftSession.user_id == user_id,
+                        DraftSession.is_active.is_(True),
+                        DraftSession.updated_at >= cutoff,
+                    )
+                )
+            ).scalar_one_or_none()
+            return found is not None
+
+    async def deactivate_stale(self, ttl_seconds: int) -> int:
+        cutoff = func.now() - timedelta(seconds=int(ttl_seconds))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                sa_update(DraftSession)
+                .where(
+                    DraftSession.is_active.is_(True),
+                    DraftSession.updated_at < cutoff,
+                )
+                .values(is_active=False)
+            )
+            await session.commit()
+            return result.rowcount or 0
+
 
 class InMemorySessionStore:
-    """SessionStore with no persistence — for tests and single-process scratch use."""
+    """SessionStore with no persistence — for tests and single-process scratch use.
+
+    Records carry {snapshot, updated_at, active} mirroring the DB row so the
+    recency gate is testable (a test can backdate _records[uid]["updated_at"]).
+    """
 
     def __init__(self) -> None:
-        self._data: dict[uuid.UUID, dict] = {}
+        self._records: dict[uuid.UUID, dict] = {}
 
     async def load(self, user_id: uuid.UUID) -> Optional[dict]:
-        snap = self._data.get(user_id)
-        return dict(snap) if snap else None
+        r = self._records.get(user_id)
+        return dict(r["snapshot"]) if r and r["active"] else None
 
     async def save(
         self, user_id: uuid.UUID, snapshot: dict, draft_type: Optional[str]
     ) -> None:
-        self._data[user_id] = dict(snapshot)
+        self._records[user_id] = {
+            "snapshot": dict(snapshot),
+            "updated_at": _now(),
+            "active": True,
+        }
 
     async def delete(self, user_id: uuid.UUID) -> None:
-        self._data.pop(user_id, None)
+        r = self._records.get(user_id)
+        if r is not None:
+            r["active"] = False
+
+    async def is_resumable(
+        self, user_id: uuid.UUID, max_idle_seconds: int
+    ) -> bool:
+        r = self._records.get(user_id)
+        if not r or not r["active"]:
+            return False
+        return r["updated_at"] >= _now() - timedelta(seconds=max_idle_seconds)
+
+    async def deactivate_stale(self, ttl_seconds: int) -> int:
+        cutoff = _now() - timedelta(seconds=ttl_seconds)
+        n = 0
+        for r in self._records.values():
+            if r["active"] and r["updated_at"] < cutoff:
+                r["active"] = False
+                n += 1
+        return n
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +293,19 @@ class DraftSessionManager:
         self._sessions.pop(self._key(user_id), None)
         await self._store.delete(user_id)
         logger.info("Draft session ended for user %s", self._key(user_id))
+
+    async def is_resumable(self, user_id: uuid.UUID, max_idle_seconds: int) -> bool:
+        """Should a page refresh AUTO-RESUME this user's draft? True only when the
+        durable row is active AND its last event is within the resume window — the
+        read gate that splits 'active, recover it' from 'ended/stale, show board'.
+        Keyed on the DB (not the warm session), so reads can't keep a dead draft
+        warm and resumable."""
+        return await self._store.is_resumable(user_id, max_idle_seconds)
+
+    async def deactivate_stale_rows(self, ttl_seconds: int) -> int:
+        """Durably flip is_active=False for long-idle rows (incl. COLD ones never
+        held warm in this process). The DB-flip backstop behind the read gate."""
+        return await self._store.deactivate_stale(ttl_seconds)
 
     def evict_stale(self, ttl_seconds: int) -> int:
         """Drop warm sessions idle longer than ttl (memory reaper). The durable

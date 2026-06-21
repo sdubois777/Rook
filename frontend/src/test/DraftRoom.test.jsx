@@ -782,6 +782,35 @@ describe('DraftRoom', () => {
     })
   })
 
+  it('End Draft requires window.confirm — cancel does nothing, confirm ends it', async () => {
+    const { endDraft } = await import('../api/draft')
+    useDraftStore.setState({ phase: 'live' }) // skips mount rehydrate
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    endDraft.mockClear()
+
+    const btn = screen.getByText('End Draft')
+
+    // Cancel → the irreversible action must NOT fire on a stray click.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    fireEvent.click(btn)
+    expect(endDraft).not.toHaveBeenCalled()
+    expect(useDraftStore.getState().phase).toBe('live')
+
+    // Confirm → ends the draft (POST /draft/end); room goes to 'ended'.
+    confirmSpy.mockReturnValue(true)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
+    expect(endDraft).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(useDraftStore.getState().phase).toBe('ended'))
+    confirmSpy.mockRestore()
+  })
+
   it('assignToSlot puts a 3rd RB into FLEX when RB slots are full', () => {
     const grouped = {}
     assignToSlot({ player_name: 'RB1', position: 'RB' }, grouped, POSITION_SLOTS)

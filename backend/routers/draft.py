@@ -20,6 +20,7 @@ POST /draft/start and the WS connect — left as a marker; OUT OF SCOPE here.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -43,6 +44,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
+
+# How recently a draft must have had a real EVENT (a pick/nomination → persist →
+# draft_sessions.updated_at) for a page refresh to AUTO-RESUME it. Long enough to
+# survive a stalled auction (commissioner pause, food break, someone AFK on the
+# clock) + a redeploy; the explicit "End Draft" button — not this window — is the
+# signal for "forget an abandoned draft now". Env-overridable so it can be widened
+# without a code deploy if real drafts stall longer. Default 60 min.
+RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 60 * 60))
 
 # Legacy Playwright bridge — single optional server-side control path (not part
 # of the per-user extension draft flow).
@@ -597,7 +606,23 @@ async def end_draft(user: User = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 async def _require_session(user: User):
-    """Resolve the user's session (warm or rehydrated), or 409 if none."""
+    """Resolve the user's RESUMABLE session, or 409.
+
+    Recency-gated: only auto-resume a draft that's plausibly still live (active +
+    a real event within RESUME_WINDOW_SECONDS). A stale/abandoned or explicitly
+    ended draft 409s, so the frontend shows the board instead of resurrecting a
+    finished draft. Checked BEFORE get_or_rehydrate, so a stale read never warms
+    (and keeps alive) a dead session — closing the reads-keep-it-warm leak.
+
+    NOTE: this gates the READ endpoints only (/state, /recommendation, /opponents,
+    /frame). POST /draft/event is intentionally NOT gated — an incoming event is
+    itself fresh activity and re-freshens updated_at (keep-alive).
+    """
+    if not await session_manager.is_resumable(user.id, RESUME_WINDOW_SECONDS):
+        raise HTTPException(
+            status_code=409,
+            detail="Draft engine not started — POST /draft/start first",
+        )
     session = await session_manager.get_or_rehydrate(user.id)
     if session is None:
         raise HTTPException(
