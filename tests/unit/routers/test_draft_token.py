@@ -1,7 +1,17 @@
-"""Tests for draft token and extension relay endpoints."""
+"""Tests for draft token and extension relay endpoints.
+
+CHANGED (session-isolation refactor): the /draft/event and /draft/start tests no
+longer patch the removed module globals _engine/_state/_build_engine. They now
+patch the per-user `session_manager` (get_or_rehydrate/create/persist/get_warm)
+and assert events route to THAT user's session and broadcast via
+`ws_manager.broadcast_to_session(<user.id>, ...)` (was the global broadcast()).
+/draft/start now requires auth (Depends(get_current_user)). The account
+draft-token, invalid-token, and sync-platform tests are unchanged.
+"""
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,8 +32,29 @@ def _make_user(uid=None, draft_token=None):
     return user
 
 
+def _fake_session():
+    """A per-user session stand-in: an async engine + a state mock."""
+    return SimpleNamespace(engine=AsyncMock(), state=MagicMock())
+
+
+def _fake_manager(*, session=None, created=None, warm=None):
+    mgr = MagicMock()
+    mgr.get_or_rehydrate = AsyncMock(return_value=session)
+    mgr.create = AsyncMock(return_value=created if created is not None else session)
+    mgr.persist = AsyncMock()
+    mgr.end = AsyncMock()
+    mgr.get_warm = MagicMock(return_value=warm)
+    return mgr
+
+
+def _mock_user_repo(user):
+    repo = AsyncMock()
+    repo.get_by_draft_token.return_value = user
+    return repo
+
+
 # ---------------------------------------------------------------------------
-# Draft token endpoints (in /account)
+# Draft token endpoints (in /account) — unchanged by the session refactor
 # ---------------------------------------------------------------------------
 
 
@@ -31,7 +62,6 @@ def _make_user(uid=None, draft_token=None):
 async def test_draft_token_created_for_new_user():
     """GET /account/draft-token creates a token when user has none."""
     user = _make_user(draft_token=None)
-    # db.get() returns a separate db_user object that the endpoint mutates
     db_user = _make_user(draft_token=None)
     db_user.id = user.id
     from backend.core.dependencies import get_current_user, get_db
@@ -43,10 +73,7 @@ async def test_draft_token_created_for_new_user():
     app.dependency_overrides[get_db] = lambda: mock_db
 
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as ac:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         token = resp.json()["draft_token"]
@@ -69,14 +96,10 @@ async def test_draft_token_stable_on_repeat_call():
     app.dependency_overrides[get_db] = lambda: mock_db
 
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as ac:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/api/account/draft-token")
         assert resp.status_code == 200
         assert resp.json()["draft_token"] == existing_token
-        # Should NOT have committed (no change)
         mock_db.commit.assert_not_called()
     finally:
         app.dependency_overrides.clear()
@@ -98,10 +121,7 @@ async def test_revoke_generates_new_token():
     app.dependency_overrides[get_db] = lambda: mock_db
 
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as ac:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post("/api/account/draft-token/revoke")
         assert resp.status_code == 200
         new_token = resp.json()["draft_token"]
@@ -113,7 +133,7 @@ async def test_revoke_generates_new_token():
 
 
 # ---------------------------------------------------------------------------
-# Draft event relay
+# Draft event relay — now session-keyed (per user)
 # ---------------------------------------------------------------------------
 
 
@@ -125,25 +145,13 @@ async def test_draft_event_rejects_invalid_token():
     mock_db = AsyncMock()
     app.dependency_overrides[get_db] = lambda: mock_db
 
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo:
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = None
-        MockRepo.return_value = mock_repo
-
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo:
+        MockRepo.return_value = _mock_user_repo(None)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "nomination",
-                        "platform": "yahoo",
-                        "payload": {},
-                    },
+                    json={"type": "nomination", "platform": "yahoo", "payload": {}},
                     headers={"X-Draft-Token": "invalid-token"},
                 )
             assert resp.status_code == 401
@@ -152,108 +160,78 @@ async def test_draft_event_rejects_invalid_token():
 
 
 @pytest.mark.asyncio
-async def test_draft_event_relays_to_ws_manager():
-    """POST /draft/event with valid token broadcasts to WS manager."""
+async def test_draft_event_relays_to_session_ws():
+    """A valid nomination routes to the user's session and broadcasts ONLY to
+    that user's session key (was a global broadcast)."""
     user = _make_user(draft_token="valid-token")
+    session = _fake_session()
+    mgr = _fake_manager(session=session)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", AsyncMock()
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=None)
     ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "nomination",
-                        "platform": "yahoo",
-                        "payload": {"player": "CMC"},
-                    },
+                    json={"type": "nomination", "platform": "yahoo", "payload": {"player": "CMC"}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
             assert resp.json()["status"] == "relayed"
-            mock_ws.broadcast.assert_called_once()
-            call_data = mock_ws.broadcast.call_args[0][0]
-            assert call_data["type"] == "nomination"
-            assert call_data["platform"] == "yahoo"
+            mgr.get_or_rehydrate.assert_awaited_once_with(user.id)
+            session.engine.on_nomination.assert_awaited_once()
+            mgr.persist.assert_awaited_once_with(user.id)
+            # Broadcast went ONLY to this user's session key.
+            mock_ws.broadcast_to_session.assert_awaited_once()
+            key, data = mock_ws.broadcast_to_session.await_args[0]
+            assert key == str(user.id)
+            assert data["type"] == "nomination"
         finally:
             app.dependency_overrides.clear()
 
 
-# ---------------------------------------------------------------------------
-# Live draft engine wiring (nomination -> recommendation)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_nomination_triggers_engine():
-    """A nomination event resolves the player and runs the engine."""
+    """A nomination resolves the player and runs the user's engine."""
     user = _make_user(draft_token="valid-token")
+    session = _fake_session()
+    mgr = _fake_manager(session=session)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    fake_player = MagicMock(yahoo_player_id="nfl_123", position="TE")
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    fake_player = MagicMock()
-    fake_player.yahoo_player_id = "nfl_123"
-    fake_player.position = "TE"
-    engine = AsyncMock()
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", engine
-    ), patch(
-        "backend.routers.draft._resolve_player",
-        AsyncMock(return_value=fake_player),
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=fake_player)
     ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "nomination",
-                        "platform": "yahoo",
-                        "payload": {
-                            "player_name": "Sam LaPorta",
-                            "opening_bid": 4,
-                        },
-                    },
+                    json={"type": "nomination", "platform": "yahoo",
+                          "payload": {"player_name": "Sam LaPorta", "opening_bid": 4}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            engine.on_nomination.assert_awaited_once()
-            sent = engine.on_nomination.call_args[0][0]
+            session.engine.on_nomination.assert_awaited_once()
+            sent = session.engine.on_nomination.call_args[0][0]
             assert sent["player_id"] == "nfl_123"
             assert sent["player_name"] == "Sam LaPorta"
-            # Raw nomination still relayed to the UI
-            raw = mock_ws.broadcast.call_args[0][0]
+            raw = mock_ws.broadcast_to_session.await_args[0][1]
             assert raw["type"] == "nomination"
         finally:
             app.dependency_overrides.clear()
@@ -261,44 +239,34 @@ async def test_nomination_triggers_engine():
 
 @pytest.mark.asyncio
 async def test_bid_update_relayed_without_engine_call():
-    """bid_update relays to the UI but never invokes the engine handlers."""
+    """bid_update relays to the UI but never invokes engine handlers (and never
+    even resolves a session)."""
     user = _make_user(draft_token="valid-token")
+    session = _fake_session()
+    mgr = _fake_manager(session=session)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
-    engine = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", engine
-    ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr):
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "bid_update",
-                        "platform": "yahoo",
-                        "payload": {"player_name": "Sam LaPorta", "current_bid": 6},
-                    },
+                    json={"type": "bid_update", "platform": "yahoo",
+                          "payload": {"player_name": "Sam LaPorta", "current_bid": 6}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            engine.on_nomination.assert_not_awaited()
-            engine.on_pick_confirmed.assert_not_awaited()
-            raw = mock_ws.broadcast.call_args[0][0]
+            session.engine.on_nomination.assert_not_awaited()
+            session.engine.on_pick_confirmed.assert_not_awaited()
+            mgr.get_or_rehydrate.assert_not_awaited()  # bid_update only relays
+            raw = mock_ws.broadcast_to_session.await_args[0][1]
             assert raw["type"] == "bid_update"
             assert raw["payload"]["current_bid"] == 6
         finally:
@@ -307,246 +275,204 @@ async def test_bid_update_relayed_without_engine_call():
 
 @pytest.mark.asyncio
 async def test_draft_pick_recorded():
-    """draft_pick records the pick into engine state and relays raw."""
+    """draft_pick records into the user's session state and relays raw."""
     user = _make_user(draft_token="valid-token")
+    session = _fake_session()
+    session.state.is_my_winning_bid.return_value = False
+    mgr = _fake_manager(session=session)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    fake_player = MagicMock(yahoo_player_id="nfl_9", position="RB")
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    fake_player = MagicMock()
-    fake_player.yahoo_player_id = "nfl_9"
-    fake_player.position = "RB"
-    engine = AsyncMock()
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", engine
-    ), patch(
-        "backend.routers.draft._resolve_player",
-        AsyncMock(return_value=fake_player),
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=fake_player)
     ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "draft_pick",
-                        "platform": "yahoo",
-                        "payload": {
-                            "player_name": "Bijan Robinson",
-                            "final_price": 20,
-                            "winner": "Stephen",
-                            "teams_snapshot": {},
-                        },
-                    },
+                    json={"type": "draft_pick", "platform": "yahoo",
+                          "payload": {"player_name": "Bijan Robinson", "final_price": 20,
+                                      "winner": "Stephen", "teams_snapshot": {}}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            engine.on_pick_confirmed.assert_awaited_once()
-            sent = engine.on_pick_confirmed.call_args[0][0]
+            session.engine.on_pick_confirmed.assert_awaited_once()
+            sent = session.engine.on_pick_confirmed.call_args[0][0]
             assert sent["player_id"] == "nfl_9"
             assert sent["team_id"] == "Stephen"
             assert sent["final_price"] == 20
-            raw = mock_ws.broadcast.call_args[0][0]
+            mgr.persist.assert_awaited_once_with(user.id)
+            raw = mock_ws.broadcast_to_session.await_args[0][1]
             assert raw["type"] == "draft_pick"
         finally:
             app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
-async def test_nomination_lazy_inits_engine_when_none():
-    """A nomination with no engine lazily builds one, then runs it."""
+async def test_nomination_lazy_creates_session_when_none():
+    """A nomination with no existing session lazily CREATES one (replacing the
+    old default-engine band-aid), then runs it."""
     user = _make_user(draft_token="valid-token")
+    created = _fake_session()
+    mgr = _fake_manager(session=None, created=created)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    build = AsyncMock()
-    trigger = AsyncMock()
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", None
-    ), patch(
-        "backend.routers.draft._build_engine", build
-    ), patch(
-        "backend.routers.draft._trigger_nomination", trigger
-    ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._build_state", AsyncMock(return_value="STATE")
+    ), patch("backend.routers.draft._resolve_player", AsyncMock(return_value=None)):
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "nomination",
-                        "platform": "yahoo",
-                        "payload": {"player_name": "Sam LaPorta"},
-                    },
+                    json={"type": "nomination", "platform": "yahoo",
+                          "payload": {"player_name": "Sam LaPorta"}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            build.assert_awaited_once()
-            trigger.assert_awaited_once()
-            mock_ws.broadcast.assert_awaited()
+            mgr.create.assert_awaited_once()  # lazily created for THIS user
+            created.engine.on_nomination.assert_awaited_once()
+            mgr.persist.assert_awaited_once_with(user.id)
         finally:
             app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
-async def test_nomination_skips_lazy_init_when_engine_exists():
-    """A nomination with an existing engine does NOT rebuild it."""
+async def test_nomination_uses_existing_session_no_create():
+    """A nomination with an existing session does NOT create a new one."""
     user = _make_user(draft_token="valid-token")
+    session = _fake_session()
+    mgr = _fake_manager(session=session)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    build = AsyncMock()
-    trigger = AsyncMock()
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", AsyncMock()
-    ), patch(
-        "backend.routers.draft._build_engine", build
-    ), patch(
-        "backend.routers.draft._trigger_nomination", trigger
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=None)
     ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "nomination",
-                        "platform": "yahoo",
-                        "payload": {"player_name": "Sam LaPorta"},
-                    },
+                    json={"type": "nomination", "platform": "yahoo",
+                          "payload": {"player_name": "Sam LaPorta"}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            build.assert_not_awaited()
-            trigger.assert_awaited_once()
+            mgr.create.assert_not_awaited()
+            session.engine.on_nomination.assert_awaited_once()
         finally:
             app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
-async def test_draft_pick_does_not_lazy_init():
-    """A draft_pick with no engine relays raw but never builds/records."""
+async def test_draft_pick_no_session_relays_only():
+    """A draft_pick with no session relays raw but never records (no lazy create)."""
     user = _make_user(draft_token="valid-token")
+    mgr = _fake_manager(session=None)
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
 
-    build = AsyncMock()
-    record = AsyncMock()
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo, patch(
-        "backend.routers.draft.ws_manager"
-    ) as mock_ws, patch(
-        "backend.routers.draft._engine", None
-    ), patch(
-        "backend.routers.draft._build_engine", build
-    ), patch(
-        "backend.routers.draft._record_pick", record
-    ):
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = user
-        MockRepo.return_value = mock_repo
-        mock_ws.broadcast = AsyncMock()
-
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._record_pick", AsyncMock()
+    ) as rec:
+        MockRepo.return_value = _mock_user_repo(user)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/event",
-                    json={
-                        "type": "draft_pick",
-                        "platform": "yahoo",
-                        "payload": {"player_name": "X", "final_price": 5},
-                    },
+                    json={"type": "draft_pick", "platform": "yahoo",
+                          "payload": {"player_name": "X", "final_price": 5}},
                     headers={"X-Draft-Token": "valid-token"},
                 )
             assert resp.status_code == 200
-            build.assert_not_awaited()
-            record.assert_not_awaited()
-            mock_ws.broadcast.assert_awaited()
-        finally:
-            app.dependency_overrides.clear()
-
-
-@pytest.mark.asyncio
-async def test_start_draft_builds_engine_and_returns_ready():
-    """POST /draft/start builds the engine via the shared helper, no Playwright."""
-    build = AsyncMock()
-
-    with patch(
-        "backend.routers.draft._engine", None
-    ), patch(
-        "backend.routers.draft._bridge", None
-    ), patch(
-        "backend.routers.draft._build_engine", build
-    ):
-        try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
-                resp = await ac.post(
-                    "/api/draft/start",
-                    json={"your_team_id": "team_5"},
-                )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "ready"
-            assert data["mode"] == "extension"
-            # (your_team_id, league_id, draft_type) — draft_type omitted -> None
-            build.assert_awaited_once_with("team_5", None, None)
+            mgr.create.assert_not_awaited()
+            rec.assert_not_awaited()
+            mock_ws.broadcast_to_session.assert_awaited()
         finally:
             app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
-# Passive sync
+# Draft engine lifecycle — /start now authed + per-user session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_draft_creates_session_for_user():
+    """POST /draft/start (authed) creates THIS user's session via the manager."""
+    user = _make_user()
+    mgr = _fake_manager(warm=None)
+    from backend.core.dependencies import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    build = AsyncMock(return_value="STATE")
+
+    with patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._bridge", None
+    ), patch("backend.routers.draft._build_state", build):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ready"
+            assert data["mode"] == "extension"
+            build.assert_awaited_once_with("team_5", None, None)
+            mgr.create.assert_awaited_once()
+            assert mgr.create.await_args[0][0] == user.id
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_start_draft_idempotent_when_session_warm():
+    """POST /draft/start with an already-warm session does NOT recreate it."""
+    user = _make_user()
+    mgr = _fake_manager(warm=_fake_session())
+    from backend.core.dependencies import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    with patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._build_state", AsyncMock()
+    ) as build:
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "ready"
+            mgr.create.assert_not_awaited()
+            build.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Passive sync — unchanged by the session refactor
 # ---------------------------------------------------------------------------
 
 
@@ -555,17 +481,11 @@ async def test_sync_platform_skips_sleeper():
     """POST /leagues/sync-platform/sleeper returns skipped."""
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as ac:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
-                "/api/leagues/sync-platform/sleeper",
-                headers={"X-Draft-Token": "any"},
+                "/api/leagues/sync-platform/sleeper", headers={"X-Draft-Token": "any"}
             )
         assert resp.status_code == 200
         assert resp.json()["status"] == "skipped"
@@ -579,24 +499,13 @@ async def test_sync_platform_skips_invalid_token():
     """POST /leagues/sync-platform/yahoo with bad token returns 200 + skipped."""
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockRepo:
-        mock_repo = AsyncMock()
-        mock_repo.get_by_draft_token.return_value = None
-        MockRepo.return_value = mock_repo
-
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo:
+        MockRepo.return_value = _mock_user_repo(None)
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
-                    "/api/leagues/sync-platform/yahoo",
-                    headers={"X-Draft-Token": "invalid"},
+                    "/api/leagues/sync-platform/yahoo", headers={"X-Draft-Token": "invalid"}
                 )
             assert resp.status_code == 200
             data = resp.json()
@@ -608,34 +517,22 @@ async def test_sync_platform_skips_invalid_token():
 
 @pytest.mark.asyncio
 async def test_sync_platform_skips_no_leagues():
-    """POST /leagues/sync-platform/espn with valid token but no leagues returns skipped."""
+    """POST /leagues/sync-platform/espn with valid token but no leagues skips."""
     user = _make_user(draft_token="valid-token")
     from backend.core.dependencies import get_db
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockUserRepo, patch(
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    with patch("backend.repositories.user_repo.UserRepository") as MockUserRepo, patch(
         "backend.routers.league_connect.LeagueRepository"
     ) as MockLeagueRepo:
-        mock_user_repo = AsyncMock()
-        mock_user_repo.get_by_draft_token.return_value = user
-        MockUserRepo.return_value = mock_user_repo
-
+        MockUserRepo.return_value = _mock_user_repo(user)
         mock_league_repo = AsyncMock()
         mock_league_repo.get_user_leagues_by_platform.return_value = []
         MockLeagueRepo.return_value = mock_league_repo
-
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
-                    "/api/leagues/sync-platform/espn",
-                    headers={"X-Draft-Token": "valid-token"},
+                    "/api/leagues/sync-platform/espn", headers={"X-Draft-Token": "valid-token"}
                 )
             assert resp.status_code == 200
             data = resp.json()
@@ -653,36 +550,23 @@ async def test_sync_platform_syncs_all_user_leagues():
 
     mock_league = MagicMock()
     mock_league.id = uuid.uuid4()
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
 
-    mock_db = AsyncMock()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    with patch(
-        "backend.repositories.user_repo.UserRepository"
-    ) as MockUserRepo, patch(
+    with patch("backend.repositories.user_repo.UserRepository") as MockUserRepo, patch(
         "backend.routers.league_connect.LeagueRepository"
     ) as MockLeagueRepo, patch(
         "backend.services.league_sync.LeagueSyncService"
     ) as MockSync:
-        mock_user_repo = AsyncMock()
-        mock_user_repo.get_by_draft_token.return_value = user
-        MockUserRepo.return_value = mock_user_repo
-
+        MockUserRepo.return_value = _mock_user_repo(user)
         mock_league_repo = AsyncMock()
         mock_league_repo.get_user_leagues_by_platform.return_value = [mock_league]
         MockLeagueRepo.return_value = mock_league_repo
-
         mock_sync = AsyncMock()
         MockSync.return_value = mock_sync
-
         try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as ac:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
-                    "/api/leagues/sync-platform/yahoo",
-                    headers={"X-Draft-Token": "valid-token"},
+                    "/api/leagues/sync-platform/yahoo", headers={"X-Draft-Token": "valid-token"}
                 )
             assert resp.status_code == 200
             data = resp.json()

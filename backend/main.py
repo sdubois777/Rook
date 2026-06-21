@@ -138,9 +138,20 @@ async def startup_checks():
         replace_existing=True,
     )
 
+    # Evict idle warm draft sessions (memory reaper). The durable DB snapshot is
+    # left intact, so an evicted-then-resumed draft still rehydrates.
+    _scheduler.add_job(
+        _evict_stale_draft_sessions,
+        "interval",
+        minutes=30,
+        id="evict_stale_draft_sessions",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Beat Reporter scheduler started (daily at 7am)")
     logger.info("Monthly credit reset job registered (1st of month)")
+    logger.info("Stale draft-session reaper registered (every 30 min)")
 
 
 @app.on_event("shutdown")
@@ -149,6 +160,21 @@ async def shutdown_checks():
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Beat Reporter scheduler stopped")
+
+
+# Warm draft sessions idle longer than this are evicted from memory (the DB
+# snapshot survives, so they rehydrate on the next event). 6h comfortably covers
+# a long auction plus breaks.
+_DRAFT_SESSION_TTL_SECONDS = 6 * 60 * 60
+
+
+async def _evict_stale_draft_sessions():
+    """Reap idle in-memory draft sessions (prevents unbounded memory growth)."""
+    from backend.routers.draft import session_manager
+
+    evicted = session_manager.evict_stale(_DRAFT_SESSION_TTL_SECONDS)
+    if evicted:
+        logger.info("Reaper evicted %d stale draft session(s)", evicted)
 
 
 async def _monthly_credit_reset():

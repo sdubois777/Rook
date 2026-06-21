@@ -3,32 +3,34 @@ backend/routers/draft.py
 
 Live draft endpoints — WebSocket push and HTTP action triggers.
 
-WebSocket: GET /ws/draft
-  React clients connect here. Receives all draft events (nominations,
-  bids, picks, clock warnings) pushed from the Playwright bridge.
+Concurrency model (single-worker, in-memory, per-user):
+  Each user's draft lives in its own session in `session_manager` (keyed by
+  user_id), so concurrent drafts are fully isolated — no shared engine/state, no
+  cross-broadcast. Each session is mirrored to the draft_sessions DB table on
+  every event, so a redeploy/crash mid-draft rehydrates instead of losing it.
 
-HTTP actions (called by React UI):
-  POST /draft/bid        → place bid on current nomination
-  POST /draft/nominate   → nominate a player
-  POST /draft/pass       → pass on current nomination
-  POST /draft/connect    → start bridge connection to Yahoo draft room
-  POST /draft/start      → initialize draft engine + state manager
-  GET  /draft/state      → current draft state snapshot
-  POST /draft/frame      → inject a frame into the engine (testing/manual)
-  GET  /draft/recommendation → last AI recommendation
-  GET  /draft/opponents  → opponent budgets, threats, and combo alerts
-  POST /draft/end        → close draft session
+  - POST /draft/event   (extension)  X-Draft-Token -> user -> that user's session
+  - WS   /ws/draft       (React)      ?token=<Clerk JWT> -> user -> that session
+  - POST /draft/start|state|bid|nominate|pass|end|recommendation|opponents|frame
+                         (React)      Clerk JWT (Depends(get_current_user))
+
+NOTE: require_feature("live_draft") (the billing entitlement gate) will attach at
+POST /draft/start and the WS connect — left as a marker; OUT OF SCOPE here.
 """
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from backend.core.dependencies import get_db
-from backend.websocket.manager import ws_manager
+from backend.core.dependencies import _verify_clerk_jwt, get_current_user, get_db
+from backend.database import AsyncSessionLocal
+from backend.models.user import User
+from backend.services.draft_session import DbSessionStore, DraftSessionManager
+from backend.websocket.manager import SessionScopedBroadcaster, ws_manager
 
 # The Playwright bridge is an optional, legacy server-side control path. The
 # browser extension now drives the draft room, so a missing Playwright install
@@ -42,10 +44,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
-# Module-level singletons — created on POST /draft/start
+# Legacy Playwright bridge — single optional server-side control path (not part
+# of the per-user extension draft flow).
 _bridge = None
-_engine = None
-_state = None
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,75 @@ class DraftEventPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Engine / state construction (per session)
+# ---------------------------------------------------------------------------
+
+
+async def _build_state(
+    your_team_id: str = "",
+    league_id: str | None = None,
+    draft_type: str | None = None,
+):
+    """Construct a DraftStateManager from a user's connected league (or defaults)."""
+    from backend.engines.draft_state_manager import DraftStateManager
+
+    user_league = None
+    if league_id:
+        try:
+            from backend.repositories.league_repo import LeagueRepository
+
+            async with AsyncSessionLocal() as session:
+                user_league = await LeagueRepository(session).get(uuid.UUID(league_id))
+        except Exception as exc:
+            logger.warning("Could not load league %s for draft config: %s", league_id, exc)
+
+    config = DraftStateManager.config_from_user_league(user_league)
+    if draft_type:
+        config.draft_type = draft_type
+    return DraftStateManager(config, your_team_id)
+
+
+async def _make_engine_for(state, session_key: str):
+    """Engine factory passed to the session manager.
+
+    Builds the resolver + threat analyzer + LiveDraftEngine, wired to a
+    session-scoped broadcaster so the engine's broadcasts reach ONLY this user's
+    WebSocket clients. The engine code is unchanged — it still calls
+    `self.ws_manager.broadcast(...)`; that object is now session-scoped.
+    """
+    from backend.engines.dependency_resolver import DependencyResolver
+    from backend.engines.live_draft import LiveDraftEngine
+    from backend.engines.opponent_threat import OpponentThreatAnalyzer
+
+    resolver = DependencyResolver()
+
+    tendencies: dict = {}
+    try:
+        from backend.engines.league_auction import load_manager_tendencies
+        async with AsyncSessionLocal() as session:
+            tendencies = await load_manager_tendencies(session)
+        if tendencies:
+            logger.info("Loaded tendencies for %d managers", len(tendencies))
+    except Exception as exc:
+        logger.warning("Could not load manager tendencies: %s", exc)
+
+    return LiveDraftEngine(
+        state=state,
+        resolver=resolver,
+        threat_analyzer=OpponentThreatAnalyzer(tendencies=tendencies),
+        db_session_factory=AsyncSessionLocal,
+        ws_manager=SessionScopedBroadcaster(ws_manager, session_key),
+    )
+
+
+# The per-user session registry (warm engines) + durable DB mirror.
+session_manager = DraftSessionManager(
+    store=DbSessionStore(AsyncSessionLocal),
+    engine_factory=_make_engine_for,
+)
+
+
+# ---------------------------------------------------------------------------
 # Extension relay — receives draft events via X-Draft-Token
 # ---------------------------------------------------------------------------
 
@@ -96,8 +166,8 @@ async def relay_draft_event(
 ):
     """
     Receives draft events from the browser extension.
-    Authenticates via X-Draft-Token header (not JWT).
-    Broadcasts to React UI via WebSocket manager.
+    Authenticates via X-Draft-Token header (not JWT) and routes to THAT user's
+    isolated draft session. Broadcasts only to that user's WebSocket clients.
     """
     from backend.repositories.user_repo import UserRepository
 
@@ -106,46 +176,59 @@ async def relay_draft_event(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
-    # Feed the live draft engine. A nomination needs a recommendation, so if the
-    # engine singleton is missing (e.g. a Railway redeploy reset it mid-draft),
-    # lazily build a default one rather than silently dropping the event. Picks
-    # only update state, so they're recorded only when an engine already exists.
-    if event.type == "nomination":
-        if _engine is None:
-            logger.warning(
-                "Nomination received with no live draft engine — lazily "
-                "initializing a default engine (a redeploy likely reset it). "
-                "Call POST /draft/start for full budget/opponent fidelity."
-            )
-            await _build_engine()
-        await _trigger_nomination(event)
-    elif event.type == "your_turn":
-        # Snake: user on the clock — recommend best available. Lazily build the
-        # engine like a nomination so a redeploy mid-draft still yields a rec.
-        if _engine is None:
-            logger.warning(
-                "your_turn received with no live draft engine — lazily "
-                "initializing a default engine (a redeploy likely reset it)."
-            )
-            await _build_engine(draft_type="snake")
-        await _trigger_your_turn(event)
-    elif event.type == "snake_pick":
-        # Enrich the payload (canonical name + UUID id) regardless of engine
-        # state, so the UI can always match and remove the picked player.
-        await _record_snake_pick(event)
-    elif event.type == "draft_pick" and _engine is not None:
-        await _record_pick(event)
-    elif event.type == "my_bid" and _state is not None:
-        # Remember your own bid so a later sale whose winner the DOM poller
-        # couldn't attribute ('unknown') can still be recovered as yours.
-        _state.record_my_bid(
-            event.payload.get("yahoo_player_id", ""),
-            event.payload.get("amount"),
-        )
+    session_key = str(user.id)
 
-    # Always relay the raw event so the UI updates (nomination card, bid,
-    # clock, team budgets, pick log) regardless of engine state.
-    await ws_manager.broadcast({
+    # Resolve this user's session. get_or_rehydrate restores a real mid-draft
+    # state from the DB snapshot after a redeploy (replacing the old "build a
+    # default engine" band-aid). nomination/your_turn lazily CREATE a default
+    # session only when none exists at all.
+    if event.type in ("nomination", "your_turn"):
+        session = await session_manager.get_or_rehydrate(user.id)
+        if session is None:
+            logger.warning(
+                "%s with no session for user %s — creating a default session "
+                "(call POST /draft/start for full budget/opponent fidelity).",
+                event.type, session_key,
+            )
+            state = await _build_state(
+                draft_type="snake" if event.type == "your_turn" else None,
+            )
+            session = await session_manager.create(user.id, state)
+
+        if event.type == "nomination":
+            await _trigger_nomination(event, session.engine)
+        else:
+            await _trigger_your_turn(event, session.engine)
+        await session_manager.persist(user.id)
+
+    elif event.type == "snake_pick":
+        # Enrich regardless of session so the UI can always match/remove the pick.
+        session = await session_manager.get_or_rehydrate(user.id)
+        await _record_snake_pick(
+            event,
+            engine=session.engine if session else None,
+            state=session.state if session else None,
+        )
+        if session is not None:
+            await session_manager.persist(user.id)
+
+    elif event.type == "draft_pick":
+        session = await session_manager.get_or_rehydrate(user.id)
+        if session is not None:
+            await _record_pick(event, session.engine, session.state)
+            await session_manager.persist(user.id)
+
+    elif event.type == "my_bid":
+        session = await session_manager.get_or_rehydrate(user.id)
+        if session is not None:
+            session.state.record_my_bid(
+                event.payload.get("yahoo_player_id", ""),
+                event.payload.get("amount"),
+            )
+            await session_manager.persist(user.id)
+
+    # Always relay the raw event — but ONLY to this user's WebSocket clients.
+    await ws_manager.broadcast_to_session(session_key, {
         "type": event.type,
         "payload": event.payload,
         "platform": event.platform,
@@ -158,35 +241,29 @@ async def _resolve_player(player_name: str):
     """Fuzzy-resolve a draft-room display name to a Player (or None)."""
     if not player_name:
         return None
-    from backend.database import AsyncSessionLocal
     from backend.repositories.player_repo import PlayerRepository
 
     async with AsyncSessionLocal() as session:
         return await PlayerRepository(session).find_by_name_fuzzy(player_name)
 
 
-async def _trigger_nomination(event: "DraftEventPayload") -> None:
-    """Resolve the nominated player and run the engine's recommendation.
-
-    The engine looks players up by yahoo_player_id and broadcasts the
-    recommendation itself; an empty id falls back to its unknown-player pass.
-    """
+async def _trigger_nomination(event: "DraftEventPayload", engine) -> None:
+    """Resolve the nominated player and run the engine's recommendation."""
     player_name = event.payload.get("player_name", "")
     player = await _resolve_player(player_name)
-    await _engine.on_nomination({
+    await engine.on_nomination({
         "type": "nomination",
         "player_id": player.yahoo_player_id if player else "",
         "player_name": player_name,
     })
 
 
-async def _record_pick(event: "DraftEventPayload") -> None:
+async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
     """Record a confirmed pick into engine state (updates opponent tracking).
 
     Recovers an unattributed win: when the DOM poller couldn't determine the
     winner ('unknown') but your last relayed bid matches this sale, attribute it
-    to you — both in the engine (team_id -> your_team_id, so your budget/roster
-    update) and in the payload (is_yours/winner), which is broadcast to the UI.
+    to you — in the engine (your budget/roster) and the broadcast payload.
     """
     payload = event.payload
     player_name = payload.get("player_name", "")
@@ -197,15 +274,15 @@ async def _record_pick(event: "DraftEventPayload") -> None:
 
     if (
         winner == "unknown"
-        and _state is not None
-        and _state.is_my_winning_bid(player_id, final_price)
+        and state is not None
+        and state.is_my_winning_bid(player_id, final_price)
     ):
-        winner = _state.your_team_id or winner
+        winner = state.your_team_id or winner
         payload["winner"] = winner
         payload["is_yours"] = True
-        _state.last_my_bid = None  # consume so it can't attribute a second sale
+        state.last_my_bid = None  # consume so it can't attribute a second sale
 
-    await _engine.on_pick_confirmed({
+    await engine.on_pick_confirmed({
         "type": "draft_pick",
         "player_id": player_id,
         "team_id": winner,
@@ -215,25 +292,22 @@ async def _record_pick(event: "DraftEventPayload") -> None:
     })
 
 
-async def _trigger_your_turn(event: "DraftEventPayload") -> None:
+async def _trigger_your_turn(event: "DraftEventPayload", engine) -> None:
     """Snake: user is on the clock — run the best-available recommendation."""
-    await _engine.on_your_turn({
+    await engine.on_your_turn({
         "type": "your_turn",
         "round": event.payload.get("round"),
         "pick": event.payload.get("pick"),
     })
 
 
-async def _record_snake_pick(event: "DraftEventPayload") -> None:
+async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
     """Snake: enrich the pick payload and record it into engine state.
 
-    Resolve by NAME, not by the console.error frame's player id: our DB
-    yahoo_player_id is "nfl_<gsis>" (e.g. "nfl_00-0033280"), a DIFFERENT id space
-    from Yahoo's own frame id, so an id lookup never matches. The DOM 'Last:'
-    name is abbreviated ("C. MCCAFFREY"), and find_by_name_fuzzy already handles
-    that (first-initial + last-name). Write the canonical full name + UUID id +
-    position back onto the payload IN PLACE so the broadcast relays data the UI
-    can match (draftboard rows have a UUID id + full name, no yahoo_player_id).
+    Resolve by NAME, not the console.error frame's id: our DB yahoo_player_id is
+    "nfl_<gsis>", a different id space from Yahoo's frame id. The DOM 'Last:' name
+    is abbreviated ("C. MCCAFFREY"); find_by_name_fuzzy handles that. The enriched
+    full name + UUID id let the UI match + remove the picked player.
     """
     payload = event.payload
     abbreviated = payload.get("player_name", "") or ""
@@ -246,11 +320,8 @@ async def _record_snake_pick(event: "DraftEventPayload") -> None:
     else:
         logger.warning("Snake pick: could not resolve player name %r", abbreviated)
 
-    # Track the (now canonical) pick: its name excludes it from your-turn
-    # recommendations, and when it's YOURS it fills your roster (the snake
-    # pick's id can't be matched against our DB, so we rely on is_yours).
-    if _state is not None:
-        _state.record_snake_pick(
+    if state is not None:
+        state.record_snake_pick(
             player_name=payload.get("player_name", "") or abbreviated,
             position=payload.get("position"),
             pick_number=payload.get("pick_number"),
@@ -258,8 +329,8 @@ async def _record_snake_pick(event: "DraftEventPayload") -> None:
             is_yours=bool(payload.get("is_yours", False)),
         )
 
-    if _engine is not None:
-        await _engine.on_pick_confirmed({
+    if engine is not None:
+        await engine.on_pick_confirmed({
             "type": "draft_pick",
             "player_id": payload.get("yahoo_player_id", "") or "",
             "team_id": payload.get("picker", "") or "",
@@ -269,112 +340,78 @@ async def _record_snake_pick(event: "DraftEventPayload") -> None:
         })
 
 
-async def _build_engine(
-    your_team_id: str = "",
-    league_id: str | None = None,
-    draft_type: str | None = None,
-) -> None:
-    """Construct the DraftStateManager + LiveDraftEngine into module globals.
+# ---------------------------------------------------------------------------
+# WebSocket endpoint — React clients connect here (per-session)
+# ---------------------------------------------------------------------------
 
-    Shared by POST /draft/start and the lazy-init path in POST /draft/event,
-    so a recommendation can still be produced if the engine singleton was wiped
-    by a container restart (Railway redeploy) mid-draft. league_id/your_team_id
-    are optional: with neither, a default config + empty team id is used, which
-    still yields valuation-driven recommendations (budget/opponent fidelity is
-    degraded until POST /draft/start supplies the real identity).
+async def _resolve_ws_user_id(token: str | None) -> uuid.UUID | None:
+    """Resolve a WS query token to a user.id (the session key).
+
+    Production: verifies the Clerk JWT (short-lived; verified server-side, keeps
+    the long-lived draft token off the wire). Dev (Clerk disabled): the token is
+    treated as the external id. Returns None on any failure (connection rejected).
     """
-    global _engine, _state
-
-    from backend.database import AsyncSessionLocal as async_session
-    from backend.engines.draft_state_manager import DraftStateManager
-    from backend.engines.dependency_resolver import DependencyResolver
-    from backend.engines.opponent_threat import OpponentThreatAnalyzer
-    from backend.engines.live_draft import LiveDraftEngine
-
-    # Load user's league settings if a league_id was provided
-    user_league = None
-    if league_id:
-        try:
-            import uuid as _uuid
-            from backend.repositories.league_repo import LeagueRepository
-
-            async with async_session() as session:
-                user_league = await LeagueRepository(session).get(
-                    _uuid.UUID(league_id)
-                )
-        except Exception as exc:
-            logger.warning(
-                "Could not load league %s for draft config: %s", league_id, exc
-            )
-
-    config = DraftStateManager.config_from_user_league(user_league)
-    # Explicit request override wins over the league's stored draft_type (e.g.
-    # the frontend passing the selected league's type, or a manual snake start).
-    if draft_type:
-        config.draft_type = draft_type
-    _state = DraftStateManager(config, your_team_id)
-
-    resolver = DependencyResolver()
-
-    # Load historical manager tendencies from league auction data
-    tendencies: dict = {}
+    if not token:
+        return None
     try:
-        from backend.engines.league_auction import load_manager_tendencies
-        async with async_session() as session:
-            tendencies = await load_manager_tendencies(session)
-        if tendencies:
-            logger.info("Loaded tendencies for %d managers", len(tendencies))
+        from backend.config import settings
+        from backend.repositories.user_repo import UserRepository
+        from backend.services.user_service import UserService
+
+        if settings.clerk_enabled:
+            payload = await _verify_clerk_jwt(token)
+            external_id = payload["sub"]
+            email = payload.get("email") or f"{external_id}@placeholder.local"
+        else:
+            external_id = token or "dev-user-001"
+            email = f"{external_id}@dev.local"
+
+        async with AsyncSessionLocal() as db:
+            service = UserService(UserRepository(db))
+            user, _ = await service.get_or_create(external_id=external_id, email=email)
+            return user.id
     except Exception as exc:
-        logger.warning("Could not load manager tendencies: %s", exc)
+        logger.warning("WS token resolution failed: %s", exc)
+        return None
 
-    threat_analyzer = OpponentThreatAnalyzer(tendencies=tendencies)
-
-    _engine = LiveDraftEngine(
-        state=_state,
-        resolver=resolver,
-        threat_analyzer=threat_analyzer,
-        db_session_factory=async_session,
-        ws_manager=ws_manager,
-    )
-
-
-# ---------------------------------------------------------------------------
-# WebSocket endpoint — React clients connect here
-# ---------------------------------------------------------------------------
 
 @router.websocket("/ws/draft")
-async def draft_websocket(websocket: WebSocket):
+async def draft_websocket(websocket: WebSocket, token: str | None = None):
     """
-    Push-based WebSocket for React draft clients.
-    All draft events (nominations, bids, picks) are broadcast here from the bridge.
-    No polling — events arrive only when Yahoo pushes WS frames.
+    Push-based WebSocket for React draft clients, scoped to the user's session.
+    The client connects with ?token=<Clerk JWT>; the connection only receives
+    that user's own draft events. No polling.
     """
-    await ws_manager.connect(websocket)
-    logger.info("Draft WebSocket client connected")
+    user_id = await _resolve_ws_user_id(token)
+    if user_id is None:
+        # 4401 = application-level "unauthorized" close code.
+        await websocket.close(code=4401)
+        logger.info("Draft WS rejected — missing/invalid token")
+        return
+
+    session_key = str(user_id)
+    await ws_manager.connect(websocket, session_key=session_key)
+    logger.info("Draft WebSocket client connected (session=%s)", session_key)
     try:
         while True:
-            # Keep connection alive and handle any client → server messages
             data = await websocket.receive_json()
             logger.debug("Client message: %s", data)
             # No client → server messages needed in current design
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
-        logger.info("Draft WebSocket client disconnected")
+        logger.info("Draft WebSocket client disconnected (session=%s)", session_key)
     except Exception as exc:
         logger.error("Draft WebSocket error: %s", exc)
         ws_manager.disconnect(websocket)
 
 
 # ---------------------------------------------------------------------------
-# Bridge lifecycle
+# Bridge lifecycle (legacy Playwright — single optional path)
 # ---------------------------------------------------------------------------
 
 @router.post("/connect", summary="Connect Playwright bridge to Yahoo draft room")
 async def connect_bridge(req: ConnectRequest):
-    """
-    Launch the Playwright browser and connect to the Yahoo draft room.
-    Must be called before any bid/nominate/pass actions.
-    """
+    """Launch Playwright and connect to the Yahoo draft room (legacy/optional)."""
     global _bridge
 
     if not PLAYWRIGHT_AVAILABLE:
@@ -402,11 +439,11 @@ async def connect_bridge(req: ConnectRequest):
 
 
 # ---------------------------------------------------------------------------
-# Draft action endpoints
+# Draft action endpoints (legacy bridge — now authenticated)
 # ---------------------------------------------------------------------------
 
 @router.post("/bid", summary="Place a bid on the currently nominated player")
-async def place_bid(req: BidRequest):
+async def place_bid(req: BidRequest, user: User = Depends(get_current_user)):
     """Submit a bid. Bridge must be connected (POST /draft/connect first)."""
     _require_bridge()
     await _bridge.place_bid(req.amount)
@@ -414,7 +451,7 @@ async def place_bid(req: BidRequest):
 
 
 @router.post("/nominate", summary="Nominate a player for auction")
-async def nominate_player(req: NominateRequest):
+async def nominate_player(req: NominateRequest, user: User = Depends(get_current_user)):
     """Nominate a player. Bridge must be connected."""
     _require_bridge()
     await _bridge.nominate_player(req.yahoo_player_id, req.opening_bid)
@@ -426,7 +463,7 @@ async def nominate_player(req: NominateRequest):
 
 
 @router.post("/pass", summary="Pass on the current nomination")
-async def pass_nomination():
+async def pass_nomination(user: User = Depends(get_current_user)):
     """Pass on the current nomination. Bridge must be connected."""
     _require_bridge()
     await _bridge.pass_nomination()
@@ -434,20 +471,21 @@ async def pass_nomination():
 
 
 # ---------------------------------------------------------------------------
-# Draft engine lifecycle
+# Draft engine lifecycle (per-user session)
 # ---------------------------------------------------------------------------
 
 @router.post("/start", summary="Initialize draft engine and state manager")
-async def start_draft(req: StartDraftRequest):
+async def start_draft(req: StartDraftRequest, user: User = Depends(get_current_user)):
     """
-    Create DraftStateManager + LiveDraftEngine and mark the engine ready.
+    Create the current USER's draft session (DraftStateManager + LiveDraftEngine).
 
-    No server-side browser is launched: the Rook browser extension drives
-    the Yahoo draft room and relays events via POST /draft/event. The legacy
-    Playwright bridge is intentionally not connected here (Yahoo's CSP blocks
-    it and Chromium need not be installed).
+    Per-user: a second user calling /start while another drafts creates THEIR OWN
+    session — never attaches to someone else's. No server-side browser is launched;
+    the Rook extension drives the room and relays via POST /draft/event.
+
+    (require_feature("live_draft") will gate this endpoint — out of scope here.)
     """
-    if _engine is not None:
+    if session_manager.get_warm(user.id) is not None:
         return {
             "status": "ready",
             "mode": "extension",
@@ -458,15 +496,14 @@ async def start_draft(req: StartDraftRequest):
             ),
         }
 
-    await _build_engine(req.your_team_id, req.league_id, req.draft_type)
+    state = await _build_state(req.your_team_id, req.league_id, req.draft_type)
+    await session_manager.create(user.id, state)
 
-    # No Playwright: the browser extension handles the draft room and relays
-    # events via POST /draft/event. If a bridge was connected out-of-band via
-    # POST /draft/connect, keep it wired so its frames still reach the engine.
     if _bridge is not None:
-        _bridge.register_event_callback(_engine.handle_event)
+        session = session_manager.get_warm(user.id)
+        _bridge.register_event_callback(session.engine.handle_event)
 
-    logger.info("Draft engine ready for team %s (extension mode)", req.your_team_id)
+    logger.info("Draft session ready for user %s team %s", user.id, req.your_team_id)
     return {
         "status": "ready",
         "mode": "extension",
@@ -479,14 +516,15 @@ async def start_draft(req: StartDraftRequest):
 
 
 @router.get("/state", summary="Current draft state snapshot")
-async def get_draft_state():
-    """Return budget, roster, and pick history."""
-    _require_engine()
+async def get_draft_state(user: User = Depends(get_current_user)):
+    """Return budget, roster, and pick history for the current user's draft."""
+    session = await _require_session(user)
+    state = session.state
     return {
-        "your_remaining_budget": _state.get_your_remaining_budget(),
-        "spendable_on_next_player": _state.get_spendable_on_this_player(),
-        "minimum_completion_budget": _state.get_minimum_completion_budget(),
-        "roster_slots_remaining": _state.get_roster_slots_remaining(),
+        "your_remaining_budget": state.get_your_remaining_budget(),
+        "spendable_on_next_player": state.get_spendable_on_this_player(),
+        "minimum_completion_budget": state.get_minimum_completion_budget(),
+        "roster_slots_remaining": state.get_roster_slots_remaining(),
         "your_roster": [
             {
                 "player_id": p.player_id,
@@ -494,42 +532,41 @@ async def get_draft_state():
                 "position": p.position,
                 "price": p.price,
             }
-            for p in _state.your_roster
+            for p in state.your_roster
         ],
-        "total_picks": len(_state.picks),
-        "positional_counts": _state.get_your_positional_counts(),
+        "total_picks": len(state.picks),
+        "positional_counts": state.get_your_positional_counts(),
     }
 
 
 @router.post("/frame", summary="Inject a frame into the engine")
-async def inject_frame(req: FrameRequest):
-    """
-    Manually inject a draft event into the engine.
-    Used for testing or when the bridge is not connected.
-    """
-    _require_engine()
-    await _engine.handle_event(req.frame)
+async def inject_frame(req: FrameRequest, user: User = Depends(get_current_user)):
+    """Manually inject a draft event into the current user's engine (testing)."""
+    session = await _require_session(user)
+    await session.engine.handle_event(req.frame)
+    await session_manager.persist(user.id)
     return {"status": "processed", "event_type": req.frame.get("type")}
 
 
 @router.get("/recommendation", summary="Last AI recommendation")
-async def get_recommendation():
-    """Return the most recent recommendation from the engine."""
-    _require_engine()
-    if _engine.last_recommendation is None:
+async def get_recommendation(user: User = Depends(get_current_user)):
+    """Return the most recent recommendation from the current user's engine."""
+    session = await _require_session(user)
+    if session.engine.last_recommendation is None:
         return {"status": "no_recommendation", "message": "No nomination processed yet"}
-    return _engine.last_recommendation
+    return session.engine.last_recommendation
 
 
 @router.get("/opponents", summary="Opponent budget and threat data")
-async def get_opponents():
-    """Return opponent budgets, rosters, and combo alerts."""
-    _require_engine()
+async def get_opponents(user: User = Depends(get_current_user)):
+    """Return opponent budgets, rosters, and combo alerts for the user's draft."""
+    session = await _require_session(user)
+    state, engine = session.state, session.engine
     opponents = {}
-    for team_id, roster in _state.opponent_rosters.items():
-        budget = _state.opponent_budgets.get(team_id, 0)
-        combos = _engine.threat_analyzer.get_active_combo_flags(roster)
-        score = _engine.threat_analyzer.get_threat_score(roster, team_id=team_id)
+    for team_id, roster in state.opponent_rosters.items():
+        budget = state.opponent_budgets.get(team_id, 0)
+        combos = engine.threat_analyzer.get_active_combo_flags(roster)
+        score = engine.threat_analyzer.get_threat_score(roster, team_id=team_id)
         opponents[team_id] = {
             "budget": budget,
             "roster_count": len(roster),
@@ -548,12 +585,10 @@ async def get_opponents():
 
 
 @router.post("/end", summary="Close draft session")
-async def end_draft():
-    """Tear down the engine and state. Does not disconnect the bridge."""
-    global _engine, _state
-    _engine = None
-    _state = None
-    logger.info("Draft session ended")
+async def end_draft(user: User = Depends(get_current_user)):
+    """Tear down the current user's session. Does not disconnect the bridge."""
+    await session_manager.end(user.id)
+    logger.info("Draft session ended for user %s", user.id)
     return {"status": "ended"}
 
 
@@ -561,12 +596,15 @@ async def end_draft():
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _require_engine() -> None:
-    if _engine is None or _state is None:
+async def _require_session(user: User):
+    """Resolve the user's session (warm or rehydrated), or 409 if none."""
+    session = await session_manager.get_or_rehydrate(user.id)
+    if session is None:
         raise HTTPException(
             status_code=409,
             detail="Draft engine not started — POST /draft/start first",
         )
+    return session
 
 
 def _require_bridge() -> None:

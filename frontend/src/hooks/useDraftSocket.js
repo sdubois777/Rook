@@ -8,12 +8,33 @@ const MAX_RECONNECT_DELAY = 10000
 // backend; prod uses a relative path on the same origin.
 const WS_PATH = '/api/draft/ws/draft'
 
-function getWsUrl() {
+function getWsBase() {
   if (import.meta.env.DEV) {
     return `ws://localhost:8000${WS_PATH}`
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}${WS_PATH}`
+}
+
+// The draft WS is session-keyed on the backend: the connection only receives the
+// current user's own draft events. We authenticate the handshake with a fresh
+// Clerk JWT in the query string (browser WS can't set Authorization headers). A
+// FRESH token is fetched on every (re)connect via fetchWsToken() below, so a long
+// auction that outlives one token, or a user who blips offline and reconnects,
+// always presents a currently-valid token and rejoins their own session.
+async function fetchWsToken() {
+  try {
+    const getToken = window.Clerk?.session?.getToken
+    if (!getToken) return null
+    return (await getToken.call(window.Clerk.session)) || null
+  } catch {
+    return null
+  }
+}
+
+function getWsUrl(token) {
+  const base = getWsBase()
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 
 // The engine broadcasts a recommendation over the WS after a nomination, but
@@ -92,8 +113,10 @@ export default function useDraftSocket() {
       }
     }
 
-    function connect() {
-      const ws = new WebSocket(getWsUrl())
+    async function connect() {
+      // Fetch a fresh token on every (re)connect — never reuse a stale one.
+      const token = await fetchWsToken()
+      const ws = new WebSocket(getWsUrl(token))
       wsRef.current = ws
 
       ws.onopen = () => {
