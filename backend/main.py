@@ -169,12 +169,19 @@ _DRAFT_SESSION_TTL_SECONDS = 6 * 60 * 60
 
 
 async def _evict_stale_draft_sessions():
-    """Reap idle in-memory draft sessions (prevents unbounded memory growth)."""
+    """Reap idle draft sessions: evict warm memory AND durably deactivate the DB
+    rows (incl. cold rows never held warm here), so an abandoned draft can't stay
+    is_active=True forever. The recency read-gate already shows the board for
+    stale drafts; this is the durable cleanup backstop."""
     from backend.routers.draft import session_manager
 
     evicted = session_manager.evict_stale(_DRAFT_SESSION_TTL_SECONDS)
-    if evicted:
-        logger.info("Reaper evicted %d stale draft session(s)", evicted)
+    deactivated = await session_manager.deactivate_stale_rows(_DRAFT_SESSION_TTL_SECONDS)
+    if evicted or deactivated:
+        logger.info(
+            "Reaper: evicted %d warm session(s), deactivated %d DB row(s)",
+            evicted, deactivated,
+        )
 
 
 async def _monthly_credit_reset():

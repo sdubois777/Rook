@@ -472,6 +472,70 @@ async def test_start_draft_idempotent_when_session_warm():
 
 
 # ---------------------------------------------------------------------------
+# Recency gate on the READ path: finished/abandoned drafts must not resume
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_state_409_when_not_resumable_and_does_not_warm_the_session():
+    """A stale/abandoned draft (is_resumable False) → /state 409, and the gate is
+    checked BEFORE get_or_rehydrate so a read can't keep a dead session warm."""
+    user = _make_user()
+    mgr = MagicMock()
+    mgr.is_resumable = AsyncMock(return_value=False)
+    mgr.get_or_rehydrate = AsyncMock()
+    from backend.core.dependencies import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    with patch("backend.routers.draft.session_manager", mgr):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/api/draft/state")
+            assert resp.status_code == 409
+            mgr.is_resumable.assert_awaited_once()
+            mgr.get_or_rehydrate.assert_not_awaited()  # gated before rehydrate
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_state_then_end_then_state_409_real_manager():
+    """End-to-end through the real manager + in-memory store: an active draft
+    serves /state 200; after POST /draft/end it 409s on re-entry (immediate)."""
+    from backend.core.dependencies import get_current_user
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+    from backend.services.draft_session import DraftSessionManager, InMemorySessionStore
+
+    user = _make_user()
+
+    async def factory(state, key):
+        return AsyncMock()
+
+    mgr = DraftSessionManager(InMemorySessionStore(), factory)
+    await mgr.create(user.id, DraftStateManager(LeagueConfig(auction_budget=200), "team"))
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    with patch("backend.routers.draft.session_manager", mgr):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                # Active + recent → resumable → 200 with real budget/roster.
+                live = await ac.get("/api/draft/state")
+                assert live.status_code == 200
+                assert live.json()["your_remaining_budget"] == 200
+
+                # End Draft → is_active=False.
+                ended = await ac.post("/api/draft/end")
+                assert ended.status_code == 200
+                assert ended.json()["status"] == "ended"
+
+                # Re-entry now shows the board (409), not the finished draft.
+                after = await ac.get("/api/draft/state")
+                assert after.status_code == 409
+        finally:
+            app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
 # Passive sync — unchanged by the session refactor
 # ---------------------------------------------------------------------------
 

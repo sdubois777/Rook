@@ -443,7 +443,14 @@ export const useDraftStore = create((set, get) => ({
     try {
       state = await getDraftState()
     } catch (e) {
-      if (e?.response?.status === 409) return false // no active draft
+      if (e?.response?.status === 409) {
+        // No resumable draft (none, ended, or stale past the resume window).
+        // Clear the leftover team id so it can't outlive the draft it belonged to.
+        try {
+          localStorage.removeItem(TEAM_KEY)
+        } catch { /* ignore */ }
+        return false
+      }
       throw e
     }
 
