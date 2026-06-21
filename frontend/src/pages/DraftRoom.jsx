@@ -23,10 +23,19 @@ export default function DraftRoom() {
   const wsStatus = useDraftStore((s) => s.wsStatus)
   const setAvailablePlayers = useDraftStore((s) => s.setAvailablePlayers)
   const rehydrate = useDraftStore((s) => s.rehydrate)
+  const endDraft = useDraftStore((s) => s.endDraft)
   const { isSnake } = useLeague()
 
   // Connect WebSocket
   useDraftSocket()
+
+  // Deliberate, confirmed end of the draft (cannot be resumed). window.confirm is
+  // modal and timer-free — no ambiguity on an irreversible mid-auction action.
+  const handleEndDraft = () => {
+    if (window.confirm("End this draft? You won't be able to resume it.")) {
+      endDraft().catch((e) => console.error('Rook: end draft failed:', e))
+    }
+  }
 
   // On mount: if a backend draft session is active (e.g. a PAGE REFRESH reset the
   // in-memory store), rehydrate the full view from the server — rosters, budgets,
@@ -93,9 +102,19 @@ export default function DraftRoom() {
       {/* Status bar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-[#161822] border-b border-[#2d3148]">
         <span className="text-sm font-medium text-slate-300">Draft Room</span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span className={`w-2 h-2 rounded-full ${statusInfo.color}`} />
           <span className="text-xs text-slate-500">{statusInfo.text}</span>
+          {/* End Draft — the deliberate, irreversible "I'm done" signal that marks
+              the backend session inactive so re-entering shows the board, not this
+              finished draft. window.confirm (modal, no timer) guards an action
+              that mid-auction would be catastrophic. */}
+          <button
+            onClick={handleEndDraft}
+            className="text-xs text-slate-500 hover:text-red-400 border border-[#2d3148] hover:border-red-500/40 rounded px-2 py-0.5 transition-colors"
+          >
+            End Draft
+          </button>
         </div>
       </div>
 

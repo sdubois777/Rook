@@ -152,6 +152,84 @@ async def test_create_for_second_user_does_not_attach_to_first():
     assert mgr.active_count == 2
 
 
+def _backdate(store, user_id, *, year=2000):
+    """Make a stored session's last event look old (past any resume window)."""
+    store._records[user_id]["updated_at"] = (
+        store._records[user_id]["updated_at"].replace(year=year)
+    )
+
+
+# --- recency gate: resumable only when active AND recently active ---
+
+
+@pytest.mark.asyncio
+async def test_is_resumable_true_for_recent_active_session():
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _state())
+    assert await mgr.is_resumable(uid, 3600) is True
+
+
+@pytest.mark.asyncio
+async def test_is_resumable_false_when_stale():
+    """Active but no event within the window → NOT resumable (abandoned draft)."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _state())
+    _backdate(store, uid)
+    assert await mgr.is_resumable(uid, 3600) is False
+
+
+@pytest.mark.asyncio
+async def test_is_resumable_false_after_end():
+    """End Draft → is_active=False → NOT resumable (the immediate-409 case)."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _state())
+    await mgr.end(uid)
+    assert await mgr.is_resumable(uid, 3600) is False
+
+
+@pytest.mark.asyncio
+async def test_is_resumable_false_when_no_session():
+    mgr = _mgr()
+    assert await mgr.is_resumable(uuid.uuid4(), 3600) is False
+
+
+@pytest.mark.asyncio
+async def test_persist_refreshes_recency():
+    """A real event (persist) re-freshens updated_at — keep-alive for live drafts."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _state())
+    _backdate(store, uid)
+    assert await mgr.is_resumable(uid, 3600) is False
+    await mgr.persist(uid)  # an event lands
+    assert await mgr.is_resumable(uid, 3600) is True
+
+
+@pytest.mark.asyncio
+async def test_deactivate_stale_rows_flips_only_old_active_rows():
+    """Reaper DB-flip: long-idle rows go inactive; recent ones are untouched."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    old, fresh = uuid.uuid4(), uuid.uuid4()
+    await mgr.create(old, _state())
+    await mgr.create(fresh, _state())
+    _backdate(store, old)
+
+    n = await mgr.deactivate_stale_rows(3600)
+    assert n == 1
+    assert await mgr.is_resumable(old, 3600) is False
+    assert await mgr.is_resumable(fresh, 3600) is True
+    # The deactivated row no longer rehydrates (cold abandoned draft is closed).
+    assert await store.load(old) is None
+
+
 def _recommendation_inputs(state) -> dict:
     """Deterministic stand-in for the engine's recommendation, computed purely
     from the exact state fields the real LiveDraftEngine reads when it builds a
