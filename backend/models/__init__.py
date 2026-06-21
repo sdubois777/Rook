@@ -2,6 +2,7 @@ from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile, Pl
 from backend.models.team_system import TeamSystem
 from backend.models.dependency import PlayerDependency, BeatReporterSignal
 from backend.models.draft_state import DraftState, OpponentProfile
+from backend.models.draft_session import DraftSession
 from backend.models.season_roster import SeasonRoster
 from backend.models.agent_cache import AgentCache
 from backend.models.api_usage_log import ApiUsageLog
@@ -24,6 +25,7 @@ __all__ = [
     "BeatReporterSignal",
     "DraftState",
     "OpponentProfile",
+    "DraftSession",
     "SeasonRoster",
     "AgentCache",
     "ApiUsageLog",

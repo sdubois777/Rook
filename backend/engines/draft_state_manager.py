@@ -282,3 +282,59 @@ class DraftStateManager:
         for pick in self.your_roster:
             counts[pick.position] = counts.get(pick.position, 0) + 1
         return counts
+
+    # --- Serialization (durability: snapshot to / rehydrate from the DB) ---
+
+    def to_dict(self) -> dict:
+        """Serialize the full mutable draft state to a JSON-safe snapshot.
+
+        Captures everything needed to rebuild an identical state after a process
+        restart (Railway redeploy) or, in a future multi-worker setup, on a
+        different worker. The engine itself is NOT serialized — it is rebuilt and
+        this state is reattached via from_dict(). Round-trips exactly:
+        from_dict(to_dict()) reproduces all rosters, budgets, picks, and the
+        drafted-name set that drive recommendations.
+        """
+        from dataclasses import asdict
+
+        return {
+            "league_config": asdict(self.league_config),
+            "your_team_id": self.your_team_id,
+            "your_budget": self.your_budget,
+            "picks": [asdict(p) for p in self.picks],
+            "your_roster": [asdict(p) for p in self.your_roster],
+            "opponent_rosters": {
+                tid: [asdict(p) for p in roster]
+                for tid, roster in self.opponent_rosters.items()
+            },
+            "opponent_budgets": dict(self.opponent_budgets),
+            "last_my_bid": self.last_my_bid,
+            # set -> sorted list for JSON; order is irrelevant (membership only).
+            "drafted_names": sorted(self._drafted_names),
+            "my_picks": list(self._my_picks),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DraftStateManager":
+        """Rebuild a DraftStateManager from a to_dict() snapshot.
+
+        Inverse of to_dict(): reconstructs the LeagueConfig, DraftPick records,
+        rosters, budgets, the drafted-name set, and your snake picks.
+        """
+        cfg = dict(data.get("league_config") or {})
+        # roster_slots round-trips as a plain dict; LeagueConfig accepts it.
+        league_config = LeagueConfig(**cfg) if cfg else LeagueConfig()
+
+        state = cls(league_config, data.get("your_team_id", "") or "")
+        state.your_budget = data.get("your_budget", league_config.auction_budget)
+        state.picks = [DraftPick(**p) for p in (data.get("picks") or [])]
+        state.your_roster = [DraftPick(**p) for p in (data.get("your_roster") or [])]
+        state.opponent_rosters = {
+            tid: [DraftPick(**p) for p in roster]
+            for tid, roster in (data.get("opponent_rosters") or {}).items()
+        }
+        state.opponent_budgets = dict(data.get("opponent_budgets") or {})
+        state.last_my_bid = data.get("last_my_bid")
+        state._drafted_names = set(data.get("drafted_names") or [])
+        state._my_picks = list(data.get("my_picks") or [])
+        return state

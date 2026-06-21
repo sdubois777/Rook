@@ -308,11 +308,18 @@ async def test_websocket_manager_broadcast_removes_dead_connections():
 
 @pytest.mark.asyncio
 async def test_websocket_manager_broadcasts_to_all_clients():
-    """broadcast() sends to every active connection."""
+    """broadcast() sends to every active connection.
+
+    CHANGED (session-isolation refactor): connections are now grouped by session
+    key and active_connections is a read-only computed view, so this registers
+    via the public connect() API instead of mutating active_connections directly.
+    broadcast() still fans out to every connection across sessions (news path).
+    """
     manager = WebSocketManager()
     ws1, ws2 = AsyncMock(), AsyncMock()
     ws1.send_json, ws2.send_json = AsyncMock(), AsyncMock()
-    manager.active_connections.extend([ws1, ws2])
+    await manager.connect(ws1)
+    await manager.connect(ws2)
 
     await manager.broadcast({"type": "nomination"})
 

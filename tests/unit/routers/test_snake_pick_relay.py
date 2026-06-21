@@ -3,12 +3,17 @@ abbreviated DOM name ("C. MCCAFFREY") to the canonical Player by NAME — our DB
 yahoo_player_id is "nfl_<gsis>", a different id space from Yahoo's frame id, so
 an id lookup can't work. find_by_name_fuzzy (via _resolve_player) handles the
 abbreviation; the enriched full name + UUID id let the UI match + remove it.
+
+CHANGED (session-isolation refactor): _record_snake_pick no longer reads module
+globals _engine/_state — it takes explicit engine= and state= args (the per-user
+session's engine/state). Behavior assertions are unchanged; only how the engine
+and state are supplied changed.
 """
 from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import backend.routers.draft as draft
 
@@ -22,7 +27,7 @@ def test_record_snake_pick_enriches_from_abbreviated_name(monkeypatch):
     resolve = AsyncMock(return_value=player)
     monkeypatch.setattr(draft, "_resolve_player", resolve)
     engine = AsyncMock()
-    monkeypatch.setattr(draft, "_engine", engine)
+    state = MagicMock()
 
     payload = {
         "yahoo_player_id": "yahoo-internal-id",  # NOT our nfl_<gsis> id
@@ -31,7 +36,7 @@ def test_record_snake_pick_enriches_from_abbreviated_name(monkeypatch):
         "picker": "You",
         "is_yours": True,
     }
-    asyncio.run(draft._record_snake_pick(_event(payload)))
+    asyncio.run(draft._record_snake_pick(_event(payload), engine=engine, state=state))
 
     # Resolution is by NAME, not the frame's id.
     resolve.assert_awaited_once_with("C. MCCAFFREY")
@@ -48,10 +53,11 @@ def test_record_snake_pick_enriches_from_abbreviated_name(monkeypatch):
 def test_record_snake_pick_unresolved_keeps_raw_payload(monkeypatch):
     # Name doesn't resolve — payload stays as-is, no crash, no enrichment.
     monkeypatch.setattr(draft, "_resolve_player", AsyncMock(return_value=None))
-    monkeypatch.setattr(draft, "_engine", AsyncMock())
 
     payload = {"yahoo_player_id": "x", "player_name": "X. UNKNOWN", "picker": "You"}
-    asyncio.run(draft._record_snake_pick(_event(payload)))
+    asyncio.run(
+        draft._record_snake_pick(_event(payload), engine=AsyncMock(), state=MagicMock())
+    )
 
     assert "id" not in payload
     assert payload["player_name"] == "X. UNKNOWN"
@@ -62,31 +68,29 @@ def test_record_snake_pick_records_name_for_exclusion(monkeypatch):
     # exclude it from your-turn recommendations.
     player = SimpleNamespace(id="uuid-7", name="Christian McCaffrey", position="RB")
     monkeypatch.setattr(draft, "_resolve_player", AsyncMock(return_value=player))
-    monkeypatch.setattr(draft, "_engine", AsyncMock())
-    state = AsyncMock()
-    state.record_snake_pick = lambda **kw: setattr(state, "_recorded", kw)
-    monkeypatch.setattr(draft, "_state", state)
+    state = MagicMock()
 
     payload = {
         "yahoo_player_id": "x", "player_name": "C. MCCAFFREY", "picker": "You",
         "is_yours": True, "pick_number": 12, "round": 1,
     }
-    asyncio.run(draft._record_snake_pick(_event(payload)))
+    asyncio.run(draft._record_snake_pick(_event(payload), engine=AsyncMock(), state=state))
 
     # Recorded under the canonical name, with the is_yours flag carried through.
-    assert state._recorded["player_name"] == "Christian McCaffrey"
-    assert state._recorded["is_yours"] is True
-    assert state._recorded["pick_number"] == 12
+    state.record_snake_pick.assert_called_once()
+    kw = state.record_snake_pick.call_args.kwargs
+    assert kw["player_name"] == "Christian McCaffrey"
+    assert kw["is_yours"] is True
+    assert kw["pick_number"] == 12
 
 
 def test_record_snake_pick_no_engine_still_enriches(monkeypatch):
-    # A redeploy may wipe the engine; enrichment must still run for the UI.
+    # A redeploy may leave no session; enrichment must still run for the UI.
     player = SimpleNamespace(id="uuid-9", name="Bijan Robinson", position="RB")
     monkeypatch.setattr(draft, "_resolve_player", AsyncMock(return_value=player))
-    monkeypatch.setattr(draft, "_engine", None)
 
     payload = {"yahoo_player_id": "x", "player_name": "B. ROBINSON", "picker": "You"}
-    asyncio.run(draft._record_snake_pick(_event(payload)))
+    asyncio.run(draft._record_snake_pick(_event(payload), engine=None, state=None))
 
     assert payload["id"] == "uuid-9"
     assert payload["player_name"] == "Bijan Robinson"
