@@ -10,7 +10,8 @@ adp_rank (not adp_ai) is the value shown as "AI ADP" on the board, so the diff
 stays consistent with both displayed columns. adp_ai has heavy ties that made
 the old diff disagree with the rank shown beside it.
 
-projected_ppr lives in the profile's clean_season_baseline, NOT on Player.
+VALUE/SLEEPER is split on the VORP-derived `tier` (a Player column, set by the
+valuation engine) — not an absolute PPR bar — so it's replacement-aware.
 
   python scripts/recompute_adp_diff.py
 """
@@ -21,7 +22,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
-from sqlalchemy.orm import selectinload  # noqa: E402
 
 from backend.database import AsyncSessionLocal  # noqa: E402
 from backend.models.player import Player  # noqa: E402
@@ -33,11 +33,10 @@ from backend.agents.valuation_agent import (  # noqa: E402
 
 async def recompute() -> None:
     async with AsyncSessionLocal() as db:
+        # tier (VORP) drives VALUE/SLEEPER and is a Player column — no profile load.
         players = (
             await db.execute(
-                select(Player)
-                .where(Player.adp_ai.isnot(None))
-                .options(selectinload(Player.profile))
+                select(Player).where(Player.adp_ai.isnot(None))
             )
         ).scalars().all()
 
@@ -49,16 +48,11 @@ async def recompute() -> None:
             if p.adp_diff is not None:
                 diff_set += 1
 
-            projected_ppr = None
-            if p.profile and p.profile.clean_season_baseline:
-                projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
-
-            # adp_diff keeps the raw rank gap (for display); the flag is
-            # neutralized past the draftable window on EITHER our rank or FP's.
+            # adp_diff keeps the raw rank gap (for display); VALUE/SLEEPER uses the
+            # VORP-derived tier, and the flag is neutralized past the two-sided window.
             flag = classify_snake_flag(
                 adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
-                projected_ppr=float(projected_ppr) if projected_ppr is not None else None,
-                position=p.position,
+                tier=p.tier,
                 adp_rank=p.adp_rank,
                 fp_rank=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
             )

@@ -656,13 +656,47 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
       scripts/recompute_adp_diff.py (no pipeline
       run). recompute_snake_flags.py latent bug
       (skipped the window) fixed too.
-- [ ] Positional-bias investigation (SEPARATE):
-      VALUE panel skews TE-heavy (5/6 TEs),
-      SLEEPER skews RB-heavy. May indicate a real
-      positional bias in adp_ai vs FP consensus
-      (TE _STRONG_PPR=170 bar vs where FP ranks
-      TEs). Do NOT band-aid with per-position
-      capping — investigate the model first.
+- [x] Positional VALUE/SLEEPER skew RESOLVED via
+      VORP. Root cause was definitional, not the
+      model: classify_snake_flag split VALUE vs
+      SLEEPER on an ABSOLUTE PPR bar (_STRONG_PPR
+      TE170 etc). TE170 sits barely above TE
+      replacement (~140) so every startable TE
+      cleared it, while equally-strong ~200-PPR WRs
+      (WR replacement ~200) did not — a WR and TE
+      with the same projection got opposite flags.
+      Fix: VALUE if the VORP-derived tier <= 2 (the
+      valuation engine's PAR-ratio tier, position-
+      relative, built on forward projected_ppr_
+      season), else SLEEPER. _STRONG_PPR removed.
+      Now position-consistent + replacement-aware:
+      VALUE 6->13 (TE7/WR4/RB2), and it correctly
+      keeps near-replacement ~200 WRs (Addison T3,
+      Pittman T3) as SLEEPER while promoting genuine
+      separators (Metcalf T2). Also fixed the
+      ppr_points(backward) vs projected_ppr_season
+      (forward) inconsistency — tier uses forward,
+      so e.g. Kyle Pitts now flags off his T1
+      projection not his stale ppr_points=96.
+      Auction untouched (already VORP $ + surplus
+      signal). Recompute via recompute_adp_diff.py.
+- [ ] OPEN QUESTION (not yet decided): separate
+      injury-faded elites (Kittle) from healthy
+      fungible-middle (Warren/Fannin) within VALUE.
+      Tier-based VORP leaves Warren/Fannin as VALUE
+      (both T2, 188 ~= realized TE6 — a defensible
+      separator), so total-points VORP can't make
+      this distinction — that's the KNOWN LIMITATION
+      this item addresses. Options to EVALUATE (pick
+      before building): (a) projected-games per-game
+      scoring — needs a projected-games field from
+      the agent (pipeline change + VERSION bump,
+      expensive; injury prediction is noisy), vs
+      (b) a ceiling/variance tiebreaker from the
+      EXISTING upside_ppr/downside_ppr already in
+      clean_season_baseline (possibly $0, no agent
+      change). Decide approach before committing to
+      the agent path.
 
 ### Stages Remaining
 - [~] Stage 29: Snake draft — data/UI/engine
