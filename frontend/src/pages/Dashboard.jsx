@@ -1,11 +1,10 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, BarChart3, Plus } from 'lucide-react'
+import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, Plus } from 'lucide-react'
 import { DRAFT_DATE } from '../lib/theme'
 import { fetchPlayers } from '../api/players'
 import { fetchNews } from '../api/news'
-import { fetchLeagueTendencies, fetchUserLeagues } from '../api/league'
+import { fetchUserLeagues } from '../api/league'
 import { fetchPlayerSummary } from '../api/players'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
@@ -37,16 +36,12 @@ export default function Dashboard() {
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
 
-  // League selector state — null until the user picks; default derived below
-  const [pickedLeagueId, setPickedLeagueId] = useState(null)
-
+  // Connected leagues — only used to show the "add a league" empty state below.
   const { data: leaguesData } = useQuery({
     queryKey: ['user-leagues'],
     queryFn: fetchUserLeagues,
   })
   const leagues = (leaguesData || []).filter((l) => l.is_active)
-  const selectedLeagueId =
-    pickedLeagueId ?? (leagues.length > 0 ? leagues[0].id : null)
 
   const { isSnake } = useLeague()
 
@@ -89,13 +84,6 @@ export default function Dashboard() {
     queryFn: fetchPlayerSummary,
   })
 
-  // League tendencies — scoped to selected league
-  const { data: tendenciesData } = useQuery({
-    queryKey: ['dashboard-tendencies', selectedLeagueId],
-    queryFn: () => fetchLeagueTendencies(selectedLeagueId),
-    enabled: !!selectedLeagueId,
-  })
-
   // Watchlist players
   const { data: watchlistPlayers } = useQuery({
     queryKey: ['dashboard-watchlist', (watchlist || []).map((w) => w.player_id).join(',')],
@@ -125,23 +113,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* League selector */}
-      {leagues.length > 0 ? (
-        <div className="flex items-center gap-3 mb-4">
-          <label className="text-sm text-slate-400">League:</label>
-          <select
-            value={selectedLeagueId || ''}
-            onChange={(e) => setPickedLeagueId(e.target.value)}
-            className="bg-[#1c1f2e] border border-[#2d3148] rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-          >
-            {leagues.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.league_name || l.league_id}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : (
+      {/* Empty-state onboarding — only when no leagues are connected */}
+      {leagues.length === 0 && (
         <div className="bg-[#161822] border border-[#2d3148] rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
           <span className="text-sm text-slate-400">No active leagues connected.</span>
           <button
@@ -316,60 +289,6 @@ export default function Dashboard() {
           )}
         </DashboardCard>
       </div>
-
-      {/* League Tendencies */}
-      {tendenciesData && tendenciesData.total_players_with_league_data > 0 && (
-        <div className="mt-4">
-          <DashboardCard title="League Tendencies" icon={BarChart3} iconColor="text-purple-400">
-            {/* Position bias bars */}
-            <div className="space-y-2 mb-4">
-              {(tendenciesData.positional_biases || []).map((pb) => {
-                const absBias = Math.abs(pb.avg_bias)
-                const maxBias = Math.max(...(tendenciesData.positional_biases || []).map((b) => Math.abs(b.avg_bias)), 1)
-                const pct = Math.min((absBias / maxBias) * 100, 100)
-                return (
-                  <div key={pb.position}>
-                    <div className="flex justify-between text-xs mb-0.5">
-                      <span className="text-slate-400">{pb.position}</span>
-                      <span className={pb.avg_bias > 0 ? 'text-red-400' : pb.avg_bias < 0 ? 'text-emerald-400' : 'text-slate-400'}>
-                        {pb.avg_bias > 0 ? '+' : ''}{pb.avg_bias.toFixed(1)}
-                      </span>
-                    </div>
-                    <div className="h-1.5 bg-[#1c1f2e] rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${pb.avg_bias > 0 ? 'bg-red-500/60' : 'bg-emerald-500/60'}`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Top 3 opportunities */}
-            {(tendenciesData.top_opportunities || []).length > 0 && (
-              <div>
-                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Top Opportunities</div>
-                <div className="space-y-1">
-                  {(tendenciesData.top_opportunities || []).slice(0, 3).map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => openPlayerDetail(p.id)}
-                      className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
-                    >
-                      <PositionBadge position={p.position} />
-                      <span className="text-slate-300 truncate flex-1">{p.name}</span>
-                      <span className="text-emerald-400 font-mono text-xs">
-                        {p.bias.toFixed(0)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </DashboardCard>
-        </div>
-      )}
 
       {/* Detail panel */}
       {detailPanelOpen && selectedPlayerId && (
