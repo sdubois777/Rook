@@ -141,6 +141,29 @@ describe('draft rehydrate on page refresh', () => {
     expect(getRecommendation).not.toHaveBeenCalled()
   })
 
+  it('clears the leftover team id on a 409 (no resumable draft)', async () => {
+    localStorage.setItem('rook_draft_team', 'Old Team')
+    getDraftState.mockRejectedValue({ response: { status: 409 } })
+
+    const ok = await useDraftStore.getState().rehydrate()
+
+    expect(ok).toBe(false)
+    expect(localStorage.getItem('rook_draft_team')).toBeNull()
+  })
+
+  it('endDraft clears the team id and moves to the ended phase', async () => {
+    const { endDraft } = await import('../api/draft')
+    endDraft.mockResolvedValue({ status: 'ended' })
+    localStorage.setItem('rook_draft_team', 'My Team')
+    useDraftStore.setState({ phase: 'live' })
+
+    await useDraftStore.getState().endDraft()
+
+    expect(endDraft).toHaveBeenCalledTimes(1) // POST /draft/end
+    expect(localStorage.getItem('rook_draft_team')).toBeNull()
+    expect(useDraftStore.getState().phase).toBe('ended')
+  })
+
   it('still hydrates rosters/budget when opponents or recommendation fetch fails', async () => {
     mockActiveDraft()
     getOpponentBudgets.mockRejectedValue(new Error('network'))
