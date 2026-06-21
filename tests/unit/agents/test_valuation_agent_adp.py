@@ -153,22 +153,24 @@ def test_draftable_window_is_180():
 def test_snake_flag_neutralized_beyond_draftable_window():
     # Mike Evans artifact: huge negative diff but adp_rank 414 (round ~35).
     # Past the window the diff is rank-scale noise -> TARGET, not REACH.
-    assert classify_snake_flag(-359, 240, "WR", adp_rank=414) == "TARGET"
+    # (2nd arg is now `tier`; past the window it's irrelevant.)
+    assert classify_snake_flag(-359, 2, adp_rank=414) == "TARGET"
     # A big positive diff out past the window is also neutralized.
-    assert classify_snake_flag(200, 300, "WR", adp_rank=500) == "TARGET"
+    assert classify_snake_flag(200, 1, adp_rank=500) == "TARGET"
 
 
 def test_snake_flag_within_window_still_classifies():
-    # Inside the window the normal thresholds apply.
-    assert classify_snake_flag(-20, 240, "WR", adp_rank=30) == "REACH"
-    assert classify_snake_flag(20, 280, "WR", adp_rank=30) == "VALUE"
+    # Inside the window the normal thresholds apply. VALUE/SLEEPER is now driven
+    # by the VORP tier (tier<=2 separator -> VALUE), not an absolute PPR bar.
+    assert classify_snake_flag(-20, 2, adp_rank=30) == "REACH"
+    assert classify_snake_flag(20, 2, adp_rank=30) == "VALUE"
     # Right at the boundary (180) is still draftable.
-    assert classify_snake_flag(-20, 240, "WR", adp_rank=180) == "REACH"
+    assert classify_snake_flag(-20, 2, adp_rank=180) == "REACH"
 
 
 def test_snake_flag_window_guard_optional():
     # adp_rank defaults to None -> no window guard (back-compat with old callers).
-    assert classify_snake_flag(-20, 240, "WR") == "REACH"
+    assert classify_snake_flag(-20, 2) == "REACH"
 
 
 # --- two-sided window: deep FantasyPros rank can't produce flag noise either ---
@@ -176,60 +178,72 @@ def test_snake_flag_window_guard_optional():
 def test_snake_flag_neutralized_when_fp_rank_beyond_window():
     # The Singletary/Ford/Davis class: our adp_rank is inside the window but FP's
     # overall rank is undraftably deep (~400+), inflating the diff into a bogus
-    # SLEEPER. The fp-side guard neutralizes it to TARGET.
+    # SLEEPER. The fp-side guard neutralizes it to TARGET (tier=5 here, near-repl).
     assert (
-        classify_snake_flag(306, 120, "RB", adp_rank=99, fp_rank=405) == "TARGET"
+        classify_snake_flag(306, 5, adp_rank=99, fp_rank=405) == "TARGET"
     )
-    # A big positive diff with a real, draftable fp_rank still classifies normally.
+    # A positive diff with a real fp_rank but a near-replacement tier -> SLEEPER.
     assert (
-        classify_snake_flag(20, 120, "RB", adp_rank=30, fp_rank=50) == "SLEEPER"
+        classify_snake_flag(20, 3, adp_rank=30, fp_rank=50) == "SLEEPER"
     )
+    # Positive diff + separator tier -> VALUE.
     assert (
-        classify_snake_flag(20, 280, "WR", adp_rank=30, fp_rank=50) == "VALUE"
+        classify_snake_flag(20, 2, adp_rank=30, fp_rank=50) == "VALUE"
     )
 
 
 def test_snake_flag_fp_rank_at_boundary_still_classifies():
     # fp_rank exactly at the window (180) is still draftable -> normal thresholds.
     assert (
-        classify_snake_flag(20, 280, "WR", adp_rank=30, fp_rank=180) == "VALUE"
+        classify_snake_flag(20, 2, adp_rank=30, fp_rank=180) == "VALUE"
     )
 
 
 def test_snake_flag_fp_rank_guard_optional():
-    # fp_rank defaults to None -> fp-side guard inert (back-compat; this is the
-    # path the no-fp_rank unit calls above exercise).
-    assert classify_snake_flag(20, 280, "WR", adp_rank=30) == "VALUE"
+    # fp_rank defaults to None -> fp-side guard inert (back-compat).
+    assert classify_snake_flag(20, 2, adp_rank=30) == "VALUE"
 
 
-def test_snake_flag_value_high_production():
-    # We rate them much earlier AND strong WR production -> VALUE
-    assert classify_snake_flag(20, 280, "WR") == "VALUE"
+def test_snake_flag_value_separator_tier():
+    # We rate them much earlier AND a genuine positional separator (tier 1-2)
+    # -> VALUE.
+    assert classify_snake_flag(20, 1) == "VALUE"
+    assert classify_snake_flag(20, 2) == "VALUE"
 
 
-def test_snake_flag_sleeper_low_production():
-    # We rate them much earlier BUT modest production -> SLEEPER
-    assert classify_snake_flag(20, 120, "WR") == "SLEEPER"
+def test_snake_flag_sleeper_near_replacement_tier():
+    # We rate them much earlier BUT near-replacement (tier 3+) -> SLEEPER.
+    assert classify_snake_flag(20, 3) == "SLEEPER"
+    assert classify_snake_flag(20, 5) == "SLEEPER"
+
+
+def test_snake_flag_sleeper_when_tier_missing():
+    # No tier (player not valued / no projection) can't be confirmed a separator
+    # -> SLEEPER on a positive diff, never VALUE.
+    assert classify_snake_flag(20, None, adp_rank=30) == "SLEEPER"
 
 
 def test_snake_flag_target_consensus():
-    assert classify_snake_flag(5, 280, "WR") == "TARGET"
-    assert classify_snake_flag(-10, 280, "WR") == "TARGET"
+    assert classify_snake_flag(5, 2) == "TARGET"
+    assert classify_snake_flag(-10, 2) == "TARGET"
 
 
 def test_snake_flag_reach_negative_diff():
-    assert classify_snake_flag(-20, 280, "WR") == "REACH"
+    assert classify_snake_flag(-20, 2) == "REACH"
 
 
 def test_snake_flag_null_adp_defaults_target():
-    assert classify_snake_flag(None, 280, "WR") == "TARGET"
+    assert classify_snake_flag(None, 2) == "TARGET"
 
 
-def test_snake_flag_position_relative_production():
-    # A QB at 280 PPR is below-average -> SLEEPER even with a big diff;
-    # a TE at 180 clears the lower TE bar -> VALUE.
-    assert classify_snake_flag(20, 280, "QB") == "SLEEPER"
-    assert classify_snake_flag(20, 180, "TE") == "VALUE"
+def test_snake_flag_value_is_position_agnostic_via_tier():
+    # The classifier no longer uses an absolute per-position PPR bar; position-
+    # relativity lives in `tier` (PAR ratio) upstream. So a tier-2 separator is
+    # VALUE and a tier-3 near-replacement player is SLEEPER regardless of position
+    # — fixing the old asymmetry where a ~200-PPR TE was VALUE but an equally
+    # strong ~200-PPR WR was SLEEPER.
+    assert classify_snake_flag(20, 2, adp_rank=30) == "VALUE"
+    assert classify_snake_flag(20, 3, adp_rank=30) == "SLEEPER"
 
 
 def test_snake_flag_not_in_model_prompt():
@@ -240,23 +254,23 @@ def test_snake_flag_not_in_model_prompt():
 
 
 def test_classify_snake_flag_null_adp():
-    assert classify_snake_flag(None, 380, "QB") == "TARGET"
+    assert classify_snake_flag(None, 1) == "TARGET"
 
 
-def test_classify_snake_flag_high_diff_high_ppr():
-    # diff +25, QB projecting 380 (strong) -> VALUE
-    assert classify_snake_flag(25, 380, "QB") == "VALUE"
+def test_classify_snake_flag_high_diff_separator_tier():
+    # diff +25, tier 1 (clear separator) -> VALUE
+    assert classify_snake_flag(25, 1) == "VALUE"
 
 
-def test_classify_snake_flag_high_diff_low_ppr():
-    # diff +25, TE projecting 90 (modest) -> SLEEPER
-    assert classify_snake_flag(25, 90, "TE") == "SLEEPER"
+def test_classify_snake_flag_high_diff_near_replacement_tier():
+    # diff +25, tier 4 (near replacement) -> SLEEPER
+    assert classify_snake_flag(25, 4) == "SLEEPER"
 
 
 def test_classify_snake_flag_reach():
-    # diff -20 -> REACH regardless of production
-    assert classify_snake_flag(-20, 400, "QB") == "REACH"
-    assert classify_snake_flag(-20, 50, "TE") == "REACH"
+    # diff -20 -> REACH regardless of tier
+    assert classify_snake_flag(-20, 1) == "REACH"
+    assert classify_snake_flag(-20, 5) == "REACH"
 
 
 def test_prompt_auction_note_no_dollar_instruction():

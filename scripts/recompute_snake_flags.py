@@ -1,6 +1,6 @@
 """One-off: recompute snake_flag for all valued players deterministically.
 
-snake_flag is derived from the post-hoc adp_diff + projected production — the
+snake_flag is derived from the post-hoc adp_diff + the VORP-derived tier — the
 model can't know adp_diff at inference (it depends on the model's own adp_ai),
 so this fixes the column from already-stored data with no pipeline re-run.
 
@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
-from sqlalchemy.orm import selectinload  # noqa: E402
 
 from backend.database import AsyncSessionLocal  # noqa: E402
 from backend.models.player import Player  # noqa: E402
@@ -22,28 +21,22 @@ from backend.agents.valuation_agent import classify_snake_flag  # noqa: E402
 
 async def recompute():
     async with AsyncSessionLocal() as db:
+        # tier (VORP) drives VALUE/SLEEPER and is a Player column — no profile load.
         players = (
             await db.execute(
-                select(Player)
-                .where(Player.adp_ai.isnot(None))
-                .options(selectinload(Player.profile))
+                select(Player).where(Player.adp_ai.isnot(None))
             )
         ).scalars().all()
 
         counts = {}
         for p in players:
-            # projected_ppr lives in the profile's clean_season_baseline,
-            # not on the Player row.
-            projected_ppr = None
-            if p.profile and p.profile.clean_season_baseline:
-                projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
             # Pass adp_rank AND fp_rank so the two-sided draftable window is
             # applied here exactly as in the pipeline (this previously omitted
-            # adp_rank, silently skipping the window guard).
+            # adp_rank, silently skipping the window guard). VALUE/SLEEPER uses
+            # the VORP-derived tier.
             flag = classify_snake_flag(
                 adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
-                projected_ppr=float(projected_ppr) if projected_ppr is not None else None,
-                position=p.position,
+                tier=p.tier,
                 adp_rank=p.adp_rank,
                 fp_rank=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
             )

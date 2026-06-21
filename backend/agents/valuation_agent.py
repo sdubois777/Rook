@@ -81,11 +81,6 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
 VALUATION_AGENT_VERSION = "v4"
 
-# Position-relative "strong production" PPR season totals — used to split a
-# we-rate-earlier player into VALUE (production justifies it) vs SLEEPER
-# (upside exceeds cost, but modest production for the position).
-_STRONG_PPR = {"QB": 320, "RB": 240, "WR": 240, "TE": 170}
-
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
 # runs 1..~410, so the two rank lists diverge in length and deep players get
@@ -120,20 +115,28 @@ def assign_adp_ranks(players) -> int:
     return len(players)
 
 
-def classify_snake_flag(
-    adp_diff, projected_ppr, position: str | None, adp_rank=None, fp_rank=None
-) -> str:
-    """Deterministic snake_flag from the ADP differential + production.
+def classify_snake_flag(adp_diff, tier, adp_rank=None, fp_rank=None) -> str:
+    """Deterministic snake_flag from the ADP differential + VORP tier.
 
     This is the SOLE source of snake_flag. The model is not asked for it: adp_diff
     is computed from the model's own adp_ai output, so the model cannot know it at
     inference time (it would have to guess blind).
 
-      VALUE   — adp_diff >= 15 AND strong production for the position
-      SLEEPER — adp_diff >= 15 BUT modest production (upside > cost, late pick)
+      VALUE   — adp_diff >= 15 AND a genuine positional separator (valuation-engine
+                tier 1-2, i.e. well above replacement for the position)
+      SLEEPER — adp_diff >= 15 BUT near-replacement production (tier 3+, or no tier):
+                a positive gap on a speculative/fungible player
       TARGET  — |adp_diff| < 15 (we agree with consensus), or no FP ADP, or the
                 player is beyond the draftable window (diff is rank-scale noise)
       REACH   — adp_diff <= -15 (market values them well above us)
+
+    VALUE/SLEEPER uses `tier` — the valuation engine's PAR-ratio (Points Above
+    Replacement) tier — instead of an absolute PPR bar. This is replacement-aware
+    (an absolute bar like TE170 sits barely above TE replacement, so every startable
+    TE cleared it while equally-strong ~200-PPR WRs did not), and position-relative.
+    Tier is built on the forward projected_ppr_season, so VALUE/SLEEPER now uses the
+    same projection as the rest of the system (not the backward ppr_points the old
+    absolute bar read).
     """
     # Two-sided draftable window. A value/sleeper/reach only exists relative to a
     # REAL consensus position INSIDE the draft. Past the window on EITHER side the
@@ -154,10 +157,11 @@ def classify_snake_flag(
     if diff <= -15:
         return "REACH"
     if diff >= 15:
-        strong = projected_ppr is not None and float(projected_ppr) >= _STRONG_PPR.get(
-            position or "", 240
-        )
-        return "VALUE" if strong else "SLEEPER"
+        # VALUE only when the player genuinely separates from replacement
+        # (tier 1-2). A positive gap on a near-replacement player (tier 3+, or no
+        # tier) is a SLEEPER: upside over cost, but modest production.
+        is_separator = tier is not None and int(tier) <= 2
+        return "VALUE" if is_separator else "SLEEPER"
     return "TARGET"
 
 # System prompt
@@ -386,27 +390,24 @@ class ValuationAgent(BaseAgent):
         be computed here, after adp_rank exists — not in _write_results.
         """
         async with AsyncSessionLocal() as session:
+            # tier (set by the valuation engine before this agent) drives the
+            # VALUE/SLEEPER split — it's a column on Player, no profile load needed.
             players = (
                 await session.execute(
                     select(Player)
                     .where(Player.adp_ai.isnot(None))
                     .order_by(Player.adp_ai.asc())
-                    .options(selectinload(Player.profile))
                 )
             ).scalars().all()
             count = assign_adp_ranks(players)
 
             for p in players:
                 p.adp_diff = compute_adp_diff(p.adp_fantasypros, p.adp_rank)
-                projected_ppr = None
-                if p.profile and p.profile.clean_season_baseline:
-                    projected_ppr = p.profile.clean_season_baseline.get("ppr_points")
-                # adp_diff keeps the raw rank gap (for display); the flag is
-                # neutralized past the draftable window on EITHER our rank or FP's.
+                # adp_diff keeps the raw rank gap (for display); the flag uses the
+                # VORP-derived tier for VALUE/SLEEPER and the two-sided window.
                 p.snake_flag = classify_snake_flag(
                     p.adp_diff,
-                    projected_ppr,
-                    p.position,
+                    p.tier,
                     p.adp_rank,
                     float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
                 )
