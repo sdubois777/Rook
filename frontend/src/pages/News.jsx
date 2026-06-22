@@ -114,7 +114,7 @@ export default function News() {
             onChange={(e) => { setTeam(e.target.value.toUpperCase()); setPage(1) }}
             placeholder="e.g. KC"
             maxLength={3}
-            className="w-16 bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-blue-500/50 placeholder-slate-600 uppercase"
+            className="w-16 bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent/60 placeholder-slate-600 uppercase"
           />
         </div>
       </FilterBar>

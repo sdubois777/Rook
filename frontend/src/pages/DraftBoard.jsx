@@ -136,7 +136,7 @@ function FlagsDropdown({ selected, onChange }) {
                 type="checkbox"
                 checked={selected.includes(flag)}
                 onChange={() => toggle(flag)}
-                className="rounded border-border bg-surface-1 text-blue-500 focus:ring-blue-500/30"
+                className="rounded border-border bg-surface-1 text-brand-accent focus:ring-brand-accent/40"
               />
               {flag}
             </label>
@@ -507,7 +507,7 @@ export default function DraftBoard() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search players..."
-            className="w-48 pl-8 pr-8 py-1 text-sm bg-surface-2 text-slate-300 border border-border rounded focus:outline-none focus:border-blue-500/50 placeholder-slate-600"
+            className="w-48 pl-8 pr-8 py-1 text-sm bg-surface-2 text-slate-300 border border-border rounded focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
           />
           {searchQuery && (
             <button
@@ -543,7 +543,7 @@ export default function DraftBoard() {
             type="checkbox"
             checked={showWatchlistOnly}
             onChange={(e) => setShowWatchlistOnly(e.target.checked)}
-            className="rounded border-border bg-surface-2 text-blue-500 focus:ring-blue-500/30"
+            className="rounded border-border bg-surface-2 text-brand-accent focus:ring-brand-accent/40"
           />
           Watchlist only
         </label>

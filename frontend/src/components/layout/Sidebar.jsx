@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import LeagueSelector from './LeagueSelector'
+import Logo from '../brand/Logo'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -42,11 +43,9 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
     >
       {/* Header */}
       <div className="flex items-center h-14 px-4 border-b border-border">
-        <span
-          className={`text-blue-400 font-semibold text-sm tracking-wide ${labelHidden}`}
-        >
-          Rook
-        </span>
+        {/* Full lockup; the wordmark hides at lg when the rail is collapsed,
+            leaving the glyph alone. */}
+        <Logo size={24} wordmarkClassName={`text-white ${labelHidden}`} />
         {/* Mobile close (drawer) */}
         <button
           onClick={onClose}
@@ -79,7 +78,7 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
             className={({ isActive }) =>
               `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
                 isActive
-                  ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
+                  ? 'text-brand-accent bg-brand/10 border-r-2 border-brand-accent'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-surface-2'
               }`
             }
@@ -96,7 +95,7 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
           className={({ isActive }) =>
             `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
               isActive
-                ? 'text-blue-400 bg-blue-500/10 border-r-2 border-blue-400'
+                ? 'text-brand-accent bg-brand/10 border-r-2 border-brand-accent'
                 : 'text-amber-400 hover:text-amber-300 hover:bg-surface-2'
             }`
           }

@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react'
 import Sidebar from './Sidebar'
 import AssistantButton from '../AssistantButton'
 import AssistantPanel from '../AssistantPanel'
+import Logo from '../brand/Logo'
 import { useUIStore } from '../../stores/ui'
 
 export default function Layout({ children }) {
@@ -23,7 +24,7 @@ export default function Layout({ children }) {
         >
           <Menu size={22} />
         </button>
-        <span className="text-blue-400 font-semibold text-sm tracking-wide">Rook</span>
+        <Logo size={22} />
       </header>
 
       {/* Backdrop behind the drawer (mobile only). */}

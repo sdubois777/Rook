@@ -10,7 +10,7 @@ export default function AssistantButton() {
   return (
     <button
       onClick={toggle}
-      className="fixed bottom-6 right-6 z-40 p-3.5 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-500 hover:scale-105 transition-all duration-200"
+      className="fixed bottom-6 right-6 z-40 p-3.5 rounded-full bg-brand text-white shadow-lg hover:bg-brand-hover hover:scale-105 transition-all duration-200"
       title="AI Assistant"
     >
       <MessageCircle size={22} />

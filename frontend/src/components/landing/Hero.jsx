@@ -13,6 +13,13 @@ export default function Hero() {
       <div className="absolute inset-0 bg-gradient-to-b from-blue-950/20 via-surface-0 to-surface-0" />
 
       <div className="relative max-w-4xl mx-auto text-center">
+        <img
+          src="/rook-mascot.png"
+          alt="Rook — the AI fantasy draft rookie mascot"
+          width="160"
+          height="160"
+          className="mx-auto mb-8 w-28 sm:w-32 lg:w-36 h-auto drop-shadow-[0_10px_28px_rgba(42,61,143,0.5)]"
+        />
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight tracking-tight">
           Win Your Fantasy League{' '}
           <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-300">
@@ -29,7 +36,7 @@ export default function Hero() {
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link
             to="/sign-up"
-            className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-colors text-center"
+            className="w-full sm:w-auto px-8 py-3.5 bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg transition-colors text-center"
           >
             Start Free &rarr;
           </Link>

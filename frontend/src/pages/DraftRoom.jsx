@@ -86,7 +86,7 @@ export default function DraftRoom() {
           <p className="text-slate-500">Session ended. Return to the draft board to review.</p>
           <a
             href="/draftboard"
-            className="inline-block mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors"
+            className="inline-block mt-4 px-4 py-2 bg-brand text-white rounded-lg hover:bg-brand-hover transition-colors"
           >
             View Draft Board
           </a>

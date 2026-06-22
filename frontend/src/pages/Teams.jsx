@@ -36,7 +36,7 @@ export default function Teams() {
         <select
           value={division}
           onChange={(e) => setDivision(e.target.value)}
-          className="bg-surface-2 text-sm text-slate-300 border border-border rounded px-3 py-1.5 focus:outline-none focus:border-blue-500/50"
+          className="bg-surface-2 text-sm text-slate-300 border border-border rounded px-3 py-1.5 focus:outline-none focus:border-brand-accent/60"
         >
           <option value="">All Divisions</option>
           {Object.keys(NFL_DIVISIONS).map((div) => (

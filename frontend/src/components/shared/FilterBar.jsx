@@ -13,7 +13,7 @@ export function FilterSelect({ label, value, onChange, options }) {
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-blue-500/50"
+        className="bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent/60"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>

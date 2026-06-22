@@ -3,10 +3,10 @@
 Two independent sources (NOT the old contact sheet, which produced clipped big
 icons and blurry small ones):
 
-  * rook.png  (repo root, NOT committed) — clean full-res mascot on a
-    transparent background. Source for the BIG icons (512 / 192 / 180). We trim
-    to the alpha bbox and re-pad to a centered square with an even gutter so the
-    mascot is never off-center or clipped.
+  * rook.png  (repo root, NOT committed) — full-res mascot on an opaque WHITE
+    card. Source for the BIG icons (512 / 192 / 180). We flood-key the exterior
+    white to transparent, trim to the mascot, and center it on a navy brand
+    tile with an even gutter (solid bg → no white square, good for apple-touch).
 
   * the "R" glyph — a tiny rounded-square monogram. Source for the SMALL
     favicons (16 / 32 / .ico). A detailed mascot is unreadable at 16px; a bold
@@ -52,16 +52,29 @@ FAVICON_SVG = """\
 # --------------------------------------------------------------------------- #
 # Big icons — from rook.png
 # --------------------------------------------------------------------------- #
-def square_with_margin(im: Image.Image, margin: float) -> Image.Image:
-    """Trim to the alpha bbox, then center on a transparent square whose side
-    leaves `margin` of even gutter on the mascot's dominant dimension."""
+def key_white(im: Image.Image) -> Image.Image:
+    """Flood-fill the EXTERIOR white card to transparent from the borders. The
+    cartoon's solid black outlines stop the fill, so interior whites (helmet
+    stripe, eyes) are preserved."""
     im = im.convert("RGBA")
-    bbox = im.getbbox()  # bounds of all non-zero (here: non-transparent) pixels
+    w, h = im.size
+    for xy in [(1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2),
+               (w // 2, 1), (w // 2, h - 2), (1, h // 2), (w - 2, h // 2)]:
+        ImageDraw.floodfill(im, xy, (0, 0, 0, 0), thresh=60)
+    return im
+
+
+def square_with_margin(im: Image.Image, margin: float) -> Image.Image:
+    """Key the white card out, trim to the mascot, then center it on a navy
+    brand square whose side leaves `margin` of even gutter on the dominant
+    dimension. Solid navy background — no white square, safe for apple-touch."""
+    im = key_white(im)
+    bbox = im.getbbox()  # bounds of the now-transparent-keyed mascot
     if bbox:
         im = im.crop(bbox)
     w, h = im.size
     side = round(max(w, h) / (1 - 2 * margin))
-    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (side, side), NAVY)
     canvas.paste(im, ((side - w) // 2, (side - h) // 2), im)
     return canvas
 

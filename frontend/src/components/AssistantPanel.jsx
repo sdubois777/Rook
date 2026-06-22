@@ -223,7 +223,7 @@ export default function AssistantPanel() {
               onKeyDown={handleKeyDown}
               placeholder="Ask about a player, trade, or strategy..."
               rows={1}
-              className="flex-1 resize-none bg-surface-assistant border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 max-h-24 overflow-y-auto"
+              className="flex-1 resize-none bg-surface-assistant border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-accent/60 max-h-24 overflow-y-auto"
               disabled={isStreaming}
             />
             <button
