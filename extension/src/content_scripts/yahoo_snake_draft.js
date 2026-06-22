@@ -6,6 +6,7 @@ import {
   detectSnakeEvents,
   parsePickCards,
   findPicksButton,
+  shouldSnakeActivate,
 } from './yahoo_snake_draft_observer.mjs'
 
 /**
@@ -168,9 +169,11 @@ window.addEventListener('__yahoo_pick_made__', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Bootstrap — wait for the snake room (#app), click the Picks tab so the pick
-// cards render, then start polling.
+// Bootstrap — wait for the snake room (#app), POSITIVELY confirm it's a snake
+// draft, click the Picks tab so the pick cards render, then start polling.
 // ---------------------------------------------------------------------------
+
+const SNAKE_DETECT_INTERVAL_MS = 1000
 
 // Click the Picks tab (retrying until the button exists), then start the poller
 // once the cards have had a moment to render.
@@ -182,15 +185,33 @@ function startWhenPicksReady() {
   }
 }
 
+// Auction rooms share our URL match patterns and ALSO have #app, so we must
+// confirm a snake draft (snake markers in #app, #draft absent) BEFORE any
+// page-mutating action. The clickPicksTab() in startWhenPicksReady switches the
+// view; on an auction room it removes #draft and kills the auction poller. Bail
+// permanently the moment the auction nomination panel (#draft) is present;
+// otherwise wait for snake markers to render, then start. NEVER click on a page
+// we haven't positively identified as snake.
+function waitForSnakeDraft() {
+  const hasDraftPanel = !!document.querySelector('#draft')
+  if (hasDraftPanel) return // auction room — never act, stop checking
+  const appText = document.querySelector('#app')?.innerText || ''
+  if (shouldSnakeActivate({ hasDraftPanel, appText })) {
+    startWhenPicksReady()
+    return
+  }
+  setTimeout(waitForSnakeDraft, SNAKE_DETECT_INTERVAL_MS)
+}
+
 function bootstrap() {
   if (document.querySelector('#app')) {
-    startWhenPicksReady()
+    waitForSnakeDraft()
     return
   }
   const observer = new MutationObserver(() => {
     if (document.querySelector('#app')) {
       observer.disconnect()
-      startWhenPicksReady()
+      waitForSnakeDraft()
     }
   })
   observer.observe(document.documentElement, { childList: true, subtree: true })

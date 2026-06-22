@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 import {
   parseDraftState,
@@ -7,7 +10,14 @@ import {
   detectWinner,
   detectEvents,
   secondsFromClock,
+  shouldAuctionActivate,
 } from '../src/content_scripts/yahoo_draft_parse.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const auctionSrc = readFileSync(
+  join(__dirname, '..', 'src', 'content_scripts', 'yahoo_draft.js'),
+  'utf-8'
+)
 
 // A representative #draft innerText snapshot mid-nomination.
 const SAMPLE = [
@@ -127,4 +137,27 @@ test('sold event fires when player goes null', () => {
   assert.equal(sold.payload.final_price, 6)
   assert.equal(sold.payload.winner, 'Stephen')
   assert.equal(next.lastPlayer, null)
+})
+
+// ---------------------------------------------------------------------------
+// Cross-poller guard — the auction poller must act ONLY on auction rooms
+// (#draft present), staying inert on snake pages even though both content
+// scripts share the same Yahoo draft URL match patterns.
+// ---------------------------------------------------------------------------
+
+test('shouldAuctionActivate: ACTIVE on an auction room (#draft present)', () => {
+  assert.equal(shouldAuctionActivate({ hasDraftPanel: true }), true)
+})
+
+test('shouldAuctionActivate: INERT on a snake page (no #draft)', () => {
+  // Snake rooms use #app and have no #draft → the auction poller must not run.
+  assert.equal(shouldAuctionActivate({ hasDraftPanel: false }), false)
+})
+
+test('auction content script gates startup on shouldAuctionActivate', () => {
+  // The poller may only start behind the shared guard (never on bare URL match).
+  assert.ok(
+    auctionSrc.includes('shouldAuctionActivate'),
+    'yahoo_draft.js must gate startup on shouldAuctionActivate'
+  )
 })
