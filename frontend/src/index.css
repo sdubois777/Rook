@@ -1,5 +1,39 @@
 @import "tailwindcss";
 
+/*
+ * Brand & surface design tokens (Tailwind v4 @theme).
+ *
+ * COLOR SYSTEM — three NON-OVERLAPPING roles. Never mix them:
+ *   • brand  (navy #2a3d8f) — IDENTITY only: logo/lockup, wordmark, active nav,
+ *                             primary CTAs, focus rings. One navy app-wide.
+ *   • signal (emerald)      — VALUE / positive: BUY, positive flags. Owned by
+ *                             signals.js / FlagBadge / PositionBadge / etc.
+ *                             Leave those as-is; never navy-wash a signal color.
+ *   • risk   (red / amber)  — avoid·injury (red) / caution (amber). As-is.
+ *
+ * The core navy is too dark to read as text on the dark surfaces, so:
+ *   - `brand`        → solid fills with white text (buttons, logo tile, badges)
+ *   - `brand-accent` → on-dark brand text / active nav / focus rings
+ *   - `brand-hover`  → CTA hover
+ * It is one navy hue — brand-accent/-hover are just the on-dark tint/shade.
+ *
+ * surface-* / border replace the dark-bg hexes that were scattered as arbitrary
+ * Tailwind values (bg-[#161822] → bg-surface-1, border-[#2d3148] →
+ * border-border, …) so the palette lives in one place. Same hex, no visual change.
+ */
+@theme {
+  --color-brand: #2a3d8f;        /* core navy — solid fills w/ white text */
+  --color-brand-hover: #34499f;  /* primary-CTA hover */
+  --color-brand-accent: #8190e6; /* on-dark brand text / active / focus ring */
+
+  --color-surface-0: #0f1117;         /* app / page base background */
+  --color-surface-1: #161822;         /* panels, sidebar, headers */
+  --color-surface-2: #1c1f2e;         /* inputs, cards */
+  --color-surface-3: #222539;         /* raised / hover */
+  --color-surface-assistant: #1a1d2e; /* assistant panel */
+  --color-border: #2d3148;            /* borders, dividers */
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;

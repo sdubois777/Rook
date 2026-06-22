@@ -119,24 +119,24 @@ function FlagsDropdown({ selected, onChange }) {
         className={`flex items-center gap-1.5 text-sm border rounded px-2 py-1 transition-colors ${
           selected.length > 0
             ? 'text-blue-400 border-blue-500/50 bg-blue-500/10'
-            : 'text-slate-300 border-[#2d3148] bg-[#1c1f2e]'
+            : 'text-slate-300 border-border bg-surface-2'
         }`}
       >
         {label}
         <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 bg-[#1c1f2e] border border-[#2d3148] rounded shadow-lg py-1 min-w-[150px]">
+        <div className="absolute top-full left-0 mt-1 z-50 bg-surface-2 border border-border rounded shadow-lg py-1 min-w-[150px]">
           {FLAG_OPTIONS.map((flag) => (
             <label
               key={flag}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-300 hover:bg-[#222539] cursor-pointer"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-slate-300 hover:bg-surface-3 cursor-pointer"
             >
               <input
                 type="checkbox"
                 checked={selected.includes(flag)}
                 onChange={() => toggle(flag)}
-                className="rounded border-[#2d3148] bg-[#161822] text-blue-500 focus:ring-blue-500/30"
+                className="rounded border-border bg-surface-1 text-brand-accent focus:ring-brand-accent/40"
               />
               {flag}
             </label>
@@ -144,7 +144,7 @@ function FlagsDropdown({ selected, onChange }) {
           {selected.length > 0 && (
             <button
               onClick={() => onChange([])}
-              className="w-full text-left px-3 py-1.5 text-xs text-slate-500 hover:text-slate-300 border-t border-[#2d3148] mt-1"
+              className="w-full text-left px-3 py-1.5 text-xs text-slate-500 hover:text-slate-300 border-t border-border mt-1"
             >
               Clear all
             </button>
@@ -304,7 +304,7 @@ export default function DraftBoard() {
     return (
       <div
         key={p.id}
-        className={`flex items-center gap-3 px-4 py-2.5 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50 ${highlightClasses}`}
+        className={`flex items-center gap-3 px-4 py-2.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50 ${highlightClasses}`}
       >
         <button
           onClick={(e) => {
@@ -431,7 +431,7 @@ export default function DraftBoard() {
   }
 
   const columnHeaders = (
-    <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[#2d3148]">
+    <div className="flex items-center gap-3 px-4 py-1.5 border-b border-border">
       <span className="w-[14px] shrink-0" />
       <div className="flex items-center gap-3 flex-1 min-w-0">
         <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
@@ -479,10 +479,10 @@ export default function DraftBoard() {
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
         <div className="flex items-center gap-3 no-print">
           <span className="text-sm text-slate-500">{sortedPlayers.length} of {totalPlayers} players</span>
-          <button onClick={handleExportTxt} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded hover:bg-[#222539] transition-colors" title="Export TXT cheat sheet">
+          <button onClick={handleExportTxt} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-surface-2 text-slate-300 border border-border rounded hover:bg-surface-3 transition-colors" title="Export TXT cheat sheet">
             <Download size={13} /> Export
           </button>
-          <button onClick={handlePrint} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded hover:bg-[#222539] transition-colors" title="Print draft board">
+          <button onClick={handlePrint} className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-surface-2 text-slate-300 border border-border rounded hover:bg-surface-3 transition-colors" title="Print draft board">
             <Printer size={13} /> Print
           </button>
         </div>
@@ -490,7 +490,7 @@ export default function DraftBoard() {
 
       {/* Budget bar — auction only. Snake has no budget. */}
       {!isSnake && (
-        <div className="flex items-center gap-4 bg-[#161822] rounded-lg border border-[#2d3148] px-4 py-2.5 mb-3 text-sm no-print">
+        <div className="flex items-center gap-4 bg-surface-1 rounded-lg border border-border px-4 py-2.5 mb-3 text-sm no-print">
           <span className="text-slate-200 font-medium">Budget: $200</span>
           <span className="text-slate-400">Skill starters: <span className="text-blue-400 font-mono">$185</span></span>
           <span className="text-slate-500 text-xs">(Bench + K + DEF: $15)</span>
@@ -507,7 +507,7 @@ export default function DraftBoard() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search players..."
-            className="w-48 pl-8 pr-8 py-1 text-sm bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded focus:outline-none focus:border-blue-500/50 placeholder-slate-600"
+            className="w-48 pl-8 pr-8 py-1 text-sm bg-surface-2 text-slate-300 border border-border rounded focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
           />
           {searchQuery && (
             <button
@@ -543,7 +543,7 @@ export default function DraftBoard() {
             type="checkbox"
             checked={showWatchlistOnly}
             onChange={(e) => setShowWatchlistOnly(e.target.checked)}
-            className="rounded border-[#2d3148] bg-[#1c1f2e] text-blue-500 focus:ring-blue-500/30"
+            className="rounded border-border bg-surface-2 text-brand-accent focus:ring-brand-accent/40"
           />
           Watchlist only
         </label>
@@ -572,8 +572,8 @@ export default function DraftBoard() {
             const players = tierGroups[tierKey]
             if (!players || players.length === 0) return null
             return (
-              <div key={tierKey} className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-[#2d3148] flex items-center justify-between">
+              <div key={tierKey} className="bg-surface-1 rounded-lg border border-border overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
                   <h3 className="text-sm font-medium text-slate-200">
                     {groupLabel} {tierKey}
                   </h3>
@@ -587,7 +587,7 @@ export default function DraftBoard() {
         </div>
       ) : (
         /* Flat sorted view */
-        <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
+        <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
           {columnHeaders}
           {sortedPlayers.map(renderPlayerRow)}
         </div>

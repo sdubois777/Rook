@@ -114,12 +114,12 @@ export default function News() {
             onChange={(e) => { setTeam(e.target.value.toUpperCase()); setPage(1) }}
             placeholder="e.g. KC"
             maxLength={3}
-            className="w-16 bg-[#1c1f2e] text-sm text-slate-300 border border-[#2d3148] rounded px-2 py-1 focus:outline-none focus:border-blue-500/50 placeholder-slate-600 uppercase"
+            className="w-16 bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent/60 placeholder-slate-600 uppercase"
           />
         </div>
       </FilterBar>
 
-      <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
+      <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
         {isLoading ? (
           <div className="py-12 text-center text-slate-500 text-sm">Loading signals...</div>
         ) : signals.length === 0 ? (

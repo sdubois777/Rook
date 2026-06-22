@@ -69,3 +69,4 @@ data/*.csv
 rook_kit.png
 rook.png
 frontend/public/_debug_crops/
+frontend/public/_brand_preview/

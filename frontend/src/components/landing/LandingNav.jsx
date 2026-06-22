@@ -1,12 +1,13 @@
 import { Link } from 'react-router-dom'
 import { SignedIn, SignedOut } from '@clerk/clerk-react'
+import Logo from '../brand/Logo'
 
 export default function LandingNav() {
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-[#0f1117]/80 backdrop-blur-md border-b border-gray-800/50">
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-surface-0/80 backdrop-blur-md border-b border-gray-800/50">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-        <Link to="/" className="text-xl font-bold text-white tracking-tight">
-          Draft<span className="text-blue-400">Mind</span>
+        <Link to="/" aria-label="Rook home">
+          <Logo size={30} />
         </Link>
 
         <div className="hidden sm:flex items-center gap-6 text-sm text-gray-400">
@@ -25,7 +26,7 @@ export default function LandingNav() {
             </Link>
             <Link
               to="/sign-up"
-              className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors"
+              className="text-sm bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg transition-colors"
             >
               Get Started
             </Link>
@@ -33,7 +34,7 @@ export default function LandingNav() {
           <SignedIn>
             <Link
               to="/dashboard"
-              className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors"
+              className="text-sm bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg transition-colors"
             >
               Dashboard
             </Link>

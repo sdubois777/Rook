@@ -28,7 +28,7 @@ function RosterSlotGrid({ roster }) {
             <div
               key={`${pos}-${i}`}
               className={`flex items-center gap-2 px-3 py-1.5 rounded ${
-                pick ? 'bg-[#1c1f2e]' : 'border border-dashed border-[#2d3148]'
+                pick ? 'bg-surface-2' : 'border border-dashed border-border'
               }`}
             >
               <span className="text-[10px] text-slate-600 w-6 font-mono">{pos}</span>
@@ -88,7 +88,7 @@ export default function TeamRosterPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Team selector */}
-      <div className="p-3 border-b border-[#2d3148]">
+      <div className="p-3 border-b border-border">
         <h3 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">
           Team Rosters
         </h3>
@@ -96,7 +96,7 @@ export default function TeamRosterPanel() {
           aria-label="Select team"
           value={activeTeam || ''}
           onChange={(e) => setSelectedTeam(e.target.value)}
-          className="w-full bg-[#1c1f2e] text-white border border-[#2d3148] rounded px-3 py-2 text-sm"
+          className="w-full bg-surface-2 text-white border border-border rounded px-3 py-2 text-sm"
         >
           {allTeams.length === 0 && <option value="">No teams yet</option>}
           {allTeams.map((team) => (
@@ -110,7 +110,7 @@ export default function TeamRosterPanel() {
       </div>
 
       {/* Team info bar */}
-      <div className="p-3 border-b border-[#2d3148]">
+      <div className="p-3 border-b border-border">
         {isHighThreat && (
           <div className="text-amber-400 text-xs mb-2">
             ⚠️ High threat — ${threatScore} ceiling value
@@ -126,7 +126,7 @@ export default function TeamRosterPanel() {
           </span>
         </div>
         {/* Budget bar */}
-        <div className="mt-2 h-1.5 bg-[#0f1117] rounded-full overflow-hidden">
+        <div className="mt-2 h-1.5 bg-surface-0 rounded-full overflow-hidden">
           <div
             className="h-full rounded-full bg-blue-500"
             style={{

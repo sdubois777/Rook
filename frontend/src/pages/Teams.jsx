@@ -36,7 +36,7 @@ export default function Teams() {
         <select
           value={division}
           onChange={(e) => setDivision(e.target.value)}
-          className="bg-[#1c1f2e] text-sm text-slate-300 border border-[#2d3148] rounded px-3 py-1.5 focus:outline-none focus:border-blue-500/50"
+          className="bg-surface-2 text-sm text-slate-300 border border-border rounded px-3 py-1.5 focus:outline-none focus:border-brand-accent/60"
         >
           <option value="">All Divisions</option>
           {Object.keys(NFL_DIVISIONS).map((div) => (
@@ -45,12 +45,12 @@ export default function Teams() {
         </select>
       </div>
 
-      <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
+      <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
         {/* Header — column template grows with the breakpoint so hidden cells
             don't leave empty grid tracks. Grade/Team/QB + the two O-line grades
             (Pass Pro, Run Block) always show; Scheme at sm; QB Tier + Players at
             md; full desktop template at md (exact at lg). */}
-        <div className="grid grid-cols-[40px_40px_1fr_56px_56px] sm:grid-cols-[52px_60px_1fr_90px_64px_64px] md:grid-cols-[60px_80px_1fr_100px_80px_80px_80px_60px] gap-2 px-4 py-2 border-b border-[#2d3148] text-[10px] uppercase tracking-wider text-slate-500">
+        <div className="grid grid-cols-[40px_40px_1fr_56px_56px] sm:grid-cols-[52px_60px_1fr_90px_64px_64px] md:grid-cols-[60px_80px_1fr_100px_80px_80px_80px_60px] gap-2 px-4 py-2 border-b border-border text-[10px] uppercase tracking-wider text-slate-500">
           <span>Grade</span>
           <span>Team</span>
           <span>QB</span>
@@ -70,7 +70,7 @@ export default function Teams() {
             <div
               key={team.team_abbr}
               onClick={() => navigate(`/teams/${team.team_abbr.toLowerCase()}`)}
-              className="grid grid-cols-[40px_40px_1fr_56px_56px] sm:grid-cols-[52px_60px_1fr_90px_64px_64px] md:grid-cols-[60px_80px_1fr_100px_80px_80px_80px_60px] gap-2 px-4 py-2.5 items-center hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
+              className="grid grid-cols-[40px_40px_1fr_56px_56px] sm:grid-cols-[52px_60px_1fr_90px_64px_64px] md:grid-cols-[60px_80px_1fr_100px_80px_80px_80px_60px] gap-2 px-4 py-2.5 items-center hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50"
             >
               <SystemGradeBadge grade={team.system_grade} size="sm" />
               <span className="text-sm font-medium text-slate-200">{team.team_abbr}</span>

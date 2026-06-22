@@ -15,7 +15,7 @@ export default function LandingFooter() {
         </p>
         <Link
           to="/sign-up"
-          className="inline-block px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-colors"
+          className="inline-block px-8 py-3.5 bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg transition-colors"
         >
           Create Free Account &rarr;
         </Link>

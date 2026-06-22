@@ -237,7 +237,7 @@ export default function AccountPage() {
               </div>
             </div>
             {user.tier !== 'pro' && (
-              <button className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+              <button className="bg-brand hover:bg-brand-hover text-white text-sm px-4 py-2 rounded-lg transition-colors">
                 Upgrade
               </button>
             )}

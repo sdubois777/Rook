@@ -84,7 +84,7 @@ export default function MyRoster() {
       </h3>
 
       {/* Budget bar */}
-      <div className="bg-[#1c1f2e] rounded-lg p-3 mb-3">
+      <div className="bg-surface-2 rounded-lg p-3 mb-3">
         <div className="flex justify-between text-sm mb-2">
           <span className="text-slate-300">
             Budget: <span className="font-mono font-medium">${displayBudget}</span>
@@ -93,7 +93,7 @@ export default function MyRoster() {
             Spent: <span className="font-mono">${spent}</span>
           </span>
         </div>
-        <div className="h-2 bg-[#0f1117] rounded-full overflow-hidden mb-2">
+        <div className="h-2 bg-surface-0 rounded-full overflow-hidden mb-2">
           <div
             className={`h-full rounded-full transition-all ${getBudgetColor(displayBudget, totalBudget)}`}
             style={{ width: `${budgetPct}%` }}
@@ -121,8 +121,8 @@ export default function MyRoster() {
                 key={`${pos}-${i}`}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded ${
                   pick
-                    ? 'bg-[#1c1f2e]'
-                    : 'border border-dashed border-[#2d3148]'
+                    ? 'bg-surface-2'
+                    : 'border border-dashed border-border'
                 }`}
               >
                 <span className="text-[10px] text-slate-600 w-6 font-mono">{pos}</span>

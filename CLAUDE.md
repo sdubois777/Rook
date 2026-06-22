@@ -714,6 +714,26 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
       Teams) to semantic <table> w/ th scope for
       screen-reader accessibility — deferred from
       mobile-responsive work to keep scope isolated.
+- [ ] Old-name infra cleanup (DraftMind/FantasyManager →
+      Rook) — deliberately EXCLUDED from the branding
+      PR because it has CORS/deploy/store blast radius.
+      Each needs coordination, not a presentation edit:
+        - Railway hostname fantasymanager-production
+          .up.railway.app (extension/manifest.json +
+          dist, extension/src/utils/api.js, backend/
+          main.py CORS regex, tests test_cors.py /
+          test_extension_config.py, docs) — rename
+          requires a Railway service rename + redeploy
+          + CORS + extension host-permission update.
+        - Firefox addon id draftmind@fantasymanager
+          (extension/manifest.json + dist) — changing
+          it is a store-identity change.
+        - CI test DB draftmind_test (.github/workflows/
+          ci.yml) — cosmetic, rename with a CI run.
+        - git repo origin still named FantasyManager
+          (README badge/URL) — GitHub repo rename.
+      Note: the only USER-FACING stale name (LandingNav
+      "DraftMind") was already fixed in the branding pass.
 
 ---
 

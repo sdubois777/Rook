@@ -72,8 +72,8 @@ export default function PipelineAdmin() {
       <h1 className="text-2xl font-semibold text-slate-100 mb-6">Pipeline Admin</h1>
 
       {/* Agent Status Table */}
-      <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden mb-6">
-        <div className="px-4 py-3 border-b border-[#2d3148] flex items-center justify-between">
+      <div className="bg-surface-1 rounded-lg border border-border overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <RefreshCw size={16} className="text-blue-400" />
             <h3 className="text-sm font-medium text-slate-200">Agent Status</h3>
@@ -88,7 +88,7 @@ export default function PipelineAdmin() {
           </button>
         </div>
 
-        <div className="grid grid-cols-[1fr_140px_80px_80px_120px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-[#2d3148]">
+        <div className="grid grid-cols-[1fr_140px_80px_80px_120px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-border">
           <span>Agent</span>
           <span>Last Run</span>
           <span>Entities</span>
@@ -102,7 +102,7 @@ export default function PipelineAdmin() {
           (statusData?.agents || []).map((agent) => (
             <div
               key={agent.agent_name}
-              className="grid grid-cols-[1fr_140px_80px_80px_120px] gap-2 px-4 py-2.5 items-center border-b border-[#2d3148]/50"
+              className="grid grid-cols-[1fr_140px_80px_80px_120px] gap-2 px-4 py-2.5 items-center border-b border-border/50"
             >
               <span className="text-sm text-slate-200 font-medium">
                 {AGENT_LABELS[agent.agent_name] || agent.agent_name}
@@ -161,7 +161,7 @@ export default function PipelineAdmin() {
 
       {/* Dry Run Result */}
       {dryRunResult && (
-        <div className="bg-[#161822] rounded-lg border border-amber-500/30 p-4 mb-6">
+        <div className="bg-surface-1 rounded-lg border border-amber-500/30 p-4 mb-6">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <FlaskConical size={16} className="text-amber-400" />
@@ -184,8 +184,8 @@ export default function PipelineAdmin() {
       )}
 
       {/* Cost Report */}
-      <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#2d3148] flex items-center justify-between">
+      <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <DollarSign size={16} className="text-emerald-400" />
             <h3 className="text-sm font-medium text-slate-200">API Cost Report</h3>
@@ -193,7 +193,7 @@ export default function PipelineAdmin() {
           <select
             value={costDays}
             onChange={(e) => setCostDays(parseInt(e.target.value))}
-            className="bg-[#1c1f2e] text-xs text-slate-300 border border-[#2d3148] rounded px-2 py-1 focus:outline-none"
+            className="bg-surface-2 text-xs text-slate-300 border border-border rounded px-2 py-1 focus:outline-none"
           >
             <option value={7}>Last 7 days</option>
             <option value={30}>Last 30 days</option>
@@ -201,7 +201,7 @@ export default function PipelineAdmin() {
           </select>
         </div>
 
-        <div className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-[#2d3148]">
+        <div className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-border">
           <span>Agent</span>
           <span>Calls</span>
           <span>Cache Hits</span>
@@ -219,7 +219,7 @@ export default function PipelineAdmin() {
             {(costData?.agents || []).map((agent) => (
               <div
                 key={agent.agent_name}
-                className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-2.5 items-center border-b border-[#2d3148]/50"
+                className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-2.5 items-center border-b border-border/50"
               >
                 <span className="text-sm text-slate-300">
                   {AGENT_LABELS[agent.agent_name] || agent.agent_name}
@@ -235,7 +235,7 @@ export default function PipelineAdmin() {
             ))}
 
             {/* Grand total */}
-            <div className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-3 items-center bg-[#1c1f2e]">
+            <div className="grid grid-cols-[1fr_80px_80px_100px_100px_80px] gap-2 px-4 py-3 items-center bg-surface-2">
               <span className="text-sm text-slate-200 font-medium">Total</span>
               <span />
               <span />
@@ -283,7 +283,7 @@ function BacktestSection() {
   }
 
   return (
-    <div className="bg-[#1c1f2e] rounded-xl p-5 border border-[#2d3148]/50">
+    <div className="bg-surface-2 rounded-xl p-5 border border-border/50">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <BarChart3 size={18} className="text-purple-400" />
@@ -341,7 +341,7 @@ function BacktestSection() {
 
 function Stat({ label, value, sub }) {
   return (
-    <div className="bg-[#161822] rounded-lg p-2.5">
+    <div className="bg-surface-1 rounded-lg p-2.5">
       <div className="text-[10px] text-slate-500 mb-0.5">{label}</div>
       <div className="text-sm font-mono font-semibold text-slate-200">{value}</div>
       {sub && <div className="text-[10px] text-slate-600">{sub}</div>}

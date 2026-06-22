@@ -53,7 +53,7 @@ function TargetRow({ player, isSnake, totalTeams }) {
   const isValue = ceiling - market > 5
   const urgency = isSnake ? snakeUrgencyLabel(player, totalTeams) : null
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#222539] transition-colors">
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-3 transition-colors">
       <PositionBadge position={player.position} />
       <span className="text-sm text-slate-300 flex-1 truncate">{player.name}</span>
       {isSnake ? (

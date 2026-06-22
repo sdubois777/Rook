@@ -7,7 +7,7 @@ export default function PlayerCardCompact({ player, onClick }) {
   return (
     <div
       onClick={() => onClick?.(player.id)}
-      className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
+      className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50"
     >
       <PositionBadge position={player.position} />
       <span className="font-medium text-sm text-slate-200 min-w-[140px]">
