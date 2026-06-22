@@ -115,7 +115,7 @@ export default function Dashboard() {
 
       {/* Empty-state onboarding — only when no leagues are connected */}
       {leagues.length === 0 && (
-        <div className="bg-[#161822] border border-[#2d3148] rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+        <div className="bg-surface-1 border border-border rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
           <span className="text-sm text-slate-400">No active leagues connected.</span>
           <button
             onClick={() => navigate('/league-setup')}
@@ -172,7 +172,7 @@ export default function Dashboard() {
                     <div
                       key={p.id}
                       onClick={() => openPlayerDetail(p.id)}
-                      className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
+                      className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                     >
                       <PositionBadge position={p.position} />
                       <span className="text-slate-300 truncate flex-1">{p.name}</span>
@@ -204,7 +204,7 @@ export default function Dashboard() {
                   <div
                     key={p.id}
                     onClick={() => openPlayerDetail(p.id)}
-                    className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
+                    className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                   >
                     <PositionBadge position={p.position} />
                     <span className="text-slate-300 truncate flex-1">{p.name}</span>
@@ -247,7 +247,7 @@ export default function Dashboard() {
                         T1: {counts.tier1} / T2: {counts.tier2} / Total: {counts.total}
                       </span>
                     </div>
-                    <div className="h-2 bg-[#1c1f2e] rounded-full overflow-hidden">
+                    <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
                           pos === 'QB' ? 'bg-purple-500' :
@@ -276,7 +276,7 @@ export default function Dashboard() {
                 <div
                   key={p.id}
                   onClick={() => openPlayerDetail(p.id)}
-                  className="flex items-center gap-2 text-sm hover:bg-[#222539] px-2 py-1 rounded cursor-pointer"
+                  className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                 >
                   <PositionBadge position={p.position} />
                   <span className="text-slate-300 truncate flex-1">{p.name}</span>
@@ -300,7 +300,7 @@ export default function Dashboard() {
 
 function DashboardCard({ title, icon: Icon, iconColor, children }) {
   return (
-    <div className="bg-[#161822] rounded-lg border border-[#2d3148] p-4">
+    <div className="bg-surface-1 rounded-lg border border-border p-4">
       <div className="flex items-center gap-2 mb-3">
         <Icon size={16} className={iconColor} />
         <h3 className="text-sm font-medium text-slate-200">{title}</h3>

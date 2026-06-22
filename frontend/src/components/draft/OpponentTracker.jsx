@@ -28,14 +28,14 @@ export default function OpponentTracker() {
       {/* Toggle button */}
       <button
         onClick={() => setOpen(!open)}
-        className="fixed right-0 top-1/2 -translate-y-1/2 z-40 bg-[#161822] border border-[#2d3148] border-r-0 rounded-l-lg px-1 py-3 text-slate-500 hover:text-slate-300 transition-colors"
+        className="fixed right-0 top-1/2 -translate-y-1/2 z-40 bg-surface-1 border border-border border-r-0 rounded-l-lg px-1 py-3 text-slate-500 hover:text-slate-300 transition-colors"
       >
         {open ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
       </button>
 
       {/* Sidebar */}
       <div
-        className={`fixed right-0 top-0 h-screen w-72 bg-[#161822] border-l border-[#2d3148] z-30 transform transition-transform ${
+        className={`fixed right-0 top-0 h-screen w-72 bg-surface-1 border-l border-border z-30 transform transition-transform ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -53,7 +53,7 @@ export default function OpponentTracker() {
                 .map(([teamId, opp]) => (
                   <div
                     key={teamId}
-                    className="bg-[#1c1f2e] rounded-lg p-3 border border-[#2d3148]/50"
+                    className="bg-surface-2 rounded-lg p-3 border border-border/50"
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-slate-300 font-medium">
@@ -66,7 +66,7 @@ export default function OpponentTracker() {
 
                     {/* Threat bar */}
                     <div className="flex items-center gap-2 mb-1">
-                      <div className="flex-1 h-1.5 bg-[#0f1117] rounded-full overflow-hidden">
+                      <div className="flex-1 h-1.5 bg-surface-0 rounded-full overflow-hidden">
                         <div
                           className={`h-full rounded-full ${getThreatColor(opp.threat_score || 0)}`}
                           style={{ width: `${Math.min(opp.threat_score || 0, 100)}%` }}

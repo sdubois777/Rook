@@ -52,7 +52,7 @@ export default function TeamDetail() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         {/* QB Section */}
-        <div className="bg-[#161822] rounded-lg border border-[#2d3148] p-4">
+        <div className="bg-surface-1 rounded-lg border border-border p-4">
           <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3 font-medium">
             Quarterback
           </h3>
@@ -66,7 +66,7 @@ export default function TeamDetail() {
             <Stat label="Downfield" value={team.qb_downfield_aggressiveness} />
           </div>
           {team.qb_wr_trust_score != null && (
-            <div className="mt-3 pt-3 border-t border-[#2d3148]">
+            <div className="mt-3 pt-3 border-t border-border">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-slate-500">QB→WR Trust</span>
                 <span className={`text-sm font-mono font-medium ${
@@ -77,7 +77,7 @@ export default function TeamDetail() {
                   {team.qb_wr_trust_score}/100
                 </span>
               </div>
-              <div className="h-1.5 bg-[#1c1f2e] rounded-full overflow-hidden mt-1">
+              <div className="h-1.5 bg-surface-2 rounded-full overflow-hidden mt-1">
                 <div
                   className={`h-full rounded-full ${
                     team.qb_wr_trust_score >= 70 ? 'bg-emerald-500'
@@ -96,7 +96,7 @@ export default function TeamDetail() {
         </div>
 
         {/* O-Line Section */}
-        <div className="bg-[#161822] rounded-lg border border-[#2d3148] p-4">
+        <div className="bg-surface-1 rounded-lg border border-border p-4">
           <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3 font-medium">
             Offensive Line
           </h3>
@@ -107,7 +107,7 @@ export default function TeamDetail() {
         </div>
 
         {/* OC Section */}
-        <div className="bg-[#161822] rounded-lg border border-[#2d3148] p-4">
+        <div className="bg-surface-1 rounded-lg border border-border p-4">
           <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3 font-medium">
             Offensive Coordinator
           </h3>
@@ -123,7 +123,7 @@ export default function TeamDetail() {
 
       {/* Notes */}
       {team.notes && (
-        <div className="bg-[#161822] rounded-lg border border-[#2d3148] p-4 mb-6">
+        <div className="bg-surface-1 rounded-lg border border-border p-4 mb-6">
           <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-2 font-medium">
             System Notes
           </h3>
@@ -132,8 +132,8 @@ export default function TeamDetail() {
       )}
 
       {/* Skill Position Players */}
-      <div className="bg-[#161822] rounded-lg border border-[#2d3148] overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#2d3148]">
+      <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
+        <div className="px-4 py-3 border-b border-border">
           <h3 className="text-sm font-medium text-slate-200">
             Skill Position Players ({team.players?.length || 0})
           </h3>
@@ -141,7 +141,7 @@ export default function TeamDetail() {
 
         {/* Responsive column-hiding: Pos/Player + Gap (value signal) + Flag
             always show; Tier + Ceiling at sm; Market at lg (desktop exact). */}
-        <div className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-[#2d3148]">
+        <div className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wider text-slate-500 border-b border-border">
           <span>Pos</span>
           <span>Player</span>
           <span className="hidden sm:block">Tier</span>
@@ -155,7 +155,7 @@ export default function TeamDetail() {
           <div
             key={p.id}
             onClick={() => openPlayerDetail(p.id)}
-            className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2.5 items-center hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
+            className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2.5 items-center hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50"
           >
             <PositionBadge position={p.position} />
             <span className="text-sm text-slate-200 font-medium truncate">{p.name}</span>
@@ -210,7 +210,7 @@ function GradeBar({ label, grade }) {
         <span className="text-slate-400">{label}</span>
         <span className="text-slate-300 font-medium">{grade || '--'}</span>
       </div>
-      <div className="h-2 bg-[#1c1f2e] rounded-full overflow-hidden">
+      <div className="h-2 bg-surface-2 rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full ${barColor} transition-all`}
           style={{ width: `${pct}%` }}

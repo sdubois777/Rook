@@ -23,7 +23,7 @@ export default function ValueComparisonBar({ systemValue, marketValue, maxValue 
         <span>System: ${systemValue.toFixed(0)}</span>
         <span>Market: ${marketValue.toFixed(0)}</span>
       </div>
-      <div className="relative h-2 bg-[#1c1f2e] rounded-full overflow-hidden">
+      <div className="relative h-2 bg-surface-2 rounded-full overflow-hidden">
         <div
           className="absolute top-0 left-0 h-full bg-blue-500/40 rounded-full"
           style={{ width: `${systemPct}%` }}

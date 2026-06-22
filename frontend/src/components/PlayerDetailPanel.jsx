@@ -50,9 +50,9 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
       />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-full sm:w-[480px] max-w-full bg-[#161822] border-l border-[#2d3148] z-50 overflow-y-auto shadow-2xl animate-slide-in">
+      <div className="fixed top-0 right-0 h-full w-full sm:w-[480px] max-w-full bg-surface-1 border-l border-border z-50 overflow-y-auto shadow-2xl animate-slide-in">
         {/* Header */}
-        <div className="sticky top-0 bg-[#161822] border-b border-[#2d3148] px-5 py-4 flex items-center justify-between z-10">
+        <div className="sticky top-0 bg-surface-1 border-b border-border px-5 py-4 flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
             {player && <PositionBadge position={player.position} />}
             <h2 className="text-lg font-semibold text-slate-100">
@@ -62,7 +62,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleWatchlist}
-              className="p-1.5 rounded hover:bg-[#222539] transition-colors"
+              className="p-1.5 rounded hover:bg-surface-3 transition-colors"
               title={isWatchlisted ? 'Remove from watchlist' : 'Add to watchlist'}
             >
               {isWatchlisted ? (
@@ -73,7 +73,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
             </button>
             <button
               onClick={close}
-              className="p-1.5 rounded hover:bg-[#222539] transition-colors text-slate-400"
+              className="p-1.5 rounded hover:bg-surface-3 transition-colors text-slate-400"
             >
               <X size={18} />
             </button>
@@ -138,7 +138,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
 
               {/* AI confidence range */}
               {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
-                <div className="bg-[#1c1f2e] rounded p-2 mb-3 text-center">
+                <div className="bg-surface-2 rounded p-2 mb-3 text-center">
                   <div className="text-[10px] text-slate-500 mb-1">Confidence Range</div>
                   <div className="text-sm font-mono text-slate-300">
                     ${player.ai_confidence_floor} &ndash; ${player.ai_confidence_ceiling}
@@ -152,7 +152,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               </div>
 
               {player.prior_season_price != null && (
-                <div className="bg-[#1c1f2e] rounded p-2 mb-3 flex items-center justify-between">
+                <div className="bg-surface-2 rounded p-2 mb-3 flex items-center justify-between">
                   <span className="text-[10px] text-slate-500">{player.prior_season_year} Avg Price</span>
                   <span className="text-sm font-mono text-slate-300">${player.prior_season_price.toFixed(0)}</span>
                 </div>
@@ -283,7 +283,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                     )
                   }
                   return (
-                    <div className="bg-[#1c1f2e] rounded p-3 mb-3">
+                    <div className="bg-surface-2 rounded p-3 mb-3">
                       <div className="text-[10px] text-slate-500 mb-1">
                         {(isSonnet || isSonnetRookie) ? 'Projected PPR (17 games)' : 'Baseline PPR (17 games)'}
                       </div>
@@ -296,7 +296,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                             <span>Floor: {projFloor?.toFixed(0)}</span>
                             <span>Ceiling: {projCeiling?.toFixed(0)}</span>
                           </div>
-                          <div className="relative h-2 bg-[#161822] rounded-full overflow-hidden">
+                          <div className="relative h-2 bg-surface-1 rounded-full overflow-hidden">
                             <div className="absolute h-full bg-blue-500/20 rounded-full"
                               style={{
                                 left: `${(projFloor / projCeiling) * 100 * 0.9}%`,
@@ -387,7 +387,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               <Section title="Dependency Flags">
                 <div className="space-y-2">
                   {player.dependencies.map((dep) => (
-                    <div key={dep.id} className="bg-[#1c1f2e] rounded p-3">
+                    <div key={dep.id} className="bg-surface-2 rounded p-3">
                       <div className="flex items-center gap-2 mb-1">
                         <FlagBadge flagType={dep.flag_type} />
                         {dep.confidence && (
@@ -513,7 +513,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               <Section title="Recent Signals">
                 <div className="space-y-2">
                   {player.beat_signals.map((sig) => (
-                    <div key={sig.id} className="bg-[#1c1f2e] rounded p-2">
+                    <div key={sig.id} className="bg-surface-2 rounded p-2">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium text-blue-400">
                           {sig.signal_type.replace(/_/g, ' ')}
@@ -576,7 +576,7 @@ function Stat({ label, value }) {
 
 function StatBox({ label, value, accent = false }) {
   return (
-    <div className="bg-[#1c1f2e] rounded p-2 text-center">
+    <div className="bg-surface-2 rounded p-2 text-center">
       <div className="text-[10px] text-slate-500">{label}</div>
       <div className={`text-sm font-mono font-medium ${accent ? 'text-blue-400' : 'text-slate-300'}`}>
         {value}

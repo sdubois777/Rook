@@ -72,7 +72,7 @@ export default function DraftRoom() {
 
   if (phase === 'setup') {
     return (
-      <div className="h-screen bg-[#0f1117] text-slate-200">
+      <div className="h-screen bg-surface-0 text-slate-200">
         <DraftSetup />
       </div>
     )
@@ -80,13 +80,13 @@ export default function DraftRoom() {
 
   if (phase === 'ended') {
     return (
-      <div className="h-screen bg-[#0f1117] text-slate-200 flex items-center justify-center">
+      <div className="h-screen bg-surface-0 text-slate-200 flex items-center justify-center">
         <div className="text-center">
           <h1 className="text-2xl font-semibold text-slate-100 mb-2">Draft Complete</h1>
           <p className="text-slate-500">Session ended. Return to the draft board to review.</p>
           <a
             href="/draftboard"
-            className="inline-block mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors"
+            className="inline-block mt-4 px-4 py-2 bg-brand text-white rounded-lg hover:bg-brand-hover transition-colors"
           >
             View Draft Board
           </a>
@@ -98,9 +98,9 @@ export default function DraftRoom() {
   const statusInfo = WS_STATUS_LABEL[wsStatus] || WS_STATUS_LABEL.disconnected
 
   return (
-    <div className="h-screen bg-[#0f1117] text-slate-200 flex flex-col overflow-hidden">
+    <div className="h-screen bg-surface-0 text-slate-200 flex flex-col overflow-hidden">
       {/* Status bar */}
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#161822] border-b border-[#2d3148]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-surface-1 border-b border-border">
         <span className="text-sm font-medium text-slate-300">Draft Room</span>
         <div className="flex items-center gap-3">
           <span className={`w-2 h-2 rounded-full ${statusInfo.color}`} />
@@ -111,7 +111,7 @@ export default function DraftRoom() {
               that mid-auction would be catastrophic. */}
           <button
             onClick={handleEndDraft}
-            className="text-xs text-slate-500 hover:text-red-400 border border-[#2d3148] hover:border-red-500/40 rounded px-2 py-0.5 transition-colors"
+            className="text-xs text-slate-500 hover:text-red-400 border border-border hover:border-red-500/40 rounded px-2 py-0.5 transition-colors"
           >
             End Draft
           </button>
@@ -124,8 +124,8 @@ export default function DraftRoom() {
           optimized. */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[30%_40%_30%] min-h-0 overflow-y-auto lg:overflow-hidden">
         {/* LEFT: compact Recommendation card over Suggested Targets (scrolls) */}
-        <div className="border-b lg:border-b-0 lg:border-r border-[#2d3148] min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
-          <div className="shrink-0 border-b border-[#2d3148]">
+        <div className="border-b lg:border-b-0 lg:border-r border-border min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
+          <div className="shrink-0 border-b border-border">
             <ErrorBoundary
               fallback={
                 <div className="flex items-center justify-center p-4 text-red-400 text-sm">
@@ -142,8 +142,8 @@ export default function DraftRoom() {
         </div>
 
         {/* CENTER: Nomination (fixed) over Available players (scrolls) */}
-        <div className="border-b lg:border-b-0 lg:border-r border-[#2d3148] min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
-          <div className="h-[190px] shrink-0 border-b border-[#2d3148] overflow-hidden">
+        <div className="border-b lg:border-b-0 lg:border-r border-border min-h-[70vh] lg:min-h-0 flex flex-col overflow-hidden">
+          <div className="h-[190px] shrink-0 border-b border-border overflow-hidden">
             {isSnake ? <SnakePanel /> : <NominationPanel />}
           </div>
           <div className="flex-1 min-h-0 overflow-hidden">
