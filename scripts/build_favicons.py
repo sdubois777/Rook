@@ -1,164 +1,167 @@
-"""Slice rook_kit.png into the app's favicons / touch icons.
+"""Build the app's favicons / touch icons from clean standalone sources.
 
-rook_kit.png (repo root, NOT committed) is a single image with 5 transparent-
-background icon tiles. This crops each tile by FRACTIONAL boxes (resolution-
-independent), square-pads with transparency before resizing (no distortion), and
-writes correctly-sized PNGs to frontend/public/.
+Two independent sources (NOT the old contact sheet, which produced clipped big
+icons and blurry small ones):
 
-Detail-matched: the 32 and 16 come from the SIMPLIFIED bottom-row tiles, not from
-shrinking the hero.
+  * rook.png  (repo root, NOT committed) — clean full-res mascot on a
+    transparent background. Source for the BIG icons (512 / 192 / 180). We trim
+    to the alpha bbox and re-pad to a centered square with an even gutter so the
+    mascot is never off-center or clipped.
+
+  * the "R" glyph — a tiny rounded-square monogram. Source for the SMALL
+    favicons (16 / 32 / .ico). A detailed mascot is unreadable at 16px; a bold
+    monogram stays crisp. We also (over)write favicon.svg with the exact glyph so
+    the vector icon and the rasters match. The glyph is rasterized with Pillow
+    directly (disk-stamped strokes) — no native SVG/cairo dependency, which keeps
+    this runnable on Windows via `uv run --with pillow`.
 
 Run (Pillow is not a project dep — inject it ephemerally):
     uv run --with pillow python scripts/build_favicons.py
 
-First run writes raw crops to frontend/public/_debug_crops/ for visual review.
-Delete that folder once the crops are verified; it is not committed.
+Writes frontend/public/_debug_crops/hero_squared.png for visual review; delete
+that folder once verified (it is not committed).
 """
 from __future__ import annotations
 
-from collections import Counter
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "rook_kit.png"
+ROOK = ROOT / "rook.png"
 OUT = ROOT / "frontend" / "public"
 DEBUG = OUT / "_debug_crops"
 
-# GENEROUS rough boxes (left, top, right, bottom) as fractions — each must
-# enclose its tile (with margin) WITHOUT reaching a neighboring tile or that
-# tile's caption. The exact helmet/card bounds are then found by auto_trim(),
-# so these don't have to be pixel-perfect — just bound the right tile.
-ROUGH: dict[str, tuple[float, float, float, float]] = {
-    "hero":  (0.010, 0.030, 0.480, 0.710),
-    "med":   (0.490, 0.050, 0.700, 0.520),
-    "apple": (0.718, 0.050, 0.965, 0.520),
-    "fav32": (0.490, 0.560, 0.670, 0.870),
-    "fav16": (0.725, 0.585, 0.895, 0.865),
-}
+# Even transparent gutter around the mascot's alpha bbox, per side, so the big
+# icons read as centered with a small consistent margin (not edge-to-edge).
+MARGIN = 0.07
 
-# Auto-trim mode per tile: the hero sits on TRANSPARENCY (trim by alpha); the
-# others sit on a WHITE CARD over a dark background (trim to the bright card,
-# then inset to drop the rounded-corner edge + border).
-TRIM = {
-    "hero":  ("alpha", 0.0),
-    "med":   ("bright", 0.05),
-    "apple": ("bright", 0.05),
-    "fav32": ("bright", 0.06),
-    "fav16": ("bright", 0.06),
-}
+# Brand navy of the monogram tile (matches favicon.svg / the manifest theme).
+NAVY = (42, 61, 143, 255)  # #2a3d8f
+
+# Exact favicon.svg the small rasters are derived from (kept in sync on disk).
+FAVICON_SVG = """\
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100" height="100" rx="23" fill="#2a3d8f"/>
+  <path d="M37 26 L37 74 M37 26 L64 26 Q79 26 79 40 Q79 54 64 54 L37 54 M59 54 L80 74"
+        fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
 
 
-def crop(im: Image.Image, box: tuple[float, float, float, float]) -> Image.Image:
-    w, h = im.size
-    l, t, r, b = box
-    return im.crop((round(l * w), round(t * h), round(r * w), round(b * h)))
-
-
-def _content_bbox(c: Image.Image, mode: str):
-    """Bounding box of the tile's real content within a rough crop.
-
-    alpha  → opaque pixels (hero, on transparency).
-    bright → the white card (luminance high), which excludes the dark card
-             background AND the grey caption text below it.
-    """
-    px = c.convert("RGBA").load()
-    w, h = c.size
-    minx, miny, maxx, maxy = w, h, -1, -1
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            if mode == "alpha":
-                hit = a > 30
-            else:  # bright: the white card (caption grey ~<160 is excluded)
-                hit = a > 30 and (r + g + b) / 3 > 180
-            if hit:
-                minx, miny = min(minx, x), min(miny, y)
-                maxx, maxy = max(maxx, x), max(maxy, y)
-    if maxx < 0:
-        return (0, 0, w, h)
-    return (minx, miny, maxx + 1, maxy + 1)
-
-
-def auto_trim(c: Image.Image, mode: str, inset: float) -> Image.Image:
-    """Trim a rough crop to its content bbox, then inset by `inset` fraction of
-    the bbox to drop the rounded-card edge / outline halo."""
-    l, t, r, b = _content_bbox(c, mode)
-    bw, bh = r - l, b - t
-    dx, dy = round(bw * inset), round(bh * inset)
-    return c.crop((l + dx, t + dy, r - dx, b - dy))
-
-
-def square_pad(im: Image.Image) -> Image.Image:
-    """Center the crop on a transparent square canvas (no distortion on resize)."""
+# --------------------------------------------------------------------------- #
+# Big icons — from rook.png
+# --------------------------------------------------------------------------- #
+def square_with_margin(im: Image.Image, margin: float) -> Image.Image:
+    """Trim to the alpha bbox, then center on a transparent square whose side
+    leaves `margin` of even gutter on the mascot's dominant dimension."""
     im = im.convert("RGBA")
-    side = max(im.size)
+    bbox = im.getbbox()  # bounds of all non-zero (here: non-transparent) pixels
+    if bbox:
+        im = im.crop(bbox)
+    w, h = im.size
+    side = round(max(w, h) / (1 - 2 * margin))
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    canvas.paste(im, ((side - im.width) // 2, (side - im.height) // 2), im)
+    canvas.paste(im, ((side - w) // 2, (side - h) // 2), im)
     return canvas
 
 
-def resized(im: Image.Image, size: int) -> Image.Image:
-    return square_pad(im).resize((size, size), Image.LANCZOS)
+# --------------------------------------------------------------------------- #
+# Small favicons — rasterize the "R" glyph with Pillow (no cairo dependency)
+# --------------------------------------------------------------------------- #
+def _quad(p0, p1, p2, n=48):
+    """Sample a quadratic bezier (matches the SVG 'Q' commands)."""
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        u = 1 - t
+        x = u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0]
+        y = u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]
+        pts.append((x, y))
+    return pts
 
 
-def dominant_navy(hero: Image.Image) -> str:
-    """Most common navy-blue helmet color in the hero tile (opaque, blue-dominant,
-    mid/dark) — the brand color, quantized to a stable hex."""
-    px = hero.convert("RGBA").getdata()
-    buckets: Counter = Counter()
-    for r, g, b, a in px:
-        if a < 200:
-            continue
-        # navy: blue is the dominant channel, not near-white, not near-black
-        if b > r and b > g and 25 < b < 230 and (b - max(r, g)) > 20:
-            buckets[(r & ~7, g & ~7, b & ~7)] += 1  # quantize to 8-steps
-    if not buckets:
-        return "#1d4ed8"
-    r, g, b = buckets.most_common(1)[0][0]
-    return f"#{r:02x}{g:02x}{b:02x}"
+def _densify(pts, step=0.4):
+    """Insert points along straight segments so a disk-stamped stroke is solid."""
+    out = []
+    for a, b in zip(pts, pts[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        dist = (dx * dx + dy * dy) ** 0.5
+        n = max(1, int(dist / step))
+        for i in range(n):
+            out.append((a[0] + dx * i / n, a[1] + dy * i / n))
+    out.append(pts[-1])
+    return out
+
+
+def render_glyph(px: int) -> Image.Image:
+    """Render the R monogram at `px` square. Strokes are drawn by stamping discs
+    of diameter = stroke-width along densely-sampled subpaths, which yields exact
+    round caps + round joins (SVG stroke-linecap/linejoin='round')."""
+    s = px / 100.0  # SVG user units are a 100x100 viewBox
+    img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    # Rounded-square background: rect width=100 rx=23.
+    d.rounded_rectangle([0, 0, px - 1, px - 1], radius=23 * s, fill=NAVY)
+
+    # The three subpaths of the "R" (stem, bowl, leg), in SVG user units.
+    stem = [(37, 26), (37, 74)]
+    bowl = (
+        [(37, 26), (64, 26)]
+        + _quad((64, 26), (79, 26), (79, 40))
+        + _quad((79, 40), (79, 54), (64, 54))
+        + [(37, 54)]
+    )
+    leg = [(59, 54), (80, 74)]
+
+    r = (11 * s) / 2.0  # stroke half-width
+    white = (255, 255, 255, 255)
+    for sub in (stem, bowl, leg):
+        for x, y in _densify(sub):
+            cx, cy = x * s, y * s
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white)
+    return img
 
 
 def main() -> None:
-    im = Image.open(SRC).convert("RGBA")
-    print(f"source: {SRC.name}  {im.size}")
     OUT.mkdir(parents=True, exist_ok=True)
     DEBUG.mkdir(parents=True, exist_ok=True)
 
-    crops = {}
-    for name, box in ROUGH.items():
-        mode, inset = TRIM[name]
-        crops[name] = auto_trim(crop(im, box), mode, inset)
+    # --- Big icons from rook.png ------------------------------------------- #
+    rook = Image.open(ROOK).convert("RGBA")
+    print(f"source (big): {ROOK.name}  {rook.size}")
+    hero = square_with_margin(rook, MARGIN)
+    print(f"  squared master: {hero.size}  (margin {MARGIN:.0%}/side)")
+    hero.save(DEBUG / "hero_squared.png")
 
-    # 1) Raw crops for visual verification (review before trusting the outputs).
-    for name, c in crops.items():
-        c.save(DEBUG / f"{name}.png")
-        print(f"  debug crop {name:6} {c.size} -> {DEBUG / (name + '.png')}")
+    for size, fname in (
+        (512, "android-chrome-512x512.png"),
+        (192, "android-chrome-192x192.png"),
+        (180, "apple-touch-icon.png"),
+    ):
+        hero.resize((size, size), Image.LANCZOS).save(OUT / fname)
 
-    # 2) Final, detail-matched outputs.
-    resized(crops["hero"], 512).save(OUT / "android-chrome-512x512.png")
-    resized(crops["med"], 192).save(OUT / "android-chrome-192x192.png")
-    resized(crops["apple"], 180).save(OUT / "apple-touch-icon.png")
-    resized(crops["fav32"], 32).save(OUT / "favicon-32x32.png")
-    resized(crops["fav16"], 16).save(OUT / "favicon-16x16.png")
+    # --- favicon.svg (exact glyph) ----------------------------------------- #
+    (OUT / "favicon.svg").write_text(FAVICON_SVG, encoding="utf-8")
+    print("  wrote favicon.svg (R monogram)")
 
-    # Multi-res .ico from the SIMPLIFIED small tile (more detail at small sizes
-    # than shrinking the hero). Pillow generates the 16/32/48 entries.
-    square_pad(crops["fav32"]).resize((48, 48), Image.LANCZOS).save(
+    # --- Small favicons rasterized from the glyph -------------------------- #
+    master = render_glyph(256)
+    master.resize((32, 32), Image.LANCZOS).save(OUT / "favicon-32x32.png")
+    master.resize((16, 16), Image.LANCZOS).save(OUT / "favicon-16x16.png")
+    master.resize((48, 48), Image.LANCZOS).save(
         OUT / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)]
     )
 
     print("\nwrote:")
     for f in (
         "android-chrome-512x512.png", "android-chrome-192x192.png",
-        "apple-touch-icon.png", "favicon-32x32.png", "favicon-16x16.png",
-        "favicon.ico",
+        "apple-touch-icon.png", "favicon.svg", "favicon-32x32.png",
+        "favicon-16x16.png", "favicon.ico",
     ):
         print(f"  frontend/public/{f}")
-
-    print(f"\nDOMINANT NAVY (brand color): {dominant_navy(crops['hero'])}")
-    print(f"\nReview {DEBUG} then delete it (not committed).")
+    print(f"\nReview {DEBUG / 'hero_squared.png'} then delete _debug_crops/ (not committed).")
 
 
 if __name__ == "__main__":
