@@ -263,28 +263,41 @@ if FRONTEND_DIST.exists():
         name="assets",
     )
 
-    @app.get("/favicon.svg")
-    async def favicon():
-        return FileResponse(FRONTEND_DIST / "favicon.svg")
-
-    @app.get("/icons.svg")
-    async def icons():
-        return FileResponse(FRONTEND_DIST / "icons.svg")
-
-    # Catch-all: serve index.html for any non-API route
-    # (React Router handles client-side routing). With every router under /api,
-    # the only non-SPA paths are /api/*, the app-level /ws + /health, the docs,
-    # the static mounts, and the root-mounted /webhooks.
+    # Catch-all: serve real root static files when they exist, else the SPA
+    # shell (React Router handles client-side routing). With every router under
+    # /api, the only non-SPA paths are /api/*, the app-level /ws + /health, the
+    # docs, the static mounts, and the root-mounted /webhooks.
     _API_PREFIXES = (
         "api/", "ws/", "webhooks", "health",
-        "docs", "redoc", "openapi.json",
-        "assets/", "favicon.svg", "icons.svg",
+        "docs", "redoc", "openapi.json", "assets/",
     )
+    _DIST_ROOT = FRONTEND_DIST.resolve()
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         if full_path and any(full_path.startswith(p) for p in _API_PREFIXES):
             raise HTTPException(status_code=404)
+        # Vite copies everything in frontend/public/ to the dist ROOT (favicons,
+        # site.webmanifest, og-image.png, the mascot, robots.txt, …) — NOT under
+        # /assets. Serve those real files with the correct content-type. Without
+        # this they fall through to the SPA shell below and get index.html, which
+        # is why /site.webmanifest failed to parse ("Line 1, column 1") and the
+        # hero /rook-mascot.png <img> rendered broken.
+        if full_path:
+            candidate = (FRONTEND_DIST / full_path).resolve()
+            if (
+                candidate.is_relative_to(_DIST_ROOT)   # block path traversal
+                and candidate.is_file()
+                and candidate.name != "index.html"     # shell stays no-cache below
+            ):
+                # mimetypes doesn't know .webmanifest; set it so the browser
+                # parses the manifest instead of rejecting/sniffing it.
+                media_type = (
+                    "application/manifest+json"
+                    if candidate.suffix == ".webmanifest"
+                    else None
+                )
+                return FileResponse(candidate, media_type=media_type)
         # Never cache the SPA shell — always hand the browser the latest bundle
         # reference (the assets it points to are immutable + content-hashed).
         return FileResponse(FRONTEND_DIST / "index.html", headers=_NO_CACHE_HEADERS)
