@@ -560,6 +560,29 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 ## Known Issues / Backlog
 
 ### Extension
+- CROSS-POLLER RULE (non-negotiable): the snake
+  and auction Yahoo pollers SHARE the same URL
+  match patterns (both inject on every Yahoo
+  draft page). Each MUST positively detect its
+  OWN draft type before acting — never mutate
+  the page on a bare #app / URL match. Auction =
+  the #draft nomination panel; snake = #app +
+  snake turn/countdown markers (and #draft
+  ABSENT). Gates: shouldAuctionActivate
+  (yahoo_draft_parse.mjs) and shouldSnakeActivate
+  / hasSnakeMarkers (yahoo_snake_draft_observer
+  .mjs). History: the snake poller's
+  clickPicksTab() ran on auction pages (only
+  #app-gated), switched the view, removed #draft,
+  and took the WHOLE auction room down (no
+  events POSTed) — looked exactly like "DOM
+  drift" but was OUR cross-poller interference.
+- STANDING RULE: snake changes MUST be verified
+  against AUCTION (and vice versa). This is the
+  2nd snake change to break auction (1st: the
+  VORP classifier; 2nd: the poller). Tests cover
+  BOTH directions so this class is caught in CI,
+  not prod — keep it that way.
 - Yahoo passive sync removed — Yahoo CSP
   blocks content script injection in both
   Chrome and Firefox. window.__rook__

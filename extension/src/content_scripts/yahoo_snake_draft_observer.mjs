@@ -19,6 +19,36 @@ const VALID_POSITIONS = new Set([
 ])
 
 /**
+ * True when `#app` text carries live SNAKE-draft markers (the turn / countdown
+ * banner). Used to POSITIVELY confirm a snake draft before the poller takes any
+ * page-mutating action: auction rooms share our URL match patterns AND also
+ * have `#app`, so "#app exists" is not enough to know we're on a snake page.
+ */
+export function hasSnakeMarkers(text) {
+  const s = parseSnakeState(text)
+  return (
+    !!s &&
+    (s.isYourTurn || s.currentPicker != null || s.picksUntilYourTurn != null)
+  )
+}
+
+/**
+ * Gate for the snake poller. It may act ONLY on a confirmed snake draft:
+ *   - NEVER when the auction nomination panel (#draft) is present, and
+ *   - only when snake markers are visible in #app text.
+ *
+ * Both pollers share Yahoo's draft URL patterns, so each MUST positively detect
+ * its own draft type before acting. The snake poller's clickPicksTab() mutates
+ * the page — on an auction room that click switches the view and removes
+ * #draft, starving the auction poller (the cross-poller-interference outage).
+ * Pure: the content script passes the live #draft presence + #app text.
+ */
+export function shouldSnakeActivate({ hasDraftPanel, appText }) {
+  if (hasDraftPanel) return false
+  return hasSnakeMarkers(appText || '')
+}
+
+/**
  * Find the "Picks" tab button among a list of button-like elements. The pick
  * cards only render once the Picks tab is active, so the content script clicks
  * this. Pure: takes the array of buttons (content script passes the live ones).

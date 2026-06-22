@@ -9,6 +9,8 @@ import {
   detectSnakeEvents,
   parsePickCards,
   findPicksButton,
+  hasSnakeMarkers,
+  shouldSnakeActivate,
 } from '../src/content_scripts/yahoo_snake_draft_observer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -273,4 +275,72 @@ test('pollPicksPanel re-clicks the Picks tab when 0 cards after known picks', ()
   )
   // The guard re-clicks and returns before trying to relay.
   assert.match(snakeSrc, /clickPicksTab\(\)\s*\n\s*return/)
+})
+
+// ---------------------------------------------------------------------------
+// Cross-poller guard — the snake poller must POSITIVELY confirm a snake draft
+// before any page-mutating action (clickPicksTab). Auction rooms share the same
+// URL match patterns AND have #app, so "#app exists" is not enough: clicking
+// "Picks" on an auction room switches the view and removes #draft, which killed
+// the auction poller (the cross-poller-interference outage).
+// ---------------------------------------------------------------------------
+
+// A representative auction #app snapshot (nomination panel text, no snake
+// turn/countdown banner — and note "Picks" exists on auction too).
+const AUCTION_APP = [
+  'Saquon Barkley',
+  'RB – PHI',
+  '$15',
+  '0:19 Remaining',
+  'Stephen$96/15',
+  'Bart$80/14',
+  'Picks',
+].join('\n')
+
+test('hasSnakeMarkers: true for live snake banners', () => {
+  assert.equal(hasSnakeMarkers(SOMEONE_ELSE), true)
+  assert.equal(hasSnakeMarkers(YOUR_TURN), true)
+})
+
+test('hasSnakeMarkers: false for an auction page and empty text', () => {
+  assert.equal(hasSnakeMarkers(AUCTION_APP), false)
+  assert.equal(hasSnakeMarkers(''), false)
+})
+
+test('shouldSnakeActivate: INERT when #draft present (auction room)', () => {
+  // Even if some snake-looking text were on the page, #draft = auction → no-op.
+  assert.equal(
+    shouldSnakeActivate({ hasDraftPanel: true, appText: YOUR_TURN }),
+    false
+  )
+})
+
+test('shouldSnakeActivate: INERT on an auction page (no snake markers)', () => {
+  assert.equal(
+    shouldSnakeActivate({ hasDraftPanel: false, appText: AUCTION_APP }),
+    false
+  )
+})
+
+test('shouldSnakeActivate: ACTIVE on a confirmed snake draft', () => {
+  assert.equal(
+    shouldSnakeActivate({ hasDraftPanel: false, appText: SOMEONE_ELSE }),
+    true
+  )
+})
+
+test('snake content script gates clickPicksTab behind snake detection', () => {
+  // The destructive click must run only after a positive snake confirmation —
+  // never directly from bootstrap on a bare #app match.
+  assert.ok(
+    snakeSrc.includes('shouldSnakeActivate') && snakeSrc.includes('waitForSnakeDraft'),
+    'yahoo_snake_draft.js must gate clickPicksTab behind shouldSnakeActivate'
+  )
+  // bootstrap must route through the snake-detection wait, not call the click
+  // path (startWhenPicksReady) directly.
+  const bootstrapBody = snakeSrc.slice(snakeSrc.indexOf('function bootstrap()'))
+  assert.ok(
+    bootstrapBody.includes('waitForSnakeDraft'),
+    'bootstrap must wait for snake confirmation before acting'
+  )
 })

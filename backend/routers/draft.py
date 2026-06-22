@@ -191,50 +191,63 @@ async def relay_draft_event(
     # state from the DB snapshot after a redeploy (replacing the old "build a
     # default engine" band-aid). nomination/your_turn lazily CREATE a default
     # session only when none exists at all.
-    if event.type in ("nomination", "your_turn"):
-        session = await session_manager.get_or_rehydrate(user.id)
-        if session is None:
-            logger.warning(
-                "%s with no session for user %s — creating a default session "
-                "(call POST /draft/start for full budget/opponent fidelity).",
-                event.type, session_key,
-            )
-            state = await _build_state(
-                draft_type="snake" if event.type == "your_turn" else None,
-            )
-            session = await session_manager.create(user.id, state)
+    #
+    # Engine processing (DB lookups + Sonnet recommendation + state persist) is
+    # ISOLATED in this try: a failure here must NEVER suppress the raw-event
+    # relay below. The room has to keep ticking — nominee on the block, timer,
+    # bids, picks leaving the list, opponent budgets — even if the AI
+    # recommendation or a state write throws; the rec simply arrives when it can.
+    try:
+        if event.type in ("nomination", "your_turn"):
+            session = await session_manager.get_or_rehydrate(user.id)
+            if session is None:
+                logger.warning(
+                    "%s with no session for user %s — creating a default session "
+                    "(call POST /draft/start for full budget/opponent fidelity).",
+                    event.type, session_key,
+                )
+                state = await _build_state(
+                    draft_type="snake" if event.type == "your_turn" else None,
+                )
+                session = await session_manager.create(user.id, state)
 
-        if event.type == "nomination":
-            await _trigger_nomination(event, session.engine)
-        else:
-            await _trigger_your_turn(event, session.engine)
-        await session_manager.persist(user.id)
+            if event.type == "nomination":
+                await _trigger_nomination(event, session.engine)
+            else:
+                await _trigger_your_turn(event, session.engine)
+            await session_manager.persist(user.id)
 
-    elif event.type == "snake_pick":
-        # Enrich regardless of session so the UI can always match/remove the pick.
-        session = await session_manager.get_or_rehydrate(user.id)
-        await _record_snake_pick(
-            event,
-            engine=session.engine if session else None,
-            state=session.state if session else None,
+        elif event.type == "snake_pick":
+            # Enrich regardless of session so the UI can always match/remove the pick.
+            session = await session_manager.get_or_rehydrate(user.id)
+            await _record_snake_pick(
+                event,
+                engine=session.engine if session else None,
+                state=session.state if session else None,
+            )
+            if session is not None:
+                await session_manager.persist(user.id)
+
+        elif event.type == "draft_pick":
+            session = await session_manager.get_or_rehydrate(user.id)
+            if session is not None:
+                await _record_pick(event, session.engine, session.state)
+                await session_manager.persist(user.id)
+
+        elif event.type == "my_bid":
+            session = await session_manager.get_or_rehydrate(user.id)
+            if session is not None:
+                session.state.record_my_bid(
+                    event.payload.get("yahoo_player_id", ""),
+                    event.payload.get("amount"),
+                )
+                await session_manager.persist(user.id)
+    except Exception:
+        logger.exception(
+            "Engine processing failed for %s event (user %s) — relaying the raw "
+            "event to the UI anyway",
+            event.type, session_key,
         )
-        if session is not None:
-            await session_manager.persist(user.id)
-
-    elif event.type == "draft_pick":
-        session = await session_manager.get_or_rehydrate(user.id)
-        if session is not None:
-            await _record_pick(event, session.engine, session.state)
-            await session_manager.persist(user.id)
-
-    elif event.type == "my_bid":
-        session = await session_manager.get_or_rehydrate(user.id)
-        if session is not None:
-            session.state.record_my_bid(
-                event.payload.get("yahoo_player_id", ""),
-                event.payload.get("amount"),
-            )
-            await session_manager.persist(user.id)
 
     # Always relay the raw event — but ONLY to this user's WebSocket clients.
     await ws_manager.broadcast_to_session(session_key, {

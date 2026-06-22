@@ -1,7 +1,7 @@
 import browser from '../utils/browser.js'
 import { postDraftEvent } from '../utils/api.js'
 import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
-import { parseDraftState, detectEvents } from './yahoo_draft_parse.mjs'
+import { parseDraftState, detectEvents, shouldAuctionActivate } from './yahoo_draft_parse.mjs'
 
 /**
  * Yahoo Draft Room DOM Poller
@@ -105,13 +105,20 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
 // Bootstrap — wait for the draft room to render, then start
 // ---------------------------------------------------------------------------
 
+// Act ONLY on an auction room — the #draft nomination panel. Snake rooms use
+// #app and have no #draft, so this keeps the auction poller inert there
+// (symmetric to the snake poller's guard against trampling auction).
+function auctionReady() {
+  return shouldAuctionActivate({ hasDraftPanel: !!document.querySelector('#draft') })
+}
+
 function bootstrap() {
-  if (document.querySelector('#draft')) {
+  if (auctionReady()) {
     startPoller()
     return
   }
   const observer = new MutationObserver(() => {
-    if (document.querySelector('#draft')) {
+    if (auctionReady()) {
       observer.disconnect()
       startPoller()
     }
