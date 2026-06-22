@@ -118,9 +118,9 @@ export default function AssistantPanel() {
       <div className="fixed inset-0 bg-black/30 z-50" onClick={close} />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-[480px] max-w-[90vw] bg-[#161822] border-l border-[#2d3148] z-50 flex flex-col shadow-2xl animate-slide-in">
+      <div className="fixed top-0 right-0 h-full w-[480px] max-w-[90vw] bg-surface-1 border-l border-border z-50 flex flex-col shadow-2xl animate-slide-in">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#2d3148]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
             <h2 className="text-sm font-semibold text-white">AI Assistant</h2>
@@ -128,14 +128,14 @@ export default function AssistantPanel() {
           <div className="flex items-center gap-2">
             <button
               onClick={clearConversation}
-              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#2d3148] transition-colors"
+              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-border transition-colors"
               title="Clear conversation"
             >
               <Trash2 size={14} />
             </button>
             <button
               onClick={close}
-              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#2d3148] transition-colors"
+              className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-border transition-colors"
             >
               <X size={16} />
             </button>
@@ -143,14 +143,14 @@ export default function AssistantPanel() {
         </div>
 
         {/* Context toggles */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-[#2d3148] bg-[#1a1d2e]">
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-surface-assistant">
           <span className="text-xs text-gray-500">Context:</span>
           <button
             onClick={() => setIncludeRoster(!includeRoster)}
             className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
               includeRoster
                 ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                : 'bg-[#2d3148] text-gray-400 border border-transparent'
+                : 'bg-border text-gray-400 border border-transparent'
             }`}
           >
             <UserCheck size={12} />
@@ -161,7 +161,7 @@ export default function AssistantPanel() {
             className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
               includeOpponents
                 ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                : 'bg-[#2d3148] text-gray-400 border border-transparent'
+                : 'bg-border text-gray-400 border border-transparent'
             }`}
           >
             <Users size={12} />
@@ -214,7 +214,7 @@ export default function AssistantPanel() {
         </div>
 
         {/* Input */}
-        <div className="border-t border-[#2d3148] px-4 py-3">
+        <div className="border-t border-border px-4 py-3">
           <div className="flex items-end gap-2">
             <textarea
               ref={inputRef}
@@ -223,7 +223,7 @@ export default function AssistantPanel() {
               onKeyDown={handleKeyDown}
               placeholder="Ask about a player, trade, or strategy..."
               rows={1}
-              className="flex-1 resize-none bg-[#1a1d2e] border border-[#2d3148] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 max-h-24 overflow-y-auto"
+              className="flex-1 resize-none bg-surface-assistant border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-accent/60 max-h-24 overflow-y-auto"
               disabled={isStreaming}
             />
             <button
@@ -253,7 +253,7 @@ function MessageBubble({ role, content, openPlayerDetail, streaming }) {
 
   return (
     <div className="max-w-[95%]">
-      <div className="bg-[#1a1d2e] border border-[#2d3148] rounded-lg px-3 py-2 text-sm text-gray-200 prose prose-invert prose-sm max-w-none">
+      <div className="bg-surface-assistant border border-border rounded-lg px-3 py-2 text-sm text-gray-200 prose prose-invert prose-sm max-w-none">
         <Markdown>{content}</Markdown>
         {streaming && <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5" />}
       </div>

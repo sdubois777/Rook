@@ -68,12 +68,12 @@ export default function PricingTable({ showHeader = true }) {
               key={tier.name}
               className={`relative rounded-xl p-8 border transition-colors ${
                 tier.highlight
-                  ? 'border-blue-500 bg-blue-950/20 shadow-lg shadow-blue-500/5'
+                  ? 'border-brand bg-brand/10 shadow-lg shadow-brand/10'
                   : 'border-gray-800 bg-gray-900/40 hover:border-gray-700'
               }`}
             >
               {tier.highlight && (
-                <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand text-white text-xs font-bold px-3 py-1 rounded-full">
                   Most Popular
                 </span>
               )}
@@ -105,7 +105,7 @@ export default function PricingTable({ showHeader = true }) {
                 to="/sign-up"
                 className={`mt-8 block text-center py-3 rounded-lg font-semibold text-sm transition-colors ${
                   tier.highlight
-                    ? 'bg-blue-600 hover:bg-blue-500 text-white'
+                    ? 'bg-brand hover:bg-brand-hover text-white'
                     : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
                 }`}
               >

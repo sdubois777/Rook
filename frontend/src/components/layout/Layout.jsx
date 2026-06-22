@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react'
 import Sidebar from './Sidebar'
 import AssistantButton from '../AssistantButton'
 import AssistantPanel from '../AssistantPanel'
+import Logo from '../brand/Logo'
 import { useUIStore } from '../../stores/ui'
 
 export default function Layout({ children }) {
@@ -13,9 +14,9 @@ export default function Layout({ children }) {
   return (
     // Column on mobile (top bar above content); the existing row layout returns
     // at lg. The Sidebar is fixed/out-of-flow, so `main` is the only flow child.
-    <div className="flex flex-col lg:flex-row h-screen bg-[#0f1117] text-slate-200">
+    <div className="flex flex-col lg:flex-row h-screen bg-surface-0 text-slate-200">
       {/* Mobile top bar — hidden at lg so desktop is unchanged. */}
-      <header className="lg:hidden flex items-center gap-2 h-14 px-3 border-b border-[#2d3148] bg-[#161822] shrink-0">
+      <header className="lg:hidden flex items-center gap-2 h-14 px-3 border-b border-border bg-surface-1 shrink-0">
         <button
           onClick={() => setMobileNavOpen(true)}
           aria-label="Open navigation"
@@ -23,7 +24,7 @@ export default function Layout({ children }) {
         >
           <Menu size={22} />
         </button>
-        <span className="text-blue-400 font-semibold text-sm tracking-wide">Rook</span>
+        <Logo size={22} />
       </header>
 
       {/* Backdrop behind the drawer (mobile only). */}

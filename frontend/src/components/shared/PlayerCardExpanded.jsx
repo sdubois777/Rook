@@ -9,7 +9,7 @@ export default function PlayerCardExpanded({ player, onClick }) {
   return (
     <div
       onClick={() => onClick?.(player.id)}
-      className="px-4 py-3 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/50"
+      className="px-4 py-3 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50"
     >
       <div className="flex items-center gap-3">
         <span className="w-9 shrink-0"><PositionBadge position={player.position} /></span>

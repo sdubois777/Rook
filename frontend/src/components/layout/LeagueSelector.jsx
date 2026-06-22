@@ -55,7 +55,7 @@ export default function LeagueSelector() {
   // Full dropdown — always used on mobile (the drawer is full-width, so the
   // desktop "collapsed" rail concept doesn't apply there).
   const fullSelector = (
-    <div className="px-3 py-2 border-b border-[#2d3148]">
+    <div className="px-3 py-2 border-b border-border">
       <select
         aria-label="Select league"
         value={selectedLeague?.id || ''}
@@ -63,7 +63,7 @@ export default function LeagueSelector() {
           const next = options.find((l) => l.id === e.target.value) || null
           setSelectedLeague(next)
         }}
-        className="w-full bg-[#1c1f2e] text-slate-200 border border-[#2d3148] rounded px-2 py-1.5 text-xs"
+        className="w-full bg-surface-2 text-slate-200 border border-border rounded px-2 py-1.5 text-xs"
       >
         {options.map((l) => (
           <option key={l.id} value={l.id}>
@@ -84,10 +84,10 @@ export default function LeagueSelector() {
   if (collapsed) {
     return (
       <>
-        <div className="hidden lg:flex px-2 py-2 border-b border-[#2d3148] justify-center">
+        <div className="hidden lg:flex px-2 py-2 border-b border-border justify-center">
           <span
             title={selectedLeague?.league_name || 'No league'}
-            className="text-[10px] font-semibold text-blue-300 bg-[#1c1f2e] rounded px-1.5 py-1"
+            className="text-[10px] font-semibold text-blue-300 bg-surface-2 rounded px-1.5 py-1"
           >
             {abbreviate(selectedLeague?.league_name)}
           </span>

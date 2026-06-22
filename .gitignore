@@ -64,3 +64,9 @@ backtest_results_2025.csv
 
 # League import CSVs - user data, never committed
 data/*.csv
+
+# Throwaway icon sources (built into frontend/public/ by scripts/build_favicons.py)
+rook_kit.png
+rook.png
+frontend/public/_debug_crops/
+frontend/public/_brand_preview/

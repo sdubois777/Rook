@@ -8,7 +8,7 @@ export default function Pagination({ page, pages, onPageChange }) {
       <button
         onClick={() => onPageChange(page - 1)}
         disabled={page <= 1}
-        className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-400 bg-[#1c1f2e] rounded border border-[#2d3148] hover:bg-[#222539] disabled:opacity-30 disabled:cursor-not-allowed"
+        className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-400 bg-surface-2 rounded border border-border hover:bg-surface-3 disabled:opacity-30 disabled:cursor-not-allowed"
       >
         <ChevronLeft size={14} />
         Previous
@@ -19,7 +19,7 @@ export default function Pagination({ page, pages, onPageChange }) {
       <button
         onClick={() => onPageChange(page + 1)}
         disabled={page >= pages}
-        className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-400 bg-[#1c1f2e] rounded border border-[#2d3148] hover:bg-[#222539] disabled:opacity-30 disabled:cursor-not-allowed"
+        className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-400 bg-surface-2 rounded border border-border hover:bg-surface-3 disabled:opacity-30 disabled:cursor-not-allowed"
       >
         Next
         <ChevronRight size={14} />

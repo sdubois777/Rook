@@ -75,7 +75,7 @@ export default function AvailablePlayers() {
       </div>
 
       {/* Column headers — auction (dollars) vs snake (ADP) */}
-      <div className="flex items-center gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-slate-600 border-b border-[#2d3148]">
+      <div className="flex items-center gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-slate-600 border-b border-border">
         <span className="w-8">Pos</span>
         <span className="flex-1">Player</span>
         <span className="w-10">Team</span>
@@ -109,7 +109,7 @@ export default function AvailablePlayers() {
           return (
             <div
               key={p.id || p.yahoo_player_id}
-              className="flex items-center gap-2 px-3 py-1.5 hover:bg-[#222539] cursor-pointer transition-colors border-b border-[#2d3148]/30"
+              className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/30"
             >
               <div className="w-8">
                 <PositionBadge position={p.position} />

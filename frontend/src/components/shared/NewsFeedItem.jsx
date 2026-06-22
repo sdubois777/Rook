@@ -47,7 +47,7 @@ export default function NewsFeedItem({ signal, onPlayerClick }) {
     : ''
 
   return (
-    <div className="border-b border-[#2d3148]/50 py-3 px-4">
+    <div className="border-b border-border/50 py-3 px-4">
       <div
         className="flex items-start gap-3 cursor-pointer"
         onClick={() => setExpanded(!expanded)}

@@ -24,7 +24,7 @@ export default function SearchInput({ placeholder = 'Search...', onSearch, delay
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
-        className="w-full pl-8 pr-8 py-1.5 text-sm bg-[#1c1f2e] text-slate-300 border border-[#2d3148] rounded focus:outline-none focus:border-blue-500/50 placeholder-slate-600"
+        className="w-full pl-8 pr-8 py-1.5 text-sm bg-surface-2 text-slate-300 border border-border rounded focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
       />
       {value && (
         <button

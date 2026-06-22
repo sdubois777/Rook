@@ -26,7 +26,7 @@ function StepIndicator({ current }) {
               i < current
                 ? 'bg-green-600 text-white'
                 : i === current
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-brand text-white'
                   : 'bg-gray-800 text-gray-500'
             }`}
           >
@@ -517,7 +517,7 @@ function ConfirmStep({ result }) {
 
       <button
         onClick={() => navigate('/dashboard')}
-        className="bg-blue-600 hover:bg-blue-500 text-white font-medium px-6 py-3 rounded-lg transition-colors"
+        className="bg-brand hover:bg-brand-hover text-white font-medium px-6 py-3 rounded-lg transition-colors"
       >
         Go to Dashboard
       </button>

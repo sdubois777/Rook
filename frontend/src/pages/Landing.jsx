@@ -10,7 +10,7 @@ import LandingFooter from '../components/landing/LandingFooter'
 
 export default function Landing() {
   return (
-    <div className="min-h-screen bg-[#0f1117] text-slate-200">
+    <div className="min-h-screen bg-surface-0 text-slate-200">
       <LandingNav />
       <Hero />
       <SocialProof />
