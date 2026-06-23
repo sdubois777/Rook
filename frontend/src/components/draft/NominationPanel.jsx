@@ -1,5 +1,14 @@
+import { useState, useEffect } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import PositionBadge from '../shared/PositionBadge'
+
+/** "0:15" from a seconds count. */
+function fmtClock(secs) {
+  if (secs == null) return null
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
 
 // Where the live bid sits relative to our own system value.
 function valueIndicator(bid, systemValue) {
@@ -19,8 +28,24 @@ export default function NominationPanel() {
   const playerName =
     nom?.playerName || rec?.player_name || currentBid?.player_name || 'Unknown'
   const bidAmount = nom?.currentBid ?? currentBid?.current_bid
-  const clock = nom?.clock
-  const clockDanger = nom?.secondsRemaining != null && nom.secondsRemaining < 10
+
+  // Local 1s countdown so the timer ticks SMOOTHLY and never appears frozen
+  // between the extension's coarse (5s) clock updates. It resyncs to the
+  // extension's value on every fresh clock/bid tick; between them it counts down
+  // locally. (Hooks run unconditionally — before the early return below.)
+  const targetSecs = nom?.secondsRemaining ?? null
+  const [secs, setSecs] = useState(targetSecs)
+  useEffect(() => setSecs(targetSecs), [targetSecs])
+  useEffect(() => {
+    const t = setInterval(
+      () => setSecs((s) => (s != null && s > 0 ? s - 1 : s)),
+      1000
+    )
+    return () => clearInterval(t)
+  }, [])
+
+  const clock = nom ? fmtClock(secs) : null
+  const clockDanger = secs != null && secs < 10
   const hasNomination = nom || rec || currentBid
 
   const systemValue = rec?.system_value ?? null

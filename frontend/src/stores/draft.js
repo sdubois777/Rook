@@ -202,7 +202,19 @@ export const useDraftStore = create((set, get) => ({
         : s.currentNomination,
     })),
 
-  updateTeams: (teams) => set({ teamsState: teams || {} }),
+  updateTeams: (teams) =>
+    set((s) => {
+      if (!teams || typeof teams !== 'object') return { teamsState: {} }
+      // The React poller labels YOUR OWN card "You"; the engine knows you as
+      // myTeamName. Fold "You" into myTeamName so the panel shows ONE entry for
+      // you, not a phantom "You" beside "<your team> (you)".
+      const me = s.myTeamName
+      if (me && me !== 'You' && Object.prototype.hasOwnProperty.call(teams, 'You')) {
+        const { You, ...rest } = teams
+        return { teamsState: { ...rest, [me]: You } }
+      }
+      return { teamsState: teams }
+    }),
 
   recordPick: (pick) => {
     const state = get()
@@ -249,29 +261,24 @@ export const useDraftStore = create((set, get) => ({
 
     const newPicks = [...state.picks, { ...pick, timestamp: now }]
 
-    // Find the available entry (for position lookup) before removing it.
-    const fromAvailable = state.availablePlayers.find(
-      (p) => normalizeName(p.name) === pickName
-    )
+    // Match the picked player to the available list. The backend enriches the
+    // auction draft_pick with the FULL name + canonical id, but the React DOM's
+    // raw name is abbreviated ("T. McMillan") — so match by id (guarded so
+    // undefined!==undefined can't wipe the list) OR matchesPickName, which
+    // handles abbreviated DOM names (same backstop snake uses).
+    const matchesPick = (p) =>
+      (pick.player_id != null &&
+        (p.id === pick.player_id || p.yahoo_player_id === pick.player_id)) ||
+      (!!pick.player_name && matchesPickName(p.name, pick.player_name))
 
-    // Remove ONLY the drafted player from the available list — never clear it.
-    // Keep every player UNLESS it matches the sold pick by a real id or by name.
-    // Note: relayed picks carry no player_id, and draftboard players have no
-    // yahoo_player_id — so the id checks must be guarded, otherwise
-    // `undefined !== undefined` would (wrongly) treat every player as a match
-    // and wipe the whole list on the first sale.
-    const newAvailable = state.availablePlayers.filter((p) => {
-      const idMatch =
-        pick.player_id != null &&
-        (p.yahoo_player_id === pick.player_id || p.id === pick.player_id)
-      const nameMatch = pickName !== '' && normalizeName(p.name) === pickName
-      return !(idMatch || nameMatch)
-    })
+    const fromAvailable = state.availablePlayers.find(matchesPick)
+    const newAvailable = state.availablePlayers.filter((p) => !matchesPick(p))
 
     // Group the pick under its winning team and recompute that team's threat
-    // score (sum of ai_bid_ceiling). Threat is ceiling-based, not price-based,
-    // so elite players flag a team even when bought cheaply.
-    const winner = pick.winner || 'Unknown'
+    // score (sum of ai_bid_ceiling). Collapse YOUR wins (the React poller labels
+    // your card "You", and is_yours is set when you win) into myTeamName, so the
+    // roster dropdown shows ONE entry for you — not a phantom "You" beside it.
+    const winner = isYours ? state.myTeamName || 'You' : pick.winner || 'Unknown'
     const ceiling =
       fromAvailable?.ai_bid_ceiling ??
       fromAvailable?.recommended_bid_ceiling ??

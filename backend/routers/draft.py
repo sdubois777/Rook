@@ -294,6 +294,17 @@ async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
     winner = payload.get("winner", "")
     final_price = payload.get("final_price", 0) or 0
 
+    # Enrich the broadcast payload so the UI can match + remove the player. The
+    # React draft room shows an ABBREVIATED name ("T. McMillan") and Yahoo's own
+    # id (a different id space than the board's canonical UUID), so the raw event
+    # matches nothing. Resolve to the full name + canonical id (mirrors
+    # _record_snake_pick).
+    if player is not None:
+        player_name = player.name  # full name for the engine's opponent roster too
+        payload["player_name"] = player.name
+        payload["player_id"] = str(player.id)
+        payload["position"] = player.position or payload.get("position") or ""
+
     if (
         winner == "unknown"
         and state is not None

@@ -457,6 +457,7 @@ export function initAuctionMemory() {
     lastPlayerKey: null,
     pendingPlayerKey: null,
     lastPlayerName: null,
+    lastPlayerId: null,
     lastBid: null,
     lastBidder: null,
     lastClock: null,
@@ -471,28 +472,33 @@ export function initAuctionMemory() {
 export function detectAuctionEvents(prev, curr) {
   const events = []
   const next = { ...prev, soldKeys: prev.soldKeys.slice() }
-  const key = curr.playerId || curr.playerName // nomination identity
+  const key = curr.playerName ? curr.playerId || curr.playerName : null // nominee identity
 
-  // SALE (delta-driven, dedupe) — attribute to the LAST-known nomination so a
-  // back-to-back nomination on the same tick still records the prior sale.
-  if (prev.lastPlayerKey && !next.soldKeys.includes(prev.lastPlayerKey)) {
-    const winner = detectWinner(curr.teams, prev.nominationTeams || {}, prev.lastBid)
-    if (winner) {
-      events.push({
-        type: 'draft_pick',
-        platform: 'yahoo',
-        payload: {
-          player_name: prev.lastPlayerName,
-          player_id: prev.lastPlayerKey,
-          final_price: prev.lastBid,
-          winner,
-          teams_snapshot: curr.teams,
-        },
-      })
-      next.soldKeys.push(prev.lastPlayerKey)
-      next.lastPlayerKey = null // cleared so the next nomination can stage
-      next.pendingPlayerKey = null
-    }
+  // SALE — the previously-confirmed nominee is no longer the active nominee
+  // (sold, or replaced by the next nomination). Every nominated player IS sold
+  // in an auction (min $1), so this MUST fire even when the winner can't be
+  // determined from the budget delta ('unknown') — otherwise the player never
+  // leaves the board. Attribute the winner via the team-budget delta; tag
+  // is_yours so the UI books it to your team, not a phantom "You".
+  if (prev.lastPlayerKey && key !== prev.lastPlayerKey && !next.soldKeys.includes(prev.lastPlayerKey)) {
+    const winner = detectWinner(curr.teams, prev.nominationTeams || {}, prev.lastBid) || 'unknown'
+    events.push({
+      type: 'draft_pick',
+      platform: 'yahoo',
+      payload: {
+        player_name: prev.lastPlayerName,
+        player_id: prev.lastPlayerId,
+        final_price: prev.lastBid,
+        winner,
+        is_yours: winner === EXPECTED_YOU_LABEL,
+        teams_snapshot: curr.teams,
+      },
+    })
+    next.soldKeys.push(prev.lastPlayerKey)
+    next.lastPlayerKey = null // cleared so the next nomination can stage
+    next.lastPlayerName = null
+    next.lastPlayerId = null
+    next.pendingPlayerKey = null
   }
 
   // NOMINATION (1-tick confirmation debounce — Amendment 1).
@@ -513,6 +519,7 @@ export function detectAuctionEvents(prev, curr) {
       })
       next.lastPlayerKey = key
       next.lastPlayerName = curr.playerName
+      next.lastPlayerId = curr.playerId
       next.lastBid = curr.currentBid
       next.lastBidder = curr.currentBidder
       next.lastClock = curr.clock

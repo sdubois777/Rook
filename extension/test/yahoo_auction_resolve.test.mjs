@@ -183,16 +183,54 @@ test('post-pick: team-delta draft_pick attributed to the last-known nominee', ()
     ...initAuctionMemory(),
     lastPlayerKey: '99999',
     lastPlayerName: 'Sold Player',
+    lastPlayerId: '99999',
     lastBid: price,
     nominationTeams,
   }
+  // The nominee left the block (playerName null) → the sale fires.
   const { events } = detectAuctionEvents(prev, { ...curr, playerName: null })
   const sale = events.find((e) => e.type === 'draft_pick')
-  assert.ok(sale, 'draft_pick emitted on the team-budget delta')
+  assert.ok(sale, 'draft_pick emitted when the nominee leaves the block')
   assert.equal(sale.payload.winner, winner)
   assert.equal(sale.payload.player_name, 'Sold Player') // last-known nominee
   assert.equal(sale.payload.player_id, '99999')
   assert.equal(sale.payload.final_price, price)
+  assert.equal(sale.payload.is_yours, false) // an opponent won
+})
+
+test('sale fires even when the winner is undetermined (player must leave the board)', () => {
+  // No team-budget delta resolvable → winner "unknown", but the pick STILL fires
+  // (every nominated auction player is sold), so the UI removes it.
+  const prev = {
+    ...initAuctionMemory(),
+    lastPlayerKey: '123',
+    lastPlayerName: 'Gone Player',
+    lastPlayerId: '123',
+    lastBid: 5,
+    nominationTeams: { 'Team 1': { budget: 100, slotsUsed: 1, totalSlots: 15, dataId: '1' } },
+  }
+  const curr = { teams: { 'Team 1': { budget: 100, slotsUsed: 1, totalSlots: 15, dataId: '1' } }, health: {} }
+  const sale = detectAuctionEvents(prev, curr).events.find((e) => e.type === 'draft_pick')
+  assert.ok(sale)
+  assert.equal(sale.payload.winner, 'unknown')
+  assert.equal(sale.payload.player_name, 'Gone Player')
+})
+
+test('sale tags is_yours when YOUR card wins (winner === "You")', () => {
+  // Your card's budget drops by the price → detectWinner resolves "You" → is_yours.
+  const prev = {
+    ...initAuctionMemory(),
+    lastPlayerKey: '7',
+    lastPlayerName: 'My Guy',
+    lastPlayerId: '7',
+    lastBid: 20,
+    nominationTeams: { You: { budget: 200, slotsUsed: 0, totalSlots: 15, dataId: '4' } },
+  }
+  const curr = { teams: { You: { budget: 180, slotsUsed: 1, totalSlots: 15, dataId: '4' } }, health: {} }
+  const sale = detectAuctionEvents(prev, curr).events.find((e) => e.type === 'draft_pick')
+  assert.ok(sale)
+  assert.equal(sale.payload.winner, 'You')
+  assert.equal(sale.payload.is_yours, true)
 })
 
 // draft-complete.html — post-draft summary on the SAME root. It has no .ys-team
