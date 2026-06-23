@@ -57,7 +57,9 @@ test('DOM poller core is independent of the MAIN-world interceptor', () => {
   assert.doesNotMatch(parse, /__yahoo_draft_action__/)
 
   const isolated = read('src/content_scripts/yahoo_draft.js')
-  assert.match(isolated, /detectEvents/)
+  // React-client core: resolve the board + diff events, no MAIN-world dependency.
+  assert.match(isolated, /resolveAuctionState/)
+  assert.match(isolated, /detectAuctionEvents/)
   assert.match(isolated, /window\.__rook__\s*=\s*true/)
 })
 

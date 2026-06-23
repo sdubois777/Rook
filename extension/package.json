@@ -10,8 +10,9 @@
     "zip:firefox": "cd dist && zip -r ../rook-firefox.zip . && cd .."
   },
   "devDependencies": {
+    "copy-webpack-plugin": "^12",
+    "linkedom": "^0.18.12",
     "webpack": "^5",
-    "webpack-cli": "^5",
-    "copy-webpack-plugin": "^12"
+    "webpack-cli": "^5"
   }
 }

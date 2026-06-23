@@ -34,17 +34,26 @@ export function hasSnakeMarkers(text) {
 
 /**
  * Gate for the snake poller. It may act ONLY on a confirmed snake draft:
- *   - NEVER when the auction nomination panel (#draft) is present, and
+ *   - NEVER when an auction room is detected — legacy `#draft` panel
+ *     (hasDraftPanel) OR the auction React root (hasAuctionRoot), and
  *   - only when snake markers are visible in #app text.
  *
  * Both pollers share Yahoo's draft URL patterns, so each MUST positively detect
  * its own draft type before acting. The snake poller's clickPicksTab() mutates
- * the page — on an auction room that click switches the view and removes
- * #draft, starving the auction poller (the cross-poller-interference outage).
- * Pure: the content script passes the live #draft presence + #app text.
+ * the page — on an auction room that click switches the view and starves the
+ * auction poller (the cross-poller-interference outage).
+ *
+ * Yahoo's 2026 React replatform REMOVED the auction `#draft` node, so the veto
+ * now also keys on the auction React root (`#main-0-DraftClientBootstrap-Proxy`).
+ * LANDMINE: when snake itself migrates onto that SAME root, this rule will see
+ * the root on snake's OWN page and silently disable snake — it MUST be revisited
+ * then (gate on snake-specific markers within the root, not the root's mere
+ * presence). See CLAUDE.md "snake-migration landmine".
+ *
+ * Pure: the content script passes the live #draft / auction-root presence + text.
  */
-export function shouldSnakeActivate({ hasDraftPanel, appText }) {
-  if (hasDraftPanel) return false
+export function shouldSnakeActivate({ hasDraftPanel, hasAuctionRoot, appText }) {
+  if (hasDraftPanel || hasAuctionRoot) return false
   return hasSnakeMarkers(appText || '')
 }
 

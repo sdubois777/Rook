@@ -566,10 +566,11 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   draft page). Each MUST positively detect its
   OWN draft type before acting — never mutate
   the page on a bare #app / URL match. Auction =
-  the #draft nomination panel; snake = #app +
-  snake turn/countdown markers (and #draft
-  ABSENT). Gates: shouldAuctionActivate
-  (yahoo_draft_parse.mjs) and shouldSnakeActivate
+  the React root #main-0-DraftClientBootstrap-
+  Proxy (live timer / .ys-team cards); snake =
+  #app + snake turn/countdown markers AND the
+  auction root ABSENT. Gates: shouldAuctionActivate
+  (yahoo_auction_resolve.mjs) and shouldSnakeActivate
   / hasSnakeMarkers (yahoo_snake_draft_observer
   .mjs). History: the snake poller's
   clickPicksTab() ran on auction pages (only
@@ -583,6 +584,39 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   VORP classifier; 2nd: the poller). Tests cover
   BOTH directions so this class is caught in CI,
   not prod — keep it that way.
+- AUCTION REACT CLIENT (2026 replatform): Yahoo
+  migrated the AUCTION room to a React app, root
+  #main-0-DraftClientBootstrap-Proxy, with NO
+  semantic selectors on live data. Two class
+  families: `ys-*` KEBAB classes (e.g. .ys-team,
+  .ys-player) are hand-authored/semantic — OK as
+  anchors; `_ys_*` HASH classes are build-
+  generated and ROTATE every Yahoo deploy — NEVER
+  a primary key, only a fallback layered behind a
+  text/structure check, and using one MUST emit
+  loud telemetry (console.warn + selector_health
+  heartbeat) so a rotation alarms instead of
+  silently stalling. Auction selectors must be
+  TEXT / STRUCTURE / kebab-`ys-` anchored
+  (resolveAuctionState in yahoo_auction_resolve
+  .mjs): gate = root + (timer SPAN /^\d{2}:\d{2}$/
+  not in a dialog OR >=1 .ys-team) AND NOT draft-
+  complete; nominee identity = ys-player[data-id]
+  (stable player ID) primary; team self-id =
+  <span>You</span> + .ys-team[data-id] primary.
+  Fixtures = REAL captured Yahoo outerHTML under
+  extension/test/fixtures/auction/ (re-runnable
+  after each deploy), parsed with linkedom.
+- SNAKE-MIGRATION LANDMINE: the snake poller
+  vetoes when the auction React root
+  #main-0-DraftClientBootstrap-Proxy is present.
+  When SNAKE itself migrates onto that SAME root
+  (likely next — it's the same client), snake
+  will see the root on its OWN page and silently
+  disable itself. This rule MUST be revisited then
+  (gate snake on snake-specific markers WITHIN the
+  root, not the root's mere presence) or snake
+  breaks. Snake is still on the old #app DOM today.
 - Yahoo passive sync removed — Yahoo CSP
   blocks content script injection in both
   Chrome and Firefox. window.__rook__

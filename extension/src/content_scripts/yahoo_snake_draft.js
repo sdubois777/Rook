@@ -8,6 +8,7 @@ import {
   findPicksButton,
   shouldSnakeActivate,
 } from './yahoo_snake_draft_observer.mjs'
+import { AUCTION_ROOT_SELECTOR } from './yahoo_auction_resolve.mjs'
 
 /**
  * Yahoo Snake Draft Room — DOM Poller
@@ -186,17 +187,18 @@ function startWhenPicksReady() {
 }
 
 // Auction rooms share our URL match patterns and ALSO have #app, so we must
-// confirm a snake draft (snake markers in #app, #draft absent) BEFORE any
-// page-mutating action. The clickPicksTab() in startWhenPicksReady switches the
-// view; on an auction room it removes #draft and kills the auction poller. Bail
-// permanently the moment the auction nomination panel (#draft) is present;
-// otherwise wait for snake markers to render, then start. NEVER click on a page
-// we haven't positively identified as snake.
+// confirm a snake draft BEFORE any page-mutating action. The clickPicksTab() in
+// startWhenPicksReady switches the view; on an auction room it starves the
+// auction poller. Bail permanently the moment an auction room is detected —
+// legacy #draft OR the React auction root (#draft was removed by Yahoo's 2026
+// replatform) — otherwise wait for snake markers to render, then start. NEVER
+// click on a page we haven't positively identified as snake.
 function waitForSnakeDraft() {
   const hasDraftPanel = !!document.querySelector('#draft')
-  if (hasDraftPanel) return // auction room — never act, stop checking
+  const hasAuctionRoot = !!document.querySelector(AUCTION_ROOT_SELECTOR)
+  if (hasDraftPanel || hasAuctionRoot) return // auction room — never act
   const appText = document.querySelector('#app')?.innerText || ''
-  if (shouldSnakeActivate({ hasDraftPanel, appText })) {
+  if (shouldSnakeActivate({ hasDraftPanel, hasAuctionRoot, appText })) {
     startWhenPicksReady()
     return
   }

@@ -1,24 +1,30 @@
 import browser from '../utils/browser.js'
 import { postDraftEvent } from '../utils/api.js'
 import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
-import { parseDraftState, detectEvents, shouldAuctionActivate } from './yahoo_draft_parse.mjs'
+import {
+  AUCTION_ROOT_SELECTOR,
+  auctionRoot,
+  shouldAuctionActivate,
+  resolveAuctionState,
+  detectAuctionEvents,
+  initAuctionMemory,
+} from './yahoo_auction_resolve.mjs'
+import { hasSnakeMarkers } from './yahoo_snake_draft_observer.mjs'
 
 /**
- * Yahoo Draft Room DOM Poller
+ * Yahoo AUCTION Draft Room poller (React client, 2026 replatform).
  *
- * Reads draft state from `#draft` innerText every 300ms and relays
- * nominations, bid updates, clock ticks, sold picks, and budget changes
- * to the backend via POST /draft/event. Also intercepts Yahoo's own
- * console.error draft logging (['B',...] / ['N',...]) to capture the
- * Yahoo player IDs of YOUR bids and nominations.
+ * Yahoo rebuilt the auction room as a React app rooted at
+ * `#main-0-DraftClientBootstrap-Proxy` — the old `#draft` innerText container is
+ * gone. This polls the React root every 300ms, resolves the board state with
+ * resolveAuctionState() (text/structure/kebab-`ys-` anchored, `_ys_` hashes only
+ * as loud-degrading fallbacks), and relays nomination/bid/clock/sold/teams +
+ * a selector_health heartbeat via POST /draft/event.
  *
- * Does NOT use WS interception — Yahoo's CSP blocks content-script
- * injection, so DOM polling is the reliable alternative. The console.error
- * hook for YOUR own bid/nomination frames runs in the page's MAIN world via
- * a separate manifest-declared content script (yahoo_draft_main.js, "world":
- * "MAIN") — not an inline <script> tag, which Yahoo's CSP would block. This
- * isolated-world file listens for the frames it forwards. The pure
- * parsing/detection logic lives in yahoo_draft_parse.mjs (unit-tested).
+ * Still NOT WS interception — Yahoo's CSP blocks it; DOM polling is the reliable
+ * path. The console.error hook for YOUR own bid/nomination frames runs in the
+ * page's MAIN world via yahoo_draft_main.js ("world":"MAIN"). All selector logic
+ * lives in yahoo_auction_resolve.mjs (fixture-tested against captured Yahoo DOM).
  */
 
 const POLL_INTERVAL_MS = 300
@@ -44,21 +50,41 @@ function markDraftActive() {
 function startPoller() {
   if (active) return
   active = true
+  // Flip to "live draft" off the gate (Yahoo's React client never renders the
+  // old #draft node, so presence is now signalled here when the poller starts).
+  window.__rook__ = true
   markDraftActive()
 
-  let memory = {
-    lastPlayer: null,
-    lastBid: null,
-    lastClock: null,
-    prevTeams: {},
+  let memory = initAuctionMemory()
+
+  // Loud-degradation hook, throttled to once per field-state so a Yahoo deploy
+  // that rotates the `_ys_` hashes alarms once (console.warn) and surfaces via
+  // the selector_health heartbeat — instead of stalling silently.
+  const warned = new Set()
+  const warn = (field, level) => {
+    const k = `${field}:${level}`
+    if (warned.has(k)) return
+    warned.add(k)
+    console.warn(`Rook auction selector degraded: ${field} → ${level}`)
   }
 
   setInterval(async () => {
-    const text = document.querySelector('#draft')?.innerText
-    const state = parseDraftState(text)
-    if (!state) return
+    const root = auctionRoot(document)
+    if (!root) return
 
-    const { events, next } = detectEvents(memory, state)
+    const state = resolveAuctionState(root, { warn })
+
+    // Reset the throttle for any field that recovered to a stable anchor, so a
+    // FUTURE rotation re-alarms rather than staying silent under the old key.
+    for (const [field, lvl] of Object.entries(state.health)) {
+      if (lvl === 'primary' || lvl === 'na') {
+        for (const k of Array.from(warned)) {
+          if (k.startsWith(`${field}:`)) warned.delete(k)
+        }
+      }
+    }
+
+    const { events, next } = detectAuctionEvents(memory, state)
     memory = next
 
     for (const event of events) {
@@ -73,7 +99,10 @@ function startPoller() {
 }
 
 // ---------------------------------------------------------------------------
-// console.error listener — YOUR own bids/nominations (carry Yahoo player IDs)
+// console.error listener — YOUR own bids/nominations (carry Yahoo player IDs).
+// NOTE: re-verify these ['B',...]/['N',...] frames still fire on the React
+// client; if not, Amendment B's ys-player[data-id] already covers nominee
+// identity. Kept as-is (non-destructive) pending a live mid-nomination capture.
 // ---------------------------------------------------------------------------
 
 window.addEventListener('__yahoo_draft_action__', async (event) => {
@@ -102,14 +131,15 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
 })
 
 // ---------------------------------------------------------------------------
-// Bootstrap — wait for the draft room to render, then start
+// Bootstrap — wait for the React auction room, confirm the live gate, then start
 // ---------------------------------------------------------------------------
 
-// Act ONLY on an auction room — the #draft nomination panel. Snake rooms use
-// #app and have no #draft, so this keeps the auction poller inert there
-// (symmetric to the snake poller's guard against trampling auction).
+// Gate: React root present AND (live timer OR >=1 .ys-team) AND not draft-complete
+// AND no snake markers (cross-poller veto). Snake rooms (still on #app) never
+// have the auction root, so this stays inert there.
 function auctionReady() {
-  return shouldAuctionActivate({ hasDraftPanel: !!document.querySelector('#draft') })
+  const appText = document.querySelector('#app')?.innerText || ''
+  return shouldAuctionActivate(document, { snakeMarkers: hasSnakeMarkers(appText) })
 }
 
 function bootstrap() {
@@ -132,5 +162,5 @@ if (document.readyState === 'loading') {
   bootstrap()
 }
 
-// Signal extension presence to the page
-window.__rook__ = true
+// Re-export so the snake poller can veto on the same constant (single source).
+export { AUCTION_ROOT_SELECTOR }
