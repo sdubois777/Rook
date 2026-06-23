@@ -10,7 +10,6 @@ import {
   detectWinner,
   detectEvents,
   secondsFromClock,
-  shouldAuctionActivate,
 } from '../src/content_scripts/yahoo_draft_parse.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -140,22 +139,13 @@ test('sold event fires when player goes null', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cross-poller guard — the auction poller must act ONLY on auction rooms
-// (#draft present), staying inert on snake pages even though both content
-// scripts share the same Yahoo draft URL match patterns.
+// Cross-poller guard (static): the auction poller gates startup on the React
+// resolver's shouldAuctionActivate (gate logic itself is unit-tested in
+// yahoo_auction_resolve.test.mjs). The old `#draft`-presence gate was removed
+// with Yahoo's React replatform.
 // ---------------------------------------------------------------------------
 
-test('shouldAuctionActivate: ACTIVE on an auction room (#draft present)', () => {
-  assert.equal(shouldAuctionActivate({ hasDraftPanel: true }), true)
-})
-
-test('shouldAuctionActivate: INERT on a snake page (no #draft)', () => {
-  // Snake rooms use #app and have no #draft → the auction poller must not run.
-  assert.equal(shouldAuctionActivate({ hasDraftPanel: false }), false)
-})
-
 test('auction content script gates startup on shouldAuctionActivate', () => {
-  // The poller may only start behind the shared guard (never on bare URL match).
   assert.ok(
     auctionSrc.includes('shouldAuctionActivate'),
     'yahoo_draft.js must gate startup on shouldAuctionActivate'

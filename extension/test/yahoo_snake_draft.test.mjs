@@ -329,6 +329,21 @@ test('shouldSnakeActivate: ACTIVE on a confirmed snake draft', () => {
   )
 })
 
+test('shouldSnakeActivate: INERT when the auction React root is present', () => {
+  // Yahoo's 2026 replatform removed the auction #draft node, so the cross-poller
+  // veto now keys on the auction React root. Even with snake-looking text, snake
+  // must NOT act on an auction page. (See CLAUDE.md snake-migration landmine:
+  // this rule must be revisited when snake itself moves onto that root.)
+  assert.equal(
+    shouldSnakeActivate({
+      hasDraftPanel: false,
+      hasAuctionRoot: true,
+      appText: SOMEONE_ELSE,
+    }),
+    false
+  )
+})
+
 test('snake content script gates clickPicksTab behind snake detection', () => {
   // The destructive click must run only after a positive snake confirmation —
   // never directly from bootstrap on a bare #app match.

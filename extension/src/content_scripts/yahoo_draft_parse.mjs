@@ -39,18 +39,12 @@ export function parseTeamLine(line) {
   return null
 }
 
-/**
- * Gate for the auction poller. It may act ONLY when the auction nomination
- * panel (#draft) is present. Snake rooms use #app and have NO #draft, so this
- * keeps the auction poller inert on snake pages — the symmetric half of the
- * cross-poller guard (see shouldSnakeActivate in yahoo_snake_draft_observer).
- * Both pollers share Yahoo's draft URL patterns, so each must positively detect
- * its own draft type before acting. Pure: the content script passes the live
- * #draft presence.
- */
-export function shouldAuctionActivate({ hasDraftPanel }) {
-  return !!hasDraftPanel
-}
+// NOTE (2026 React replatform): the auction activation gate moved to
+// yahoo_auction_resolve.mjs (`shouldAuctionActivate(doc, …)` — root + live
+// signal + cross-poller veto). The old `#draft`-presence gate that lived here is
+// gone; Yahoo removed the `#draft` node. parseDraftState/detectEvents below are
+// LEGACY innerText helpers (no longer wired to a content script); detectWinner
+// and secondsFromClock are still reused by the React resolver.
 
 /** Total seconds remaining from a "M:SS" clock string ("0:19" → 19). */
 export function secondsFromClock(clock) {
