@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import PositionBadge from '../shared/PositionBadge'
 
@@ -36,6 +36,21 @@ export default function NominationPanel() {
   const targetSecs = nom?.secondsRemaining ?? null
   const [secs, setSecs] = useState(targetSecs)
   useEffect(() => setSecs(targetSecs), [targetSecs])
+
+  // Anti-snipe: Yahoo bumps the clock back up to 10s when a HIGHER bid lands in
+  // the final seconds. Our scraped clock doesn't reflect that reset, so mirror
+  // it locally — on a higher bid, raise the countdown to 10s if it's below.
+  // Declared AFTER the resync above so it wins over any stale clock value
+  // delivered alongside the same bid.
+  const prevBidRef = useRef(null)
+  useEffect(() => {
+    const prev = prevBidRef.current
+    prevBidRef.current = bidAmount
+    if (bidAmount != null && prev != null && bidAmount > prev) {
+      setSecs((s) => (s != null && s < 10 ? 10 : s))
+    }
+  }, [bidAmount])
+
   useEffect(() => {
     const t = setInterval(
       () => setSecs((s) => (s != null && s > 0 ? s - 1 : s)),
