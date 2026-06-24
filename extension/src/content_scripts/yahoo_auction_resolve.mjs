@@ -82,32 +82,44 @@ export function isDraftComplete(root) {
 // ---------------------------------------------------------------------------
 
 /**
- * Pure gate decision (unit-testable without a DOM). Active iff the React root is
- * present, the draft isn't complete, snake markers are absent (cross-poller
- * veto), and there's a live signal (a live timer OR at least one team card).
+ * `.ys-team` cards carrying a $-budget span. This is the AUCTION discriminator:
+ * auction team cards always show a $ budget (12/12 in every captured state),
+ * whereas snake `.ys-team` cards (180 of them — the serpentine board grid) are
+ * budget-LESS. Counting only budgeted cards is what keeps the auction poller from
+ * false-activating on a snake page that happens to share the same React root.
  */
-export function auctionGateDecision({
-  hasRoot,
-  hasLiveTimer,
-  teamCardCount,
-  draftComplete,
-  snakeMarkers,
-}) {
+export function budgetTeamCount(root) {
+  if (!root) return 0
+  return Array.from(root.querySelectorAll('.ys-team')).filter((card) =>
+    spansIn(card).some((s) => MONEY_RE.test(txt(s)))
+  ).length
+}
+
+/**
+ * Pure gate decision (unit-testable without a DOM). Active iff the React root is
+ * present, the draft isn't complete, and there's POSITIVE AUCTION content — a
+ * Proj-$ nominee OR at least one $-budget team card. Deliberately content-only:
+ * - NOT the live timer — snake also has a 00:xx pick clock, so a timer arm would
+ *   false-trip on snake.
+ * - NOT bare `.ys-team` — snake's 180 budget-less board cells would false-trip it.
+ * - NO snake-marker veto / `#app` discriminator — the guard gates purely on its
+ *   own positive signal, so a shared root is harmless either way.
+ */
+export function auctionGateDecision({ hasRoot, hasNominee, budgetTeamCount, draftComplete }) {
   if (!hasRoot) return false
   if (draftComplete) return false
-  if (snakeMarkers) return false // auction no-ops if snake markers present
-  return !!hasLiveTimer || (teamCardCount || 0) >= 1
+  return !!hasNominee || (budgetTeamCount || 0) >= 1
 }
 
 /** DOM wrapper: compute the gate inputs from a document/root and decide. */
-export function shouldAuctionActivate(doc, { snakeMarkers = false } = {}) {
+export function shouldAuctionActivate(doc) {
   const root = auctionRoot(doc)
+  if (!root) return false
   return auctionGateDecision({
-    hasRoot: !!root,
-    hasLiveTimer: root ? !!findLiveTimer(root) : false,
-    teamCardCount: root ? root.querySelectorAll('.ys-team').length : 0,
-    draftComplete: root ? isDraftComplete(root) : false,
-    snakeMarkers,
+    hasRoot: true,
+    hasNominee: !!findNomineeEl(root),
+    budgetTeamCount: budgetTeamCount(root),
+    draftComplete: isDraftComplete(root),
   })
 }
 

@@ -28,47 +28,46 @@ function rootFor(name) {
 }
 
 // ---------------------------------------------------------------------------
-// Activation gate — pure decision (no DOM). Root + live signal + cross-poller
-// veto + draft-complete negative override.
+// Activation gate — pure decision (no DOM). Root + POSITIVE auction content (a
+// Proj-$ nominee OR a $-budget team card) + draft-complete negative override.
+// Content-only: NO timer arm (snake has a clock too) and NO bare-.ys-team arm
+// (snake's 180 budget-less cells) — those are the snake false-trip vectors.
 // ---------------------------------------------------------------------------
 const GATE = {
   hasRoot: true,
-  hasLiveTimer: false,
-  teamCardCount: 0,
+  hasNominee: false,
+  budgetTeamCount: 0,
   draftComplete: false,
-  snakeMarkers: false,
 }
 
-test('gate: ACTIVE with root + a live timer', () => {
-  assert.equal(auctionGateDecision({ ...GATE, hasLiveTimer: true }), true)
+test('gate: ACTIVE with root + a Proj-$ nominee', () => {
+  assert.equal(auctionGateDecision({ ...GATE, hasNominee: true }), true)
 })
 
-test('gate: ACTIVE with root + >=1 .ys-team card (lobby, no timer yet)', () => {
-  assert.equal(auctionGateDecision({ ...GATE, teamCardCount: 12 }), true)
+test('gate: ACTIVE with root + >=1 $-budget .ys-team card (lobby, no nominee yet)', () => {
+  assert.equal(auctionGateDecision({ ...GATE, budgetTeamCount: 12 }), true)
 })
 
-test('gate: INERT without the React root (even with a timer + cards)', () => {
+test('gate: INERT without the React root (even with a nominee + budget cards)', () => {
   assert.equal(
-    auctionGateDecision({ ...GATE, hasRoot: false, hasLiveTimer: true, teamCardCount: 12 }),
+    auctionGateDecision({ ...GATE, hasRoot: false, hasNominee: true, budgetTeamCount: 12 }),
     false
   )
 })
 
 test('gate: INERT when draft-complete (negative override)', () => {
   assert.equal(
-    auctionGateDecision({ ...GATE, teamCardCount: 12, draftComplete: true }),
+    auctionGateDecision({ ...GATE, budgetTeamCount: 12, draftComplete: true }),
     false
   )
 })
 
-test('gate: INERT when snake markers present (cross-poller veto)', () => {
-  assert.equal(
-    auctionGateDecision({ ...GATE, hasLiveTimer: true, teamCardCount: 12, snakeMarkers: true }),
-    false
-  )
+test('gate: INERT with budget-less team cards only (the snake board — 0 budget cards)', () => {
+  // Snake's 180 .ys-team cells carry no $; budgetTeamCount is 0 → no false trip.
+  assert.equal(auctionGateDecision({ ...GATE, budgetTeamCount: 0 }), false)
 })
 
-test('gate: INERT with the root but no live signal (root only)', () => {
+test('gate: INERT with the root but no auction content (root only)', () => {
   assert.equal(auctionGateDecision(GATE), false)
 })
 
