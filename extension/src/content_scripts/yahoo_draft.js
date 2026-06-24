@@ -9,7 +9,6 @@ import {
   detectAuctionEvents,
   initAuctionMemory,
 } from './yahoo_auction_resolve.mjs'
-import { hasSnakeMarkers } from './yahoo_snake_draft_observer.mjs'
 
 /**
  * Yahoo AUCTION Draft Room poller (React client, 2026 replatform).
@@ -134,12 +133,12 @@ window.addEventListener('__yahoo_draft_action__', async (event) => {
 // Bootstrap — wait for the React auction room, confirm the live gate, then start
 // ---------------------------------------------------------------------------
 
-// Gate: React root present AND (live timer OR >=1 .ys-team) AND not draft-complete
-// AND no snake markers (cross-poller veto). Snake rooms (still on #app) never
-// have the auction root, so this stays inert there.
+// Gate: React root present AND POSITIVE auction content (a Proj-$ nominee OR
+// >=1 $-budget .ys-team) AND not draft-complete. Content-only — snake shares the
+// React root but its .ys-team cards are budget-less and it has no Proj-$ nominee,
+// so this stays inert on a snake page without any root/marker veto.
 function auctionReady() {
-  const appText = document.querySelector('#app')?.innerText || ''
-  return shouldAuctionActivate(document, { snakeMarkers: hasSnakeMarkers(appText) })
+  return shouldAuctionActivate(document)
 }
 
 function bootstrap() {
