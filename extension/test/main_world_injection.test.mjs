@@ -121,7 +121,7 @@ test('snake main IIFE fires the pick trigger on a 0 frame and sets the flag', ()
 
   assert.equal(fakeWin.__rook_snake__, true)
 
-  // A '0' frame fires a content-free trigger (the poller reads the Picks panel).
+  // A '0' frame fires a content-free trigger (the poller reads the React board).
   fakeConsole.error(['0', 'lg', 'dr', 84, 'nfl.p.1'])
   assert.equal(dispatched.length, 1)
   assert.equal(dispatched[0].type, '__yahoo_pick_made__')

@@ -487,9 +487,15 @@ fantasy-football-ai/
     App.jsx collapsed to a single LeagueProvider (was duplicated across the
     full-screen and Layout branches). Note: DraftBoard is a bespoke page — it
     does NOT use the draft-room AvailablePlayers component.
+  - Extension snake poller SHIPPED (June 2026): yahoo_snake_resolve.mjs reads
+    Yahoo's React snake room (the room migrated onto the shared auction root).
+    Non-destructive Board-view read (turn banner + "Last:" indicator + serpentine
+    board grid) → your_turn / your_turn_soon / snake_status / snake_pick. Gate is
+    content-based in both directions (see Cross-Poller Rule). Verified against
+    real captures (snake-{onclock,waiting,postpick}.html).
   REMAINING (see Known Issues):
-  - Extension snake DOM poller (yahoo_snake_draft.js) is a logging stub —
-    needs a live Yahoo snake mock-draft session to map selectors.
+  - Serpentine board mapping is asserted from the rule, not yet from a real
+    round-boundary (round-turn) capture — re-verify to lock pick 12→13.
   - 2-3 low-tier QBs (Tua, Purdy) sit slightly early (~38); minor.
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
   Half PPR scoring, replacement level adjustments. Note: valuation_agent +
@@ -562,22 +568,31 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 ### Extension
 - CROSS-POLLER RULE (non-negotiable): the snake
   and auction Yahoo pollers SHARE the same URL
-  match patterns (both inject on every Yahoo
-  draft page). Each MUST positively detect its
-  OWN draft type before acting — never mutate
-  the page on a bare #app / URL match. Auction =
-  the React root #main-0-DraftClientBootstrap-
-  Proxy (live timer / .ys-team cards); snake =
-  #app + snake turn/countdown markers AND the
-  auction root ABSENT. Gates: shouldAuctionActivate
-  (yahoo_auction_resolve.mjs) and shouldSnakeActivate
-  / hasSnakeMarkers (yahoo_snake_draft_observer
-  .mjs). History: the snake poller's
-  clickPicksTab() ran on auction pages (only
-  #app-gated), switched the view, removed #draft,
-  and took the WHOLE auction room down (no
-  events POSTed) — looked exactly like "DOM
-  drift" but was OUR cross-poller interference.
+  match patterns AND (as of June 2026) the SAME
+  React root #main-0-DraftClientBootstrap-Proxy.
+  Each MUST positively detect its OWN draft type
+  from POSITIVE CONTENT before acting — the shared
+  root is NOT a discriminator. Auction content =
+  a Proj-$ nominee (structural: a ys-player[data-id]
+  whose short text carries "Proj $") OR >=1 .ys-team
+  carrying a $-budget span. Snake content = the turn
+  banner ("Your Turn • Round R, Pick P" / "{Name}'s
+  Pick • You're up in N Picks • Round R, Pick P").
+  Gates: shouldAuctionActivate (yahoo_auction_resolve
+  .mjs — content-only: NO timer arm, snake has a
+  00:xx clock too; NO bare-.ys-team arm, snake's 180
+  board cells are budget-LESS) and shouldSnakeActivate
+  (yahoo_snake_resolve.mjs). The snake poller is now
+  NON-DESTRUCTIVE — it reads the Board view only
+  (banner + "Last:" indicator + serpentine board
+  grid), no "Picks"-tab click. History: (1) the old
+  snake poller's clickPicksTab() ran on auction pages
+  and took the auction room down; (2) fixing auction
+  then broke snake when both rooms moved to the shared
+  root and the auction gate's timer/bare-.ys-team arms
+  false-tripped on snake's 180 budget-less cells. Both
+  are why the guard is content-positive in BOTH
+  directions now.
 - STANDING RULE: snake changes MUST be verified
   against AUCTION (and vice versa). This is the
   2nd snake change to break auction (1st: the
@@ -607,16 +622,26 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   Fixtures = REAL captured Yahoo outerHTML under
   extension/test/fixtures/auction/ (re-runnable
   after each deploy), parsed with linkedom.
-- SNAKE-MIGRATION LANDMINE: the snake poller
-  vetoes when the auction React root
-  #main-0-DraftClientBootstrap-Proxy is present.
-  When SNAKE itself migrates onto that SAME root
-  (likely next — it's the same client), snake
-  will see the root on its OWN page and silently
-  disable itself. This rule MUST be revisited then
-  (gate snake on snake-specific markers WITHIN the
-  root, not the root's mere presence) or snake
-  breaks. Snake is still on the old #app DOM today.
+- SNAKE-MIGRATION LANDMINE — RESOLVED (June 2026):
+  Yahoo migrated SNAKE onto the shared auction React
+  root (#main-0-DraftClientBootstrap-Proxy), exactly
+  as predicted. The old `hasAuctionRoot` veto then
+  silently disabled snake on its own page, and the
+  auction gate's timer / bare-.ys-team arms false-
+  tripped on snake (grabbed the 180-cell board as
+  "opponents"). Fix: a React snake resolver
+  (yahoo_snake_resolve.mjs) + a content-positive
+  guard in BOTH gates — the `hasAuctionRoot` veto is
+  RETIRED entirely (root presence is never a
+  discriminator). The old yahoo_snake_draft_observer
+  .mjs (#app innerText + pick-card scan) is deleted.
+  SERPENTINE board mapping: pickSlotIndex() reverses
+  on even rounds (pick 12 == pick 13 slot in a 12-team
+  league); the captures are early Round 1 only, so the
+  round-boundary case is asserted from the rule —
+  re-verify against a real round-turn capture to lock.
+  Fixtures: extension/test/fixtures/auction/snake-
+  {onclock,waiting,postpick}.html.
 - Yahoo passive sync removed — Yahoo CSP
   blocks content script injection in both
   Chrome and Firefox. window.__rook__
@@ -695,11 +720,16 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
 - [ ] Selector lives only in the sidebar (not
       reachable from the full-screen draft room);
       league must be chosen before entering.
-- [ ] Extension snake DOM poller is a logging
-      stub (yahoo_snake_draft.js) — needs a live
-      Yahoo snake mock draft to map selectors
-      (pick number, on-the-clock, board) and wire
-      a real /draft/event relay.
+- [x] Extension snake poller SHIPPED — React
+      resolver (yahoo_snake_resolve.mjs) maps the
+      shared-root snake room: turn banner (pick /
+      on-the-clock / countdown), "Last:" indicator
+      + serpentine board (snake_pick), all relayed
+      via /draft/event. Content-based cross-poller
+      guard; non-destructive (no Picks-tab click).
+- [ ] Re-verify the serpentine board mapping
+      against a real round-boundary (round-turn)
+      capture — currently asserted from the rule.
 - [ ] A few low-tier QBs (Tua, Purdy) get
       adp_ai ~38, slightly early.
 - [x] Snake signal quality: two-sided draftable
