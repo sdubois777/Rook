@@ -76,11 +76,10 @@
     },
     {
       "matches": [
-        "https://fantasy.espn.com/*/draftroom*",
-        "https://fantasy.espn.com/football/draftroom*"
+        "https://fantasy.espn.com/football/draft*"
       ],
       "js": ["espn_draft.js"],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     },
     {
       "matches": [
