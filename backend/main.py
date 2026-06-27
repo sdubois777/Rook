@@ -42,6 +42,7 @@ app.add_middleware(
         r"|https://football\.fantasysports\.yahoo\.com"
         r"|https://fantasysports\.yahoo\.com"
         r"|https://.*\.yahoo\.com"
+        r"|https://fantasy\.espn\.com"
     ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],

@@ -74,10 +74,21 @@ async def test_cors_allows_rookff_custom_domain():
 
 
 @pytest.mark.asyncio
+async def test_cors_allows_espn_draft_origin():
+    """The ESPN draft site (where the extension's ESPN poller runs) is allowed."""
+    resp = await _preflight("https://fantasy.espn.com", request_headers="x-draft-token")
+    assert resp.status_code == 200, "preflight rejected for https://fantasy.espn.com"
+    assert resp.headers["access-control-allow-origin"] == "https://fantasy.espn.com"
+
+
+@pytest.mark.asyncio
 async def test_cors_rejects_unknown_origin():
     """Arbitrary web origins are still refused."""
     resp = await _preflight("https://evil.example.com")
     assert "access-control-allow-origin" not in resp.headers
     # A lookalike must not slip through the rookff.com alternative.
     resp = await _preflight("https://notrookff.com.evil.com")
+    assert "access-control-allow-origin" not in resp.headers
+    # ...nor a lookalike of the ESPN alternative (fantasy.espn.com.evil.com).
+    resp = await _preflight("https://fantasy.espn.com.evil.com")
     assert "access-control-allow-origin" not in resp.headers
