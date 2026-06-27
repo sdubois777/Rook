@@ -46,9 +46,13 @@ function teamsSnapshot(next) {
   const teams = {}
   if (!next.teams) return teams
   for (let slot = 1; slot <= next.teams; slot++) {
-    teams[teamLabel(slot)] = {
+    const mine = slot === next.mySlot
+    // Label my own slot "You" (not "Team 4"): the frontend folds teams['You']
+    // into myTeamName, so the roster list shows ONE entry for me instead of a
+    // phantom "Team 4" beside my name. Mirrors the Yahoo "You" convention.
+    teams[mine ? 'You' : teamLabel(slot)] = {
       budget: next.budget != null ? next.budget - (next.spentBySlot[slot] || 0) : null,
-      isMine: slot === next.mySlot,
+      isMine: mine,
     }
   }
   return teams
@@ -142,7 +146,7 @@ export function detectAuctionEvents(memory, frame) {
         events.push({
           type: 'teams_update',
           platform: 'sleeper',
-          payload: { teams, your_team_id: teamLabel(next.mySlot) },
+          payload: { teams, your_team_id: next.mySlot != null ? 'You' : null },
         })
       }
     }

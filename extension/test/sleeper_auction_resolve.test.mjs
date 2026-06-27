@@ -73,10 +73,14 @@ test('teams_update: budgets derived (budget − Σ won)', () => {
   const tu = replay(FRAMES, MY_USER).filter((e) => e.type === 'teams_update')
   assert.ok(tu.length >= 1)
   const last = tu[tu.length - 1].payload
-  assert.equal(last.your_team_id, 'Team 3')
-  assert.equal(last.teams['Team 3'].budget, 128) // 200 − 72
+  // My own slot is keyed "You" (the frontend folds it into myTeamName → one
+  // roster entry, not a phantom "Team 3" beside my name).
+  assert.equal(last.your_team_id, 'You')
+  assert.equal(last.teams['You'].budget, 128) // 200 − 72
+  assert.equal(last.teams['You'].isMine, true)
   assert.equal(last.teams['Team 1'].budget, 200) // untouched
-  assert.equal(last.teams['Team 3'].isMine, true)
+  assert.equal(last.teams['Team 3'], undefined) // not duplicated as Team 3
+  assert.equal(Object.keys(last.teams).length, 12) // exactly 12 teams, no phantom
 })
 
 test('dedupe: a re-transmitted frame (same frame twice) does not double-emit', () => {
