@@ -38,6 +38,21 @@ def _repo(side_effects):
 
 
 @pytest.mark.asyncio
+async def test_find_by_sleeper_id_exact():
+    """Sleeper draft picks carry a canonical sleeper_id → exact, indexed match."""
+    chase = _player("Ja'Marr Chase", position="WR", ypid="nfl_7564")
+    repo = _repo([_exact_result(chase)])
+    assert await repo.find_by_sleeper_id("7564") is chase
+
+
+@pytest.mark.asyncio
+async def test_find_by_sleeper_id_empty_returns_none_without_querying():
+    repo = _repo([])  # no query should run for a blank id
+    assert await repo.find_by_sleeper_id("") is None
+    assert await repo.find_by_sleeper_id("   ") is None
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_empty_name_returns_none():
     repo = _repo([])  # no query should run
     assert await repo.find_by_name_fuzzy("") is None

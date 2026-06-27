@@ -212,6 +212,9 @@ async def test_nomination_triggers_engine():
 
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     fake_player = MagicMock(yahoo_player_id="nfl_123", position="TE")
+    # `name` is a reserved MagicMock kwarg, so set the resolved player's display
+    # name explicitly — _trigger_nomination now backfills the broadcast from it.
+    fake_player.name = "Sam LaPorta"
     mock_ws = MagicMock()
     mock_ws.broadcast_to_session = AsyncMock()
 

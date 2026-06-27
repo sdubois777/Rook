@@ -259,24 +259,46 @@ async def relay_draft_event(
     return {"status": "relayed"}
 
 
-async def _resolve_player(player_name: str):
-    """Fuzzy-resolve a draft-room display name to a Player (or None)."""
-    if not player_name:
-        return None
+async def _resolve_player(player_name: str, sleeper_id: str | None = None):
+    """Resolve a draft event's player to a Player (or None).
+
+    Sleeper sends a canonical `sleeper_id` (its pick/nomination frames are
+    id-only), so try that exact, indexed match FIRST — `resolution_source=id_map`,
+    the clean case. Yahoo/ESPN send no sleeper_id and fall straight through to the
+    name-fuzzy path (`name_backstop`), so they're unaffected.
+    """
     from backend.repositories.player_repo import PlayerRepository
 
     async with AsyncSessionLocal() as session:
-        return await PlayerRepository(session).find_by_name_fuzzy(player_name)
+        repo = PlayerRepository(session)
+        if sleeper_id:
+            by_id = await repo.find_by_sleeper_id(sleeper_id)
+            if by_id is not None:
+                return by_id
+        if not player_name:
+            return None
+        return await repo.find_by_name_fuzzy(player_name)
 
 
 async def _trigger_nomination(event: "DraftEventPayload", engine) -> None:
-    """Resolve the nominated player and run the engine's recommendation."""
-    player_name = event.payload.get("player_name", "")
-    player = await _resolve_player(player_name)
+    """Resolve the nominated player and run the engine's recommendation.
+
+    Sleeper nominations are id-only (`sleeper_player_id`, no name), so enrich the
+    broadcast payload with the resolved name/id/position — otherwise the UI shows
+    a blank nominee. Yahoo/ESPN already carry the name, so this is idempotent there.
+    """
+    payload = event.payload
+    player_name = payload.get("player_name", "")
+    player = await _resolve_player(player_name, payload.get("sleeper_player_id"))
+    if player is not None:
+        payload["player_name"] = player.name
+        payload["player_id"] = str(player.id)
+        if not payload.get("pos_team") and player.position:
+            payload["pos_team"] = player.position
     await engine.on_nomination({
         "type": "nomination",
         "player_id": player.yahoo_player_id if player else "",
-        "player_name": player_name,
+        "player_name": payload.get("player_name", "") or player_name,
     })
 
 
@@ -289,7 +311,7 @@ async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
     """
     payload = event.payload
     player_name = payload.get("player_name", "")
-    player = await _resolve_player(player_name)
+    player = await _resolve_player(player_name, payload.get("sleeper_player_id"))
     player_id = player.yahoo_player_id if player else ""
     winner = payload.get("winner", "")
     final_price = payload.get("final_price", 0) or 0
@@ -345,7 +367,7 @@ async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
     payload = event.payload
     abbreviated = payload.get("player_name", "") or ""
 
-    player = await _resolve_player(abbreviated)
+    player = await _resolve_player(abbreviated, payload.get("sleeper_player_id"))
     if player is not None:
         payload["id"] = str(player.id)
         payload["player_name"] = player.name

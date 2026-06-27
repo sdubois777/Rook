@@ -11,6 +11,7 @@ module.exports = {
     espn_draft: './src/content_scripts/espn_draft.js',
     espn_auth: './src/content_scripts/espn_auth.js',
     sleeper_draft: './src/content_scripts/sleeper_draft.js',
+    sleeper_draft_main: './src/content_scripts/sleeper_draft_main.js',
     popup: './src/popup/popup.js',
   },
   output: {

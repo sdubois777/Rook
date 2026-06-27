@@ -94,6 +94,15 @@
         "https://sleeper.com/draft/*",
         "https://sleeper.app/draft/*"
       ],
+      "js": ["sleeper_draft_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://sleeper.com/draft/*",
+        "https://sleeper.app/draft/*"
+      ],
       "js": ["sleeper_draft.js"],
       "run_at": "document_start"
     }

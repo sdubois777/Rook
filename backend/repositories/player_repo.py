@@ -94,6 +94,17 @@ class PlayerRepository(BaseRepository[Player]):
         )
         return list(result.scalars().all())
 
+    async def find_by_sleeper_id(self, sleeper_id: str) -> Player | None:
+        """Exact match on the indexed Sleeper id — the canonical id for Sleeper
+        drafts (whose pick/nomination frames are id-only). Returns None if unset."""
+        sid = (sleeper_id or "").strip()
+        if not sid:
+            return None
+        result = await self._session.execute(
+            select(Player).where(Player.sleeper_id == sid).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def find_by_name_fuzzy(self, name: str) -> Player | None:
         """Resolve a (possibly inexact) display name to a single Player.
 
