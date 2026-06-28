@@ -1,8 +1,9 @@
 # Rook — Fantasy Football AI Platform — Claude Code Entry Point
 
 This file is read automatically at the start of every session.
-Read it fully before writing any code. (Repo/Railway service are still named
-`FantasyManager` — that infra rename is deliberately deferred; see backlog.)
+Read it fully before writing any code. (Branding/repo are all **Rook**. The Railway
+service hostname remains `fantasymanager-production.up.railway.app` — the extension's
+hardcoded API base; it works, intentionally left as-is.)
 
 ---
 
@@ -539,8 +540,8 @@ design locked (not implemented).**
     content-based in both directions (see Cross-Poller Rule). Verified against
     real captures (snake-{onclock,waiting,postpick}.html).
   Yahoo snake (yahoo_snake_resolve.mjs) + auction both live in prod.
-  Minor open: serpentine board mapping asserted from the rule (no round-boundary
-  capture yet); 2-3 low-tier QBs (Tua, Purdy) adp_ai ~38, slightly early.
+  Snake board mapping (incl. the round boundary) confirmed working in real drafts.
+  Minor open: 2-3 low-tier QBs (Tua, Purdy) adp_ai ~38, slightly early.
 - [x] ESPN live-draft poller — SHIPPED to prod (both formats), June 2026
   React + styled-jsx SPA, no stable root → content-gated. Two resolvers:
   espn_salarycap_resolve.mjs (nomination/bid_update/clock/draft_pick/teams_update),
@@ -830,15 +831,9 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
   auto-invalidate (no manual clear needed).
 
 ### SaaS / Auth
-- Clerk running in dev mode (pk_test_) in
-  production. Custom domain required for
-  production Clerk instance. Deferred until
-  domain purchased. See backlog item below.
-- Production /api prefix mismatch — frontend
-  calls /api/* but FastAPI serves /* in
-  production. Vite proxy handles in dev.
-  Fix requires custom domain + nginx rewrite.
-  Both items must be done together.
+- Clerk is in **production mode** on the live `rookff.com` domain (no longer
+  pk_test_/dev). The custom-domain + /api-prefix items that depended on it are
+  resolved.
 - Yahoo OAuth multi-user — buddy confirmed
   his own leagues loaded (not Stephen's),
   so OAuth is working for other users.
@@ -868,9 +863,7 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
       + serpentine board (snake_pick), all relayed
       via /draft/event. Content-based cross-poller
       guard; non-destructive (no Picks-tab click).
-- [ ] Re-verify the serpentine board mapping
-      against a real round-boundary (round-turn)
-      capture — currently asserted from the rule.
+- [x] Serpentine board mapping (incl. round boundary) — confirmed in real drafts.
 - [ ] A few low-tier QBs (Tua, Purdy) get
       adp_ai ~38, slightly early.
 - [x] Snake signal quality: two-sided draftable
@@ -930,14 +923,16 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
 - [x] Stage 29: Snake draft — shipped (all platforms)
 - [x] ESPN + Sleeper live-draft pollers — shipped to prod
 - [x] CI/CD: GitHub Actions — DONE (backend/frontend/extension checks gate every PR)
+- [ ] **In-season feature build (PRE-SEASON PRIORITY): Trade page + Trade agent**
+      (Stages 14–19). Greenfield — only the SeasonRoster model exists. Approach:
+      a DUMMY-DATA harness (fabricated 12-team league, real players, "week N of
+      2025" with real 2025 stats) lets the trade analyzer be built + tested before
+      live in-season data exists. Then: lineup optimizer (20), waiver wire (21),
+      roster monitor (15), opponent analyzer (16), gameday (24).
 - [ ] **Stripe billing implementation** (design locked — docs/stripe_billing_design.md)
-- [ ] Stage 14–24: in-season (season roster, roster monitor, opponent analyzer,
-      trade value/analyzer/proposals, lineup optimizer, waiver wire, gameday)
 - [ ] Stage 30: Half PPR support
 - [ ] Generalize extension orphaned-context recovery to the Yahoo/ESPN pollers
       (currently only Sleeper)
-- [ ] Sleeper phx_join backlog re-sync (seamless mid-draft reconnect)
-- [ ] Verify serpentine board mapping vs a real round-boundary capture (Yahoo/ESPN/Sleeper)
 - [ ] Browser extension Chrome/Firefox store submission
 - [ ] my_nomination/my_bid → DraftStateManager
       integration (auto-roster + budget sync)
@@ -947,26 +942,10 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
       Teams) to semantic <table> w/ th scope for
       screen-reader accessibility — deferred from
       mobile-responsive work to keep scope isolated.
-- [ ] Old-name infra cleanup (DraftMind/FantasyManager →
-      Rook) — deliberately EXCLUDED from the branding
-      PR because it has CORS/deploy/store blast radius.
-      Each needs coordination, not a presentation edit:
-        - Railway hostname fantasymanager-production
-          .up.railway.app (extension/manifest.json +
-          dist, extension/src/utils/api.js, backend/
-          main.py CORS regex, tests test_cors.py /
-          test_extension_config.py, docs) — rename
-          requires a Railway service rename + redeploy
-          + CORS + extension host-permission update.
-        - Firefox addon id draftmind@fantasymanager
-          (extension/manifest.json + dist) — changing
-          it is a store-identity change.
-        - CI test DB draftmind_test (.github/workflows/
-          ci.yml) — cosmetic, rename with a CI run.
-        - git repo origin still named FantasyManager
-          (README badge/URL) — GitHub repo rename.
-      Note: the only USER-FACING stale name (LandingNav
-      "DraftMind") was already fixed in the branding pass.
+
+Old-name infra rename is **DONE** — branding/repo are Rook; the only remaining
+old-name reference is the Railway service hostname `fantasymanager-production`
+(intentional — the extension's working API base, see title note).
 
 ---
 
