@@ -924,11 +924,20 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
 - [x] ESPN + Sleeper live-draft pollers — shipped to prod
 - [x] CI/CD: GitHub Actions — DONE (backend/frontend/extension checks gate every PR)
 - [ ] **In-season feature build (PRE-SEASON PRIORITY): Trade page + Trade agent**
-      (Stages 14–19). Greenfield — only the SeasonRoster model exists. Approach:
-      a DUMMY-DATA harness (fabricated 12-team league, real players, "week N of
-      2025" with real 2025 stats) lets the trade analyzer be built + tested before
-      live in-season data exists. Then: lineup optimizer (20), waiver wire (21),
-      roster monitor (15), opponent analyzer (16), gameday (24).
+      (analyzer + proposals). Greenfield — only the SeasonRoster model exists.
+      Design: `docs/trade_agent_design.md`. Approach: a DUMMY-DATA harness
+      (fabricated 12-team league, real players, "week 5 of 2025" with real 2025
+      weekly usage) lets the agents be built + tested before live in-season data
+      exists, behind a clean league-state interface so the SAME agents later run on
+      real data. The VALUE MODEL is the differentiator: in-season value is driven by
+      actual production + usage TRAJECTORY (target/snap share rising or falling,
+      opportunity-vs-production gap), NOT preseason projections — with a name-bias
+      guard. ⚠️ **ALL test scaffolding (demo seeder, team-switcher, `_demo`
+      endpoints, the hardcoded week, the dummy data source) is gated behind
+      `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
+      teardown checklist in the design doc. Permanent = the interface, value engine,
+      agents, page, and gates ONLY. Do NOT let demo/test code ship to users.**
+      Then: lineup optimizer, waiver wire, roster monitor, opponent analyzer, gameday.
 - [ ] **Stripe billing implementation** (design locked — docs/stripe_billing_design.md)
 - [ ] Stage 30: Half PPR support
 - [ ] Generalize extension orphaned-context recovery to the Yahoo/ESPN pollers
