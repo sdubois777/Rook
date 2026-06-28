@@ -554,6 +554,41 @@ async def test_state_409_when_not_resumable_and_does_not_warm_the_session():
 
 
 @pytest.mark.asyncio
+async def test_state_returns_snake_roster_from_my_picks():
+    """A snake draft's own picks live in _my_picks, not your_roster (the auction
+    roster, which stays empty on snake). /state must source from get_my_roster() so
+    a page refresh restores your picks instead of an empty roster."""
+    from backend.core.dependencies import get_current_user
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+    from backend.services.draft_session import DraftSessionManager, InMemorySessionStore
+
+    user = _make_user()
+    store = InMemorySessionStore()
+
+    async def factory(state, key):
+        return AsyncMock()
+
+    mgr = DraftSessionManager(store, factory)
+    state = DraftStateManager(LeagueConfig(draft_type="snake"), "my_team")
+    state.record_snake_pick(
+        player_name="Bijan Robinson", position="RB", pick_number=4, round_num=1, is_yours=True
+    )
+    await mgr.create(user.id, state)  # fresh → resumable
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    with patch("backend.routers.draft.session_manager", mgr):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/api/draft/state")
+            assert resp.status_code == 200
+            roster = resp.json()["your_roster"]
+            assert [p["player_name"] for p in roster] == ["Bijan Robinson"]
+            assert roster[0]["position"] == "RB"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_state_then_end_then_state_409_real_manager():
     """End-to-end through the real manager + in-memory store: an active draft
     serves /state 200; after POST /draft/end it 409s on re-entry (immediate)."""
