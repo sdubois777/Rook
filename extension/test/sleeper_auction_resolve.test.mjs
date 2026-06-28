@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { parseFrame } from '../src/content_scripts/sleeper_resolve.mjs'
+import { parseFrame, parseUserId } from '../src/content_scripts/sleeper_resolve.mjs'
 import { initAuctionMemory, detectAuctionEvents } from '../src/content_scripts/sleeper_auction_resolve.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -57,14 +57,30 @@ test('draft_pick (sale): winner via slot, price, is_yours, full name', () => {
   assert.equal(s.is_yours, true) // my slot 3 won
 })
 
+test('self-win resolves is_yours when user_id comes JSON-quoted from localStorage', () => {
+  // End-to-end of the fix: the real localStorage form is "\"<id>\"". Feeding the
+  // RAW quoted value (without unwrapping) would miss draft_order and mis-attribute
+  // the win to "Team 3"; parseUserId unwraps it so my slot resolves.
+  const quoted = '"1373225184038764544"'
+  const sale = replay(FRAMES, parseUserId(quoted)).find((e) => e.type === 'draft_pick')
+  assert.equal(sale.payload.is_yours, true)
+  // ...and the raw quoted id (the bug) would NOT resolve.
+  const broken = replay(FRAMES, quoted).find((e) => e.type === 'draft_pick')
+  assert.equal(broken.payload.is_yours, false)
+})
+
 test('teams_update: budgets derived (budget − Σ won)', () => {
   const tu = replay(FRAMES, MY_USER).filter((e) => e.type === 'teams_update')
   assert.ok(tu.length >= 1)
   const last = tu[tu.length - 1].payload
-  assert.equal(last.your_team_id, 'Team 3')
-  assert.equal(last.teams['Team 3'].budget, 128) // 200 − 72
+  // My own slot is keyed "You" (the frontend folds it into myTeamName → one
+  // roster entry, not a phantom "Team 3" beside my name).
+  assert.equal(last.your_team_id, 'You')
+  assert.equal(last.teams['You'].budget, 128) // 200 − 72
+  assert.equal(last.teams['You'].isMine, true)
   assert.equal(last.teams['Team 1'].budget, 200) // untouched
-  assert.equal(last.teams['Team 3'].isMine, true)
+  assert.equal(last.teams['Team 3'], undefined) // not duplicated as Team 3
+  assert.equal(Object.keys(last.teams).length, 12) // exactly 12 teams, no phantom
 })
 
 test('dedupe: a re-transmitted frame (same frame twice) does not double-emit', () => {

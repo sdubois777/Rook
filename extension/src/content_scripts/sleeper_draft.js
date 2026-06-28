@@ -5,7 +5,7 @@ import {
   DRAFT_INACTIVITY_MS,
   MAX_CAPTURED_FRAMES,
 } from '../utils/constants.js'
-import { parseFrame, isDraftFrame } from './sleeper_resolve.mjs'
+import { parseFrame, isDraftFrame, parseUserId } from './sleeper_resolve.mjs'
 import { initSnakeMemory, detectSnakeEvents } from './sleeper_snake_resolve.mjs'
 import { initAuctionMemory, detectAuctionEvents } from './sleeper_auction_resolve.mjs'
 
@@ -33,7 +33,9 @@ let myUserId = null
 function getMyUserId() {
   if (myUserId == null) {
     try {
-      myUserId = window.localStorage.getItem('user_id')
+      // Sleeper stores user_id JSON-encoded ("\"123\"") → unwrap to the bare id
+      // so it matches the draft_order keys (else is_yours never resolves).
+      myUserId = parseUserId(window.localStorage.getItem('user_id'))
     } catch {
       myUserId = null
     }

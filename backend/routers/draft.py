@@ -46,12 +46,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
 # How recently a draft must have had a real EVENT (a pick/nomination → persist →
-# draft_sessions.updated_at) for a page refresh to AUTO-RESUME it. Long enough to
-# survive a stalled auction (commissioner pause, food break, someone AFK on the
-# clock) + a redeploy; the explicit "End Draft" button — not this window — is the
-# signal for "forget an abandoned draft now". Env-overridable so it can be widened
-# without a code deploy if real drafts stall longer. Default 60 min.
-RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 60 * 60))
+# draft_sessions.updated_at) for a page refresh to AUTO-RESUME it. Must comfortably
+# span a FULL draft plus gaps: a 12-team snake/auction runs 2-3h, and a dropped
+# extension connection (e.g. a Sleeper socket reconnect) can stall the event stream
+# for a stretch with no persist — a 1h window made such a live draft fall out of
+# "resumable" and a refresh 409'd to the empty board. 6h covers a real draft + its
+# hiccups while still expiring a genuinely abandoned one; the explicit "End Draft"
+# button is the immediate-forget signal. Env-overridable. Default 6h.
+RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 6 * 60 * 60))
 
 # Legacy Playwright bridge — single optional server-side control path (not part
 # of the per-user extension draft flow).
@@ -584,12 +586,21 @@ async def get_draft_state(user: User = Depends(get_current_user)):
     """Return budget, roster, and pick history for the current user's draft."""
     session = await _require_session(user)
     state = session.state
-    return {
-        "your_remaining_budget": state.get_your_remaining_budget(),
-        "spendable_on_next_player": state.get_spendable_on_this_player(),
-        "minimum_completion_budget": state.get_minimum_completion_budget(),
-        "roster_slots_remaining": state.get_roster_slots_remaining(),
-        "your_roster": [
+    # Snake picks live in _my_picks (your_roster is the auction roster — empty on a
+    # snake draft), so a refresh restored an empty roster + lost the drafted-filter
+    # for your own picks. Source your roster from the right place per draft type.
+    if state.draft_type == "snake":
+        your_roster = [
+            {
+                "player_id": "",
+                "player_name": p.get("player_name", ""),
+                "position": p.get("position"),
+                "price": 0,
+            }
+            for p in state.get_my_roster()
+        ]
+    else:
+        your_roster = [
             {
                 "player_id": p.player_id,
                 "player_name": p.player_name,
@@ -597,7 +608,15 @@ async def get_draft_state(user: User = Depends(get_current_user)):
                 "price": p.price,
             }
             for p in state.your_roster
-        ],
+        ]
+    return {
+        "your_remaining_budget": state.get_your_remaining_budget(),
+        "spendable_on_next_player": state.get_spendable_on_this_player(),
+        "minimum_completion_budget": state.get_minimum_completion_budget(),
+        "roster_slots_remaining": max(
+            0, state.league_config.total_roster_size - len(your_roster)
+        ),
+        "your_roster": your_roster,
         "total_picks": len(state.picks),
         "positional_counts": state.get_your_positional_counts(),
     }

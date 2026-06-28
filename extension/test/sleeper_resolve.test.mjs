@@ -7,6 +7,7 @@ import {
   snakeSlot,
   roundOf,
   mySlotFrom,
+  parseUserId,
 } from '../src/content_scripts/sleeper_resolve.mjs'
 import { detectSnakeEvents, initSnakeMemory } from '../src/content_scripts/sleeper_snake_resolve.mjs'
 import { detectAuctionEvents, initAuctionMemory } from '../src/content_scripts/sleeper_auction_resolve.mjs'
@@ -52,6 +53,24 @@ test('snakeSlot: Nth-round reversal flips parity from that round on (rule-assert
   // reversal_round=3 → round 3 runs the SAME direction as round 2 (reverse).
   assert.equal(snakeSlot(25, 12, 3), 12) // R3 pick 1 → reversed → slot 12
   assert.equal(snakeSlot(25, 12, 0), 1) // standard → slot 1
+})
+
+test('parseUserId: unwraps the JSON-encoded localStorage value to the bare id', () => {
+  // The real Sleeper case: stored JSON-quoted.
+  assert.equal(parseUserId('"1373225184038764544"'), '1373225184038764544')
+  // Object form.
+  assert.equal(parseUserId('{"user_id":"1373225184038764544"}'), '1373225184038764544')
+  // Bare id — returned as-is, NOT JSON.parsed (a 19-digit id would lose precision).
+  assert.equal(parseUserId('1373225184038764544'), '1373225184038764544')
+  // Empty / missing.
+  assert.equal(parseUserId(null), null)
+  assert.equal(parseUserId(''), null)
+})
+
+test('parseUserId: bare id keeps full precision (no Number coercion)', () => {
+  const id = '1373225184038764544' // > Number.MAX_SAFE_INTEGER
+  assert.equal(parseUserId(id), id)
+  assert.notEqual(parseUserId(id), String(Number(id))) // would be ...500 if coerced
 })
 
 test('roundOf + mySlotFrom', () => {

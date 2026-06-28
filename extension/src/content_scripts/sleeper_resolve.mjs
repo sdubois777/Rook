@@ -56,6 +56,32 @@ export function snakeSlot(pickNo, teams, reversalRound = 0) {
   return forward ? idx + 1 : teams - idx
 }
 
+/**
+ * Unwrap the localStorage `user_id` to the BARE id that keys `draft_order`.
+ * Sleeper JSON-encodes it (`"\"1373…\""`), so a raw read carries literal quotes
+ * and never matches the draft_order key. Parse only when it's actually quoted /
+ * object-wrapped — NEVER a bare numeric string (a 19-digit id exceeds
+ * Number.MAX_SAFE_INTEGER, so JSON.parse would silently lose precision).
+ */
+export function parseUserId(raw) {
+  if (raw == null) return null
+  const s = String(raw).trim()
+  if (!s) return null
+  if (s[0] === '"' || s[0] === '{' || s[0] === '[') {
+    try {
+      const parsed = JSON.parse(s)
+      if (typeof parsed === 'string') return parsed.trim() || null
+      if (parsed && typeof parsed === 'object') {
+        const id = parsed.user_id ?? parsed.id
+        return id != null ? String(id).trim() || null : null
+      }
+    } catch {
+      // not valid JSON — fall through to the raw string
+    }
+  }
+  return s
+}
+
 /** My draft slot from draft_order {user_id: slot}; null if I'm not mapped yet. */
 export function mySlotFrom(draftOrder, myUserId) {
   if (!draftOrder || myUserId == null) return null
