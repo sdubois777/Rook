@@ -346,6 +346,7 @@ async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
         "final_price": final_price,
         "player_name": player_name,
         "position": player.position if player else "",
+        "is_yours": bool(payload.get("is_yours")),
     })
 
 
@@ -394,6 +395,7 @@ async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
             "final_price": 0,
             "player_name": payload.get("player_name", "") or "",
             "position": payload.get("position", "") or "",
+            "is_yours": bool(payload.get("is_yours")),
         })
 
 

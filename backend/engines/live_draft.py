@@ -311,7 +311,7 @@ class LiveDraftEngine:
             player_name=event.get("player_name", ""),
             position=event.get("position", ""),
         )
-        self.state.record_pick(pick)
+        self.state.record_pick(pick, is_yours=bool(event.get("is_yours")))
 
         # Recalculate opponent threat scores and check for new combos
         for team_id, roster in self.state.opponent_rosters.items():
