@@ -1,59 +1,98 @@
 # Rook — Stripe Subscription Billing: Design / Scoping Pass
 
 > **Status: design only. No billing code in this PR.** Deliverable is this doc.
-> The headline finding: **the entitlement + gating layer already exists and is
-> wired for exactly this.** Stripe is the missing *billing* half — checkout, a
-> webhook to flip tier, and attaching the existing guards to routes. There is
-> almost nothing to invent on the entitlement side; the work is plumbing Stripe
-> into a model that was built expecting it.
+> Decisions are **LOCKED** (see "Approved decisions"). The headline finding: **the
+> entitlement + gating layer already exists and is wired for exactly this.** Stripe
+> is the missing *billing* half — checkout, a webhook to flip tier, and attaching the
+> existing guards to routes. **Security posture (§0) is a hard requirement: card data
+> never touches Rook — Stripe Checkout redirect → PCI SAQ-A.**
 
 ---
 
-## Decisions needed from Stephen (read this first)
+## Approved decisions (LOCKED — June 2026)
 
-1. **Entitlement source of truth → recommend the Rook DB (`users.tier`).** It is
-   *already* the implemented store (`backend/models/user.py`), already loaded on
-   every request (`get_current_user`), and the gate code already reads it. Stripe
-   is the billing system-of-record and syncs *into* the DB via webhook; Clerk stays
-   identity-only. **Need: confirm this** (full tradeoffs in §3).
+| # | Decision | Locked outcome |
+|---|---|---|
+| 1 | Entitlement source of truth | **Rook DB `users.tier`.** Stripe = billing record, syncs into the DB via webhook; Clerk = identity only. Read on the hot path, reconcile via webhook (§3). |
+| 2 | Stale tier doc | **`backend/models/user.py` + CLAUDE.md are canonical** (intro/standard/pro). The stale `stage-25` `free\|starter\|pro\|league` block gets removed in a **separate cleanup PR** (step 7). |
+| 3 | `/season` semantics | **Defer `/season` for v1 — ship recurring MONTHLY subscriptions only.** Seasonal can come later once the subscription path is proven. Removes the one-time-pass / expiry-job complexity entirely. |
+| 4 | Cancellation | On `subscription.deleted` → **downgrade to `intro`**, **credits persist** (they "accumulate, never reset"). |
+| 5 | Payment-failed grace | **Honor Stripe's retries** — mark `past_due` on `invoice.payment_failed`, keep access, downgrade only on the terminal `subscription.deleted`. No custom grace logic. |
+| 6 | Monthly credit grant | **Webhook-driven** — add `TIER_LIMITS[tier].credits_monthly` on each `invoice.payment_succeeded` (`billing_reason=subscription_cycle`), **guarded by event-id idempotency** so a redelivery can't double-credit. Signup bonus is the separate one-time grant. |
+| 7 | Clerk metadata mirror | **No.** DB is the boundary; the SPA reads tier from `/account/me`. |
 
-2. **Stale tier doc conflict.** Two tier definitions exist and disagree:
-   - **Canonical (implemented):** `backend/models/user.py` → `TIER_LIMITS` =
-     `intro / standard / pro`, no free tier. Matches `CLAUDE.md` → "SaaS Pricing
-     (Stages 25-30)".
-   - **Stale:** `docs/stages/stage-25-saas-foundation.md:261-263` → `users.tier
-     DEFAULT 'free'`, comment `free | starter | pro | league`, `credits DEFAULT 50`.
-     This is an early-foundation draft that was superseded by the implementation.
-   **Need: confirm `user.py`/CLAUDE.md is canonical, and let me delete/annotate the
-   stale stage-25 block in a separate cleanup** (out of scope for this docs PR).
+These collapse the object model to **3 tiers × monthly recurring Price + 3 one-time
+credit-pack Prices** — see §6.
 
-3. **`/season` billing semantics.** Pricing is quoted as e.g. "$5/month **or**
-   $15/season" (`CLAUDE.md`). Is `/season` an **annual recurring** subscription, a
-   **one-time seasonal pass** (set tier until a fixed expiry, no auto-renew), or
-   recurring-annual-that-renews? This is the single biggest Stripe-object-model
-   fork (recurring Price vs one-time Price + manual expiry job). See §6.
+---
 
-4. **Cancellation behavior** (`customer.subscription.deleted`). On cancel/expiry,
-   downgrade to **`intro`** (keep the account, lose paid features) or a distinct
-   `canceled`/none state? Credits "accumulate, never reset" (`user.py:112`) — confirm
-   they survive a downgrade.
+## 0. Security & PCI posture (non-negotiable)
 
-5. **Payment-failed grace** (`invoice.payment_failed`). Immediate downgrade, or a
-   `past_due` grace window (Stripe's smart retries, typically ~2-3 wks) before
-   dropping tier? Recommend: honor Stripe's retry/`past_due` and only downgrade on
-   the terminal `subscription.deleted`.
+**Requirement (Stephen): a user must not be able to get their card stolen *through
+Rook*.** The way you guarantee that is structural: **card data never touches Rook's
+servers, code, logs, or database — at all.**
 
-6. **Monthly credit grant mechanic.** `TIER_LIMITS[*]["credits_monthly"]` (standard
-   20, pro 50) should be **added** to the balance on each successful renewal
-   (`invoice.payment_succeeded`, `billing_reason=subscription_cycle`). Confirm this
-   is the intended renewal mechanic (vs. a cron). The signup bonus
-   (`credits_signup_bonus`) is the one-time grant on first purchase.
+### A. Card data is handled 100% by Stripe — we never see a PAN
+- **Use Stripe Checkout (hosted redirect).** Our backend creates a *Checkout
+  Session* (server-side, with our secret key) and returns its URL; the browser
+  **redirects to `checkout.stripe.com`**, where Stripe renders and collects the card
+  on **their** domain. We never render a card field, never receive card numbers,
+  never proxy them. Same for managing/changing a card → **Stripe Customer Portal**
+  (also Stripe-hosted).
+- **PCI scope = SAQ-A** (the lowest tier — for merchants who fully outsource card
+  handling to a PCI-DSS Level-1 provider). We store/process/transmit **zero** card
+  data. The only Stripe identifiers we ever hold are **opaque references**
+  (`customer_id`, `subscription_id`, `price_id`, `event_id`) — useless to an
+  attacker, no cardholder data.
+- **Reject Stripe Elements / any in-app card form for v1.** Even though Elements
+  tokenizes client-side, it puts Stripe.js on our page (SAQ-A-EP, larger surface).
+  Checkout-redirect keeps the card UI off our origin entirely. Use Elements only if a
+  future UX demands it, and never let raw card fields post to our backend.
 
-7. **(Optional) Clerk metadata mirror.** Mirror `tier` into Clerk
-   `publicMetadata` so the React app can read it straight off the Clerk session
-   without an `/account/me` call? Recommend **no for the security boundary** (the DB
-   is), **optionally yes as a UX convenience**. Default: skip it; the SPA already
-   fetches `/account/me`.
+### B. Entitlement integrity — nobody can forge a paid tier
+The dangerous class isn't card theft (Stripe owns that) — it's a user granting
+*themselves* Pro. Controls:
+- **The verified webhook is the ONLY thing that grants entitlement.** Tier is flipped
+  exclusively in the signature-verified `/webhooks/stripe` handler.
+- **NEVER trust the client success redirect.** The post-checkout `?success=true`
+  return URL is user-forgeable (they can hit it without paying) — it may *prompt* a
+  refresh but must **never** set `tier`. (Classic SaaS billing vuln.)
+- **Webhook signature verification is mandatory** (`stripe.Webhook.construct_event`
+  with `STRIPE_WEBHOOK_SECRET`); unverified → 400, no side effects. An unverified
+  endpoint is an entitlement-forgery hole.
+- **Prices are server-defined.** The checkout endpoint takes a **tier name** and maps
+  it to a server-configured `price_id`; the client never supplies an amount or
+  price_id. (Prevents "pay $1 for Pro".)
+
+### C. Tenant isolation on the endpoints we own
+- `/billing/checkout` + `/billing/portal` require `get_current_user`; the Stripe
+  `customer_id` is **bound to the authenticated user** (read from their `users` row),
+  never accepted from the request body. You can only ever check out / manage **your
+  own** subscription.
+- The webhook resolves the affected user by the Stripe `customer_id` stored on the
+  `users` row — not by anything in the (already-signature-verified) payload's
+  client-influenced fields.
+
+### D. Secret hygiene
+- `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` are **server-only Railway env vars**
+  (same pattern as Clerk) — never in the repo, never sent to the client, **never
+  logged** (scrub from request/error logs). Only a *publishable* key is ever
+  client-side, and Checkout-redirect may not even need one.
+- **Idempotency keys** on outbound Stripe API calls (checkout creation) so a retry
+  can't double-charge.
+
+### E. Operational
+- HTTPS only (already — Railway/Clerk). Webhook over HTTPS.
+- **Rate-limit** `/billing/*` (checkout/portal creation) to blunt abuse.
+- **Audit-log** every tier transition (handled where `upgrade_tier` runs) via the
+  existing `RequestLogging`/security middleware — who changed to what, when.
+- **PII minimization:** store only the opaque Stripe ids + the email we already have.
+  No card data, no billing address held by us (Stripe collects what it needs).
+
+**One-line summary:** redirect to Stripe for anything involving a card; the only
+state we keep is opaque ids; entitlement flips solely on a signature-verified
+webhook; prices and customer-binding are server-authoritative. That removes card
+theft *through Rook* as a possibility and closes the self-upgrade hole.
 
 ---
 
@@ -70,8 +109,10 @@ source of truth for subscription rules. No other file should define these values
 | **standard** | $9/mo · $29/season | 75 | 20 | 2 | ✓ | ✓ | ✗ | ✓ |
 | **pro** | $18/mo · $49/season | 200 | 50 | unlimited | ✓ | ✓ | ✓ | ✓ |
 
-`injury_monitoring` + projections / draft board / news / league sync / draft history
-are **free on all tiers** (no gate). **No free tier** — `intro` is the floor.
+The `/season` column is the *eventual* pricing; **v1 ships monthly only** (Decision
+#3) — the `/season` Prices come in a later add. `injury_monitoring` + projections /
+draft board / news / league sync / draft history are **free on all tiers** (no gate).
+**No free tier** — `intro` is the floor.
 Credit costs (feature unlocked *then* credits charged): `trade_analysis`=10,
 `trade_finder`=20, `waiver_wire`=8 (`user.py:64-70`). Credit packs (one-time):
 $5→75, $10→175, $25→500 (`user.py:73-77`). **Live draft is a tier entitlement, not a
@@ -208,16 +249,18 @@ these enforce anything — the backend dependency does.
 
 ## 6. Stripe object model
 
-**Products/Prices (assuming Decision #3 = recurring):** model **3 Products**
-(`Rook Intro`, `Rook Standard`, `Rook Pro`), each with the recurring Price(s) it
-sells. Monthly is `recurring{interval:month}`. `/season` is either
-`recurring{interval:year}` (auto-renews) **or** a one-time Price + an expiry job
-(no renewal) — **blocked on Decision #3**. So tentatively **3 tiers × {monthly,
-season}** Prices. **Credit packs** are **one-time** Prices (`small/medium/large`),
-sold via a separate one-time Checkout (mode=`payment`), not subscriptions.
+**Products/Prices (Decision #3 = MONTHLY recurring only; `/season` deferred):** model
+**3 Products** (`Rook Standard`, `Rook Pro`, and `Rook Intro`), each with **one
+recurring monthly Price** (`recurring{interval:month}`). That's it for subscriptions
+— **3 monthly Prices**, no annual/seasonal Price, no expiry job. **Credit packs** are
+**3 one-time Prices** (`small/medium/large`), sold via a separate **Checkout
+`mode=payment`** (not subscriptions). Subscriptions use **Checkout `mode=subscription`**.
+(`/season` is a later add: a new annual recurring Price per tier + a renewal-credit
+tweak — no architectural change, so deferring costs nothing.)
 
 - **`price_id → tier` mapping lives in code/config**, not hardcoded in handlers, so
   the webhook resolves a subscription's price to a tier.
+- **All card collection is via Checkout redirect** (§0.A) — no card UI on our origin.
 - **Test vs live mode:** fully separate object graphs and keys — `sk_test_*` /
   `whsec_*`(test) vs `sk_live_*` / `whsec_*`(live), and **different `price_id`s per
   mode**. Selected by environment (the `STRIPE_*` env vars differ per Railway
@@ -229,8 +272,8 @@ values are **Railway env vars**, never in the repo). Add:
 - `STRIPE_SECRET_KEY` (server SDK)
 - `STRIPE_WEBHOOK_SECRET` (signature verification)
 - `STRIPE_PRICE_*` (the per-tier/per-period + per-pack price ids)
-- `VITE_STRIPE_PUBLISHABLE_KEY` (frontend, if using Stripe.js; with Checkout
-  redirect this may be unnecessary)
+- `VITE_STRIPE_PUBLISHABLE_KEY` — **likely unnecessary** with Checkout-redirect
+  (no Stripe.js on our page); include only if a later UX needs it.
 
 The `stripe` Python SDK is **not yet a dependency** — adding it is part of the next
 pass, not this doc.
@@ -240,22 +283,28 @@ pass, not this doc.
 ## 7. Proposed implementation sequence (next pass — not now)
 
 1. **Config + SDK:** add `stripe` dep; `STRIPE_*` settings in `config.py` +
-   `.env.example`; create test-mode Products/Prices; record price ids.
-2. **Billing router** (`/api/billing`): `POST /checkout` (create a Checkout Session
-   for a tier price; ensure/attach `stripe_customer_id`), `POST /portal` (Customer
-   Portal session for manage/cancel/payment-method).
-3. **Stripe webhook** (`/webhooks/stripe`, root-mounted): signature-verified,
-   idempotent (event-id dedup table), driving the §4 transitions through the
-   **existing** `UserService.upgrade_tier` / `apply_signup_bonus` + a monthly-credit
-   grant.
+   `.env.example`; create **test-mode** Products + 3 monthly Prices + 3 pack Prices;
+   record price ids in config.
+2. **Billing router** (`/api/billing`, auth-required, rate-limited): `POST /checkout`
+   → create a **Checkout Session** (`mode=subscription`, tier→server `price_id`,
+   `customer_id` bound to the authed user) and return its URL for redirect; `POST
+   /portal` → Customer Portal session (manage/cancel/card). **No card data touches us
+   (§0.A); customer bound server-side (§0.C); prices server-defined (§0.B).**
+3. **Stripe webhook** (`/webhooks/stripe`, root-mounted): **signature-verified
+   (mandatory)**, idempotent (event-id dedup table), driving the §4 transitions
+   through the **existing** `UserService.upgrade_tier`/`apply_signup_bonus` + the
+   monthly-credit grant. **This is the sole entitlement-granting path (§0.B).**
 4. **Attach the gates:** `require_feature("live_draft")` on `/draft/start`;
    `require_credits(...)` on trade/waiver routes as they're built.
-5. **Frontend:** Pricing CTAs → `/billing/checkout`; Account → `/billing/portal`;
-   global 402/feature-error → upgrade prompt; locked-feature affordances.
-6. **Tests:** webhook signature + idempotency + each state transition (mocked
-   Stripe events); gate dependencies (allow/deny per tier); checkout/portal session
-   creation (mocked SDK). Plus the §4 local Stripe-CLI flow.
-7. **Cleanup (separate):** resolve the stale stage-25 tier block (Decision #2).
+5. **Frontend (UX only):** Pricing CTAs → `/billing/checkout` then **redirect to the
+   Stripe URL**; Account → `/billing/portal`; global 402/feature-error → upgrade
+   prompt; locked-feature affordances. The success-return URL **must not** grant
+   anything (§0.B) — it only refreshes `/account/me`.
+6. **Tests:** webhook **signature-rejection** + idempotency (no double-credit) + each
+   state transition (mocked Stripe events); gate dependencies (allow/deny per tier);
+   "client success URL grants nothing" + "client cannot supply price/customer" guards;
+   checkout/portal session creation (mocked SDK). Plus the §4 local Stripe-CLI flow.
+7. **Cleanup (separate PR):** remove the stale `stage-25` tier block (Decision #2).
 
 ---
 
