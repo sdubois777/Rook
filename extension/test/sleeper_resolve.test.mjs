@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import {
   parseFrame,
   isDraftFrame,
@@ -85,6 +88,28 @@ test('roundOf + mySlotFrom', () => {
 // sleeper_draft.js only injects on sleeper.com/sleeper.app, and the Yahoo/ESPN
 // pollers never run there. There is no shared page, so no DOM cross-fire.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Orphaned-context recovery: an extension reload/update orphans the running
+// content script (browser.* throws "Extension context invalidated"); the MAIN
+// interceptor keeps posting frames but nothing relays. The poller must detect the
+// dead context on a draft frame and reload the tab (capped) to re-inject a fresh,
+// connected content script. (Static wiring assertion — behavior needs a browser.)
+// ---------------------------------------------------------------------------
+test('content script recovers from an invalidated extension context', () => {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const src = readFileSync(
+    join(__dirname, '..', 'src', 'content_scripts', 'sleeper_draft.js'),
+    'utf-8'
+  )
+  assert.match(src, /function extensionAlive\(\)/)
+  assert.match(src, /browser\.runtime\.id/)
+  assert.match(src, /location\.reload\(\)/)
+  // recovery is gated on a real draft frame + a dead context, and capped to avoid
+  // a reload loop when the extension is disabled.
+  assert.match(src, /if \(!extensionAlive\(\)\) \{\s*\n\s*recoverInvalidatedContext\(\)/)
+  assert.match(src, /n >= 2/)
+})
+
 test('cross-poller: snake/auction resolvers emit nothing for non-draft frames', () => {
   const nonDraft = [
     parseFrame('[null,null,"presence_draft:1","presence_diff",{"joins":{}}]'),

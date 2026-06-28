@@ -7,7 +7,15 @@ export async function getDraftToken() {
 }
 
 export async function postDraftEvent(event) {
-  const token = await getDraftToken()
+  let token
+  try {
+    token = await getDraftToken()
+  } catch {
+    // Extension context invalidated (reload/update orphaned this content script)
+    // or storage unavailable — never let it reject uncaught; the poller's
+    // context check handles recovery.
+    return false
+  }
   if (!token) {
     console.debug('Rook: no draft token — skipping')
     return false

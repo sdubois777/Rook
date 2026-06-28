@@ -120,14 +120,60 @@ async function captureIfEnabled(detail) {
   }
 }
 
+/** False once the extension is reloaded/updated and this content script orphaned. */
+function extensionAlive() {
+  try {
+    return !!(browser && browser.runtime && browser.runtime.id)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * When the extension is reloaded or AUTO-UPDATED, content scripts already running
+ * in open tabs are orphaned: their browser.* calls throw "Extension context
+ * invalidated" and relaying silently dies (the MAIN-world interceptor keeps posting
+ * frames, but nothing reaches the backend). The only recovery is a fresh content-
+ * script injection = a page reload. Auto-reload once (capped to avoid a loop if the
+ * extension is disabled, reset on the next healthy relay) so a LIVE draft survives
+ * an extension update without the user noticing.
+ */
+const CTX_RELOAD_KEY = 'rook_ctx_reloads'
+function recoverInvalidatedContext() {
+  try {
+    const n = Number(sessionStorage.getItem(CTX_RELOAD_KEY) || 0)
+    if (n >= 2) {
+      console.warn(
+        'Rook: extension was reloaded/updated — refresh this Sleeper tab to resume draft tracking.'
+      )
+      return
+    }
+    sessionStorage.setItem(CTX_RELOAD_KEY, String(n + 1))
+  } catch {
+    // sessionStorage blocked — still attempt a single reload
+  }
+  location.reload()
+}
+
 window.addEventListener('message', (e) => {
   // Only our own MAIN-world interceptor's messages, from this window.
   if (e.source !== window) return
   const d = e.data
   if (!d || d.__rook_ws__ !== true || typeof d.data !== 'string') return
-  captureIfEnabled(d)
+  // Parse first (pure, no extension APIs) so we only act on real draft frames.
   const frame = parseFrame(d.data)
-  if (frame) handleFrame(frame)
+  if (!frame || !isDraftFrame(frame)) return
+  if (!extensionAlive()) {
+    recoverInvalidatedContext() // orphaned by an extension reload/update → reconnect
+    return
+  }
+  try {
+    sessionStorage.setItem(CTX_RELOAD_KEY, '0') // healthy relay → reset the reload cap
+  } catch {
+    // ignore
+  }
+  captureIfEnabled(d)
+  handleFrame(frame)
 })
 
 window.__rook_sleeper_poller__ = true
