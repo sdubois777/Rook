@@ -240,11 +240,17 @@ class DraftStateManager:
             )
         return summary
 
-    def record_pick(self, pick: DraftPick) -> None:
-        """Called after every draft_pick event from the bridge."""
+    def record_pick(self, pick: DraftPick, is_yours: bool = False) -> None:
+        """Called after every draft_pick event from the bridge.
+
+        `is_yours` (the extension's own-pick flag) routes the pick to YOUR roster
+        even when team_id is an anonymous slot label ("Team 5") that doesn't match
+        your_team_id — without it, Sleeper/ESPN buys landed in opponent_rosters
+        under your own slot, and a refresh showed them there with your roster empty.
+        """
         self.picks.append(pick)
 
-        if pick.team_id == self.your_team_id:
+        if is_yours or (pick.team_id and pick.team_id == self.your_team_id):
             self.your_roster.append(pick)
             self.your_budget -= pick.price
         else:

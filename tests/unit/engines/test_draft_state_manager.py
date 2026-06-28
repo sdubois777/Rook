@@ -72,6 +72,20 @@ def test_record_pick_my_team_reduces_budget_and_fills_roster():
     assert state.opponent_rosters == {}
 
 
+def test_record_pick_is_yours_routes_to_your_roster_despite_slot_label_team_id():
+    """is_yours (the extension's own-pick flag) routes a pick to YOUR roster even
+    when team_id is an anonymous slot label that doesn't match your_team_id — the
+    Sleeper/ESPN case where own buys otherwise landed in opponent_rosters."""
+    state = _make_state()
+
+    state.record_pick(_pick("p1", "Team 5", 70), is_yours=True)
+
+    assert len(state.your_roster) == 1
+    assert state.your_roster[0].player_id == "p1"
+    assert state.get_your_remaining_budget() == 130  # 200 − 70
+    assert state.opponent_rosters == {}  # NOT a phantom "Team 5"
+
+
 def test_record_pick_opponent_initializes_budget_and_tracks_roster():
     """An opponent's first pick seeds their budget at full and deducts the price."""
     state = _make_state()
