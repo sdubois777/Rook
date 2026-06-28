@@ -118,6 +118,9 @@ byes) + week. **Output (structured):**
 - `winner` + `value_delta` (magnitude, not just direction)
 - `fairness` verdict (fleecing / fair / overpay)
 - per-team **roster-fit** reasoning (does it fix a need / create a hole)
+- **roster-slot check** — lineup legality is NOT enforced (it's a trade), but if I
+  **receive more players than I give** and don't have the open roster slots,
+  **flag it** and **recommend which of my players to drop** to make the trade fit.
 - **counter** suggestion if lopsided
 - the **why**, grounded in usage signals (not "X is projected for more points")
 
@@ -127,11 +130,17 @@ byes) + week. **Output (structured):**
 
 `POST /api/trade/ideas` — body: `{ my_team_id }`. Scans **my roster vs the rest of the
 league** for value-asymmetric matches: my **sell-high** pieces against opponents'
-**needs**, opponents' **buy-low** pieces against my needs. Constructs a handful of
-realistic, roughly-fair offers (each must improve my starting lineup or depth), ranked
-by net value gain + likelihood the other side says yes (roster-fit on their side).
-Reuses the §4 value bundle + §3 signals; output is a list of proposed trades each with
-the analyzer-style rationale. (In prod, gated to **pro** via `trade_finder`.)
+**needs**, opponents' **buy-low** pieces against my needs. Constructs realistic,
+roughly-fair offers (each must improve my starting lineup or depth), ranked by net
+value gain + likelihood the other side says yes (roster-fit on their side). Reuses the
+§4 value bundle + §3 signals; output is a list of proposed trades each with the
+analyzer-style rationale (incl. the §4 roster-slot/drop note where relevant).
+- **Count: 3-5, NOT forced** — return however many are genuinely good.
+- **NEVER fabricate.** If there are no value-asymmetric, roster-improving trades,
+  return **none** with a plain "no clear trade right now" — do not pad to a number or
+  surface forced/marginal offers. (Same no-making-things-up discipline as the rest of
+  the system.)
+- (In prod, gated to **pro** via `trade_finder`.)
 
 ---
 
@@ -176,12 +185,15 @@ On the trade page, gated behind `TRADE_DEMO_MODE`:
 
 ---
 
-## 9. Open questions for Stephen
+## 9. Resolved (LOCKED with Stephen)
 
-- **Roster slots / lineup legality:** enforce starter-slot legality in trade fit
-  (QB/RB/WR/TE/FLEX/K/DEF + bench), or value-only for v1? *Recommend: roster-fit
-  reasoning yes, strict lineup-legality no (v1).*
-- **Number of proposals** returned by "give me trade ideas" — 3? 5? *Recommend 3-5,
-  ranked.*
-- **Value scale shared with the draft side?** Reuse the 0-100 / VORP-tier anchoring so
-  numbers are familiar, or a trade-specific scale? *Recommend reuse the anchoring.*
+- **Lineup legality:** NOT enforced (it's a trade). The only roster guard: if I
+  **receive more players than I give** and lack open slots, **flag it + recommend
+  which player(s) to drop** to fit (§4).
+- **Number of proposals:** **3-5, not forced** — return however many are genuinely
+  good, and **NONE** (with "no clear trade right now") if nothing is viable. **Never
+  fabricate** to hit a count (§5).
+- **Value scale:** **reuse the draft-side anchoring** (0-100 / VORP-tier) for v1, and
+  iterate from there.
+
+Design is complete — ready to build (sequence in §8).
