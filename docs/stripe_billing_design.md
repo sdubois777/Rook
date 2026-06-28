@@ -16,9 +16,9 @@
 | 1 | Entitlement source of truth | **Rook DB `users.tier`.** Stripe = billing record, syncs into the DB via webhook; Clerk = identity only. Read on the hot path, reconcile via webhook (§3). |
 | 2 | Stale tier doc | **`backend/models/user.py` + CLAUDE.md are canonical** (intro/standard/pro). The stale `stage-25` `free\|starter\|pro\|league` block gets removed in a **separate cleanup PR** (step 7). |
 | 3 | `/season` semantics | **Defer `/season` for v1 — ship recurring MONTHLY subscriptions only.** Seasonal can come later once the subscription path is proven. Removes the one-time-pass / expiry-job complexity entirely. |
-| 4 | Cancellation | On `subscription.deleted` → **downgrade to `intro`**, **credits persist** (they "accumulate, never reset"). |
+| 4 | Cancellation | **Period-end, not immediate.** Cancel sets `cancel_at_period_end=true` (Stripe Portal default) → the user **keeps their tier through the period they paid for**. Downgrade to `intro` fires **only** on `customer.subscription.deleted` (which Stripe emits *at* `current_period_end` for a period-end cancel). **Credits persist.** See §4 for the explicit "what does NOT downgrade." |
 | 5 | Payment-failed grace | **Honor Stripe's retries** — mark `past_due` on `invoice.payment_failed`, keep access, downgrade only on the terminal `subscription.deleted`. No custom grace logic. |
-| 6 | Monthly credit grant | **Webhook-driven** — add `TIER_LIMITS[tier].credits_monthly` on each `invoice.payment_succeeded` (`billing_reason=subscription_cycle`), **guarded by event-id idempotency** so a redelivery can't double-credit. Signup bonus is the separate one-time grant. |
+| 6 | Monthly credit grant | **Webhook-driven, once per paid monthly invoice.** Grant `credits_monthly` **only** on `invoice.payment_succeeded` **AND** `invoice.billing_reason == "subscription_cycle"` (renewals only — see §4 for the non-grant invoices). Idempotency keyed on **`event.id`** (global webhook dedup) **plus** the grant recorded against **`invoice.id`** (one invoice per cycle) so it's provably once-per-invoice. Signup bonus is the separate one-time grant. |
 | 7 | Clerk metadata mirror | **No.** DB is the boundary; the SPA reads tier from `/account/me`. |
 
 These collapse the object model to **3 tiers × monthly recurring Price + 3 one-time
@@ -192,19 +192,33 @@ STRIPE_WEBHOOK_SECRET)`.
 |---|---|
 | `checkout.session.completed` | First purchase: set `stripe_customer_id` + `stripe_subscription_id`; `upgrade_tier(<purchased>)`; one-time `apply_signup_bonus`. (Use this **or** `subscription.created` as the authoritative "started" signal — not both.) |
 | `customer.subscription.created` | Subscription exists. Map `price_id → tier`; set tier if not already set by checkout. |
-| `customer.subscription.updated` | Tier change (upgrade/downgrade via price swap) → `upgrade_tier(<new>)`; status change (`active`/`past_due`/`canceled@period_end`) → reflect status. |
-| `customer.subscription.deleted` | Subscription ended → downgrade per **Decision #4** (recommend → `intro`); clear `stripe_subscription_id`. |
-| `invoice.payment_succeeded` (`billing_reason=subscription_cycle`) | Renewal → **add** `TIER_LIMITS[tier]["credits_monthly"]` to balance (Decision #6). First invoice (`subscription_create`) is the signup, not a monthly grant. |
-| `invoice.payment_failed` | Mark `past_due`; **do not** downgrade yet (Decision #5) — let Stripe retry; terminal failure arrives as `subscription.deleted`. |
+| `customer.subscription.updated` | **Two distinct cases — keep them separate.** (a) *Tier change* (upgrade/downgrade via price swap, `active`) → `upgrade_tier(<new price's tier>)`. (b) *Cancel scheduled* (`cancel_at_period_end=true`, still `active`) → **DO NOT downgrade**; the user keeps their tier until period end. Optionally surface a "canceling on `current_period_end`" flag for the UI. Also reflect `past_due` status here. |
+| `customer.subscription.deleted` | **The only event that downgrades.** Fires when the subscription actually ends — *at* `current_period_end` for a period-end cancel (Decision #4), or immediately for a hard cancel. → downgrade to `intro`, **credits persist**, clear `stripe_subscription_id`. |
+| `invoice.payment_succeeded` | **Grant `credits_monthly` ONLY when `invoice.billing_reason == "subscription_cycle"`** (a real renewal). **Do NOT grant** on `subscription_create` (that's the signup → `apply_signup_bonus` path) or `subscription_update` (mid-cycle proration invoice). Idempotency per Decision #6 (event.id + invoice.id). |
+| `invoice.payment_failed` | Mark `past_due`; **do not** downgrade yet (Decision #5) — let Stripe retry; terminal failure arrives later as `subscription.deleted`. |
+
+**Timing summary (Decision #4):** the *only* downgrade trigger is
+`customer.subscription.deleted`. Cancelling does not delete immediately — it flips
+`cancel_at_period_end` and the subscription stays `active` until `current_period_end`,
+so honoring only `subscription.deleted` gives **access-through-the-paid-period for
+free**. Downgrading on the cancel-scheduling `subscription.updated` would yank access
+from someone who already paid for the period — the refund-request generator. **Don't.**
 
 **Requirements (call out explicitly):**
 - **Signature verification** — reject unverified payloads (400), same posture as the
   Clerk handler (prod requires the secret; dev may parse unverified).
-- **Idempotency** — Stripe retries and may double-deliver. Dedup by `event.id`
-  (e.g. a `processed_stripe_events(event_id PK, seen_at)` table, insert-or-skip) **and**
-  make each handler idempotent (set-tier is naturally idempotent; **credit grants are
-  NOT** — they must be guarded by the event-id dedup so a redelivered
-  `invoice.payment_succeeded` can't double-credit).
+- **Idempotency (two layers, because credits are real value):**
+  1. **Global:** dedup every event by `event.id` — a `processed_stripe_events(event_id
+     PK, seen_at)` insert-or-skip — so Stripe's at-least-once *redelivery of the same
+     event* is a no-op.
+  2. **Grant-level:** the monthly credit grant is additionally recorded against the
+     **`invoice.id`** (one invoice per billing cycle) — grant only if that invoice
+     hasn't been granted — so it's **provably once per paid monthly invoice**, even if
+     two distinct events ever referenced it. Combined with the
+     `billing_reason == "subscription_cycle"` filter (which excludes the
+     create/update/manual invoices), a user cannot be double-topped. Tier writes are
+     naturally idempotent (set, not increment); only the *increment* operations
+     (credit grants) need this.
 
 **Test strategy (no staging backend; prod deploys from `main`):**
 - **Local first:** `stripe listen --forward-to localhost:8000/webhooks/stripe` +
@@ -300,10 +314,16 @@ pass, not this doc.
    Stripe URL**; Account → `/billing/portal`; global 402/feature-error → upgrade
    prompt; locked-feature affordances. The success-return URL **must not** grant
    anything (§0.B) — it only refreshes `/account/me`.
-6. **Tests:** webhook **signature-rejection** + idempotency (no double-credit) + each
-   state transition (mocked Stripe events); gate dependencies (allow/deny per tier);
-   "client success URL grants nothing" + "client cannot supply price/customer" guards;
-   checkout/portal session creation (mocked SDK). Plus the §4 local Stripe-CLI flow.
+6. **Tests:** webhook **signature-rejection**; **idempotency** — redelivered
+   `event.id` is a no-op AND the same `invoice.id` grants credits once; **grant
+   filter** — `subscription_cycle` grants, but `subscription_create` /
+   `subscription_update` invoices do **not** (no double-top across a mid-cycle
+   update); **downgrade timing** — `subscription.updated{cancel_at_period_end:true}`
+   does **not** downgrade, only `subscription.deleted` does, and credits survive it;
+   each tier state transition (mocked Stripe events); gate dependencies (allow/deny
+   per tier); "client success URL grants nothing" + "client cannot supply
+   price/customer" guards; checkout/portal session creation (mocked SDK). Plus the §4
+   local Stripe-CLI flow.
 7. **Cleanup (separate PR):** remove the stale `stage-25` tier block (Decision #2).
 
 ---
