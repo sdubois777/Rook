@@ -923,21 +923,34 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
 - [x] Stage 29: Snake draft — shipped (all platforms)
 - [x] ESPN + Sleeper live-draft pollers — shipped to prod
 - [x] CI/CD: GitHub Actions — DONE (backend/frontend/extension checks gate every PR)
-- [ ] **In-season feature build (PRE-SEASON PRIORITY): Trade page + Trade agent**
-      (analyzer + proposals). Greenfield — only the SeasonRoster model exists.
-      Design: `docs/trade_agent_design.md`. Approach: a DUMMY-DATA harness
-      (fabricated 12-team league, real players, "week 5 of 2025" with real 2025
-      weekly usage) lets the agents be built + tested before live in-season data
-      exists, behind a clean league-state interface so the SAME agents later run on
-      real data. The VALUE MODEL is the differentiator: in-season value is driven by
-      actual production + usage TRAJECTORY (target/snap share rising or falling,
+- [~] **In-season feature build (PRE-SEASON PRIORITY): Trade page + Trade agent**
+      (analyzer + proposals). Design: `docs/trade_agent_design.md`. Built behind a
+      clean league-state interface so the SAME agents later run on real data. The
+      VALUE MODEL is the differentiator: in-season value is driven by actual
+      production + usage TRAJECTORY (target/snap share rising or falling,
       opportunity-vs-production gap), NOT preseason projections — with a name-bias
-      guard. ⚠️ **ALL test scaffolding (demo seeder, team-switcher, `_demo`
-      endpoints, the hardcoded week, the dummy data source) is gated behind
-      `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
-      teardown checklist in the design doc. Permanent = the interface, value engine,
-      agents, page, and gates ONLY. Do NOT let demo/test code ship to users.**
-      Then: lineup optimizer, waiver wire, roster monitor, opponent analyzer, gameday.
+      guard. **Slices shipped to develop:**
+      - per-week NFL data layer `backend/integrations/nfl_weekly.py` (snap%/target
+        share/fantasy pts keyed (canonical_player_id, season, week); 2025 production
+        from PBP since import_weekly_data([2025]) 404s).
+      - league-state seam `backend/services/trade/league_state.py` + in-season value
+        engine `backend/services/trade/value_engine.py` (forward_value, usage
+        trend, buy_low/sell_high, name-bias guard, ragged-history `confidence`
+        full/limited/insufficient).
+      - **flag-gated demo harness (TEARDOWN before prod):**
+        `backend/services/trade/trade_demo_source.py` (provider + `TRADE_DEMO_MODE`
+        gate + `DEMO_ROSTERS` of real 2025 players + demo anchor `DEMO_SEASON`/
+        `DEMO_CURRENT_WEEK` pinned HERE, currently **week 14** — not week 5, not in
+        the engine/data layer), `scripts/seed_demo_league.py` (CLI),
+        `tests/unit/services/trade/test_trade_demo.py`.
+      ⚠️ **ALL demo scaffolding (the demo source/seeder/tests, the pinned week, the
+      future team-switcher + `/_demo` endpoints) is gated behind `TRADE_DEMO_MODE`
+      (default false) and MUST be removed before prod — see the teardown checklist
+      in the design doc; grep `TRADE_DEMO` / `DEMO_ROSTERS`. Permanent = the
+      interface, value engine, agents, page, and gates ONLY.**
+      **Remaining:** analyzer + proposals agents + `/api/trade/*` routes (slice 3),
+      trade page (slice 5), teardown (slice 6). Then: lineup optimizer, waiver
+      wire, roster monitor, opponent analyzer, gameday.
 - [ ] **Stripe billing implementation** (design locked — docs/stripe_billing_design.md)
 - [ ] Stage 30: Half PPR support
 - [ ] Generalize extension orphaned-context recovery to the Yahoo/ESPN pollers

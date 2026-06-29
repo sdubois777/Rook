@@ -18,12 +18,20 @@ single env flag and namespaced for one-pass deletion.
   every demo surface below is inert/absent — the trade page operates only on the
   authed user's **real** league.
 - **Removal checklist (delete before prod / when in-season data lands):**
-  - `scripts/seed_demo_league.py` — the fabricated 12-team league seeder
-  - the demo league-state implementation (the adapter that serves 2025 historical
-    weeks as if "current") — `backend/services/trade_demo_source.py`
-  - any `/_demo` trade endpoints + the `TRADE_DEMO_MODE` flag and its branches
+  - `scripts/seed_demo_league.py` — thin CLI that rosters real 2025 players onto
+    the demo teams and prints engine verdicts (slice 2)
+  - the demo league-state source (provider + gate + roster assembly, serving the
+    real 2025 per-week layer at a pinned demo week) —
+    `backend/services/trade/trade_demo_source.py` (slice 2). Holds `DEMO_ROSTERS`,
+    the `TRADE_DEMO_MODE` gate (`trade_demo_enabled` / `maybe_demo_league_source`),
+    and the demo anchor `DEMO_SEASON = 2025` / `DEMO_CURRENT_WEEK` (pinned HERE,
+    currently week 14 — NOT in the engine or #149 data layer)
+  - the demo tests — `tests/unit/services/trade/test_trade_demo.py` (slice 2)
+  - any `/_demo` trade endpoints + the `TRADE_DEMO_MODE` branch in route/provider
+    selection (slice 3)
   - frontend **team-switcher** ("act as any team") + `TradeTestControls` component
-  - the hardcoded `week = 5, season = 2025`
+    (slice 5)
+  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_ROSTERS` to find every surface
 - **What is PERMANENT (the real feature, not test):** the league-state **interface**,
   the **in-season value engine**, the **analyzer** + **proposals** agents, the trade
   **page** (player selection, verdict, the two buttons — minus the team-switcher),
@@ -102,6 +110,13 @@ buy-low = "recency bias suppressing value below true projection").
 *why*. **Name-bias guard:** an explicit rule + prompt instruction to down-weight
 reputation when the underlying role has decayed; the value is justified by the usage
 data, not the name.
+
+**Prior source nuance (learned, slice-2 casting):** the demo sources the preseason
+prior from `PlayerProfile.clean_season_baseline["ppr_points"] / 17`. Genuine 2025
+rookies DO carry a baseline here (college-comp-derived), so a **null prior signals a
+veteran missing a projection, NOT a rookie** — do not treat `prior is None` as "rookie"
+in the value engine or downstream agents. Real rookies enter with a (low-confidence)
+prior; the null-prior code path (`prior_weight 0`) is the unprofiled-veteran case.
 
 Where this lives: a **value engine** (mostly Python signal computation; a Haiku pass
 only for formatting if needed — Stage 17's model rule). The signals feed the Sonnet
