@@ -15,7 +15,11 @@ import logging
 
 from backend.agents.base_agent import SONNET, BaseAgent, parse_json_output
 from backend.services.trade.league_state import LeagueState
-from backend.services.trade.trade_proposals import Candidate, enumerate_candidates
+from backend.services.trade.trade_proposals import (
+    Candidate,
+    enumerate_candidates,
+    merge_candidates,
+)
 from backend.services.trade.value_engine import InSeasonValue
 
 logger = logging.getLogger(__name__)
@@ -87,12 +91,24 @@ class TradeProposalsAgent(BaseAgent):
         my_team_id: str,
         values: dict[str, InSeasonValue],
     ) -> list[Candidate]:
-        """LLM candidate generation with a deterministic enumerator fallback."""
+        """Candidate generation = the UNION of two generators, deduped: the LLM's
+        plausibility-driven ideas AND the slice-6 need/surplus-targeted enumerator.
+        Both ALWAYS run (the enumerator is no longer a dead fallback), so the
+        deterministic surplus-for-need / multi-player trades reach the edge-band
+        gate on every hot path. The gate judges both sources identically. If the
+        LLM fails or returns nothing, the enumerator stands alone (graceful
+        degradation — never back to zero candidates)."""
         my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
         others = [t for t in state.teams if t.team_id != my_team_id]
         if my_team is None or not others:
             return []
 
+        # Deterministic targeted enumerator — always run (bounded by its own
+        # need/surplus targeting; ~10-12 for the demo league).
+        enumerated = enumerate_candidates(state, values, my_team_id)
+
+        # LLM candidates — best-effort; the enumerator covers us if it fails/empty.
+        llm: list[Candidate] = []
         user = "\n\n".join([
             "MY TEAM:", _format_roster(my_team, values),
             "OTHER TEAMS:", *[_format_roster(t, values) for t in others],
@@ -110,10 +126,11 @@ class TradeProposalsAgent(BaseAgent):
                 system=_SYSTEM_PROMPT, user=user, input_data=input_data,
                 entity_id=my_team_id,
             )
-            candidates = _parse_candidates(raw, state, my_team_id)
-            if candidates:
-                return candidates
+            llm = _parse_candidates(raw, state, my_team_id)
         except Exception as exc:
             logger.warning("trade candidate generation failed: %s", exc)
 
-        return enumerate_candidates(state, values, my_team_id)
+        # Union both sources, deduped on trade identity (LLM first, then the
+        # enumerator's additions). The combined pool is small — never-pad / cap-5
+        # still live downstream in evaluate_candidates.
+        return merge_candidates(llm, enumerated)

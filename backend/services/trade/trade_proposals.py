@@ -65,6 +65,29 @@ class Candidate:
     counterparty_team_id: str
 
 
+def _candidate_key(c: "Candidate") -> tuple:
+    """Order-INDEPENDENT trade identity: the give set, the get set, and the
+    counterparty. ("a","b")->X and ("b","a")->X are the same trade."""
+    return (frozenset(c.give_ids), frozenset(c.get_ids), c.counterparty_team_id)
+
+
+def merge_candidates(*candidate_lists: list[Candidate]) -> list[Candidate]:
+    """Union candidate lists from multiple generators (LLM + targeted enumerator),
+    deduped on trade identity — the same trade from both sources counts once.
+    Earlier lists win the slot, so pass the LLM's first to keep its ordering, then
+    the enumerator's to add the trades the model missed."""
+    seen: set[tuple] = set()
+    out: list[Candidate] = []
+    for lst in candidate_lists:
+        for c in lst:
+            key = _candidate_key(c)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+    return out
+
+
 @dataclass(frozen=True)
 class EdgeBand:
     """The §3 edge-band scoring of a candidate (all contextual). Surfaced numbers
