@@ -104,6 +104,12 @@ RosterPlayer:
 
 ## 3. In-season value model — THE differentiator (do NOT just reuse projections)
 
+> **IMPLEMENTED (usage-trajectory + opportunity-gap wiring):** the trajectory and
+> efficiency signals below now move `forward_value` itself, not just a display
+> flag. See `docs/trade_value_trajectory_design.md`. (They were computed and shown
+> but never fed into value until that pass — buy-low did nothing, sell-high only
+> discounted in the falling-and-over-producing corner.)
+
 Every other trade tool leans on preseason projections → name bias + stale value.
 **Ours re-derives forward value from actual production + usage TRAJECTORY**, using the
 preseason projection only as a weak prior to be **overridden** by what the data now

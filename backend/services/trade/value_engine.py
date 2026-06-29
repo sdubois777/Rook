@@ -84,6 +84,32 @@ _FULL_INSEASON_GAMES = 5.0
 # Extra discount on the prior's weight when the role has decayed (name-bias guard).
 _GUARD_PRIOR_DISCOUNT = 0.3
 
+# --- value-trajectory wiring (docs/trade_value_trajectory_design.md) ---------
+# The usage TRAJECTORY (§3.1) and the opportunity-vs-production GAP (§3.2)
+# MULTIPLY forward_ppg (before anchor-scaling) so the founding differentiator
+# actually moves value instead of only flipping a display flag. Both factors are
+# centered at 1.0 (no signal → untouched, the #158 safety), SYMMETRIC (rising
+# lifts / falling discounts), BOUNDED by a hard cap, and CONFIDENCE-SCALED (thin /
+# cross-team trends can't whipsaw value — the Lamar safety). CONSERVATIVE defaults
+# (decision 7a): the level still dominates; tune UP against real output. Each
+# coefficient is independently settable to 0 to isolate one signal in calibration.
+_TRAJECTORY_COEFFICIENT = 0.5    # usage-composite delta → factor strength
+_TRAJECTORY_CAP = 0.12           # max |trajectory factor − 1|
+_OPP_GAP_WEIGHT = 0.012          # PPR opportunity-gap → factor strength
+_OPP_GAP_CAP = 0.10              # max |opp-gap factor − 1|
+# The opp-gap is only meaningful where volume is MEASURED (targets + carries). QBs
+# (passing volume isn't captured here) and players with no volume data get NO
+# opp-gap adjustment — without this, expected≈0 makes every QB a phantom
+# "over-producer" and craters them.
+_OPP_GAP_MIN_EXPECTED = 1.0
+# Confidence scaling for both factors: FULL → full adjustment; LIMITED (partial
+# same-team window) → dampened; INSUFFICIENT or a team change (cross-offense trend
+# = wrong signal) → none.
+_LIMITED_TREND_SCALE = 0.5
+# The COMBINED factor (trajectory × opp-gap) is clamped so two same-direction
+# signals can't over-move a value — especially over-crater on the downside (§4).
+_COMBINED_FACTOR_BOUNDS = (0.80, 1.20)
+
 # --- ragged-history contract (irregular player histories) -------------------
 # A real trend needs a 2-game recent window AND a non-empty prior window, so the
 # minimum for FULL confidence is 4 played games (2 recent + ≥2 prior; at 5+ the
@@ -268,6 +294,48 @@ def _scale_0_100(ppg: float, position: str, anchors: Optional[dict] = None) -> f
     return round(max(0.0, min(100.0, val)), 1)
 
 
+def _value_confidence_scale(confidence: Confidence, team_changed: bool) -> float:
+    """How much the trajectory / opp-gap factors may move value, by data trust.
+    INSUFFICIENT or a team change (cross-offense trend = WRONG signal, not just
+    thin) → no adjustment; a partial same-team window → dampened; FULL → full.
+    This is the Lamar safety: a thin/returning-player trend can't whipsaw value."""
+    if confidence is Confidence.INSUFFICIENT or team_changed:
+        return 0.0
+    if confidence is Confidence.LIMITED:
+        return _LIMITED_TREND_SCALE
+    return 1.0
+
+
+def usage_trajectory_factor(usage_delta: float, scale: float) -> float:
+    """§3.1 — symmetric, bounded, confidence-scaled multiplier from the usage
+    composite TREND. Centered at 1.0; rising usage (delta>0) lifts (>1), falling
+    discounts (<1). This is the half of the differentiator that was dead — buy-low
+    now actually raises value, not just a flag."""
+    raw = _TRAJECTORY_COEFFICIENT * usage_delta
+    raw = max(-_TRAJECTORY_CAP, min(_TRAJECTORY_CAP, raw))
+    return 1.0 + raw * scale
+
+
+def opp_gap_factor(gap: float, expected_ppg: float, scale: float) -> float:
+    """§3.2 — symmetric efficiency mean-reversion. gap = production − volume-implied;
+    over-producing (gap>0, e.g. TD variance) discounts toward implied (sell-high),
+    under-producing (gap<0) lifts (buy-low). No adjustment where volume isn't
+    measured (QBs / missing targets+carries) — the general form of the old
+    falling-and-over-producing `unsustainable_hot` valve (§4), now both directions."""
+    if expected_ppg < _OPP_GAP_MIN_EXPECTED:
+        return 1.0
+    raw = -_OPP_GAP_WEIGHT * gap
+    raw = max(-_OPP_GAP_CAP, min(_OPP_GAP_CAP, raw))
+    return 1.0 + raw * scale
+
+
+def _bound_combined(factor: float) -> float:
+    """Clamp the trajectory × opp-gap PRODUCT so two same-direction signals can't
+    over-move a value (the combined-downside-crater guard, §4)."""
+    lo, hi = _COMBINED_FACTOR_BOUNDS
+    return max(lo, min(hi, factor))
+
+
 def _starter_demand(position: str, teams: int) -> float:
     """League-wide starters at a position = teams·starters + teams·flex·flex_share."""
     return (teams * STARTERS_PER_POS.get(position, 0)
@@ -369,8 +437,10 @@ def compute_player_value(
     expected = expected_ppg_from_volume(df)
     gap = round(form - expected, 2)
 
-    # Sustainability: hot scoring NOT backed by usage (falling role + scoring
-    # above volume) is unsustainable → regress toward volume-implied output.
+    # Sustainability flag: hot scoring NOT backed by usage (falling role + scoring
+    # above volume). Kept for the sell-high flag + transparency; its old direct
+    # value-regression is now SUBSUMED by the symmetric opp-gap factor below (§4),
+    # so it is NOT applied here (would double-discount a falling over-producer).
     unsustainable_hot = trend == ValueTrend.FALLING and gap >= _GAP_SELL
     sustainable = not unsustainable_hot
 
@@ -381,19 +451,17 @@ def compute_player_value(
     in_season_ppg = round(
         _RECENT_VS_SEASON_WEIGHT * form + (1.0 - _RECENT_VS_SEASON_WEIGHT) * season, 2
     )
-    if unsustainable_hot:
-        # Still regress an unsustainable hot streak toward volume-implied output
-        # (now on top of the season-tempered level).
-        in_season_ppg = round(0.6 * in_season_ppg + 0.4 * expected, 2)
 
     # Preseason prior enters weakly; washes out as games accrue.
     in_w = min(1.0, games / _FULL_INSEASON_GAMES)
     prior_w = 1.0 - in_w
     guard = False
     if prior_projection_ppg is not None and prior_w > 0:
-        # Name-bias guard: when the role has decayed (falling usage) and the
-        # prior (reputation) outstrips current production, discount the prior so
-        # reputation can't prop the value up.
+        # Name-bias guard (KEPT — distinct from the trajectory factor: it suppresses
+        # the PRESEASON PRIOR's weight when reputation outstrips a decayed role,
+        # whereas the trajectory factor nudges the post-blend ppg by usage
+        # direction). When the role has decayed (falling) and the prior outstrips
+        # current production, discount the prior so reputation can't prop value up.
         if trend == ValueTrend.FALLING and prior_projection_ppg > in_season_ppg:
             prior_w *= _GUARD_PRIOR_DISCOUNT
             guard = True
@@ -404,6 +472,18 @@ def compute_player_value(
     total_w = in_w + prior_w
     forward_ppg = (in_w * in_season_ppg + prior_w * prior_component) / (total_w or 1.0)
     forward_ppg = round(forward_ppg, 2)
+
+    # --- TRAJECTORY + OPP-GAP factors: the differentiator, finally wired into VALUE.
+    # Multiply forward_ppg BEFORE anchor-scaling (role change matters more in
+    # absolute terms for high-value players). Both centered at 1.0, confidence-
+    # scaled, and the product is clamped so two same-direction signals can't
+    # over-move the value.
+    tscale = _value_confidence_scale(confidence, team_changed)
+    combined_factor = _bound_combined(
+        usage_trajectory_factor(u_delta, tscale) * opp_gap_factor(gap, expected, tscale)
+    )
+    forward_ppg = round(forward_ppg * combined_factor, 2)
+
     forward_value = _scale_0_100(forward_ppg + schedule_modifier, position, anchors)
 
     if confidence is Confidence.INSUFFICIENT:

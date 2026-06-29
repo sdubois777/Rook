@@ -15,15 +15,22 @@ from backend.services.trade.league_state import (
     RosterPlayer,
     TeamState,
 )
+import backend.services.trade.value_engine as ve
 from backend.services.trade.value_engine import (
     ValueTrend,
+    _COMBINED_FACTOR_BOUNDS,
+    _OPP_GAP_CAP,
     _PPG_ANCHORS,
+    _TRAJECTORY_CAP,
+    _bound_combined,
     _played_weeks,
     _scale_0_100,
     compute_player_value,
     derive_anchors,
     evaluate_league,
+    opp_gap_factor,
     season_ppg_by_position,
+    usage_trajectory_factor,
     usage_trend,
 )
 
@@ -182,10 +189,10 @@ def test_high_prior_but_weak_inseason_value_follows_inseason():
     assert v.prior_weight == pytest.approx(0.0)     # 6 games ≥ full-in-season
     # in-season ~11 ppg → low score, nowhere near the prior-implied ~80.
     assert v.forward_value < 40
-    # LEVEL now blends recent form with the season-to-date baseline (calibration
-    # fix); both are ~11 here, so forward stays anchored to in-season reality, not
-    # the 20-ppg prior. (Was: forward_ppg == recency_ppg, pre-calibration.)
-    assert v.forward_ppg == pytest.approx(11.2, abs=0.7)
+    # LEVEL blends recent form with the season-to-date baseline (~11), then the
+    # opp-gap factor lightly discounts (scoring ~11 above the ~7 volume-implied),
+    # so forward stays anchored to in-season reality (~10.7), not the 20-ppg prior.
+    assert v.forward_ppg == pytest.approx(10.7, abs=0.7)
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +289,9 @@ def test_genuine_decline_still_reads_low():
 
 def test_hot_but_unsustainable_is_not_credited_at_the_hot_rate():
     """A short hot streak above the season level on falling usage is NOT fully
-    credited: the season baseline tempers it AND the unsustainable-hot regression
-    still applies, so the level lands well below the recent hot form."""
+    credited: the season baseline tempers it AND the opp-gap factor (which now
+    SUBSUMES the old unsustainable-hot regression) discounts it, so the level lands
+    well below the recent hot form."""
     weeks = _weeks(
         snaps=[0.70, 0.65, 0.45, 0.40], targets=[0.18, 0.16, 0.08, 0.07],
         points=[8, 9, 19, 20],                    # ~17.5 hot last-3 vs ~14 season
@@ -393,3 +401,123 @@ def test_season_ppg_by_position_groups_rostered_players():
     ], ignore_index=True)
     pools = season_ppg_by_position(weekly, {"a": "QB", "b": "QB"})
     assert sorted(pools["QB"]) == [10.0, 20.0]
+
+
+# ===========================================================================
+# USAGE-TRAJECTORY + OPP-GAP wiring (docs/trade_value_trajectory_design.md §8).
+# The paired safety property: the differentiator MOVES value (Burrow flips),
+# while a stable-usage stud and a thin/cross-team trend do NOT whipsaw.
+# ===========================================================================
+def _fv(pid, pos, weeks):
+    return compute_player_value(
+        canonical_player_id=pid, name=pid, position=pos, weeks=weeks, current_week=weeks["week"].max(),
+    )
+
+
+def test_burrow_henderson_trade_flips_with_trajectory_wiring(monkeypatch):
+    """§8.1 HEADLINE: give a RISING buy-low QB (Burrow) for a FALLING sell-high RB
+    (Henderson). Level-only the higher-level Henderson is a 'you win'; once the
+    trajectory + opp-gap factors move value, Burrow lifts and Henderson discounts,
+    and the verdict FLIPS — buy-high/sell-low no longer scores as a win."""
+    burrow = _weeks([0.64, 0.66, 0.68, 0.95, 1.0], [0, 0, 0, 0, 0], [16, 17, 17, 20, 21])
+    hend = _weeks([0.62, 0.60, 0.58, 0.40, 0.36], [0.10, 0.10, 0.09, 0.06, 0.05],
+                  [18, 17, 16, 15, 14], tgts=[4, 4, 3, 2, 2], carries=[14, 13, 12, 8, 7])
+
+    # LEVEL-ONLY baseline (factors disabled).
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    b0, h0 = _fv("burrow", "QB", burrow), _fv("hend", "RB", hend)
+    delta_level = h0.forward_value - b0.forward_value
+    assert delta_level > 5          # level-only: clearly "you win" getting Henderson
+
+    # Conservative defaults restored — the differentiator moves value.
+    monkeypatch.undo()
+    b1, h1 = _fv("burrow", "QB", burrow), _fv("hend", "RB", hend)
+    assert b1.value_trend is ValueTrend.RISING and b1.buy_low
+    assert h1.value_trend is ValueTrend.FALLING and h1.sell_high
+    assert b1.forward_value > b0.forward_value      # rising buy-low LIFTS
+    assert h1.forward_value < h0.forward_value      # falling sell-high DISCOUNTS
+    delta_factors = h1.forward_value - b1.forward_value
+    assert delta_factors < delta_level              # verdict moved the right way
+    assert delta_factors < 0                         # ...and FLIPPED — no longer "you win"
+
+
+def test_stable_usage_stud_in_a_scoring_dip_stays_put(monkeypatch):
+    """§8.2 #158 GUARD (non-negotiable): a high-value, STABLE-usage player in a
+    couple low-scoring weeks barely moves — the factors key on USAGE, not scoring,
+    so a scoring dip doesn't whipsaw the value."""
+    weeks = _weeks([0.85] * 7, [0.24] * 7, [20, 21, 20, 22, 21, 12, 11], tgts=[9] * 7)
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    base = _fv("stud", "WR", weeks).forward_value
+    monkeypatch.undo()
+    factored = _fv("stud", "WR", weeks)
+    assert factored.value_trend is ValueTrend.STABLE
+    assert factored.forward_value == pytest.approx(base, rel=0.05)   # essentially unchanged
+
+
+def test_team_change_trend_does_not_whipsaw_value(monkeypatch):
+    """§8.3 CONFIDENCE GUARD (Lamar safety): a falling trend across a TEAM CHANGE
+    is a cross-offense (wrong) signal → the confidence guard suppresses the value
+    adjustment entirely, so a returning/moved player's value is not whipsawed."""
+    weeks = _weeks([0.9, 0.85, 0.55, 0.50], [0.28, 0.24, 0.13, 0.11], [18, 16, 9, 8], tgts=[9, 8, 4, 4])
+    weeks["nfl_team"] = ["AAA", "AAA", "BBB", "BBB"]      # changed mid-window
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    base = _fv("moved", "WR", weeks).forward_value
+    monkeypatch.undo()
+    factored = _fv("moved", "WR", weeks).forward_value
+    assert factored == base          # team change → scale 0 → no adjustment despite the trend
+
+
+def test_opp_gap_under_producer_lifts_value(monkeypatch):
+    """§8.4: heavy volume, suppressed output → lift toward volume-implied (buy-low).
+    (Points kept above positional replacement so the lift isn't floored at 0.)"""
+    weeks = _weeks([0.85] * 5, [0.24] * 5, [10, 9, 11, 10, 9], tgts=[13, 12, 14, 13, 12])
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    base = _fv("under", "WR", weeks).forward_value
+    monkeypatch.undo()
+    assert _fv("under", "WR", weeks).forward_value > base
+
+
+def test_opp_gap_over_producer_discounts_value(monkeypatch):
+    """§8.5: low volume, high (TD-driven) output → discount toward volume-implied."""
+    weeks = _weeks([0.45] * 5, [0.07] * 5, [16, 17, 18, 16, 17], tgts=[3, 2, 3, 2, 3])
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    base = _fv("over", "WR", weeks).forward_value
+    monkeypatch.undo()
+    assert _fv("over", "WR", weeks).forward_value < base
+
+
+def test_unsustainable_hot_still_discounts_via_opp_gap(monkeypatch):
+    """§8.6: the old falling/over-producing `unsustainable_hot` case is preserved —
+    still flagged sell-high AND still discounted, now via the general opp-gap factor
+    (not the removed direct regression)."""
+    weeks = _weeks([0.70, 0.65, 0.45, 0.40], [0.18, 0.16, 0.08, 0.07], [8, 9, 19, 20], tgts=[6, 5, 3, 3])
+    monkeypatch.setattr(ve, "_OPP_GAP_WEIGHT", 0.0)
+    monkeypatch.setattr(ve, "_TRAJECTORY_COEFFICIENT", 0.0)
+    base = _fv("hot", "WR", weeks).forward_value
+    monkeypatch.undo()
+    v = _fv("hot", "WR", weeks)
+    assert v.sustainable is False and v.sell_high is True   # flag preserved
+    assert v.forward_value < base                            # still discounted
+
+
+def test_factors_are_bounded_confidence_scaled_and_qb_guarded():
+    """§8.7: caps clamp extreme swings; QB/no-volume skips opp-gap; insufficient/
+    team-change scale → 1.0; the combined product is bounded."""
+    # trajectory cap (symmetric)
+    assert usage_trajectory_factor(1.0, 1.0) == pytest.approx(1 + _TRAJECTORY_CAP)
+    assert usage_trajectory_factor(-1.0, 1.0) == pytest.approx(1 - _TRAJECTORY_CAP)
+    # opp-gap cap (symmetric) + QB/no-volume guard
+    assert opp_gap_factor(100.0, 10.0, 1.0) == pytest.approx(1 - _OPP_GAP_CAP)
+    assert opp_gap_factor(-100.0, 10.0, 1.0) == pytest.approx(1 + _OPP_GAP_CAP)
+    assert opp_gap_factor(50.0, 0.0, 1.0) == 1.0          # no volume measured → no adjustment
+    # confidence scale 0 (insufficient / team change) → untouched
+    assert usage_trajectory_factor(0.2, 0.0) == 1.0
+    # combined product clamped both directions
+    lo, hi = _COMBINED_FACTOR_BOUNDS
+    assert _bound_combined(0.5) == lo
+    assert _bound_combined(1.9) == hi
