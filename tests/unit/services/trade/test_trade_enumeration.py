@@ -30,6 +30,7 @@ from backend.services.trade.trade_proposals import (
     analyze_roster,
     enumerate_candidates,
     evaluate_candidates,
+    merge_candidates,
 )
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
@@ -193,6 +194,26 @@ def test_multiplayer_robbery_still_fails_the_gate():
         state, values, "me", [Candidate(("s1", "s2"), ("stud",), "opp")], roster_limit=16,
     )
     assert surfaced == []        # rejected — they'd never accept losing their stud
+
+
+# ---------------------------------------------------------------------------
+# merge_candidates — order-independent dedup union (hot-path wiring helper)
+# ---------------------------------------------------------------------------
+def test_merge_candidates_dedupes_order_independently():
+    llm = [Candidate(("a", "b"), ("x",), "opp")]
+    enumr = [Candidate(("b", "a"), ("x",), "opp"),     # same trade, reversed give order
+             Candidate(("c",), ("y",), "opp")]          # a genuinely new trade
+    merged = merge_candidates(llm, enumr)
+    assert len(merged) == 2                              # the reversed dup folded away
+    assert merged[0] == Candidate(("a", "b"), ("x",), "opp")   # LLM kept first (its slot)
+    assert Candidate(("c",), ("y",), "opp") in merged
+
+
+def test_merge_candidates_distinguishes_counterparty_and_sides():
+    a = Candidate(("p",), ("q",), "opp1")
+    b = Candidate(("p",), ("q",), "opp2")    # same players, different counterparty
+    c = Candidate(("p",), ("r",), "opp1")    # different get
+    assert len(merge_candidates([a], [b], [c])) == 3
 
 
 def test_never_pads_when_no_targeted_candidate_clears():
