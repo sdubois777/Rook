@@ -87,11 +87,19 @@ class TradeIdeasRequest(BaseModel):
     )
 
 
+class EdgeBandOut(BaseModel):
+    your_net: float          # your contextual gain
+    their_net: float         # their contextual gain (comfortable per the gate)
+    my_strength: float       # post-trade starting strength (yours)
+    their_strength: float    # post-trade starting strength (theirs)
+
+
 class TradeIdea(BaseModel):
     counterparty_team_id: str
     counterparty_team_name: str
     why: str
     verdict: TradeAnalyzeResponse   # the full slice-3 verdict payload, unchanged
+    edge: EdgeBandOut               # why it cleared the edge band (slice 4)
 
 
 class TradeIdeasResponse(BaseModel):
@@ -260,7 +268,7 @@ async def ideas(
         await credit_service.deduct(user, "trade_finder", agent_name="trade_proposals")
 
     # 4. Generate candidates (LLM, deterministic fallback) → filter through the
-    #    SAME slice-3 verdict + benefit bar → rank → cap (never-pad lives there).
+    #    four-condition EDGE BAND (slice 4) → rank by your_net → cap (never-pad).
     candidates = await proposals_agent.generate_candidates(state, my_team_id, values)
     surfaced = evaluate_candidates(
         state, values, my_team_id, candidates, roster_limit=roster_limit,
@@ -269,11 +277,11 @@ async def ideas(
     # Generate the per-proposal rationales CONCURRENTLY — each is a Sonnet call,
     # and doing them sequentially blew past the client timeout for a 5-idea slate.
     rationales = await asyncio.gather(
-        *(analyzer.explain_trade(analysis) for _, analysis in surfaced)
+        *(analyzer.explain_trade(analysis) for _, analysis, _ in surfaced)
     )
 
     proposals: list[TradeIdea] = []
-    for (cand, analysis), rationale in zip(surfaced, rationales):
+    for (cand, analysis, edge), rationale in zip(surfaced, rationales):
         analysis.rationale = rationale
         team_name = next(
             (t.team_name for t in state.teams if t.team_id == cand.counterparty_team_id),
@@ -284,6 +292,10 @@ async def ideas(
             counterparty_team_name=team_name,
             why=analysis.rationale,
             verdict=_to_response(analysis, demo),
+            edge=EdgeBandOut(
+                your_net=edge.your_net, their_net=edge.their_net,
+                my_strength=edge.my_strength, their_strength=edge.their_strength,
+            ),
         ))
 
     message = "" if proposals else "no clear trade right now"

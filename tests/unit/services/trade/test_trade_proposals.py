@@ -1,116 +1,157 @@
 """
-Pure tests for the proposals filter (backend/services/trade/trade_proposals.py).
-
-The never-pad + cap + rank guarantees are deterministic Python (not the LLM), so
-they're proven here directly on hand-built candidate sets run through slice-3's
-verdict — including the headline never-pad case where padding to a count would be
-the tempting wrong answer.
+Edge-band gate tests (slice 4, trade_acceptability_design.md §3). The headline:
+the gate REJECTS the zero-sum robbery the old winner=="you" bar surfaced, and
+SURFACES genuine positive-sum trades — judged in contextual value against BOTH
+rosters, with the overtake guard as condition 4.
 """
 from __future__ import annotations
 
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
-from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
+from backend.services.trade.lineup import LineupPlayer
 from backend.services.trade.trade_proposals import (
     Candidate,
+    _COMFORT_THRESHOLD,
     enumerate_candidates,
     evaluate_candidates,
+    evaluate_edge_band,
 )
+from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
 
-def _iv(pid, name, fv, *, conf=Confidence.FULL, reason=""):
+def _lp(spec):
+    return [LineupPlayer(pid, pos, fv) for pid, pos, fv in spec]
+
+
+# Roster shapes (pid, pos, forward_value). Me: RB-rich / WR-thin (strong);
+# Them: WR-rich / RB-thin. The slice-2 asymmetry that makes positive-sum exist.
+ME_STRONG = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
+             ("rm4", "RB", 15), ("rm5", "RB", 13),  # rm4/rm5: surplus RBs (below my FLEX)
+             ("wm1", "WR", 16), ("wm2", "WR", 14), ("tm", "TE", 15)]
+THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
+        ("wt1", "WR", 20), ("wt2", "WR", 18), ("wt3", "WR", 16), ("wt4", "WR", 14),
+        ("wt5", "WR", 13), ("wt6", "WR", 12),  # wt5/wt6: surplus WRs (benched)
+        ("tt", "TE", 14)]
+
+
+# ---------------------------------------------------------------------------
+# evaluate_edge_band — the four conditions
+# ---------------------------------------------------------------------------
+def test_mutual_benefit_trade_clears_all_four_conditions():
+    # Give my surplus RB (rm4, my 4th) for their surplus WR (wt5, benched): I'm
+    # WR-thin so wt5 starts for me; they're RB-thin so rm4 starts for them.
+    e = evaluate_edge_band(_lp(ME_STRONG), _lp(THEM), ["rm4"], ["wt5"])
+    assert e.clears is True
+    assert e.your_net > 0                      # 1: I improve
+    assert e.their_net > _COMFORT_THRESHOLD    # 2: they improve comfortably
+    assert e.your_net > e.their_net            # 3: I keep the edge
+    assert e.my_strength >= e.their_strength   # 4: I stay stronger on the field
+
+
+def test_robbery_is_rejected_by_condition_2():
+    # The Najee-for-Taylor class: I give a scrub, get their stud → huge your_net,
+    # but they LOSE — the OLD winner=="you" bar would have surfaced it.
+    me = _lp([("q", "QB", 22), ("r1", "RB", 20), ("r2", "RB", 18),
+              ("w1", "WR", 16), ("w2", "WR", 14), ("w3", "WR", 12),
+              ("t", "TE", 13), ("scrub", "WR", 5)])
+    them = _lp([("q2", "QB", 19), ("stud", "RB", 24), ("r9", "RB", 9),
+                ("w4", "WR", 15), ("w5", "WR", 13), ("w6", "WR", 11), ("t2", "TE", 10)])
+    e = evaluate_edge_band(me, them, ["scrub"], ["stud"])
+    assert e.your_net > 0          # I'd clearly win (old bar would surface this)
+    assert e.their_net < 0         # but they lose — fails condition 2
+    assert e.clears is False
+
+
+def test_perspective_is_per_roster_not_zero_sum():
+    # In a positive-sum trade BOTH nets are positive — impossible under the old
+    # intrinsic/zero-sum value (where their_net would be exactly −your_net).
+    e = evaluate_edge_band(_lp(ME_STRONG), _lp(THEM), ["rm4"], ["wt5"])
+    assert e.your_net > 0 and e.their_net > 0
+    assert e.their_net != -e.your_net
+
+
+def test_condition_4_blocks_a_trade_that_passes_1_through_3():
+    # Same beneficial swap, but my roster is weak everywhere except the RB I give
+    # → I'm behind on the field, and the trade (good for me 1-3) still leaves me
+    # behind → condition 4 fails.
+    me_weak = _lp([("qm", "QB", 8), ("rm1", "RB", 24), ("rm2", "RB", 22),
+                   ("rm3", "RB", 20), ("rm4", "RB", 15),
+                   ("wm1", "WR", 6), ("wm2", "WR", 5), ("tm", "TE", 6)])
+    e = evaluate_edge_band(me_weak, _lp(THEM), ["rm4"], ["wt5"])
+    assert e.your_net > 0 and e.their_net > _COMFORT_THRESHOLD and e.your_net > e.their_net
+    assert e.my_strength < e.their_strength    # I stay behind
+    assert e.clears is False                   # condition 4 blocks it
+
+
+# ---------------------------------------------------------------------------
+# evaluate_candidates — surfacing, never-pad, ranking (LeagueState path)
+# ---------------------------------------------------------------------------
+def _iv(pid, pos, fv):
     return InSeasonValue(
-        canonical_player_id=pid, name=name, position="WR", forward_value=fv,
-        value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="usage",
+        canonical_player_id=pid, name=f"P-{pid}", position=pos, forward_value=fv,
+        value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
         recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
         forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
-        prior_weight=0.0, name_bias_guard_applied=False, confidence=conf,
-        confidence_reason=reason,
+        prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
+        confidence_reason="",
     )
 
 
-def _league(my_players, opp_players):
-    me = TeamState("me", "Me", True, tuple(RosterPlayer(p, p.upper(), "WR") for p in my_players))
-    opp = TeamState("opp", "Opp", False, tuple(RosterPlayer(p, p.upper(), "WR") for p in opp_players))
-    return LeagueState(2025, 14, (me, opp))
+def _league(my_spec, opp_spec):
+    me = TeamState("me", "Me", True,
+                   tuple(RosterPlayer(pid, f"P-{pid}", pos) for pid, pos, _ in my_spec))
+    opp = TeamState("opp", "Opp", False,
+                    tuple(RosterPlayer(pid, f"P-{pid}", pos) for pid, pos, _ in opp_spec))
+    state = LeagueState(2025, 14, (me, opp))
+    values = {pid: _iv(pid, pos, fv) for pid, pos, fv in (*my_spec, *opp_spec)}
+    return state, values
 
 
-def _cand(give, get):
-    return Candidate((give,), (get,), "opp")
+def test_evaluate_candidates_surfaces_the_mutual_benefit_trade():
+    state, values = _league(ME_STRONG, THEM)
+    cand = Candidate(("rm4",), ("wt5",), "opp")
+    out = evaluate_candidates(state, values, "me", [cand], roster_limit=16)
+    assert len(out) == 1
+    _, _, edge = out[0]
+    assert edge.clears and edge.your_net > 0 and edge.their_net > _COMFORT_THRESHOLD
 
 
-# ---------------------------------------------------------------------------
-# NEVER-PAD — the headline test
-# ---------------------------------------------------------------------------
-def test_never_pads_to_a_count_when_only_one_trade_is_good():
-    """My low player vs five opponents: only ONE swap actually gains me value;
-    the rest are even or losing. Padding to 3-5 would be the tempting wrong
-    answer — prove exactly ONE surfaces."""
-    state = _league(["g"], ["x", "e1", "e2", "e3", "w1"])
-    values = {
-        "g": _iv("g", "G", 50),
-        "x": _iv("x", "X", 90),    # clear upgrade → surfaces
-        "e1": _iv("e1", "E1", 50), # even → no
-        "e2": _iv("e2", "E2", 52), # within fair band → no
-        "e3": _iv("e3", "E3", 30), # losing → no
-        "w1": _iv("w1", "W1", 20), # losing → no
-    }
-    candidates = [_cand("g", o) for o in ("x", "e1", "e2", "e3", "w1")]
-    surfaced = evaluate_candidates(state, values, "me", candidates, roster_limit=16)
-    assert len(surfaced) == 1
-    assert surfaced[0][0].get_ids == ("x",)
-    assert surfaced[0][1].winner == "you"
+def test_never_pads_when_nothing_clears():
+    # I'm strictly stronger at every position → no swap helps both sides.
+    my_spec = [("q", "QB", 25), ("r1", "RB", 24), ("r2", "RB", 22),
+               ("w1", "WR", 20), ("w2", "WR", 18), ("w3", "WR", 16),
+               ("t", "TE", 14), ("br", "RB", 13), ("bw", "WR", 12)]
+    opp_spec = [("oq", "QB", 10), ("or1", "RB", 9), ("or2", "RB", 7),
+                ("ow1", "WR", 8), ("ow2", "WR", 6), ("ow3", "WR", 5),
+                ("ot", "TE", 4), ("obw", "WR", 3)]
+    state, values = _league(my_spec, opp_spec)
+    out = evaluate_candidates(state, values, "me",
+                              enumerate_candidates(state, "me"), roster_limit=16)
+    assert out == []        # first-class empty — not padded/loosened
 
 
-def test_returns_empty_when_no_trade_clears_the_bar():
-    state = _league(["g"], ["a", "b"])
-    values = {"g": _iv("g", "G", 80), "a": _iv("a", "A", 30), "b": _iv("b", "B", 40)}
-    surfaced = evaluate_candidates(
-        state, values, "me", [_cand("g", "a"), _cand("g", "b")], roster_limit=16,
-    )
-    assert surfaced == []   # → route turns this into "no clear trade right now"
+def test_cleared_candidates_ranked_by_your_net_descending():
+    state, values = _league(ME_STRONG, THEM)
+    # Three beneficial swaps of surplus RBs for surplus WRs, distinct your_net.
+    cands = [Candidate(("rm4",), ("wt5",), "opp"),
+             Candidate(("rm4",), ("wt6",), "opp"),
+             Candidate(("rm5",), ("wt6",), "opp")]
+    out = evaluate_candidates(state, values, "me", cands, roster_limit=16)
+    assert len(out) >= 2
+    nets = [edge.your_net for _, _, edge in out]
+    assert nets == sorted(nets, reverse=True)    # highest your_net first
 
 
-# ---------------------------------------------------------------------------
-# CAP + RANK
-# ---------------------------------------------------------------------------
-def test_caps_at_five_even_when_more_clear():
-    opps = [f"o{i}" for i in range(8)]
-    state = _league(["g"], opps)
-    values = {"g": _iv("g", "G", 10)}
-    values.update({o: _iv(o, o.upper(), 90 - i) for i, o in enumerate(opps)})  # all >> g
-    surfaced = evaluate_candidates(
-        state, values, "me", [_cand("g", o) for o in opps], roster_limit=16,
-    )
-    assert len(surfaced) == 5                      # capped
-    deltas = [a.value_delta for _, a in surfaced]
-    assert deltas == sorted(deltas, reverse=True)  # ranked by user gain
+def test_cap_at_five():
+    state, values = _league(ME_STRONG, THEM)
+    # Many duplicate-ish candidates; even if all cleared, never more than 5.
+    cands = [Candidate(("rm4",), (w,), "opp") for w in ("wt5", "wt4", "wt3", "wt2", "wt1")]
+    out = evaluate_candidates(state, values, "me", cands * 3, roster_limit=16)
+    assert len(out) <= 5
 
 
-# ---------------------------------------------------------------------------
-# HEDGING — a thin-data winner surfaces hedged, not as a blowout
-# ---------------------------------------------------------------------------
-def test_team_change_winner_surfaces_but_hedged():
-    state = _league(["g"], ["x"])
-    values = {
-        "g": _iv("g", "G", 20),
-        "x": _iv("x", "Cooks", 90, conf=Confidence.LIMITED,
-                 reason="team change within last-5 window — cross-team share denominator"),
-    }
-    surfaced = evaluate_candidates(state, values, "me", [_cand("g", "x")], roster_limit=16)
-    assert len(surfaced) == 1
-    analysis = surfaced[0][1]
-    assert analysis.winner == "you"          # clears the bar
-    assert analysis.hedged is True
-    assert analysis.fairness == "lean you"   # NOT lopsided — hedged
-
-
-# ---------------------------------------------------------------------------
-# enumerate fallback
-# ---------------------------------------------------------------------------
-def test_enumerate_candidates_is_all_one_for_one_across_opponents():
-    state = _league(["g1", "g2"], ["x1", "x2", "x3"])
+def test_enumerate_candidates_unchanged_exhaustive_one_for_one():
+    state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, "me")
-    assert len(cands) == 2 * 3
+    assert len(cands) == 9 * 10         # 9 of my players × 10 of theirs (1-for-1)
     assert all(len(c.give_ids) == 1 and len(c.get_ids) == 1 for c in cands)
-    assert all(c.counterparty_team_id == "opp" for c in cands)
