@@ -6,6 +6,16 @@
 > (real players, "week 5 of 2025", real 2025 weekly usage), behind a clean
 > league-state interface so the *same agents* later run on real in-season data.
 
+> **⚠️ PARTIALLY SUPERSEDED (see `trade_acceptability_design.md`).** This doc
+> describes the original analyzer + proposals build, which shipped. Two parts are
+> now superseded by the acceptability model: (1) the **value scale** — §3/§9's
+> "reuse draft-side 0-100/VORP anchoring" was replaced by **pool-derived positional
+> anchors** (PR #160); and (2) **proposal surfacing** — §5's value-asymmetric /
+> "winner == you" logic is being replaced by the **edge-band acceptability gate**
+> (contextual value, opponent-acceptability). The **teardown checklist (§0)**, the
+> **value-engine signal taxonomy (§3)**, and the **analyzer roster-guard (§4/§9)**
+> remain current. When in doubt, `trade_acceptability_design.md` wins.
+
 ---
 
 ## ⚠️ Test scaffolding — MUST be removed before prod (read first)
