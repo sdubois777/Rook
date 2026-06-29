@@ -1,14 +1,16 @@
 /**
- * Trade page — build a trade and get a verdict, or ask the system for ideas.
- * Renders over the proven endpoints: GET /trade/league (picker), POST
- * /trade/analyze, POST /trade/ideas.
+ * Trade page — build a trade or get ideas, over the proven endpoints
+ * (GET /trade/league, POST /trade/analyze, POST /trade/ideas).
  *
- * The team-switcher is DEMO-ONLY scaffolding (TRADE_DEMO_MODE / fetchTradeLeague)
- * — slice-6 teardown removes it; the rest of the page is permanent.
+ * Two tabs: [Build a trade] [Trade ideas]. The "Acting as" perspective switch is
+ * DEMO-ONLY scaffolding (TRADE_DEMO_MODE / fetchTradeLeague) — slice-6 teardown
+ * removes it; the opponent selector and the rest of the page are permanent.
  */
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale } from 'lucide-react'
+import {
+  ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, X,
+} from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import VerdictPanel from '../components/trade/VerdictPanel'
 
@@ -17,79 +19,119 @@ const TREND = {
   falling: { Icon: TrendingDown, cls: 'text-red-400' },
   stable: { Icon: Minus, cls: 'text-slate-500' },
 }
+const POS_CLS = {
+  QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
+  WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
+}
+const CONF_CLS = { full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
 
-function PlayerPickRow({ p, selected, onToggle, accent }) {
+function PosBadge({ pos }) {
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${POS_CLS[pos] || 'bg-slate-500/15 text-slate-300'}`}>
+      {pos}
+    </span>
+  )
+}
+
+function PlayerRow({ p, selected, onToggle, accent }) {
   const t = TREND[p.value_trend] || TREND.stable
   const ring = selected
-    ? accent === 'get'
-      ? 'border-emerald-500/60 bg-emerald-500/10'
-      : 'border-brand-accent/60 bg-brand/10'
-    : 'border-border bg-surface-2 hover:bg-surface-3'
+    ? accent === 'get' ? 'border-emerald-500/70 bg-emerald-500/10' : 'border-brand-accent/70 bg-brand/15'
+    : 'border-transparent bg-surface-2 hover:bg-surface-3'
   return (
     <button
       type="button"
       onClick={() => onToggle(p.id)}
-      className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left transition-colors min-h-11 ${ring}`}
+      className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors min-h-11 ${ring}`}
     >
-      <div className="min-w-0">
+      <PosBadge pos={p.position} />
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="truncate font-medium text-white">{p.name}</span>
-          <span className="text-xs text-slate-400">{p.position}</span>
-          {p.buy_low && <span className="rounded bg-emerald-500/15 text-emerald-400 text-[10px] px-1 py-0.5">BUY</span>}
-          {p.sell_high && <span className="rounded bg-amber-500/15 text-amber-400 text-[10px] px-1 py-0.5">SELL</span>}
+          <span className="truncate text-sm font-medium text-white">{p.name}</span>
+          {p.buy_low && <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold text-emerald-400">BUY</span>}
+          {p.sell_high && <span className="rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-400">SELL</span>}
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+          <span>{p.nfl_team || '—'}</span>
+          {p.starter_slot && p.starter_slot !== 'BENCH' && (
+            <span className="rounded bg-surface-3 px-1 text-brand-accent">{p.starter_slot}</span>
+          )}
+          <span className={CONF_CLS[p.confidence]}>{p.confidence}</span>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2 text-sm">
-        <span className="tabular-nums font-semibold text-white">{Math.round(p.forward_value)}</span>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <span className="tabular-nums text-sm font-semibold text-white">{Math.round(p.forward_value)}</span>
         <t.Icon size={14} className={t.cls} />
       </div>
     </button>
   )
 }
 
+function RosterColumn({ players, selected, onToggle, accent }) {
+  // Starters first, then by forward_value desc — scannable.
+  const sorted = useMemo(() => {
+    const isStarter = (p) => p.starter_slot && p.starter_slot !== 'BENCH'
+    return [...players].sort((a, b) =>
+      (isStarter(b) - isStarter(a)) || (b.forward_value - a.forward_value))
+  }, [players])
+  return (
+    <div className="max-h-[30rem] space-y-1 overflow-y-auto rounded-lg border border-border bg-surface-1 p-2">
+      {sorted.map((p) => (
+        <PlayerRow key={p.id} p={p} selected={selected.includes(p.id)} onToggle={onToggle} accent={accent} />
+      ))}
+    </div>
+  )
+}
+
+function Chips({ ids, team, accent, onRemove }) {
+  const byId = useMemo(() => Object.fromEntries((team?.roster || []).map((p) => [p.id, p])), [team])
+  if (ids.length === 0) return <span className="text-xs text-slate-600">none selected</span>
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ids.map((id) => (
+        <span key={id} className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${accent === 'get' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-brand/20 text-brand-accent'}`}>
+          {byId[id]?.name || id}
+          <button type="button" onClick={() => onRemove(id)} className="hover:text-white"><X size={11} /></button>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export default function Trade() {
   const { data: league, isLoading, error } = useQuery({
-    queryKey: ['trade-league'],
-    queryFn: fetchTradeLeague,
-    retry: false,
+    queryKey: ['trade-league'], queryFn: fetchTradeLeague, retry: false,
   })
 
+  const [tab, setTab] = useState('build')
   const [myTeamId, setMyTeamId] = useState(null)
+  const [opponentId, setOpponentId] = useState(null)
   const [give, setGive] = useState([])
   const [getIds, setGetIds] = useState([])
 
-  // Default "me" to the seeded is_me team once the league loads.
-  const effectiveMyTeamId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
-
-  const myTeam = useMemo(
-    () => league?.teams?.find((t) => t.team_id === effectiveMyTeamId),
-    [league, effectiveMyTeamId],
-  )
-  const otherTeams = useMemo(
-    () => league?.teams?.filter((t) => t.team_id !== effectiveMyTeamId) || [],
-    [league, effectiveMyTeamId],
-  )
+  const effMyId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
+  const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
+  const otherTeams = useMemo(() => league?.teams?.filter((t) => t.team_id !== effMyId) || [], [league, effMyId])
+  const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : otherTeams[0]?.team_id
+  const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
   const analyzeMut = useMutation({
-    mutationFn: () => analyzeTrade({ myTeamId: effectiveMyTeamId, give, get: getIds }),
+    mutationFn: () => analyzeTrade({ myTeamId: effMyId, give, get: getIds }),
   })
-  const ideasMut = useMutation({
-    mutationFn: () => fetchTradeIdeas({ myTeamId: effectiveMyTeamId }),
-  })
+  const ideasMut = useMutation({ mutationFn: () => fetchTradeIdeas({ myTeamId: effMyId }) })
 
-  function switchTeam(id) {
-    setMyTeamId(id)
-    setGive([])
-    setGetIds([])
-    analyzeMut.reset()
-    ideasMut.reset()
+  // Switching perspective/opponent clears staged players (they belong to the
+  // previous roster) — done in the handlers to avoid setState-in-effect.
+  function switchActingAs(id) {
+    setMyTeamId(id); setOpponentId(null); setGive([]); setGetIds([])
+    analyzeMut.reset(); ideasMut.reset()
   }
+  function switchOpponent(id) { setOpponentId(id); setGetIds([]); analyzeMut.reset() }
+
   const toggle = (setter) => (id) =>
     setter((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
 
-  if (isLoading) {
-    return <div className="p-6 text-slate-400">Loading trade league…</div>
-  }
+  if (isLoading) return <div className="p-6 text-slate-400">Loading trade league…</div>
   if (error) {
     const demoOff = error?.response?.status === 404
     return (
@@ -109,77 +151,100 @@ export default function Trade() {
   const ideas = ideasMut.data
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-4 lg:p-6">
-      {/* Header + demo team-switcher */}
+    <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
+      {/* Header + demo perspective switch */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-semibold text-white">
             <ArrowLeftRight size={22} className="text-brand-accent" /> Trade
           </h1>
           <p className="text-sm text-slate-500">
-            Week {league.week}, {league.season} · in-season value from usage trajectory
+            Week {league.week}, {league.season} · value from in-season usage trajectory
           </p>
         </div>
         {league.demo_mode && (
-          /* DEMO-ONLY team-switcher (teardown: slice 6) */
           <label className="flex items-center gap-2 text-sm text-slate-400">
             Acting as
             <select
-              value={effectiveMyTeamId}
-              onChange={(e) => switchTeam(e.target.value)}
-              className="rounded-md border border-border bg-surface-2 px-2 py-1.5 text-white"
+              value={effMyId}
+              onChange={(e) => switchActingAs(e.target.value)}
+              className="min-h-9 rounded-md border border-border bg-surface-2 px-2 py-1 text-white"
             >
               {league.teams.map((t) => (
-                <option key={t.team_id} value={t.team_id}>
-                  {t.team_name}{t.is_me ? ' (you)' : ''}
-                </option>
+                <option key={t.team_id} value={t.team_id}>{t.team_name}{t.is_me ? ' (you)' : ''}</option>
               ))}
             </select>
           </label>
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* ── Build a trade → Analyze ── */}
-        <section className="space-y-3">
-          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            <Scale size={16} /> Build a trade
-          </h2>
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-border">
+        {[['build', 'Build a trade', Scale], ['ideas', 'Trade ideas', Lightbulb]].map(([key, label, Icon]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+              tab === key ? 'border-brand-accent text-white' : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Icon size={15} /> {label}
+          </button>
+        ))}
+      </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <div className="mb-1.5 text-xs font-semibold text-brand-accent">You give ({myTeam?.team_name})</div>
-              <div className="space-y-1.5">
-                {myTeam?.roster.map((p) => (
-                  <PlayerPickRow key={p.id} p={p} selected={give.includes(p.id)} onToggle={toggle(setGive)} accent="give" />
-                ))}
+      {tab === 'build' && (
+        <div className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Your roster → give */}
+            <section>
+              <h2 className="mb-1.5 text-sm font-semibold text-brand-accent">
+                Your roster — {myTeam?.team_name}
+              </h2>
+              <RosterColumn players={myTeam?.roster || []} selected={give} onToggle={toggle(setGive)} accent="give" />
+            </section>
+
+            {/* Opponent selector + roster → get */}
+            <section>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <h2 className="shrink-0 text-sm font-semibold text-emerald-400">Trade with</h2>
+                <select
+                  value={effOppId}
+                  onChange={(e) => switchOpponent(e.target.value)}
+                  className="min-h-9 min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 py-1 text-sm text-white"
+                >
+                  {otherTeams.map((t) => (
+                    <option key={t.team_id} value={t.team_id}>{t.team_name}</option>
+                  ))}
+                </select>
               </div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-xs font-semibold text-emerald-400">You get</div>
-              <div className="space-y-3">
-                {otherTeams.map((t) => (
-                  <div key={t.team_id}>
-                    <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-500">{t.team_name}</div>
-                    <div className="space-y-1.5">
-                      {t.roster.map((p) => (
-                        <PlayerPickRow key={p.id} p={p} selected={getIds.includes(p.id)} onToggle={toggle(setGetIds)} accent="get" />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              <RosterColumn players={opponent?.roster || []} selected={getIds} onToggle={toggle(setGetIds)} accent="get" />
+            </section>
           </div>
 
-          <button
-            type="button"
-            disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
-            onClick={() => analyzeMut.mutate()}
-            className="w-full rounded-md bg-brand px-4 py-2.5 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {analyzeMut.isPending ? 'Analyzing…' : 'Analyze my trade'}
-          </button>
+          {/* Trade summary + analyze */}
+          <div className="rounded-lg border border-border bg-surface-1 p-3">
+            <div className="grid items-center gap-3 sm:grid-cols-[1fr_auto_1fr_auto]">
+              <div>
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You give</div>
+                <Chips ids={give} team={myTeam} accent="give" onRemove={toggle(setGive)} />
+              </div>
+              <ArrowLeftRight size={18} className="mx-auto hidden text-slate-600 sm:block" />
+              <div>
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You get</div>
+                <Chips ids={getIds} team={opponent} accent="get" onRemove={toggle(setGetIds)} />
+              </div>
+              <button
+                type="button"
+                disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
+                onClick={() => analyzeMut.mutate()}
+                className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {analyzeMut.isPending ? 'Analyzing…' : 'Analyze my trade'}
+              </button>
+            </div>
+          </div>
 
           {analyzeMut.isError && (
             <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300">
@@ -187,18 +252,16 @@ export default function Trade() {
             </div>
           )}
           {analyzeMut.data && <VerdictPanel verdict={analyzeMut.data} />}
-        </section>
+        </div>
+      )}
 
-        {/* ── Trade ideas → Proposals ── */}
-        <section className="space-y-3">
-          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            <Lightbulb size={16} /> Trade ideas
-          </h2>
+      {tab === 'ideas' && (
+        <div className="space-y-3">
           <button
             type="button"
             disabled={ideasMut.isPending}
             onClick={() => ideasMut.mutate()}
-            className="w-full rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
+            className="min-h-11 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
           >
             {ideasMut.isPending ? 'Finding trades…' : 'Give me trade ideas'}
           </button>
@@ -209,10 +272,10 @@ export default function Trade() {
             </div>
           )}
 
-          {/* Empty state is FIRST-CLASS — not an error, not a spinner */}
+          {/* Empty state is first-class */}
           {ideas && ideas.proposals.length === 0 && (
-            <div className="rounded-lg border border-border bg-surface-1 px-4 py-6 text-center text-slate-400">
-              <Minus size={20} className="mx-auto mb-1 text-slate-600" />
+            <div className="rounded-lg border border-border bg-surface-1 px-4 py-8 text-center text-slate-400">
+              <Minus size={22} className="mx-auto mb-1 text-slate-600" />
               {ideas.message || 'No clear trade right now.'}
               <div className="mt-1 text-xs text-slate-600">Nothing on the board clears the bar — that's a real answer, not a miss.</div>
             </div>
@@ -220,14 +283,12 @@ export default function Trade() {
 
           {ideas?.proposals.map((idea, i) => (
             <div key={i} className="space-y-1">
-              <div className="text-xs text-slate-500">
-                vs <span className="text-slate-300">{idea.counterparty_team_name}</span>
-              </div>
+              <div className="text-xs text-slate-500">vs <span className="text-slate-300">{idea.counterparty_team_name}</span></div>
               <VerdictPanel verdict={idea.verdict} />
             </div>
           ))}
-        </section>
-      </div>
+        </div>
+      )}
     </div>
   )
 }

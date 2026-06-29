@@ -939,7 +939,9 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
         full/limited/insufficient).
       - **flag-gated demo harness (TEARDOWN before prod):**
         `backend/services/trade/trade_demo_source.py` (provider + `TRADE_DEMO_MODE`
-        gate + `DEMO_ROSTERS` of real 2025 players + demo anchor `DEMO_SEASON`/
+        gate + a realistic **12-team / 15-slot** league snake-drafted from the real
+        ADP pool — `DEMO_TEAM_NAMES` + forced `CASTING` + `_draft_league` — with
+        `starter_slot`/`nfl_team` populated + demo anchor `DEMO_SEASON`/
         `DEMO_CURRENT_WEEK` pinned HERE, currently **week 14** — not week 5, not in
         the engine/data layer), `scripts/seed_demo_league.py` (CLI),
         `tests/unit/services/trade/test_trade_demo.py`.
@@ -952,8 +954,8 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
       ⚠️ **ALL demo scaffolding (the demo source/seeder/tests, the pinned week, the
       `GET /api/trade/league` endpoint, the page team-switcher) is gated behind
       `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
-      teardown checklist in the design doc; grep `TRADE_DEMO` / `DEMO_ROSTERS` /
-      `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
+      teardown checklist in the design doc; grep `TRADE_DEMO` / `DEMO_TEAM_NAMES` /
+      `CASTING` / `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
       trade page (minus team-switcher), `/analyze` + `/ideas`, and the gates ONLY.**
       **Remaining:** teardown + real league-state provider (slice 6). Then: lineup
       optimizer, waiver wire, roster monitor, opponent analyzer, gameday.

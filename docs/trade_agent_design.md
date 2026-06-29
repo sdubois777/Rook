@@ -22,10 +22,13 @@ single env flag and namespaced for one-pass deletion.
     the demo teams and prints engine verdicts (slice 2)
   - the demo league-state source (provider + gate + roster assembly, serving the
     real 2025 per-week layer at a pinned demo week) —
-    `backend/services/trade/trade_demo_source.py` (slice 2). Holds `DEMO_ROSTERS`,
-    the `TRADE_DEMO_MODE` gate (`trade_demo_enabled` / `maybe_demo_league_source`),
-    and the demo anchor `DEMO_SEASON = 2025` / `DEMO_CURRENT_WEEK` (pinned HERE,
-    currently week 14 — NOT in the engine or #149 data layer)
+    `backend/services/trade/trade_demo_source.py`. A realistic **12-team / 15-slot**
+    league snake-drafted from the real ADP pool (`DEMO_TEAM_NAMES` + forced
+    `CASTING` + `_draft_league`, with `starter_slot`/`nfl_team` populated; slice 5b
+    expanded it from the slice-2 ~5-player casting set), the `TRADE_DEMO_MODE` gate
+    (`trade_demo_enabled` / `maybe_demo_league_source`), and the demo anchor
+    `DEMO_SEASON = 2025` / `DEMO_CURRENT_WEEK` (pinned HERE, currently week 14 —
+    NOT in the engine or #149 data layer)
   - the demo tests — `tests/unit/services/trade/test_trade_demo.py` (slice 2)
   - any `/_demo` trade endpoints + the `TRADE_DEMO_MODE` branch in route/provider
     selection (slice 3)
@@ -33,10 +36,12 @@ single env flag and namespaced for one-pass deletion.
     `LeaguePlayerOut`/`LeagueTeamOut`/`TradeLeagueResponse` + `league()` handler in
     `backend/routers/trade.py`) and its test
     `tests/unit/routers/test_trade_league.py` — picker support, demo-only (slice 5)
-  - frontend **team-switcher** ("act as any team") in the trade page +
-    `frontend/src/api/trade.js#fetchTradeLeague` consumer (slice 5)
-  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_ROSTERS` / `fetchTradeLeague` to find
-    every surface
+  - frontend **team-switcher** ("Acting as" perspective dropdown) in the
+    redesigned trade page (`frontend/src/pages/Trade.jsx`, behind `league.demo_mode`)
+    + `frontend/src/api/trade.js#fetchTradeLeague` consumer (slice 5/5b). The
+    opponent selector + the rest of the page are PERMANENT.
+  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_TEAM_NAMES` / `CASTING` /
+    `fetchTradeLeague` to find every surface
 - **What is PERMANENT (the real feature, not test):** the league-state **interface**,
   the **in-season value engine**, the **analyzer** + **proposals** agents, the trade
   **page** (player selection, verdict, the two buttons — minus the team-switcher),

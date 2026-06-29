@@ -14,6 +14,7 @@ the Sonnet agent only writes the rationale.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -106,6 +107,7 @@ class LeaguePlayerOut(BaseModel):
     name: str
     position: str
     nfl_team: Optional[str] = None
+    starter_slot: Optional[str] = None
     forward_value: float
     value_trend: str
     confidence: str
@@ -264,9 +266,15 @@ async def ideas(
         state, values, my_team_id, candidates, roster_limit=roster_limit,
     )
 
+    # Generate the per-proposal rationales CONCURRENTLY — each is a Sonnet call,
+    # and doing them sequentially blew past the client timeout for a 5-idea slate.
+    rationales = await asyncio.gather(
+        *(analyzer.explain_trade(analysis) for _, analysis in surfaced)
+    )
+
     proposals: list[TradeIdea] = []
-    for cand, analysis in surfaced:
-        analysis.rationale = await analyzer.explain_trade(analysis)
+    for (cand, analysis), rationale in zip(surfaced, rationales):
+        analysis.rationale = rationale
         team_name = next(
             (t.team_name for t in state.teams if t.team_id == cand.counterparty_team_id),
             cand.counterparty_team_id,
@@ -305,7 +313,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             v = values.get(rp.canonical_player_id)
             roster.append(LeaguePlayerOut(
                 id=rp.canonical_player_id, name=rp.name, position=rp.position,
-                nfl_team=rp.nfl_team,
+                nfl_team=rp.nfl_team, starter_slot=rp.starter_slot,
                 forward_value=v.forward_value if v else 0.0,
                 value_trend=v.value_trend.value if v else "stable",
                 confidence=v.confidence.value if v else "insufficient",
