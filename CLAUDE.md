@@ -84,6 +84,7 @@ Monetization: free-to-play-style **subscription tiers** (intro/standard/pro) gat
 | Live-draft extension (any platform) | the "Live Draft — Browser Extension Architecture" section below |
 | ESPN / Sleeper resolvers | `docs/espn_resolver_design.md` · `docs/sleeper_resolver_design.md` |
 | Stripe / billing | `docs/stripe_billing_design.md` (decisions locked) |
+| Trade agent / acceptability model | `docs/trade_agent_design.md` · `docs/trade_acceptability_design.md` (locked) |
 | Testing/commits | `docs/rules/GIT_RULES.md` |
 | In-season features | `docs/INSEASON.md` |
 | Current stage | `docs/stages/stage-XX-name.md` |
