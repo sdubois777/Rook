@@ -176,9 +176,12 @@ def test_high_prior_but_weak_inseason_value_follows_inseason():
         prior_projection_ppg=20.0,
     )
     assert v.prior_weight == pytest.approx(0.0)     # 6 games ≥ full-in-season
-    # in-season ~11 ppg → ~20/100, nowhere near the prior-implied ~80.
+    # in-season ~11 ppg → low score, nowhere near the prior-implied ~80.
     assert v.forward_value < 40
-    assert abs(v.forward_ppg - v.recency_ppg) < 0.5  # forward == in-season form
+    # LEVEL now blends recent form with the season-to-date baseline (calibration
+    # fix); both are ~11 here, so forward stays anchored to in-season reality, not
+    # the 20-ppg prior. (Was: forward_ppg == recency_ppg, pre-calibration.)
+    assert v.forward_ppg == pytest.approx(11.2, abs=0.7)
 
 
 # ---------------------------------------------------------------------------
@@ -232,3 +235,61 @@ def test_evaluate_league_values_every_rostered_player():
     assert values["rise"].buy_low is True
     assert values["fade"].value_trend is ValueTrend.FALLING
     assert values["fade"].sell_high is True
+
+
+# ---------------------------------------------------------------------------
+# LEVEL calibration — value is anchored to season body of work, not last 3 weeks
+# ---------------------------------------------------------------------------
+def test_chase_class_strong_season_mild_recent_dip_is_not_crushed():
+    """A strong-season, stable-usage player whose last 3 weeks dipped must read
+    HIGH-but-not-elite — the season body of work pulls the level up. Recency-only
+    (the old behavior) would collapse this to near-replacement (~7/100)."""
+    weeks = _weeks(
+        snaps=[0.8] * 8, targets=[0.22] * 8,
+        points=[22, 22, 22, 22, 22, 9, 9, 9],   # ~17 season, ~9 last-3 (sharp dip)
+        tgts=[8] * 8,
+    )
+    v = compute_player_value(
+        canonical_player_id="chaseish", name="Strong WR", position="WR",
+        weeks=weeks, current_week=8,
+    )
+    assert v.value_trend is ValueTrend.STABLE          # usage flat — it's scoring variance
+    # The season baseline lifts the level above the recency-only result…
+    assert v.forward_ppg > v.recency_ppg + 2
+    # …so the value is materially higher than the buggy recency-only ~7 and NOT ~25,
+    # but still below the season-only ceiling (~61).
+    assert 28 < v.forward_value < 55
+
+
+def test_genuine_decline_still_reads_low():
+    """Weak season AND weak recent → still low. We anchored to the season, we did
+    not inflate everyone."""
+    weeks = _weeks(
+        snaps=[0.3] * 8, targets=[0.05] * 8,
+        points=[6, 7, 5, 6, 7, 5, 6, 5],          # weak throughout
+        tgts=[3] * 8,
+    )
+    v = compute_player_value(
+        canonical_player_id="weak", name="Fungible WR", position="WR",
+        weeks=weeks, current_week=8,
+    )
+    assert v.forward_value < 12                         # near/below replacement
+
+
+def test_hot_but_unsustainable_is_not_credited_at_the_hot_rate():
+    """A short hot streak above the season level on falling usage is NOT fully
+    credited: the season baseline tempers it AND the unsustainable-hot regression
+    still applies, so the level lands well below the recent hot form."""
+    weeks = _weeks(
+        snaps=[0.70, 0.65, 0.45, 0.40], targets=[0.18, 0.16, 0.08, 0.07],
+        points=[8, 9, 19, 20],                    # ~17.5 hot last-3 vs ~14 season
+        tgts=[6, 5, 3, 3],
+    )
+    v = compute_player_value(
+        canonical_player_id="hot2", name="Hot WR", position="WR",
+        weeks=weeks, current_week=4,
+    )
+    assert v.sustainable is False                       # unsustainable-hot still fires
+    assert v.sell_high is True
+    # level is tempered well below the ~17.5 recent hot form
+    assert v.forward_ppg < v.recency_ppg - 3

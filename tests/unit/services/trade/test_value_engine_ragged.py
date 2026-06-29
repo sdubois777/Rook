@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from backend.services.trade.value_engine import (
     Confidence,
@@ -96,7 +97,9 @@ def test_null_prior_rookie_runs_and_uses_pure_inseason():
     )
     assert v.prior_projection is None
     assert v.prior_weight == 0.0          # no prior to lean on → pure in-season
-    assert v.forward_ppg == v.recency_ppg
+    # forward LEVEL = recency+season blend (flat fixture → equals the ~10 level).
+    # (Was: forward_ppg == recency_ppg, before the level-calibration blend.)
+    assert v.forward_ppg == pytest.approx(10.0)
     assert not any(math.isnan(x) for x in _numeric_fields(v))
 
 

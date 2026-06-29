@@ -50,6 +50,13 @@ _GAP_SELL = 4.0   # producing well ABOVE volume → sell (regresses)
 # Recency weights, most-recent week first (up to 3 weeks).
 _RECENCY_WEIGHTS = (0.5, 0.3, 0.2)
 
+# In-season LEVEL calibration: the level blends recency-weighted recent form with
+# a season-to-date baseline, so a strong player's value stays anchored to his
+# full body of work instead of collapsing onto a 3-week sample (the Chase-at-25
+# bug). Tunable in ONE place — Stephen calibrates against real output.
+#   1.0 → recency-only (the old, over-reactive behavior); 0.0 → season-only.
+_RECENT_VS_SEASON_WEIGHT = 0.5
+
 # Expected PPR points per opportunity (rough, for the volume-vs-production gap).
 _PTS_PER_TARGET = 1.4
 _PTS_PER_CARRY = 0.55
@@ -214,6 +221,16 @@ def recency_ppg(df_played: pd.DataFrame) -> float:
     return round(sum(p * w for p, w in zip(pts, weights)) / wsum, 2)
 
 
+def season_ppg(df_played: pd.DataFrame) -> float:
+    """Season-to-date mean PPR per played game — the LEVEL anchor that keeps a
+    strong player's value tied to his full body of work, not just recent weeks.
+    (Byes/inactives have no row, so this is correctly per played game.)"""
+    pts = df_played["fantasy_points_ppr"]
+    if len(pts) == 0:
+        return 0.0
+    return round(float(pts.mean()), 2)
+
+
 def expected_ppg_from_volume(df_played: pd.DataFrame) -> float:
     """Rough expected PPR from recent per-game opportunity (targets + carries).
     Used only relatively, for the opportunity-vs-production gap."""
@@ -286,9 +303,18 @@ def compute_player_value(
     # above volume) is unsustainable → regress toward volume-implied output.
     unsustainable_hot = trend == ValueTrend.FALLING and gap >= _GAP_SELL
     sustainable = not unsustainable_hot
-    in_season_ppg = form
+
+    # LEVEL (calibration fix): anchor the recency-weighted recent form to the
+    # season-to-date baseline so a strong player in a mild recent dip doesn't
+    # collapse onto a 3-week sample. The TREND signal above is left short-window.
+    season = season_ppg(df)
+    in_season_ppg = round(
+        _RECENT_VS_SEASON_WEIGHT * form + (1.0 - _RECENT_VS_SEASON_WEIGHT) * season, 2
+    )
     if unsustainable_hot:
-        in_season_ppg = round(0.6 * form + 0.4 * expected, 2)
+        # Still regress an unsustainable hot streak toward volume-implied output
+        # (now on top of the season-tempered level).
+        in_season_ppg = round(0.6 * in_season_ppg + 0.4 * expected, 2)
 
     # Preseason prior enters weakly; washes out as games accrue.
     in_w = min(1.0, games / _FULL_INSEASON_GAMES)
