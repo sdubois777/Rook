@@ -40,6 +40,12 @@ _PPG_ANCHORS: dict[str, tuple[float, float]] = {
 }
 _DEFAULT_ANCHOR = (6.0, 20.0)
 
+# Soft floor (0-100 scale): replacement maps HERE, not to 0, so producing
+# below-replacement players keep a small, rank-preserving value instead of
+# collapsing to an indistinguishable 0. Below replacement spreads 0..FLOOR by ppg;
+# at/above replacement spreads FLOOR..100. Tunable.
+_REPLACEMENT_FLOOR = 10.0
+
 # League shape that defines REPLACEMENT via starter demand. Replacement = the
 # waiver floor: in a `LEAGUE_TEAMS`-team league each team starts
 # STARTERS_PER_POS[pos] (+ a share of FLEX_COUNT), so the best player just below
@@ -287,10 +293,26 @@ def expected_ppg_from_volume(df_played: pd.DataFrame) -> float:
 
 
 def _scale_0_100(ppg: float, position: str, anchors: Optional[dict] = None) -> float:
+    """Scale forward ppg → 0-100, position-relative. SOFT FLOOR (not a hard clamp
+    to 0): a producing BELOW-replacement player gets a small positive,
+    rank-preserving value instead of collapsing to 0 (which destroyed all ordering
+    in the below-replacement band and made 45% of the pool an indistinguishable 0,
+    corrupting contextual_value / acceptability). Mapping:
+      • ppg ≥ replacement → linear replacement→FLOOR, elite→100 (startable band)
+      • 0 < ppg < replacement → linear 0-ppg→0, replacement→FLOOR (sub-repl band)
+      • ppg ≤ 0 / not producing → 0
+    So a 7.9-ppg WR below an 8.7 anchor reads ~9, a 3-ppg scrub ~3.4 — distinct."""
     repl, elite = (anchors or _PPG_ANCHORS).get(position, _DEFAULT_ANCHOR)
     if elite <= repl:
         return 0.0
-    val = (ppg - repl) / (elite - repl) * 100.0
+    if ppg <= 0:
+        return 0.0
+    if ppg >= repl:
+        # Startable band: replacement → FLOOR, elite → 100 (compressed into FLOOR..100).
+        val = _REPLACEMENT_FLOOR + (ppg - repl) / (elite - repl) * (100.0 - _REPLACEMENT_FLOOR)
+    else:
+        # Below-replacement band: spread 0..FLOOR by actual ppg (rank-preserving).
+        val = (ppg / repl) * _REPLACEMENT_FLOOR
     return round(max(0.0, min(100.0, val)), 1)
 
 
