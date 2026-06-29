@@ -106,6 +106,7 @@ class LeaguePlayerOut(BaseModel):
     name: str
     position: str
     nfl_team: Optional[str] = None
+    starter_slot: Optional[str] = None
     forward_value: float
     value_trend: str
     confidence: str
@@ -305,7 +306,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             v = values.get(rp.canonical_player_id)
             roster.append(LeaguePlayerOut(
                 id=rp.canonical_player_id, name=rp.name, position=rp.position,
-                nfl_team=rp.nfl_team,
+                nfl_team=rp.nfl_team, starter_slot=rp.starter_slot,
                 forward_value=v.forward_value if v else 0.0,
                 value_trend=v.value_trend.value if v else "stable",
                 confidence=v.confidence.value if v else "insufficient",

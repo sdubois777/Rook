@@ -40,7 +40,7 @@ def _iv(pid, fv, *, conf=Confidence.FULL, trend=ValueTrend.STABLE, buy=False, se
 
 
 def _fixture():
-    me = TeamState("me", "You", True, (RosterPlayer("g", "Give", "WR", nfl_team="SF"),))
+    me = TeamState("me", "You", True, (RosterPlayer("g", "Give", "WR", nfl_team="SF", starter_slot="WR1"),))
     opp = TeamState("opp", "Rivals", False, (RosterPlayer("x", "Get", "WR", nfl_team="CIN"),))
     state = LeagueState(2025, 14, (me, opp))
     values = {
@@ -88,6 +88,7 @@ async def test_league_returns_teams_rosters_and_values(monkeypatch):
     # picker value bundle mirrors the engine output exactly
     assert g["id"] == "g" and g["forward_value"] == 20 and g["value_trend"] == "falling"
     assert g["sell_high"] is True and g["nfl_team"] == "SF"
+    assert g["starter_slot"] == "WR1"
     opp = next(t for t in data["teams"] if not t["is_me"])
     x = opp["roster"][0]
     assert x["confidence"] == "limited" and x["buy_low"] is True

@@ -18,8 +18,9 @@ import pytest
 
 from backend.services.trade.trade_demo_source import (
     DEMO_CURRENT_WEEK,
-    DEMO_ROSTERS,
     DEMO_SEASON,
+    N_TEAMS,
+    TEAM_SIZE,
     build_league_state,
     build_priors,
     maybe_demo_league_source,
@@ -107,23 +108,31 @@ _NAME_TIER = {
 
 @pytest.fixture
 def synthetic_demo_source() -> TradeDemoSource:
-    """Assemble a TradeDemoSource over the REAL DEMO_ROSTERS using synthetic ids
-    + injected weekly data — exercises build_league_state / build_priors and the
-    engine without a DB."""
-    name_to_player: dict[str, tuple[str, float | None]] = {}
+    """Assemble a TradeDemoSource from synthetic teams_data + injected weekly data
+    — exercises build_league_state / build_priors and the engine without a DB."""
+    players: list[dict] = []
+    prior_by_id: dict[str, float | None] = {}
     frames = []
     for i, (name, tier) in enumerate(_NAME_TIER.items()):
         pid = f"u-{i:02d}"
         rows, prior = _series(tier)
-        name_to_player[name] = (pid, prior)
+        prior_by_id[pid] = prior
         df = pd.DataFrame(rows)
         df["canonical_player_id"] = pid
         df["player_name"] = name
         df["position"] = "WR"
         frames.append(df)
+        players.append({
+            "id": pid, "name": name, "position": "WR",
+            "nfl_team": "AAA", "starter_slot": "BENCH",
+        })
     weekly = pd.concat(frames, ignore_index=True)
-    state = build_league_state(name_to_player)
-    priors = build_priors(name_to_player)
+    teams_data = [{
+        "team_id": "demo-team-0", "team_name": "Your Squad", "is_me": True,
+        "players": players,
+    }]
+    state = build_league_state(teams_data)
+    priors = build_priors(prior_by_id)
     return TradeDemoSource(state=state, weekly_usage=weekly, priors=priors)
 
 
@@ -140,9 +149,8 @@ def _values_by_name(source: TradeDemoSource):
 def test_demo_state_has_an_is_me_team_and_full_rosters(synthetic_demo_source):
     state = synthetic_demo_source.get_league_state()
     assert state.season == DEMO_SEASON and state.week == DEMO_CURRENT_WEEK
-    assert state.my_team is not None and state.my_team.team_name == "You"
-    assert len(state.teams) == len(DEMO_ROSTERS)
-    assert sum(len(t.roster) for t in state.teams) == sum(len(s["players"]) for s in DEMO_ROSTERS)
+    assert state.my_team is not None
+    assert sum(len(t.roster) for t in state.teams) == len(_NAME_TIER)
 
 
 def test_every_confidence_tier_is_exercised(synthetic_demo_source):
@@ -210,6 +218,16 @@ async def test_real_demo_seed_produces_sane_tiers():
             source = await seed_demo_league(db)
     except Exception as exc:  # no DB / not populated → skip, don't fail
         pytest.skip(f"demo DB unavailable: {exc}")
+
+    state = source.get_league_state()
+    # Expanded to a realistic 12-team league, full rosters.
+    assert len(state.teams) == N_TEAMS
+    assert all(len(t.roster) == TEAM_SIZE for t in state.teams)
+    assert sum(t.is_me for t in state.teams) == 1
+    # starter_slot + nfl_team populated on the lineup.
+    me = state.my_team
+    assert sum(rp.starter_slot != "BENCH" for rp in me.roster) == 8   # 1QB/2RB/3WR/1TE/1FLEX
+    assert all(rp.nfl_team for rp in me.roster)
 
     values, by_name = _values_by_name(source)
     confs = {v.confidence for v in values.values()}
