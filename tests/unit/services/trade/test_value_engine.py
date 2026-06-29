@@ -16,11 +16,14 @@ from backend.services.trade.league_state import (
     TeamState,
 )
 import backend.services.trade.value_engine as ve
+from backend.services.trade.contextual import contextual_value
+from backend.services.trade.lineup import LineupPlayer
 from backend.services.trade.value_engine import (
     ValueTrend,
     _COMBINED_FACTOR_BOUNDS,
     _OPP_GAP_CAP,
     _PPG_ANCHORS,
+    _REPLACEMENT_FLOOR,
     _TRAJECTORY_CAP,
     _bound_combined,
     _played_weeks,
@@ -342,8 +345,10 @@ def test_cross_position_same_relative_standing_reads_identically():
     anchors = {"QB": (16.0, 24.0), "WR": (9.0, 21.0)}
     qb_mid = 16.0 + 0.5 * (24.0 - 16.0)   # 20.0
     wr_mid = 9.0 + 0.5 * (21.0 - 9.0)     # 15.0
-    assert _scale_0_100(qb_mid, "QB", anchors) == 50.0
-    assert _scale_0_100(wr_mid, "WR", anchors) == 50.0  # identical, cross-position
+    # Soft floor: the startable band is FLOOR..100, so the mid-band point is
+    # FLOOR + 0.5·(100−FLOOR) = 55.0 — still IDENTICAL cross-position (the point).
+    assert _scale_0_100(qb_mid, "QB", anchors) == 55.0
+    assert _scale_0_100(wr_mid, "WR", anchors) == 55.0  # identical, cross-position
 
 
 def test_lamar_class_startable_qb_not_crushed_under_derived_anchor():
@@ -383,6 +388,67 @@ def test_stud_stays_high_and_genuine_low_stays_low_under_derived_anchors():
     assert weak.forward_value < 10       # below replacement stays low
 
 
+# ===========================================================================
+# SOFT FLOOR (replacement → FLOOR, not 0) — restore ordering in the below-
+# replacement band so producing players aren't an indistinguishable 0.
+# ===========================================================================
+def test_producing_below_replacement_player_is_not_zero():
+    """§ headline: a Jefferson-class WR (7.9 ppg, just below the 8.7 anchor) reads
+    a small POSITIVE value (~9), not 0. A truly-zero-production player still 0."""
+    anchors = {"WR": (8.7, 19.2)}
+    jj = _scale_0_100(7.9, "WR", anchors)
+    assert jj > 0
+    assert jj == pytest.approx(9.1, abs=0.3)            # ~9, not the old hard 0
+    assert _scale_0_100(0.0, "WR", anchors) == 0.0       # no production → still 0
+    assert _scale_0_100(-3.0, "WR", anchors) == 0.0      # negative guarded → 0
+
+
+def test_below_replacement_band_preserves_rank():
+    """The ordering info the hard clamp destroyed is restored: three below-
+    replacement WRs at distinct ppg read distinct, monotonic, positive values."""
+    anchors = {"WR": (8.0, 23.0)}
+    v7, v4, v2 = (_scale_0_100(p, "WR", anchors) for p in (7.0, 4.0, 2.0))
+    assert v7 > v4 > v2 > 0                              # distinct + monotonic + positive
+    assert all(x < _REPLACEMENT_FLOOR for x in (v7, v4, v2))   # all in the sub-replacement band
+
+
+def test_above_replacement_band_ordered_into_floor_to_100():
+    """The startable band still works, just compressed into FLOOR..100: elite ~100,
+    a just-above-replacement player ~FLOOR, monotonic between."""
+    anchors = {"RB": (8.0, 24.0)}
+    elite = _scale_0_100(24.0, "RB", anchors)
+    mid = _scale_0_100(16.0, "RB", anchors)
+    just_above = _scale_0_100(8.1, "RB", anchors)
+    assert elite == 100.0
+    assert just_above == pytest.approx(_REPLACEMENT_FLOOR, abs=1.0)   # ~FLOOR at replacement
+    assert elite > mid > just_above
+
+
+def test_weak_rbs_are_distinguishable_and_carry_tradeable_value():
+    """§ the payoff (contextual un-corruption): a Your-Squad-shaped set of weak RBs
+    reads small-positive + ORDERED (not an all-0 blob), so a roster of weak RBs is
+    distinguishable from a roster of NO RBs, and a below-replacement player is no
+    longer worth literally 'nothing' to trade."""
+    anchors = {"QB": (16, 24), "RB": (8.0, 24.0), "WR": (8, 23), "TE": (9, 15)}
+
+    def rb(pid, ppg):
+        return compute_player_value(
+            canonical_player_id=pid, name=pid, position="RB",
+            weeks=_weeks([0.5] * 4, [0.05] * 4, [ppg] * 4, carries=[8] * 4),
+            current_week=4, anchors=anchors,
+        )
+    a, b, c = rb("a", 7), rb("b", 4), rb("c", 2)
+    assert a.forward_value > b.forward_value > c.forward_value > 0   # ordered, all nonzero
+
+    # Each weak RB still carries a small, ranked contextual value to an RB-needy
+    # roster (no RBs) — the better weak RB is worth more; neither reads as "nothing".
+    needy = [LineupPlayer("q", "QB", 60), LineupPlayer("w1", "WR", 60),
+             LineupPlayer("w2", "WR", 55), LineupPlayer("w3", "WR", 50), LineupPlayer("te", "TE", 40)]
+    cv_a = contextual_value(LineupPlayer("a", "RB", a.forward_value), needy)
+    cv_c = contextual_value(LineupPlayer("c", "RB", c.forward_value), needy)
+    assert cv_a > cv_c > 0
+
+
 def test_compute_player_value_without_anchors_uses_hardcoded_fallback():
     """Direct calls (no anchors) keep the pre-derivation hardcoded behavior — so
     the #158 calibration tests above are unaffected."""
@@ -390,8 +456,8 @@ def test_compute_player_value_without_anchors_uses_hardcoded_fallback():
         canonical_player_id="r", name="Reg WR", position="WR",
         weeks=_weeks([0.8] * 6, [0.2] * 6, [15.8] * 6), current_week=6,
     )
-    # hardcoded WR (8, 23): (15.8-8)/15*100 ≈ 52
-    assert v.forward_value == pytest.approx(52.0, abs=1.0)
+    # hardcoded WR (8, 23), soft floor: FLOOR + (15.8-8)/15*(100-FLOOR) ≈ 56.8
+    assert v.forward_value == pytest.approx(56.8, abs=1.0)
 
 
 def test_season_ppg_by_position_groups_rostered_players():
