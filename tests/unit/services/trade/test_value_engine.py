@@ -31,7 +31,11 @@ from backend.services.trade.value_engine import (
     compute_player_value,
     derive_anchors,
     evaluate_league,
+    inseason_level,
+    inseason_level_by_position,
     opp_gap_factor,
+    recency_ppg,
+    season_ppg,
     season_ppg_by_position,
     usage_trajectory_factor,
     usage_trend,
@@ -458,6 +462,102 @@ def test_compute_player_value_without_anchors_uses_hardcoded_fallback():
     )
     # hardcoded WR (8, 23), soft floor: FLOOR + (15.8-8)/15*(100-FLOOR) ≈ 56.8
     assert v.forward_value == pytest.approx(56.8, abs=1.0)
+
+
+# ===========================================================================
+# ANCHOR BASIS FIX — derive anchors from the recency-blended in-season LEVEL
+# (the basis forward_value scales), not raw season_ppg. Fixes the QB mismatch:
+# a QB whose forward ran below his season ppg was measured against a season-
+# derived replacement and read below it despite being a clear starter.
+# ===========================================================================
+def _qb_pool_weekly(n=18, top_a=24.0, step=1.0, dip=8.0):
+    """n QBs, each 5 early weeks at A then 3 recent weeks at A-dip (a recent dip,
+    so the in-season LEVEL runs below season ppg). Flat QB snaps (target≈0)."""
+    frames = []
+    roster = []
+    for i in range(n):
+        a = top_a - i * step
+        pts = [a] * 5 + [a - dip] * 3
+        w = _weeks([0.95] * 8, [0.0] * 8, pts).assign(canonical_player_id=f"qb{i}")
+        frames.append(w)
+        roster.append(RosterPlayer(f"qb{i}", f"QB{i}", "QB"))
+    return pd.concat(frames, ignore_index=True), roster
+
+
+def test_inseason_level_is_anchor_independent_no_circularity():
+    """The anchor basis (inseason_level) depends ONLY on production — recency_ppg
+    + season_ppg — never on the anchors or forward_value, so derive_anchors has no
+    circular reference."""
+    df = _played_weeks(_weeks([0.8] * 6, [0.2] * 6, [10, 12, 11, 9, 8, 7]), current_week=6)
+    assert inseason_level(df) == pytest.approx(round(0.5 * recency_ppg(df) + 0.5 * season_ppg(df), 2))
+    assert inseason_level(_played_weeks(_weeks([], [], []), current_week=6)) == 0.0
+    # it takes no anchors argument and references no scaling — purely production.
+
+
+def test_anchor_basis_is_level_not_season():
+    """With a recent dip, the LEVEL-basis QB anchor lands BELOW the season-basis
+    anchor — measuring replacement/elite in the same units as the scaled value."""
+    weekly, roster = _qb_pool_weekly()
+    rp = {r.canonical_player_id: "QB" for r in roster}
+    season_anchor = derive_anchors(season_ppg_by_position(weekly, rp))["QB"]
+    level_anchor = derive_anchors(inseason_level_by_position(weekly, rp, current_week=8))["QB"]
+    assert level_anchor[0] < season_anchor[0]      # replacement re-based down to forward
+    assert level_anchor[1] < season_anchor[1]      # elite too
+
+
+def test_starting_qb_reads_as_starter_under_level_basis():
+    """HEADLINE: a mid/upper QB whose forward dipped below his season ppg reads as a
+    real startable value under the level-basis anchor, where under the season-basis
+    anchor (the bug) it was pinned near/below the floor."""
+    weekly, roster = _qb_pool_weekly()
+    rp = {r.canonical_player_id: "QB" for r in roster}
+    state = LeagueState(season=2025, week=8,
+                        teams=(TeamState("me", "Me", True, tuple(roster)),))
+    fixed = evaluate_league(state, weekly)                       # level-basis (the fix)
+
+    season_anchors = derive_anchors(season_ppg_by_position(weekly, rp))
+    # a representative upper-mid QB (rank 3 by production)
+    qb_id = "qb2"
+    qb_weeks = weekly[weekly["canonical_player_id"] == qb_id]
+    buggy = compute_player_value(
+        canonical_player_id=qb_id, name="QB", position="QB",
+        weeks=qb_weeks, current_week=8, anchors=season_anchors,   # season-basis (the bug)
+    )
+    new_fv = fixed[qb_id].forward_value
+    assert new_fv > buggy.forward_value                          # the fix lifts it
+    assert new_fv > 2 * _REPLACEMENT_FLOOR                       # reads as a real starter, not floor
+
+
+def test_cross_position_consistency_restored_for_qb():
+    """#160 goal: a player at the same fractional standing in his position's band
+    reads the SAME value cross-position. With level-basis anchors, a top QB and a
+    top RB both read ~100; mid-band reads ~55 either way — QB no longer alone."""
+    qb_anchor, rb_anchor = (12.0, 20.0), (6.0, 22.0)
+    # top of band → ~100 both; mid of band → ~55 both
+    assert _scale_0_100(20.0, "QB", {"QB": qb_anchor}) == _scale_0_100(22.0, "RB", {"RB": rb_anchor}) == 100.0
+    qb_mid = 12.0 + 0.5 * (20.0 - 12.0)
+    rb_mid = 6.0 + 0.5 * (22.0 - 6.0)
+    assert _scale_0_100(qb_mid, "QB", {"QB": qb_anchor}) == _scale_0_100(rb_mid, "RB", {"RB": rb_anchor}) == 55.0
+
+
+def test_other_positions_still_sane_under_level_basis():
+    """The basis change didn't break the positions that already worked: a derived
+    level-basis RB anchor still has elite > replacement, a stud reads top, a
+    replacement-level RB reads near the floor."""
+    # 40 RBs spanning a real spread (deep enough to derive, cutoff 30 + band 5).
+    frames, roster = [], []
+    for i in range(40):
+        ppg = 24.0 - i * 0.55
+        frames.append(_weeks([0.7] * 6, [0.05] * 6, [ppg] * 6).assign(canonical_player_id=f"rb{i}"))
+        roster.append(RosterPlayer(f"rb{i}", f"RB{i}", "RB"))
+    weekly = pd.concat(frames, ignore_index=True)
+    rp = {r.canonical_player_id: "RB" for r in roster}
+    repl, elite = derive_anchors(inseason_level_by_position(weekly, rp, current_week=6))["RB"]
+    assert elite > repl
+    state = LeagueState(2025, 6, (TeamState("me", "Me", True, tuple(roster)),))
+    vals = evaluate_league(state, weekly)
+    assert vals["rb0"].forward_value >= 95          # stud near the top
+    assert vals["rb39"].forward_value < _REPLACEMENT_FLOOR   # deep RB near/below floor
 
 
 def test_season_ppg_by_position_groups_rostered_players():

@@ -281,6 +281,22 @@ def season_ppg(df_played: pd.DataFrame) -> float:
     return round(float(pts.mean()), 2)
 
 
+def inseason_level(df_played: pd.DataFrame) -> float:
+    """The recency-blended in-season LEVEL — recency-weighted recent form anchored
+    to the season-to-date baseline. This is the SAME quantity ``forward_ppg`` is
+    built from (BEFORE the #170 trajectory/opp-gap factors and BEFORE anchor-
+    scaling), so anchors derived from it share the value's basis. It depends ONLY
+    on production (recency_ppg + season_ppg) — never on the anchors or
+    forward_value — so there is no circular reference."""
+    if len(df_played) == 0:
+        return 0.0
+    return round(
+        _RECENT_VS_SEASON_WEIGHT * recency_ppg(df_played)
+        + (1.0 - _RECENT_VS_SEASON_WEIGHT) * season_ppg(df_played),
+        2,
+    )
+
+
 def expected_ppg_from_volume(df_played: pd.DataFrame) -> float:
     """Rough expected PPR from recent per-game opportunity (targets + carries).
     Used only relatively, for the opportunity-vs-production gap."""
@@ -378,6 +394,27 @@ def season_ppg_by_position(weekly_usage, roster_positions: dict[str, str]) -> di
     return out
 
 
+def inseason_level_by_position(
+    weekly_usage, roster_positions: dict[str, str], current_week: int,
+) -> dict[str, list[float]]:
+    """{position: [inseason_level, …]} over the ROSTERED players — the FORWARD-BASIS
+    replacement for ``season_ppg_by_position`` as the anchor-derivation input. Each
+    value is the recency-blended in-season LEVEL (the same basis ``forward_value``
+    scales), so the replacement/elite anchors are measured in the same units as the
+    players compared against them (the QB-anchor basis-mismatch fix). Pure
+    production — no anchor / forward_value dependency, so derive_anchors stays
+    non-circular."""
+    out: dict[str, list[float]] = {}
+    if weekly_usage is None or getattr(weekly_usage, "empty", True):
+        return out
+    for pid, grp in weekly_usage.groupby("canonical_player_id"):
+        pos = roster_positions.get(pid)
+        if pos not in ("QB", "RB", "WR", "TE"):
+            continue
+        out.setdefault(pos, []).append(inseason_level(_played_weeks(grp, current_week)))
+    return out
+
+
 def derive_anchors(
     season_ppg_by_pos: dict[str, list[float]],
     *,
@@ -469,10 +506,9 @@ def compute_player_value(
     # LEVEL (calibration fix): anchor the recency-weighted recent form to the
     # season-to-date baseline so a strong player in a mild recent dip doesn't
     # collapse onto a 3-week sample. The TREND signal above is left short-window.
-    season = season_ppg(df)
-    in_season_ppg = round(
-        _RECENT_VS_SEASON_WEIGHT * form + (1.0 - _RECENT_VS_SEASON_WEIGHT) * season, 2
-    )
+    # This is the SAME quantity the anchors are derived from (inseason_level), so
+    # value and anchor share a basis (the QB-anchor basis-mismatch fix).
+    in_season_ppg = inseason_level(df)
 
     # Preseason prior enters weakly; washes out as games accrue.
     in_w = min(1.0, games / _FULL_INSEASON_GAMES)
@@ -614,11 +650,18 @@ def evaluate_league(
     # Derive positional anchors ONCE from this league's rostered pool (the player
     # universe LeagueState provides), so replacement/elite reflect real depth
     # rather than guesses. Falls back to hardcoded per-position when too sparse.
+    # BASIS: the recency-blended in-season LEVEL (inseason_level_by_position), the
+    # SAME quantity forward_value scales — NOT raw season_ppg. Deriving the anchor
+    # on the value's own basis fixes the QB mismatch (a QB whose forward ran 3-5 ppg
+    # below his season ppg was measured against a season-derived replacement and
+    # read below it despite being a clear starter).
     roster_positions = {
         rp.canonical_player_id: rp.position
         for team in league_state.teams for rp in team.roster
     }
-    anchors = derive_anchors(season_ppg_by_position(weekly_usage, roster_positions))
+    anchors = derive_anchors(
+        inseason_level_by_position(weekly_usage, roster_positions, league_state.week)
+    )
 
     out: dict[str, InSeasonValue] = {}
     for team in league_state.teams:
