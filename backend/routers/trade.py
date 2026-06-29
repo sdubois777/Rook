@@ -14,6 +14,7 @@ the Sonnet agent only writes the rationale.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -265,9 +266,15 @@ async def ideas(
         state, values, my_team_id, candidates, roster_limit=roster_limit,
     )
 
+    # Generate the per-proposal rationales CONCURRENTLY — each is a Sonnet call,
+    # and doing them sequentially blew past the client timeout for a 5-idea slate.
+    rationales = await asyncio.gather(
+        *(analyzer.explain_trade(analysis) for _, analysis in surfaced)
+    )
+
     proposals: list[TradeIdea] = []
-    for cand, analysis in surfaced:
-        analysis.rationale = await analyzer.explain_trade(analysis)
+    for (cand, analysis), rationale in zip(surfaced, rationales):
+        analysis.rationale = rationale
         team_name = next(
             (t.team_name for t in state.teams if t.team_id == cand.counterparty_team_id),
             cand.counterparty_team_id,
