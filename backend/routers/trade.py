@@ -99,6 +99,34 @@ class TradeIdeasResponse(BaseModel):
     demo_mode: bool
 
 
+# --- GET /trade/league (read-only roster + value exposer for the picker) -----
+# TEST-ONLY demo surface (slice-6 teardown). Demo-aware via TRADE_DEMO_MODE.
+class LeaguePlayerOut(BaseModel):
+    id: str
+    name: str
+    position: str
+    nfl_team: Optional[str] = None
+    forward_value: float
+    value_trend: str
+    confidence: str
+    buy_low: bool
+    sell_high: bool
+
+
+class LeagueTeamOut(BaseModel):
+    team_id: str
+    team_name: str
+    is_me: bool
+    roster: list[LeaguePlayerOut]
+
+
+class TradeLeagueResponse(BaseModel):
+    season: int
+    week: int
+    teams: list[LeagueTeamOut]
+    demo_mode: bool
+
+
 # ---------------------------------------------------------------------------
 # Seams (patch points for tests + the slice-6 real provider)
 # ---------------------------------------------------------------------------
@@ -252,3 +280,43 @@ async def ideas(
 
     message = "" if proposals else "no clear trade right now"
     return TradeIdeasResponse(proposals=proposals, message=message, demo_mode=demo)
+
+
+@router.get("/league", response_model=TradeLeagueResponse)
+async def league(user=Depends(get_current_user), db=Depends(get_db)):
+    """READ-ONLY support for the trade page's picker + team-switcher. Exposes the
+    SAME slice-2 seeded demo LeagueState run through the SAME evaluate_league, so
+    picker values match verdict values exactly. Demo-only: with TRADE_DEMO_MODE
+    off it 404s (no real-league exposure here). Adds NO trade logic — it just
+    reshapes what load_league_for_analysis already returns."""
+    demo = trade_demo_enabled()
+    if not demo:
+        raise HTTPException(
+            status_code=404,
+            detail="trade demo league is only available under TRADE_DEMO_MODE",
+        )
+
+    state, values, _ = await load_league_for_analysis(db, user, demo)
+
+    teams: list[LeagueTeamOut] = []
+    for team in state.teams:
+        roster: list[LeaguePlayerOut] = []
+        for rp in team.roster:
+            v = values.get(rp.canonical_player_id)
+            roster.append(LeaguePlayerOut(
+                id=rp.canonical_player_id, name=rp.name, position=rp.position,
+                nfl_team=rp.nfl_team,
+                forward_value=v.forward_value if v else 0.0,
+                value_trend=v.value_trend.value if v else "stable",
+                confidence=v.confidence.value if v else "insufficient",
+                buy_low=v.buy_low if v else False,
+                sell_high=v.sell_high if v else False,
+            ))
+        teams.append(LeagueTeamOut(
+            team_id=team.team_id, team_name=team.team_name,
+            is_me=team.is_me, roster=roster,
+        ))
+
+    return TradeLeagueResponse(
+        season=state.season, week=state.week, teams=teams, demo_mode=demo,
+    )

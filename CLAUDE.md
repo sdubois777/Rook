@@ -943,14 +943,20 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
         `DEMO_CURRENT_WEEK` pinned HERE, currently **week 14** — not week 5, not in
         the engine/data layer), `scripts/seed_demo_league.py` (CLI),
         `tests/unit/services/trade/test_trade_demo.py`.
+      - analyzer agent + `POST /api/trade/analyze`; proposals agent +
+        `POST /api/trade/ideas` (pro-only). PERMANENT.
+      - **trade page** `frontend/src/pages/Trade.jsx` + `frontend/src/api/trade.js`
+        (PERMANENT minus the team-switcher) and the read-only demo
+        **`GET /api/trade/league`** + the page **team-switcher** (TEARDOWN — both
+        demo-only, gated/greppable via `TRADE_DEMO` / `fetchTradeLeague`).
       ⚠️ **ALL demo scaffolding (the demo source/seeder/tests, the pinned week, the
-      future team-switcher + `/_demo` endpoints) is gated behind `TRADE_DEMO_MODE`
-      (default false) and MUST be removed before prod — see the teardown checklist
-      in the design doc; grep `TRADE_DEMO` / `DEMO_ROSTERS`. Permanent = the
-      interface, value engine, agents, page, and gates ONLY.**
-      **Remaining:** analyzer + proposals agents + `/api/trade/*` routes (slice 3),
-      trade page (slice 5), teardown (slice 6). Then: lineup optimizer, waiver
-      wire, roster monitor, opponent analyzer, gameday.
+      `GET /api/trade/league` endpoint, the page team-switcher) is gated behind
+      `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
+      teardown checklist in the design doc; grep `TRADE_DEMO` / `DEMO_ROSTERS` /
+      `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
+      trade page (minus team-switcher), `/analyze` + `/ideas`, and the gates ONLY.**
+      **Remaining:** teardown + real league-state provider (slice 6). Then: lineup
+      optimizer, waiver wire, roster monitor, opponent analyzer, gameday.
 - [ ] **Stripe billing implementation** (design locked — docs/stripe_billing_design.md)
 - [ ] Stage 30: Half PPR support
 - [ ] Generalize extension orphaned-context recovery to the Yahoo/ESPN pollers

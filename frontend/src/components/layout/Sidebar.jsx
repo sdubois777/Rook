@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Swords,
+  ArrowLeftRight,
   UserCircle,
   X,
 } from 'lucide-react'
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/teams', label: 'Teams', icon: Shield },
   { to: '/news', label: 'News', icon: Newspaper },
   { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
+  { to: '/trade', label: 'Trade', icon: ArrowLeftRight },
   { to: '/account', label: 'Account', icon: UserCircle },
 ]
 

@@ -29,9 +29,14 @@ single env flag and namespaced for one-pass deletion.
   - the demo tests — `tests/unit/services/trade/test_trade_demo.py` (slice 2)
   - any `/_demo` trade endpoints + the `TRADE_DEMO_MODE` branch in route/provider
     selection (slice 3)
-  - frontend **team-switcher** ("act as any team") + `TradeTestControls` component
-    (slice 5)
-  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_ROSTERS` to find every surface
+  - the read-only **`GET /api/trade/league`** endpoint (its schemas
+    `LeaguePlayerOut`/`LeagueTeamOut`/`TradeLeagueResponse` + `league()` handler in
+    `backend/routers/trade.py`) and its test
+    `tests/unit/routers/test_trade_league.py` — picker support, demo-only (slice 5)
+  - frontend **team-switcher** ("act as any team") in the trade page +
+    `frontend/src/api/trade.js#fetchTradeLeague` consumer (slice 5)
+  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_ROSTERS` / `fetchTradeLeague` to find
+    every surface
 - **What is PERMANENT (the real feature, not test):** the league-state **interface**,
   the **in-season value engine**, the **analyzer** + **proposals** agents, the trade
   **page** (player selection, verdict, the two buttons — minus the team-switcher),
