@@ -62,3 +62,66 @@ describe('VerdictPanel — confidence/hedge visibility', () => {
     expect(screen.getByText('+17')).toBeInTheDocument()
   })
 })
+
+describe('VerdictPanel — acceptability read (the other side)', () => {
+  it('"likely to accept" renders as a positive read with the grounded why', () => {
+    const v = makeVerdict({
+      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: false,
+        hedged: false, why: 'P-rm4 fills a RB need on their roster' },
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText('Likely to accept')).toBeInTheDocument()
+    expect(screen.getByText(/fills a RB need/)).toBeInTheDocument()
+    expect(screen.getByText('+3.7')).toBeInTheDocument()      // their gain, exact
+  })
+
+  it('a trade you WIN but they would reject does NOT look like a win', () => {
+    // winner=you (the your-side header) but the acceptability section is a
+    // clear caution — "Likely to reject", their gain negative.
+    const v = makeVerdict({
+      winner: 'you', fairness: 'lopsided you',
+      acceptability: { verdict: 'likely_reject', their_net: -19, overtake_flag: false,
+        hedged: false, why: "they're set at RB — P-scrub adds little for them" },
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText('You win')).toBeInTheDocument()      // your-side verdict
+    expect(screen.getByText('Likely to reject')).toBeInTheDocument()  // their-side caution
+    expect(screen.getByText('-19')).toBeInTheDocument()          // their loss, not rounded up
+    expect(screen.getByText(/adds little for them/)).toBeInTheDocument()
+  })
+
+  it('"may haggle" renders tentatively', () => {
+    const v = makeVerdict({
+      acceptability: { verdict: 'marginal', their_net: 2.6, overtake_flag: false,
+        hedged: false, why: 'P-rm4 is a modest WR upgrade for them; they may haggle' },
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText('May haggle')).toBeInTheDocument()
+    expect(screen.getByText(/may haggle/)).toBeInTheDocument()
+  })
+
+  it('surfaces the overtake flag when the trade helps them more on the field', () => {
+    const v = makeVerdict({
+      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: true,
+        hedged: false, why: 'P-rm4 fills a RB need on their roster' },
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText(/let their lineup overtake yours/)).toBeInTheDocument()
+  })
+
+  it('a hedged read shows the tentative chip on the acceptability section', () => {
+    const v = makeVerdict({
+      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: false,
+        hedged: true, why: 'P-rm4 fills a RB need on their roster (tentative — limited data on a player involved)' },
+    })
+    render(<VerdictPanel verdict={v} />)
+    expect(screen.getByText('Likely to accept')).toBeInTheDocument()
+    expect(screen.getByText(/limited data on a player/)).toBeInTheDocument()
+  })
+
+  it('renders nothing for the acceptability section when the field is absent', () => {
+    render(<VerdictPanel verdict={makeVerdict({ acceptability: undefined })} />)
+    expect(screen.queryByText('Likely to accept')).not.toBeInTheDocument()
+    expect(screen.queryByText('Likely to reject')).not.toBeInTheDocument()
+  })
+})

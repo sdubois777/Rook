@@ -52,6 +52,109 @@ class EdgeBand:
     clears: bool
 
 
+# Acceptability verdicts (the analyzer's opponent-side READ, §5/§6c). NOT a gate:
+# any trade is evaluated and reported honestly — "great for you, they'd reject it"
+# is surfaced as a rejection, never rounded up to a win.
+ACCEPT_LIKELY = "likely_accept"      # their_net > _COMFORT_THRESHOLD
+ACCEPT_MARGINAL = "marginal"         # 0 < their_net <= _COMFORT_THRESHOLD
+ACCEPT_REJECT = "likely_reject"      # their_net <= 0
+
+
+@dataclass(frozen=True)
+class Acceptability:
+    """Would the OTHER side likely accept the trade the user built? A read derived
+    from the slice-4 edge band evaluated from the counterparty's perspective —
+    their_net (their contextual gain) drives the verdict, the overtake guard adds
+    the 'helps them more on the field' flag, and ``why`` is grounded in their
+    roster. It is a READ, not a filter (§6c)."""
+    verdict: str
+    their_net: float
+    overtake_flag: bool       # the trade would make THEIR lineup overtake yours
+    hedged: bool              # opponent-side data is limited/insufficient → soft read
+    why: str
+
+
+def _verdict_for(their_net: float) -> str:
+    if their_net > _COMFORT_THRESHOLD:
+        return ACCEPT_LIKELY
+    if their_net <= 0:
+        return ACCEPT_REJECT
+    return ACCEPT_MARGINAL
+
+
+def _acceptability_why(
+    values: dict[str, InSeasonValue],
+    their_roster: list[LineupPlayer],
+    give_ids: tuple[str, ...] | list[str],
+    verdict: str,
+    overtake_flag: bool,
+    hedged: bool,
+) -> str:
+    """A one-line WHY grounded in THEIR roster. The give players (incoming to them)
+    are valued against their roster as-is; the one worth most to them frames the
+    sentence — fills a need (accept), modest upgrade (haggle), or no value (reject)."""
+    def _cv(pid: str) -> float:
+        v = values[pid]
+        return contextual_value(LineupPlayer(pid, v.position, v.forward_value), their_roster)
+
+    incoming = [g for g in give_ids if g in values]
+    best = max(incoming, key=_cv) if incoming else None
+    name = values[best].name if best else "what you're sending"
+    pos = values[best].position if best else "that spot"
+
+    if verdict == ACCEPT_LIKELY:
+        why = f"{name} fills a {pos} need on their roster"
+    elif verdict == ACCEPT_REJECT:
+        why = f"they're set at {pos} — {name} adds little for them"
+    else:
+        why = f"{name} is a modest {pos} upgrade for them; they may haggle"
+    if overtake_flag:
+        why += "; it would also make their lineup stronger than yours"
+    if hedged:
+        why += " (tentative — limited data on a player involved)"
+    return why
+
+
+def acceptability_read(
+    state: LeagueState,
+    values: dict[str, InSeasonValue],
+    my_team_id: str,
+    give_ids: tuple[str, ...] | list[str],
+    get_ids: tuple[str, ...] | list[str],
+    *,
+    hedged: bool,
+) -> Acceptability:
+    """The §5/§6c analyzer read: evaluate the SAME trade from the counterparty's
+    side and report whether they'd likely accept it. The counterparty is the team
+    holding the ``get`` players (v1: a single counterparty — the team owning the
+    first get player). Reuses ``evaluate_edge_band`` (which runs the overtake
+    guard); never gates — on any failure it degrades to a safe, honest read."""
+    my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
+    get_set = set(get_ids)
+    counterparty = next(
+        (t for t in state.teams
+         if t.team_id != my_team_id
+         and any(rp.canonical_player_id in get_set for rp in t.roster)),
+        None,
+    )
+    if my_team is None or counterparty is None:
+        return Acceptability(ACCEPT_REJECT, 0.0, False, hedged,
+                             "could not evaluate the other side of this trade")
+
+    my_roster = _lineup_roster(my_team, values)
+    their_roster = _lineup_roster(counterparty, values)
+    try:
+        edge = evaluate_edge_band(my_roster, their_roster, give_ids, get_ids)
+    except Exception:
+        return Acceptability(ACCEPT_REJECT, 0.0, False, hedged,
+                             "could not evaluate the other side of this trade")
+
+    overtake_flag = edge.my_strength < edge.their_strength   # guard failed → they overtake
+    verdict = _verdict_for(edge.their_net)
+    why = _acceptability_why(values, their_roster, give_ids, verdict, overtake_flag, hedged)
+    return Acceptability(verdict, edge.their_net, overtake_flag, hedged, why)
+
+
 def enumerate_candidates(state: LeagueState, my_team_id: str) -> list[Candidate]:
     """Deterministic fallback search: every 1-for-1 swap between my roster and
     each opponent's roster. Plausibility (need/surplus targeting) is the LLM's

@@ -29,7 +29,7 @@ from backend.services.trade.trade_analysis import (
     validate_trade,
 )
 from backend.services.trade.trade_demo_source import trade_demo_enabled
-from backend.services.trade.trade_proposals import evaluate_candidates
+from backend.services.trade.trade_proposals import acceptability_read, evaluate_candidates
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
@@ -64,6 +64,16 @@ class RosterGuardOut(BaseModel):
     message: str
 
 
+class AcceptabilityOut(BaseModel):
+    """Would the OTHER side likely accept (§5/§6c)? A READ, not a gate — a trade
+    that's great for you but they'd reject is reported as a rejection, never a win."""
+    verdict: str             # "likely_accept" | "marginal" | "likely_reject"
+    their_net: float         # their contextual gain (drives the verdict)
+    overtake_flag: bool      # the trade would make their lineup stronger than yours
+    hedged: bool             # opponent-side data limited/insufficient → soft read
+    why: str                 # one-line, grounded in their roster
+
+
 class TradeAnalyzeResponse(BaseModel):
     my_team_id: str
     winner: str
@@ -79,6 +89,10 @@ class TradeAnalyzeResponse(BaseModel):
     roster_guard: RosterGuardOut
     rationale: str
     demo_mode: bool
+    # Additive (slice 5): the opponent-side acceptability read. Optional so the
+    # /ideas verdicts (which already cleared the band + carry their own edge
+    # payload) need no change.
+    acceptability: Optional[AcceptabilityOut] = None
 
 
 class TradeIdeasRequest(BaseModel):
@@ -175,7 +189,9 @@ def get_trade_proposals_agent():
     return TradeProposalsAgent()
 
 
-def _to_response(a: TradeAnalysis, demo: bool) -> TradeAnalyzeResponse:
+def _to_response(
+    a: TradeAnalysis, demo: bool, acceptability: Optional[AcceptabilityOut] = None,
+) -> TradeAnalyzeResponse:
     def out(p):
         return PlayerGroundingOut(
             id=p.canonical_player_id, name=p.name, position=p.position, side=p.side,
@@ -193,7 +209,7 @@ def _to_response(a: TradeAnalysis, demo: bool) -> TradeAnalyzeResponse:
             drop_recommendations=a.roster_guard.drop_recommendations,
             message=a.roster_guard.message,
         ),
-        rationale=a.rationale, demo_mode=demo,
+        rationale=a.rationale, demo_mode=demo, acceptability=acceptability,
     )
 
 
@@ -235,7 +251,18 @@ async def analyze(
     )
     analysis.rationale = await agent.explain_trade(analysis)
 
-    return _to_response(analysis, demo)
+    # 6. Acceptability READ (slice 5, §5/§6c) — would the other side accept it?
+    #    Additive, reuses the slice-4 edge band; hedges with the verdict's own
+    #    confidence. Never gates — it only annotates the verdict.
+    acc = acceptability_read(
+        state, values, body.my_team_id, body.give, body.get, hedged=analysis.hedged,
+    )
+    acceptability = AcceptabilityOut(
+        verdict=acc.verdict, their_net=acc.their_net, overtake_flag=acc.overtake_flag,
+        hedged=acc.hedged, why=acc.why,
+    )
+
+    return _to_response(analysis, demo, acceptability)
 
 
 @router.post("/ideas", response_model=TradeIdeasResponse)

@@ -245,6 +245,48 @@ async def test_balanced_swap_no_roster_warning(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ACCEPTABILITY READ (slice 5) — additive field + "you'd win, they'd reject"
+# ---------------------------------------------------------------------------
+async def test_response_is_additive_and_carries_acceptability(monkeypatch):
+    """The existing payload is unchanged; a new `acceptability` object is added."""
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    user = _make_user(tier="pro", credits=200)
+    _patch_loader(monkeypatch)
+    _wire(user)
+    try:
+        resp = await _post(_BODY)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    data = resp.json()
+    # existing fields still present + intact (additive change)
+    for f in ("winner", "fairness", "value_delta", "give_value", "get_value",
+              "confidence", "hedged", "roster_guard", "rationale", "demo_mode"):
+        assert f in data
+    acc = data["acceptability"]
+    assert set(acc) == {"verdict", "their_net", "overtake_flag", "hedged", "why"}
+    assert acc["verdict"] in {"likely_accept", "marginal", "likely_reject"}
+
+
+async def test_winning_trade_they_would_reject_is_not_a_win(monkeypatch):
+    """The fixture trade (give a 20, get a 90) is a clear win FOR ME — but a
+    robbery the opponent would reject. The verdict says winner=you while the
+    acceptability read says likely_reject; the read never rounds up to a win."""
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    user = _make_user(tier="pro", credits=200)
+    _patch_loader(monkeypatch)
+    _wire(user)
+    try:
+        resp = await _post(_BODY)
+    finally:
+        app.dependency_overrides.clear()
+    data = resp.json()
+    assert data["winner"] == "you"                       # great for me
+    assert data["acceptability"]["verdict"] == "likely_reject"
+    assert data["acceptability"]["their_net"] <= 0       # they lose value
+
+
+# ---------------------------------------------------------------------------
 # Guarded end-to-end on the REAL seeded demo league (skips in CI)
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(

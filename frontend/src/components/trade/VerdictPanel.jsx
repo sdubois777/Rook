@@ -7,7 +7,7 @@
  * reads as "lean, with a caveat", not a confident win. The UI never re-derives
  * or rounds a verdict — the deterministic backend value is the source of truth.
  */
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldAlert } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldAlert, Handshake, XCircle, Scale } from 'lucide-react'
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400', label: 'rising' },
@@ -53,6 +53,61 @@ function winnerLabel(v) {
   if (v.winner === 'you') return 'You win'
   if (v.winner === 'opponent') return 'You lose'
   return 'Even trade'
+}
+
+// Acceptability styling — the OTHER side's read. A "likely_reject" must read as a
+// clear caution (NOT a win), even when the your-side verdict above says "You win".
+const ACCEPT = {
+  likely_accept: {
+    Icon: Handshake, label: 'Likely to accept',
+    box: 'border-emerald-500/30 bg-emerald-500/[0.06]',
+    title: 'text-emerald-300', body: 'text-emerald-200/90',
+  },
+  marginal: {
+    Icon: Scale, label: 'May haggle',
+    box: 'border-amber-500/30 bg-amber-500/[0.06]',
+    title: 'text-amber-300', body: 'text-amber-200/90',
+  },
+  likely_reject: {
+    Icon: XCircle, label: 'Likely to reject',
+    box: 'border-red-500/40 bg-red-500/[0.07]',
+    title: 'text-red-300', body: 'text-red-200/90',
+  },
+}
+
+function AcceptabilitySection({ a }) {
+  if (!a) return null
+  const s = ACCEPT[a.verdict] || ACCEPT.marginal
+  const netSign = a.their_net > 0 ? '+' : ''
+  return (
+    <div className={`rounded-md border px-3 py-2.5 ${s.box}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <s.Icon size={16} className={`shrink-0 ${s.title}`} />
+          <span className={`text-sm font-semibold ${s.title}`}>{s.label}</span>
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">other side</span>
+          {a.hedged && (
+            <span className="rounded-full bg-amber-500/15 text-amber-300 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5">
+              tentative
+            </span>
+          )}
+        </div>
+        <div className="text-right text-xs text-slate-400 tabular-nums">
+          <span className="text-slate-300">their gain </span>
+          <span className={a.their_net > 0 ? 'text-emerald-400' : 'text-red-400'}>
+            {netSign}{a.their_net}
+          </span>
+        </div>
+      </div>
+      {a.why && <div className={`mt-1 text-xs ${s.body}`}>{a.why}</div>}
+      {a.overtake_flag && (
+        <div className="mt-1.5 flex items-start gap-1.5 text-xs text-red-300/90">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+          <span>Helps them more on the field — this could let their lineup overtake yours.</span>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function VerdictPanel({ verdict: v, className = '' }) {
@@ -125,6 +180,10 @@ export default function VerdictPanel({ verdict: v, className = '' }) {
             </div>
           </div>
         </div>
+
+        {/* Acceptability — the OTHER side's read, visually distinct from the
+            your-side verdict above. "Likely to reject" never reads as a win. */}
+        <AcceptabilitySection a={v.acceptability} />
 
         {/* Roster guard — only when triggered */}
         {v.roster_guard?.triggered && (
