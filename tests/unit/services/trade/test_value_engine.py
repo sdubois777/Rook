@@ -17,9 +17,13 @@ from backend.services.trade.league_state import (
 )
 from backend.services.trade.value_engine import (
     ValueTrend,
+    _PPG_ANCHORS,
     _played_weeks,
+    _scale_0_100,
     compute_player_value,
+    derive_anchors,
     evaluate_league,
+    season_ppg_by_position,
     usage_trend,
 )
 
@@ -293,3 +297,99 @@ def test_hot_but_unsustainable_is_not_credited_at_the_hot_rate():
     assert v.sell_high is True
     # level is tempered well below the ~17.5 recent hot form
     assert v.forward_ppg < v.recency_ppg - 3
+
+
+# ---------------------------------------------------------------------------
+# Pool-derived positional anchors (replacement / elite from the real pool)
+# ---------------------------------------------------------------------------
+def _pool(top, n, step):
+    """A descending season-ppg list of n players from `top` by `step`."""
+    return [round(top - i * step, 1) for i in range(n)]
+
+
+def test_derive_anchors_qb_replacement_is_higher_than_wr():
+    """The whole point: QB replacement (everyone starts 1) is legitimately higher
+    than WR replacement (deep position), so anchors reflect real positional depth."""
+    pools = {
+        "QB": _pool(27, 24, 0.8),   # 24 QBs, high floor
+        "RB": _pool(26, 60, 0.32),
+        "WR": _pool(25, 72, 0.27),  # deep WR pool
+        "TE": _pool(18, 24, 0.45),
+    }
+    a = derive_anchors(pools, teams=12)
+    assert a["QB"][0] > a["WR"][0]          # QB replacement higher than WR (the point)
+    for pos in ("QB", "RB", "WR", "TE"):
+        assert a[pos][1] > a[pos][0]        # elite > replacement everywhere
+        assert a[pos] != _PPG_ANCHORS[pos]  # actually derived, not the fallback
+
+
+def test_derive_anchors_falls_back_when_pool_too_sparse():
+    a = derive_anchors({"QB": [22, 19, 16]}, teams=12)  # 3 QBs « cutoff+band
+    assert a["QB"] == _PPG_ANCHORS["QB"]                # documented fallback
+
+
+def test_cross_position_same_relative_standing_reads_identically():
+    """A player at the same fractional position in his position's band reads the
+    SAME value regardless of position — the QB-vs-WR inconsistency fixed."""
+    anchors = {"QB": (16.0, 24.0), "WR": (9.0, 21.0)}
+    qb_mid = 16.0 + 0.5 * (24.0 - 16.0)   # 20.0
+    wr_mid = 9.0 + 0.5 * (21.0 - 9.0)     # 15.0
+    assert _scale_0_100(qb_mid, "QB", anchors) == 50.0
+    assert _scale_0_100(wr_mid, "WR", anchors) == 50.0  # identical, cross-position
+
+
+def test_lamar_class_startable_qb_not_crushed_under_derived_anchor():
+    """A genuinely startable mid QB (forward above the derived QB replacement)
+    reads a sane mid value — not collapsed to ~12/near-zero like the hardcoded
+    QB anchor did to a 15-16 ppg QB."""
+    anchors = {"QB": (16.0, 21.0), "RB": (6, 22), "WR": (9, 19), "TE": (9, 15)}
+    v = compute_player_value(
+        canonical_player_id="qb", name="Mid QB", position="QB",
+        weeks=_weeks([0.95] * 6, [0.0] * 6, [19] * 6), current_week=6,
+        anchors=anchors,
+    )
+    assert v.forward_value > 30          # sane starter, not near-zero
+
+
+def test_amon_ra_class_played_but_down_wr_stays_mid_scale():
+    anchors = {"QB": (16, 21), "RB": (6, 22), "WR": (9.0, 19.0), "TE": (9, 15)}
+    v = compute_player_value(
+        canonical_player_id="wr", name="Down WR", position="WR",
+        weeks=_weeks([0.8] * 6, [0.2] * 6, [15.8] * 6), current_week=6,
+        anchors=anchors,
+    )
+    assert 40 < v.forward_value < 85     # mid-scale, not broken by derivation
+
+
+def test_stud_stays_high_and_genuine_low_stays_low_under_derived_anchors():
+    anchors = {"QB": (16, 21), "RB": (6.0, 22.0), "WR": (9, 19), "TE": (9, 15)}
+    stud = compute_player_value(
+        canonical_player_id="cmc", name="Stud RB", position="RB",
+        weeks=_weeks([0.9] * 6, [0.2] * 6, [24] * 6), current_week=6, anchors=anchors,
+    )
+    assert stud.forward_value >= 95      # elite stays near the top
+    weak = compute_player_value(
+        canonical_player_id="weak", name="Deep RB", position="RB",
+        weeks=_weeks([0.2] * 6, [0.03] * 6, [5] * 6), current_week=6, anchors=anchors,
+    )
+    assert weak.forward_value < 10       # below replacement stays low
+
+
+def test_compute_player_value_without_anchors_uses_hardcoded_fallback():
+    """Direct calls (no anchors) keep the pre-derivation hardcoded behavior — so
+    the #158 calibration tests above are unaffected."""
+    v = compute_player_value(
+        canonical_player_id="r", name="Reg WR", position="WR",
+        weeks=_weeks([0.8] * 6, [0.2] * 6, [15.8] * 6), current_week=6,
+    )
+    # hardcoded WR (8, 23): (15.8-8)/15*100 ≈ 52
+    assert v.forward_value == pytest.approx(52.0, abs=1.0)
+
+
+def test_season_ppg_by_position_groups_rostered_players():
+    weekly = pd.concat([
+        _weeks([0.8] * 4, [0.2] * 4, [20] * 4).assign(canonical_player_id="a"),
+        _weeks([0.8] * 4, [0.2] * 4, [10] * 4).assign(canonical_player_id="b"),
+    ], ignore_index=True)
+    pools = season_ppg_by_position(weekly, {"a": "QB", "b": "QB"})
+    assert sorted(pools["QB"]) == [10.0, 20.0]

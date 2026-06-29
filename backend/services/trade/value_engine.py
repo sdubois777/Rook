@@ -27,10 +27,11 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
-# --- v1 anchors / thresholds (documented, position-relative) ----------------
-# Forward points-per-game (PPR) anchors per position: (replacement, elite) used
-# to scale forward_ppg → 0-100. v1 reuses the draft side's VORP/tier intuition:
-# value is points above positional replacement, normalised to the elite ceiling.
+# --- positional anchors (replacement / elite) -------------------------------
+# Anchors scale forward_ppg → 0-100 as points above positional REPLACEMENT,
+# normalised to the position's ELITE ceiling. Anchors are DERIVED from the
+# league's own player pool (see derive_anchors); the tuples below are the
+# documented FALLBACK used only when a position is too sparse to derive.
 _PPG_ANCHORS: dict[str, tuple[float, float]] = {
     "RB": (8.0, 24.0),
     "WR": (8.0, 23.0),
@@ -38,6 +39,23 @@ _PPG_ANCHORS: dict[str, tuple[float, float]] = {
     "QB": (14.0, 28.0),
 }
 _DEFAULT_ANCHOR = (6.0, 20.0)
+
+# League shape that defines REPLACEMENT via starter demand. Replacement = the
+# waiver floor: in a `LEAGUE_TEAMS`-team league each team starts
+# STARTERS_PER_POS[pos] (+ a share of FLEX_COUNT), so the best player just below
+# that league-wide starter cutoff is replacement-level (QB replacement is high —
+# everyone starts one; RB/WR replacement is deeper, reflecting real depth).
+# NOTE: this replacement-level / positional-demand computation IS the positional-
+# scarcity primitive the acceptability model will later consume — keep it shared.
+LEAGUE_TEAMS = 12
+STARTERS_PER_POS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1}
+FLEX_COUNT = 1
+# v1 FLEX assumption: the flex spot is filled by RB/WR (split evenly); TE is
+# rarely flexed. Tunable here so real leagues / the acceptability model reuse it.
+FLEX_SPLIT: dict[str, float] = {"RB": 0.5, "WR": 0.5, "TE": 0.0, "QB": 0.0}
+_ELITE_PCT = 0.95          # elite = 95th percentile of the position pool
+_REPL_BAND = 5             # replacement = mean of this many waiver-tier players below the cutoff
+_MIN_POOL_MARGIN = _REPL_BAND  # need cutoff + a full band to derive, else fall back
 
 # Usage-trend threshold: composite (snap%+target share)/2 change, last-2 vs
 # prior-3. 0.045 ≈ a ~5–9 point swing in snaps or target share.
@@ -242,12 +260,63 @@ def expected_ppg_from_volume(df_played: pd.DataFrame) -> float:
     return round(tpg * _PTS_PER_TARGET + cpg * _PTS_PER_CARRY, 2)
 
 
-def _scale_0_100(ppg: float, position: str) -> float:
-    repl, elite = _PPG_ANCHORS.get(position, _DEFAULT_ANCHOR)
+def _scale_0_100(ppg: float, position: str, anchors: Optional[dict] = None) -> float:
+    repl, elite = (anchors or _PPG_ANCHORS).get(position, _DEFAULT_ANCHOR)
     if elite <= repl:
         return 0.0
     val = (ppg - repl) / (elite - repl) * 100.0
     return round(max(0.0, min(100.0, val)), 1)
+
+
+def _starter_demand(position: str, teams: int) -> float:
+    """League-wide starters at a position = teams·starters + teams·flex·flex_share."""
+    return (teams * STARTERS_PER_POS.get(position, 0)
+            + teams * FLEX_COUNT * FLEX_SPLIT.get(position, 0.0))
+
+
+def season_ppg_by_position(weekly_usage, roster_positions: dict[str, str]) -> dict[str, list[float]]:
+    """{position: [season_ppg, …]} over the ROSTERED players (the league's player
+    universe), from the per-week layer. Season ppg = mean PPR over played weeks."""
+    out: dict[str, list[float]] = {}
+    if weekly_usage is None or getattr(weekly_usage, "empty", True):
+        return out
+    for pid, grp in weekly_usage.groupby("canonical_player_id"):
+        pos = roster_positions.get(pid)
+        if pos not in ("QB", "RB", "WR", "TE"):
+            continue
+        out.setdefault(pos, []).append(float(grp["fantasy_points_ppr"].mean()))
+    return out
+
+
+def derive_anchors(
+    season_ppg_by_pos: dict[str, list[float]],
+    *,
+    teams: int = LEAGUE_TEAMS,
+) -> dict[str, tuple[float, float]]:
+    """Derive {position: (replacement_ppg, elite_ppg)} from the pool's season-ppg
+    distribution. Replacement = a small band around the starter-demand cutoff
+    (the best player below the league-wide starter line); elite = the 95th
+    percentile. Falls back to the hardcoded anchor for any position too sparse
+    to derive or whose derived band is degenerate."""
+    import numpy as np
+
+    out: dict[str, tuple[float, float]] = {}
+    for pos in ("QB", "RB", "WR", "TE"):
+        vals = sorted((v for v in season_ppg_by_pos.get(pos, []) if v is not None),
+                      reverse=True)
+        cutoff = int(round(_starter_demand(pos, teams)))
+        if len(vals) < cutoff + _MIN_POOL_MARGIN:
+            out[pos] = _PPG_ANCHORS[pos]          # too sparse → documented fallback
+            continue
+        # Replacement = the WAIVER TIER: the best freely-available players, i.e.
+        # the band of `_REPL_BAND` players ranked just BELOW the starter cutoff
+        # (a band, not the single marginal starter, for stability). Elite = 95th
+        # percentile of the position pool.
+        lo, hi = cutoff, min(len(vals), cutoff + _REPL_BAND)
+        repl = round(sum(vals[lo:hi]) / (hi - lo), 1)
+        elite = round(float(np.quantile(vals, _ELITE_PCT)), 1)
+        out[pos] = (repl, elite) if elite > repl else _PPG_ANCHORS[pos]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +331,7 @@ def compute_player_value(
     current_week: int,
     prior_projection_ppg: Optional[float] = None,
     schedule_modifier: float = 0.0,
+    anchors: Optional[dict] = None,
 ) -> InSeasonValue:
     """Derive one player's in-season value from their per-week rows.
 
@@ -277,7 +347,7 @@ def compute_player_value(
         ppg = float(prior_projection_ppg or 0.0)
         return InSeasonValue(
             canonical_player_id=canonical_player_id, name=name, position=position,
-            forward_value=_scale_0_100(ppg + schedule_modifier, position),
+            forward_value=_scale_0_100(ppg + schedule_modifier, position, anchors),
             value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False,
             why="no in-season data yet; preseason prior only",
             games_played=0, usage_recent=0.0, usage_prior=0.0, usage_delta=0.0,
@@ -334,7 +404,7 @@ def compute_player_value(
     total_w = in_w + prior_w
     forward_ppg = (in_w * in_season_ppg + prior_w * prior_component) / (total_w or 1.0)
     forward_ppg = round(forward_ppg, 2)
-    forward_value = _scale_0_100(forward_ppg + schedule_modifier, position)
+    forward_value = _scale_0_100(forward_ppg + schedule_modifier, position, anchors)
 
     if confidence is Confidence.INSUFFICIENT:
         # Too little history to claim anything — don't fabricate a trend/flag.
@@ -439,6 +509,15 @@ def evaluate_league(
         pid: grp for pid, grp in weekly_usage.groupby("canonical_player_id")
     } if not weekly_usage.empty else {}
 
+    # Derive positional anchors ONCE from this league's rostered pool (the player
+    # universe LeagueState provides), so replacement/elite reflect real depth
+    # rather than guesses. Falls back to hardcoded per-position when too sparse.
+    roster_positions = {
+        rp.canonical_player_id: rp.position
+        for team in league_state.teams for rp in team.roster
+    }
+    anchors = derive_anchors(season_ppg_by_position(weekly_usage, roster_positions))
+
     out: dict[str, InSeasonValue] = {}
     for team in league_state.teams:
         for rp in team.roster:
@@ -455,5 +534,6 @@ def evaluate_league(
                 current_week=league_state.week,
                 prior_projection_ppg=priors.get(rp.canonical_player_id),
                 schedule_modifier=schedule_modifiers.get(rp.canonical_player_id, 0.0),
+                anchors=anchors,
             )
     return out
