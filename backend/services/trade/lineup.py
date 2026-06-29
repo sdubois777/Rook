@@ -124,3 +124,10 @@ def optimal_lineup(
     return OptimalLineup(
         starters=tuple(starters), strength=strength, slots=tuple(slot_assign),
     )
+
+
+def roster_strength(roster: list[LineupPlayer], rules: Optional[LineupRules] = None) -> float:
+    """A roster's team strength = its optimal STARTING-lineup strength (§4:
+    fantasy is won by who you start). Thin wrapper over optimal_lineup; bench
+    depth is explicitly a v2 refinement (see the design's deferred ledger)."""
+    return optimal_lineup(roster, rules).strength
