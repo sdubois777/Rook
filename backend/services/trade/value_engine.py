@@ -59,11 +59,29 @@ _FULL_INSEASON_GAMES = 5.0
 # Extra discount on the prior's weight when the role has decayed (name-bias guard).
 _GUARD_PRIOR_DISCOUNT = 0.3
 
+# --- ragged-history contract (irregular player histories) -------------------
+# A real trend needs a 2-game recent window AND a non-empty prior window, so the
+# minimum for FULL confidence is 4 played games (2 recent + ≥2 prior; at 5+ the
+# prior window fills to the full 3). Below 2 games no trend can be formed at all.
+_MIN_TREND_GAMES = 2     # < this → INSUFFICIENT (no trend, flags suppressed)
+_FULL_TREND_GAMES = 4    # ≥ this (and same team) → FULL confidence
+# Trade trends compare across the last-5 played-game window; a team change inside
+# it means the two halves are different offenses → widen uncertainty.
+_TREND_WINDOW = 5
+
 
 class ValueTrend(str, Enum):
     RISING = "rising"
     FALLING = "falling"
     STABLE = "stable"
+
+
+class Confidence(str, Enum):
+    """Data-sufficiency of the in-season read, so a downstream agent can soften
+    verdicts on thin/irregular history."""
+    FULL = "full"            # enough same-team played games for a real trend
+    LIMITED = "limited"      # partial window or a team change in the window
+    INSUFFICIENT = "insufficient"  # < 2 played games — no trend at all
 
 
 @dataclass
@@ -90,27 +108,78 @@ class InSeasonValue:
     prior_projection: Optional[float]
     prior_weight: float
     name_bias_guard_applied: bool
+    # --- ragged-history contract ---
+    confidence: Confidence = Confidence.FULL
+    confidence_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
 # helpers (each independently testable)
 # ---------------------------------------------------------------------------
+def _rate(val) -> float:
+    """Coerce a share/rate to a clean [0,1] float; NaN/None/garbage → 0.0.
+    (``float('nan') or 0.0`` returns nan because nan is truthy — must guard.)"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0.0
+    try:
+        return max(0.0, min(1.0, float(val)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _usage_composite(snap_pct: float, target_share: float) -> float:
     """Headline usage = mean of snap share and target share (both 0-1). For a QB
     target_share≈0, so the composite is snap-dominated — but the TREND (delta)
     still tracks snap movement, which is all we need for trajectory."""
-    return (float(snap_pct or 0.0) + float(target_share or 0.0)) / 2.0
+    return (_rate(snap_pct) + _rate(target_share)) / 2.0
 
 
 def _played_weeks(weeks: pd.DataFrame, current_week: int) -> pd.DataFrame:
-    """Rows for weeks <= current_week, oldest→newest, with a usage composite."""
+    """Rows for weeks <= current_week, oldest→newest, with a usage composite.
+
+    Each input row is one game the player PLAYED — byes/inactives produce no row
+    in the #149 layer and are therefore skipped, never counted as 0-usage. We do
+    NOT reindex to calendar weeks; the trend operates on games played.
+    """
     df = weeks[weeks["week"] <= current_week].copy()
     df = df.sort_values("week")
+    # Defensive numeric coercion so NaN/None can't poison the math downstream.
+    for col in ("fantasy_points_ppr", "targets", "carries"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     df["_usage"] = df.apply(
         lambda r: _usage_composite(r.get("snap_pct", 0.0), r.get("target_share", 0.0)),
         axis=1,
     )
     return df
+
+
+def _team_changed_in_window(df_played: pd.DataFrame, window: int = _TREND_WINDOW) -> bool:
+    """True if the player was on more than one nfl_team across the trend window.
+    If the per-week rows carry no team column, we can't detect it → False."""
+    col = "nfl_team" if "nfl_team" in df_played.columns else (
+        "recent_team" if "recent_team" in df_played.columns else None
+    )
+    if col is None:
+        return False
+    teams = [t for t in df_played.tail(window)[col].tolist()
+             if t is not None and not (isinstance(t, float) and pd.isna(t))]
+    return len(set(teams)) > 1
+
+
+def _assess_confidence(games: int, team_changed: bool) -> tuple[Confidence, str]:
+    """Grade the in-season read by how much (and how clean) the history is."""
+    if games < _MIN_TREND_GAMES:
+        return Confidence.INSUFFICIENT, f"only {games} played game(s) — no trend"
+    if team_changed:
+        return Confidence.LIMITED, (
+            f"team change within last-{_TREND_WINDOW} window — trajectory not "
+            f"cleanly computable across a mid-window team change (cross-team "
+            f"share denominator)"
+        )
+    if games < _FULL_TREND_GAMES:
+        return Confidence.LIMITED, f"{games} played games — partial trend window"
+    return Confidence.FULL, f"{games} played games"
 
 
 def usage_trend(df_played: pd.DataFrame) -> tuple[float, float, float, ValueTrend]:
@@ -198,9 +267,15 @@ def compute_player_value(
             recency_ppg=0.0, expected_ppg=0.0, opportunity_gap=0.0,
             sustainable=True, forward_ppg=round(ppg, 2),
             schedule_modifier=schedule_modifier,
-            prior_projection=prior_projection_ppg, prior_weight=1.0,
+            prior_projection=prior_projection_ppg,
+            prior_weight=1.0 if prior_projection_ppg is not None else 0.0,
             name_bias_guard_applied=False,
+            confidence=Confidence.INSUFFICIENT,
+            confidence_reason="no in-season games played",
         )
+
+    team_changed = _team_changed_in_window(df)
+    confidence, confidence_reason = _assess_confidence(games, team_changed)
 
     u_recent, u_prior, u_delta, trend = usage_trend(df)
     form = recency_ppg(df)
@@ -235,11 +310,28 @@ def compute_player_value(
     forward_ppg = round(forward_ppg, 2)
     forward_value = _scale_0_100(forward_ppg + schedule_modifier, position)
 
-    buy_low, sell_high, why = _flags_and_why(
-        position=position, trend=trend, u_recent=u_recent, u_prior=u_prior,
-        u_delta=u_delta, form=form, expected=expected, gap=gap,
-        unsustainable_hot=unsustainable_hot, guard=guard,
-    )
+    if confidence is Confidence.INSUFFICIENT:
+        # Too little history to claim anything — don't fabricate a trend/flag.
+        trend = ValueTrend.STABLE
+        buy_low = sell_high = False
+        why = confidence_reason
+    elif team_changed:
+        # Team change isn't too-LITTLE signal, it's WRONG signal: the usage trend
+        # diffs two different offenses (the per-week target-share denominator is a
+        # different team's targets before vs after the move), so the share delta
+        # is not a real trajectory. We decline to assert an actionable buy/sell we
+        # can't honestly derive — but, unlike insufficient, confidence stays
+        # `limited` and value_trend keeps its RAW direction as a transparency
+        # sub-signal. Recovering a true cross-team trajectory is the documented v2
+        # cross-team-share-normalization item.
+        buy_low = sell_high = False
+        why = confidence_reason
+    else:
+        buy_low, sell_high, why = _flags_and_why(
+            position=position, trend=trend, u_recent=u_recent, u_prior=u_prior,
+            u_delta=u_delta, form=form, expected=expected, gap=gap,
+            unsustainable_hot=unsustainable_hot, guard=guard,
+        )
 
     return InSeasonValue(
         canonical_player_id=canonical_player_id, name=name, position=position,
@@ -251,6 +343,7 @@ def compute_player_value(
         schedule_modifier=schedule_modifier, prior_projection=prior_projection_ppg,
         prior_weight=round(prior_w / (total_w or 1.0), 3),
         name_bias_guard_applied=guard,
+        confidence=confidence, confidence_reason=confidence_reason,
     )
 
 
