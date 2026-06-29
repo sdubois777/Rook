@@ -88,8 +88,8 @@ def test_likely_reject_when_trade_is_a_robbery_for_you():
 # ---------------------------------------------------------------------------
 def test_marginal_when_their_net_is_positive_but_below_comfort():
     state, values = _league(ME_STRONG, THEM)
-    # rm4 -> wt4: their_net 2.6 (0 < x <= 3.0) — a modest upgrade for them.
-    acc = acceptability_read(state, values, "me", ["rm4"], ["wt4"], hedged=False)
+    # rm5 -> wt4: their_net 1.1 (0 < x <= comfort) — a modest upgrade for them.
+    acc = acceptability_read(state, values, "me", ["rm5"], ["wt4"], hedged=False)
     assert acc.verdict == ACCEPT_MARGINAL
     assert 0 < acc.their_net <= _COMFORT_THRESHOLD
     assert "haggle" in acc.why

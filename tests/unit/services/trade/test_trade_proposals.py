@@ -126,7 +126,7 @@ def test_never_pads_when_nothing_clears():
                 ("ot", "TE", 4), ("obw", "WR", 3)]
     state, values = _league(my_spec, opp_spec)
     out = evaluate_candidates(state, values, "me",
-                              enumerate_candidates(state, "me"), roster_limit=16)
+                              enumerate_candidates(state, values, "me"), roster_limit=16)
     assert out == []        # first-class empty — not padded/loosened
 
 
@@ -150,8 +150,14 @@ def test_cap_at_five():
     assert len(out) <= 5
 
 
-def test_enumerate_candidates_unchanged_exhaustive_one_for_one():
+def test_enumerate_candidates_is_now_targeted_need_surplus():
+    # Slice 6 replaced exhaustive 1-for-1 with need/surplus targeting: my surplus
+    # RBs (rm4/rm5) ↔ their need (RB); their surplus WRs (wt5/wt6) ↔ my need (WR).
+    # give-pool {rm4,rm5} × get-pool {wt5,wt6}, shapes 1-2 per side = 3×3 = 9.
     state, values = _league(ME_STRONG, THEM)
-    cands = enumerate_candidates(state, "me")
-    assert len(cands) == 9 * 10         # 9 of my players × 10 of theirs (1-for-1)
-    assert all(len(c.give_ids) == 1 and len(c.get_ids) == 1 for c in cands)
+    cands = enumerate_candidates(state, values, "me")
+    assert len(cands) == 9
+    assert all(c.counterparty_team_id == "opp" for c in cands)
+    # only the matched surplus pieces appear — never their starters.
+    assert {p for c in cands for p in c.give_ids} == {"rm4", "rm5"}
+    assert {p for c in cands for p in c.get_ids} == {"wt5", "wt6"}

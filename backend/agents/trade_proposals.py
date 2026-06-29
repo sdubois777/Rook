@@ -116,4 +116,4 @@ class TradeProposalsAgent(BaseAgent):
         except Exception as exc:
             logger.warning("trade candidate generation failed: %s", exc)
 
-        return enumerate_candidates(state, my_team_id)
+        return enumerate_candidates(state, values, my_team_id)

@@ -116,6 +116,8 @@ Carried-forward known simplifications, in one place:
 - **Positional-scarcity-aware drop recommendations** in the analyzer (slice 3) — v1 drops by raw `forward_value`.
 - **Bye-week context** in acceptability — `bye_week` is currently unpopulated; wire only if the model ends up wanting it.
 - **Value-blend calibration** (`_RECENT_VS_SEASON_WEIGHT = 0.5`, #158) — provisional, calibrate against the real league.
+- **Comfort threshold** (`_COMFORT_THRESHOLD`, §3 cond. 2) — calibrated v1 default **2.0** (slice 6 BUILD 0). At 3.0, against the real 12-team league only equal 1-for-1 swaps cleared; 2.0 loosens slightly so genuine surplus-for-need consolidations surface. Tunable; recalibrate as real output accumulates.
+- **Need/surplus enumeration tunables** (slice 6, §6d): `_HELP_EPSILON = 1.0` (a piece must add this much contextual value to the destination to be proposed — screens junk-padding), `_NEED_REL_FRACTION = 0.6` (a starter below this fraction of the team's median starter is a need), `_MATCH_POOL_CAP = 5`, `_MAX_PER_SIDE = 3` (hard cap — no 4+-per-side trades). v1 defaults; calibrate on real output.
 - **`optimal_lineup` greedy is optimal for single-flex-from-a-superset only** (§2.1); superflex / multi-flex needs an assignment solver — guard or solve when a non-single-flex real league is in scope.
 
 **Resolved / superseded:**

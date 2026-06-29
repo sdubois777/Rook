@@ -180,10 +180,11 @@ async def test_demo_bypass_runs_without_gate(monkeypatch):
 # ---------------------------------------------------------------------------
 # NEVER-PAD through the route
 # ---------------------------------------------------------------------------
-async def test_route_never_pads_when_only_one_candidate_clears(monkeypatch):
-    """The agent proposes five candidates (all my surplus RB for one of their
-    WRs), but only the surplus-for-surplus swap clears the edge band — the
-    route returns exactly one, not a padded list."""
+async def test_route_never_pads_to_five_when_fewer_clear(monkeypatch):
+    """The agent proposes five candidates (my surplus RB for each of their WRs),
+    but only the surplus-for-surplus swaps clear the edge band — rm4↔wt5 (their
+    +3.7) and rm4↔wt4 (their +2.6, comfortable at the calibrated 2.0 threshold).
+    The route returns exactly those two, NOT a padded list of five."""
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
     user = _make_user(tier="pro", credits=200)
     _patch_loader(monkeypatch, _fixture(ME, THEM))
@@ -194,8 +195,8 @@ async def test_route_never_pads_when_only_one_candidate_clears(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     data = resp.json()
-    assert len(data["proposals"]) == 1            # only rm4↔wt5 clears; NOT padded
-    assert data["proposals"][0]["counterparty_team_name"] == "Rivals"
+    assert len(data["proposals"]) == 2            # only wt5/wt4 clear; NOT padded to 5
+    assert all(p["counterparty_team_name"] == "Rivals" for p in data["proposals"])
 
 
 async def test_route_empty_returns_no_clear_trade_message(monkeypatch):

@@ -13,13 +13,20 @@ conditions, so "no clear trade right now" is the common, correct outcome.
 """
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 from backend.services.trade.contextual import contextual_value
 from backend.services.trade.league_state import LeagueState, TeamState
-from backend.services.trade.lineup import LineupPlayer
+from backend.services.trade.lineup import (
+    DEFAULT_LINEUP_RULES,
+    LineupPlayer,
+    LineupRules,
+    optimal_lineup,
+)
 from backend.services.trade.overtake import overtake_guard
 from backend.services.trade.trade_analysis import (
+    DEFAULT_ROSTER_LIMIT,
     TradeAnalysis,
     analyze_trade,
     validate_trade,
@@ -30,8 +37,25 @@ MAX_PROPOSALS = 5
 
 # Condition 2 (Fork 3a): the opponent must improve COMFORTABLY, not by a
 # rounding-error margin they'd haggle over. Named tunable constant (contextual-
-# value points; the 0-100 forward_value scale). v1 default — Stephen calibrates.
-_COMFORT_THRESHOLD = 3.0
+# value points; the forward_value scale). CALIBRATED v1 default (§8 ledger):
+# at 3.0, against the real 12-team league only equal 1-for-1 swaps cleared; 2.0
+# loosens slightly so genuine surplus-for-need consolidations surface.
+_COMFORT_THRESHOLD = 2.0
+
+# Targeted-enumeration bounds (slice 6, §6d/§6e). HARD CAP 3 players per side
+# (Stephen: past 3-for-3 reeks of desperation / nobody accepts). The matched-pool
+# cap bounds the combinatorial space — only need/surplus-matched pieces are ever
+# combined, and at most this many per side.
+_MAX_PER_SIDE = 3
+_MATCH_POOL_CAP = 5
+# A dedicated starter weaker than this fraction of the team's MEDIAN starter is a
+# fixable weakness → that position is a NEED (scale-free, relative to the roster).
+_NEED_REL_FRACTION = 0.6
+# A piece only joins a side's pool if it adds at least this much CONTEXTUAL value
+# to the destination roster — i.e. it plausibly helps that side. Screens out
+# deep-bench junk that would otherwise pad multi-player trades with zero-value
+# extra players (same your_net/their_net, more bodies). Tunable.
+_HELP_EPSILON = 1.0
 
 
 @dataclass(frozen=True)
@@ -155,23 +179,145 @@ def acceptability_read(
     return Acceptability(verdict, edge.their_net, overtake_flag, hedged, why)
 
 
-def enumerate_candidates(state: LeagueState, my_team_id: str) -> list[Candidate]:
-    """Deterministic fallback search: every 1-for-1 swap between my roster and
-    each opponent's roster. Plausibility (need/surplus targeting) is the LLM's
-    job; the edge-band gate is what actually decides what surfaces, so an
-    exhaustive 1-for-1 enumeration is a safe, non-random fallback."""
+@dataclass(frozen=True)
+class RosterAnalysis:
+    """Per-roster need/surplus (slice 6 BUILD 1, §6d) — the targeting primitive.
+    SURPLUS = startable depth the lineup doesn't need (players outside the optimal
+    starting lineup, so adding them back wouldn't improve it — low contextual
+    value to their OWN team). NEED = positions the roster is thin/weak at."""
+    team_id: str
+    surplus_ids: tuple[str, ...]   # non-starters, highest forward_value first
+    needs: frozenset[str]          # positions where the team is thin/weak
+
+
+def _slot_position(label: str) -> str:
+    """'WR2' -> 'WR', 'QB' -> 'QB', 'FLEX' -> 'FLEX'."""
+    return "".join(ch for ch in label if not ch.isdigit())
+
+
+def analyze_roster(
+    team: TeamState,
+    values: dict[str, InSeasonValue],
+    rules: LineupRules | None = None,
+) -> RosterAnalysis:
+    """Derive need + surplus for one roster, reusing optimal_lineup (§6d). A player
+    is SURPLUS if he's not in the optimal starting lineup (he doesn't improve it).
+    A position is a NEED if a dedicated slot is empty (thin) or its weakest starter
+    is weak relative to the team's own starters (a low-value starter to upgrade)."""
+    rules = rules or DEFAULT_LINEUP_RULES
+    roster = _lineup_roster(team, values)
+    lineup = optimal_lineup(roster, rules)
+    starter_ids = {p.player_id for p in lineup.starters}
+
+    surplus = sorted(
+        (p for p in roster if p.player_id not in starter_ids),
+        key=lambda p: (-p.forward_value, p.player_id),
+    )
+
+    needs: set[str] = set()
+    # Thin: a dedicated starting slot the roster couldn't fill.
+    for label, pid in lineup.slots:
+        pos = _slot_position(label)
+        if pid is None and pos in rules.slots:
+            needs.add(pos)
+    # Weak: a dedicated starter well below the team's median starter value.
+    starter_fvs = sorted(p.forward_value for p in lineup.starters)
+    if starter_fvs:
+        median = starter_fvs[len(starter_fvs) // 2]
+        for pos in rules.slots:
+            at_pos = [p.forward_value for p in lineup.starters if p.position == pos]
+            if at_pos and min(at_pos) < _NEED_REL_FRACTION * median:
+                needs.add(pos)
+
+    return RosterAnalysis(
+        team.team_id, tuple(p.player_id for p in surplus), frozenset(needs),
+    )
+
+
+def _can_fit(size: int, out_n: int, in_n: int, limit: int) -> bool:
+    """Can a roster of ``size`` give ``out_n`` and receive ``in_n`` without
+    overfilling past ``limit`` — possibly by dropping kept players? Receiving
+    fewer than you give (in_n <= out_n) is always legal; otherwise the overflow
+    must be absorbable by dropping non-traded players."""
+    after = size - out_n + in_n
+    if after <= limit:
+        return True
+    droppable = size - out_n          # kept players that could be dropped
+    return (after - limit) <= droppable
+
+
+def _both_sides_fit(
+    my_size: int, opp_size: int, give_n: int, get_n: int, limit: int,
+) -> bool:
+    """Slot legality on BOTH sides (slice 6 BUILD 3, §6d). My side receives get_n
+    and gives give_n; the opponent's the mirror. An uneven trade only the OTHER
+    side can't fit is just as illegal as one I can't."""
+    return (
+        _can_fit(my_size, give_n, get_n, limit)
+        and _can_fit(opp_size, get_n, give_n, limit)
+    )
+
+
+def enumerate_candidates(
+    state: LeagueState,
+    values: dict[str, InSeasonValue],
+    my_team_id: str,
+    *,
+    roster_limit: int = DEFAULT_ROSTER_LIMIT,
+    rules: LineupRules | None = None,
+) -> list[Candidate]:
+    """Need/surplus-TARGETED candidate generation (slice 6 BUILD 2, §6d/§6e),
+    replacing the old exhaustive 1-for-1 enumeration. For each opponent, match MY
+    surplus -> THEIR need and THEIR surplus -> MY need, then build trades that move
+    surplus-for-need in BOTH directions: shapes 1-to-3 players per side, even AND
+    uneven, HARD-capped at 3 (no 4+). Only need/surplus-matched pieces are ever
+    combined and the matched pool is capped, so the candidate space stays bounded
+    (orders of magnitude below all-subsets). The edge-band gate still judges every
+    candidate — this only decides WHICH get generated, never whether they surface."""
+    rules = rules or DEFAULT_LINEUP_RULES
     my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
     if my_team is None:
         return []
+    me = analyze_roster(my_team, values, rules)
+    my_size = len(my_team.roster)
+    my_roster_lp = _lineup_roster(my_team, values)
+
+    def _lp(pid: str) -> LineupPlayer:
+        v = values[pid]
+        return LineupPlayer(pid, v.position, v.forward_value)
+
     out: list[Candidate] = []
     for opp in state.teams:
         if opp.team_id == my_team_id:
             continue
-        for mp in my_team.roster:
-            for op in opp.roster:
-                out.append(Candidate(
-                    (mp.canonical_player_id,), (op.canonical_player_id,), opp.team_id,
-                ))
+        them = analyze_roster(opp, values, rules)
+        their_roster_lp = _lineup_roster(opp, values)
+        # MY surplus at a position THEY need AND that materially helps THEM —
+        # capped. The help screen drops junk that would pad multi-player trades.
+        give_pool = [
+            pid for pid in me.surplus_ids
+            if pid in values and values[pid].position in them.needs
+            and contextual_value(_lp(pid), their_roster_lp, rules) > _HELP_EPSILON
+        ][:_MATCH_POOL_CAP]
+        # THEIR surplus at a position I need AND that materially helps ME — capped.
+        get_pool = [
+            pid for pid in them.surplus_ids
+            if pid in values and values[pid].position in me.needs
+            and contextual_value(_lp(pid), my_roster_lp, rules) > _HELP_EPSILON
+        ][:_MATCH_POOL_CAP]
+        if not give_pool or not get_pool:
+            continue  # no two-sided surplus-for-need fit with this opponent
+
+        opp_size = len(opp.roster)
+        for give_n in range(1, _MAX_PER_SIDE + 1):
+            for get_n in range(1, _MAX_PER_SIDE + 1):
+                if get_n > len(get_pool) or give_n > len(give_pool):
+                    continue
+                if not _both_sides_fit(my_size, opp_size, give_n, get_n, roster_limit):
+                    continue
+                for give in itertools.combinations(give_pool, give_n):
+                    for get in itertools.combinations(get_pool, get_n):
+                        out.append(Candidate(tuple(give), tuple(get), opp.team_id))
     return out
 
 
