@@ -8,13 +8,17 @@ READ, not a gate — every scenario below is evaluated, none is filtered out.
 """
 from __future__ import annotations
 
+import backend.services.trade.trade_proposals as tp
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
 from backend.services.trade.trade_proposals import (
     ACCEPT_LIKELY,
     ACCEPT_MARGINAL,
     ACCEPT_REJECT,
     _LINEUP_GAIN_THRESHOLD,
+    _MAINTAIN_TOL,
+    _lineup_roster,
     acceptability_read,
+    evaluate_edge_band,
 )
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
@@ -63,9 +67,9 @@ def test_likely_accept_when_their_lineup_improves():
     # RB-thin opponent → their lineup improves comfortably.
     acc = acceptability_read(state, values, "me", ["rm4"], ["wt5"], hedged=False)
     assert acc.verdict == ACCEPT_LIKELY
-    assert acc.their_lineup_gain >= _LINEUP_GAIN_THRESHOLD
+    assert acc.their_lineup_gain > _MAINTAIN_TOL   # they clearly improve
     assert acc.overtake_flag is False             # I stay stronger on the field
-    assert "need" in acc.why                      # grounded in their roster
+    assert "improves" in acc.why                   # grounded in their roster
 
 
 # ---------------------------------------------------------------------------
@@ -81,23 +85,90 @@ def test_likely_reject_when_trade_is_a_robbery_for_you():
     state, values = _league(me, them)
     acc = acceptability_read(state, values, "me", ["scrub"], ["stud"], hedged=False)
     assert acc.verdict == ACCEPT_REJECT
-    assert acc.their_lineup_gain <= 0              # their lineup falls
-    assert "little" in acc.why                     # honest: no value to them
+    assert acc.their_lineup_gain < -_MAINTAIN_TOL   # their lineup falls below the maintain bar
+    assert "drops" in acc.why                       # honest: it guts their lineup
 
 
 # ---------------------------------------------------------------------------
-# MARGINAL — small lineup improvement, below the threshold → they may haggle
+# CONSISTENCY (headline) — a trade where the opponent MODESTLY improves at fair
+# value is now likely_accept (was marginal/reject under the old >=5 bar), and the
+# proposal gate + the analyzer read AGREE on it (the Bijan-class fix, #174 align).
 # ---------------------------------------------------------------------------
-def test_marginal_when_their_lineup_barely_improves():
-    # Give them a modest surplus RB (10) — their RB-thin lineup (9, 7) improves only
-    # a little (a ~3 ppg bump), below the threshold → marginal.
+def test_modest_fair_improvement_is_accept_and_agrees_with_gate():
+    # Give them a modest surplus RB (10) — their RB-thin lineup improves a little
+    # (~1 ppg, below the old 5 bar) AND it's fair value. Maintain + fair → accept.
     me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
           ("rmid", "RB", 10), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
     state, values = _league(me, THEM)
     acc = acceptability_read(state, values, "me", ["rmid"], ["wt6"], hedged=False)
+    assert acc.verdict == ACCEPT_LIKELY                  # maintain+fair → accept (was marginal)
+    assert 0 < acc.their_lineup_gain < _LINEUP_GAIN_THRESHOLD   # modest, below the old bar
+    # The proposal gate and the analyzer agree: this trade CLEARS the gate too.
+    edge = evaluate_edge_band(_lineup_roster(state.teams[0], values),
+                              _lineup_roster(state.teams[1], values), ["rmid"], ["wt6"], roster_limit=16)
+    assert edge.clears is True
+
+
+def test_pure_lateral_is_marginal():
+    # Give a low RB (6) that doesn't crack their RB-thin lineup (9,7) for a benched
+    # WR — their lineup is unchanged (~0, within the maintain band) and it's fair →
+    # marginal (a lateral they may not jump at), not a clear accept.
+    me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
+          ("rlow", "RB", 6), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
+    state, values = _league(me, THEM)
+    acc = acceptability_read(state, values, "me", ["rlow"], ["wt6"], hedged=False)
     assert acc.verdict == ACCEPT_MARGINAL
-    assert 0 < acc.their_lineup_gain < _LINEUP_GAIN_THRESHOLD
-    assert "haggle" in acc.why
+    assert -_MAINTAIN_TOL <= acc.their_lineup_gain <= _MAINTAIN_TOL
+    assert "lateral" in acc.why
+
+
+# ---------------------------------------------------------------------------
+# REVERSE-FLEECE — opponent's lineup MAINTAINS but they'd hand over far more
+# value than they get → likely_reject (value-fairness, same as the gate's cond 3).
+# ---------------------------------------------------------------------------
+def test_reverse_fleece_is_labeled_reject():
+    # Acquire a startable bench WR (44, benched on a WR-loaded opp) for a junk QB
+    # (5). Their lineup maintains (he was benched) but ratio 8.8 → not fair → reject.
+    me = [("q", "QB", 20), ("r1", "RB", 22), ("r2", "RB", 20), ("w1", "WR", 16),
+          ("w2", "WR", 14), ("w3", "WR", 8), ("t", "TE", 15), ("junkqb", "QB", 5)]
+    opp = [("oq", "QB", 19), ("orb1", "RB", 16), ("orb2", "RB", 14),
+           ("ow1", "WR", 50), ("ow2", "WR", 48), ("ow3", "WR", 46), ("ow4", "WR", 45),
+           ("mclaurin", "WR", 44), ("ote", "TE", 13)]
+    state, values = _league(me, opp)
+    acc = acceptability_read(state, values, "me", ["junkqb"], ["mclaurin"], hedged=False)
+    assert acc.verdict == ACCEPT_REJECT
+    assert acc.their_lineup_gain >= -_MAINTAIN_TOL    # their lineup MAINTAINS...
+    assert "value" in acc.why                          # ...but it's a value fleece
+
+
+# ---------------------------------------------------------------------------
+# ONE SOURCE OF TRUTH — the analyzer label and the gate read the SAME constants,
+# so they can't drift. Moving _FAIRNESS_RATIO flips BOTH together.
+# ---------------------------------------------------------------------------
+def test_analyzer_and_gate_share_fairness_constant(monkeypatch):
+    # A fair-but-lopsided trade (acquirer ratio 3.5): give a surplus RB (10) for a
+    # benched WR (35). At R=5 it's fair → gate clears + analyzer accepts; tighten
+    # R to 2 and BOTH flip — the gate stops clearing AND the analyzer says reject.
+    me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
+          ("rlow", "RB", 10), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
+    opp = [("oq", "QB", 19), ("orb1", "RB", 9), ("orb2", "RB", 7),
+           ("ow1", "WR", 44), ("ow2", "WR", 42), ("ow3", "WR", 40), ("ow4", "WR", 38),
+           ("benchwr", "WR", 35), ("ote", "TE", 14)]
+    state, values = _league(me, opp)
+    mlp, tlp = _lineup_roster(state.teams[0], values), _lineup_roster(state.teams[1], values)
+
+    def both():
+        edge = evaluate_edge_band(mlp, tlp, ["rlow"], ["benchwr"], roster_limit=16)
+        acc = acceptability_read(state, values, "me", ["rlow"], ["benchwr"], hedged=False)
+        return edge.clears, acc.verdict
+
+    monkeypatch.setattr(tp, "_FAIRNESS_RATIO", 5.0)
+    clears5, verdict5 = both()
+    assert clears5 is True and verdict5 != ACCEPT_REJECT   # fair @ R=5 → gate clears + analyzer accepts
+
+    monkeypatch.setattr(tp, "_FAIRNESS_RATIO", 2.0)
+    clears2, verdict2 = both()
+    assert clears2 is False and verdict2 == ACCEPT_REJECT  # ratio 3.5 > 2 → BOTH flip together
 
 
 # ---------------------------------------------------------------------------

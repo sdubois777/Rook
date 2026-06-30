@@ -129,13 +129,17 @@ def _value_fair(get_val: float, give_val: float) -> bool:
     return (1.0 / _FAIRNESS_RATIO) <= (get_val / give_val) <= _FAIRNESS_RATIO
 
 
-# Acceptability verdicts (the analyzer's opponent-side READ, §7). NOT a gate: any
-# trade is evaluated and reported honestly — the verdict is whether the trade
-# IMPROVES THEIR STARTING LINEUP (their resulting-roster lineup gain in ppg), not a
-# value epsilon. "great for you, they'd reject it" surfaces as a rejection.
-ACCEPT_LIKELY = "likely_accept"      # their_lineup_gain >= _LINEUP_GAIN_THRESHOLD
-ACCEPT_MARGINAL = "marginal"         # 0 < their_lineup_gain < _LINEUP_GAIN_THRESHOLD
-ACCEPT_REJECT = "likely_reject"      # their_lineup_gain <= 0 (their lineup doesn't improve)
+# Acceptability verdicts (the analyzer's opponent-side READ). NOT a gate — any
+# trade is analyzed and labeled honestly — but the LABEL reads acceptance from the
+# SAME rule the proposals gate (#174) uses for the opponent's side, so the two
+# screens can never disagree on the same trade: a rational manager accepts a trade
+# that MAINTAINS their lineup (Δlineup_them >= -_MAINTAIN_TOL) and is VALUE-FAIR
+# (acquirer ratio within [1/R, R]); rejects one that drops their lineup or fleeces
+# them. Read off _MAINTAIN_TOL + _FAIRNESS_RATIO (via _value_fair) — one source of
+# truth with the gate, so they can't drift.
+ACCEPT_LIKELY = "likely_accept"      # maintain + fair AND they meaningfully improve (> _MAINTAIN_TOL)
+ACCEPT_MARGINAL = "marginal"         # maintain + fair but ~neutral (a lateral they may not jump at)
+ACCEPT_REJECT = "likely_reject"      # lineup drops (< -_MAINTAIN_TOL) OR not value-fair (fleece)
 
 
 @dataclass(frozen=True)
@@ -152,11 +156,15 @@ class Acceptability:
     why: str
 
 
-def _verdict_for(their_lineup_gain: float) -> str:
-    if their_lineup_gain >= _LINEUP_GAIN_THRESHOLD:
-        return ACCEPT_LIKELY
-    if their_lineup_gain <= 0:
+def _acceptability_verdict(their_lineup_gain: float, fair: bool) -> str:
+    """The opponent-side acceptance label, read from the SAME rule the gate (#174)
+    applies: accept iff their lineup MAINTAINS (>= -_MAINTAIN_TOL) AND the trade is
+    value-fair; otherwise reject. The maintain band ([-_MAINTAIN_TOL, _MAINTAIN_TOL])
+    is the 'marginal' lateral; a clear lineup gain above it is likely_accept."""
+    if not fair or their_lineup_gain < -_MAINTAIN_TOL:
         return ACCEPT_REJECT
+    if their_lineup_gain > _MAINTAIN_TOL:
+        return ACCEPT_LIKELY
     return ACCEPT_MARGINAL
 
 
@@ -165,12 +173,12 @@ def _acceptability_why(
     their_roster: list[LineupPlayer],
     give_ids: tuple[str, ...] | list[str],
     verdict: str,
+    fair: bool,
     overtake_flag: bool,
     hedged: bool,
 ) -> str:
-    """A one-line WHY grounded in THEIR roster. The give players (incoming to them)
-    are valued against their roster as-is; the one worth most to them frames the
-    sentence — fills a need (accept), modest upgrade (haggle), or no value (reject)."""
+    """A one-line WHY grounded in THEIR side, reflecting the REAL accept/reject
+    reason (maintain + fair vs lineup-drop vs fleece)."""
     def _cv(pid: str) -> float:
         v = values[pid]
         return contextual_value(LineupPlayer(pid, v.position, v.forward_value), their_roster)
@@ -181,11 +189,13 @@ def _acceptability_why(
     pos = values[best].position if best else "that spot"
 
     if verdict == ACCEPT_LIKELY:
-        why = f"{name} fills a {pos} need on their roster"
-    elif verdict == ACCEPT_REJECT:
-        why = f"they're set at {pos} — {name} adds little for them"
+        why = f"{name} improves their {pos} and it's fair value — they'd likely accept"
+    elif verdict == ACCEPT_MARGINAL:
+        why = f"maintains their lineup at fair value — a lateral they may not jump at"
+    elif not fair:
+        why = "they'd be giving up far more value than they get"
     else:
-        why = f"{name} is a modest {pos} upgrade for them; they may haggle"
+        why = "this drops their starting lineup"
     if overtake_flag:
         why += "; it would also make their lineup stronger than yours"
     if hedged:
@@ -229,8 +239,15 @@ def acceptability_read(
                              "could not evaluate the other side of this trade")
 
     overtake_flag = edge.my_strength < edge.their_strength   # guard failed → they overtake
-    verdict = _verdict_for(edge.their_lineup_gain)
-    why = _acceptability_why(values, their_roster, give_ids, verdict, overtake_flag, hedged)
+    # Value-fairness read off the SAME helper + constants the gate uses (the
+    # acquirer's asset-value get/give ratio) — one source of truth, can't drift.
+    my_by = {p.player_id: p for p in my_roster}
+    their_by = {p.player_id: p for p in their_roster}
+    give_val = sum(my_by[g].forward_value for g in give_ids if g in my_by)
+    get_val = sum(their_by[g].forward_value for g in get_ids if g in their_by)
+    fair = _value_fair(get_val, give_val)
+    verdict = _acceptability_verdict(edge.their_lineup_gain, fair)
+    why = _acceptability_why(values, their_roster, give_ids, verdict, fair, overtake_flag, hedged)
     return Acceptability(verdict, edge.their_lineup_gain, overtake_flag, hedged, why)
 
 
