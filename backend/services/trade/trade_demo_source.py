@@ -7,16 +7,18 @@ before live in-season data lands. Everything here is gated behind
 ``TRADE_DEMO_MODE`` (env, default FALSE). When false, ``maybe_demo_league_source``
 returns None and nothing in this file is reached on the prod path.
 
-It builds a realistic 12-team league by snake-drafting REAL 2025 skill players
-from the ADP pool (deterministic) and force-placing the CASTING players so every
-confidence tier + the team-change case stay present. It NEVER fabricates weekly
-stats — value comes from the unchanged #149 per-week layer. Only roster
-construction + the demo "current week" anchor live here.
+It builds the demo's 12-team league from a REAL auction draft (``DEMO_ROSTERS`` —
+real manager names + the players each actually drafted, K/DST stripped since they
+have no usage/snap data and no value-engine anchors). Auction dollar amounts are
+NOT modeled: they only ever decided who rostered whom, and roster membership is all
+we encode. Player VALUE still comes entirely from the unchanged #149 per-week usage
+layer; starter slots are re-derived per team from that forward value (NOT draft
+cost). It NEVER fabricates weekly stats. Only roster membership + the demo "current
+week" anchor live here.
 
 Teardown deletes: this file, ``scripts/seed_demo_league.py``, the
 ``TRADE_DEMO_MODE`` branches, and the trade-demo tests. Grep ``TRADE_DEMO`` /
-``trade_demo`` / ``DEMO_ROSTERS`` / ``CASTING`` / ``DEMO_TEAM_NAMES`` to find
-every surface.
+``trade_demo`` / ``DEMO_ROSTERS`` / ``DEMO_TEAM_NAMES`` to find every surface.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ import logging
 import os
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
 
@@ -33,6 +35,7 @@ from backend.services.trade.league_state import (
     RosterPlayer,
     TeamState,
 )
+from backend.services.trade.value_engine import evaluate_league
 
 logger = logging.getLogger(__name__)
 
@@ -42,53 +45,109 @@ DEMO_CURRENT_WEEK = 14   # late-season trade-window read; gives studs a full tre
 
 # --- league shape ------------------------------------------------------------
 N_TEAMS = 12
-TEAM_SIZE = 15
-_SKILL = ("QB", "RB", "WR", "TE")   # K/DST excluded — no usage/snap data
-# Per-team roster quotas (sum == TEAM_SIZE) so every team can field a lineup.
-DRAFT_QUOTAS = {"QB": 2, "RB": 5, "WR": 6, "TE": 2}
-# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE) = 8 starters, 7 bench.
+_SKILL = ("QB", "RB", "WR", "TE")   # K/DST excluded — no usage/snap data, no anchors
+# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE) = 8 starters.
 STARTER_NEED = {"QB": 1, "RB": 2, "WR": 3, "TE": 1}
+N_STARTERS = sum(STARTER_NEED.values()) + 1   # + FLEX
 _FLEX_POS = ("RB", "WR", "TE")
 N_FLEX = 1
 
-# 12 believable team names; index 0 is the is_me team.
-DEMO_TEAM_NAMES = [
-    "Your Squad",            # is_me
-    "Gridiron Gurus",
-    "End Zone Elites",
-    "Hail Mary Heroes",
-    "Blitz Brigade",
-    "Pigskin Prophets",
-    "Fourth & Long",
-    "Audible Anarchy",
-    "Red Zone Raiders",
-    "Checkdown Kings",
-    "Gronk & Roll",
-    "Victory Formation",
+# The user's own team (the default acting-as team). is_me is keyed off this name.
+USER_TEAM_NAME = "Have you seen McConkeys"
+
+# --- the REAL auction draft (K/DST stripped) ---------------------------------
+# (manager_name, ((player_name, position), ...)). Roster membership only — auction
+# prices aren't modeled (they merely decided who drafted whom). Team order is the
+# draft's; is_me is whichever team == USER_TEAM_NAME. 159 skill players total.
+DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+    ("The Lord", (
+        ("Drake London", "WR"), ("Jahmyr Gibbs", "RB"), ("CeeDee Lamb", "WR"),
+        ("D'Andre Swift", "RB"), ("Caleb Williams", "QB"),
+        ("Jacory Croskey-Merritt", "RB"), ("Javonte Williams", "RB"),
+        ("Kaleb Johnson", "RB"), ("Kyler Murray", "QB"), ("Tyler Warren", "TE"),
+        ("Joe Mixon", "RB"), ("Brian Robinson", "RB"), ("Isaac TeSlaa", "WR"),
+    )),
+    ("GOAT C.", (
+        ("Amon-Ra St. Brown", "WR"), ("Saquon Barkley", "RB"), ("Tee Higgins", "WR"),
+        ("James Cook III", "RB"), ("Patrick Mahomes", "QB"), ("Jordan Mason", "RB"),
+        ("Dallas Goedert", "TE"), ("Rashod Bateman", "WR"), ("Darnell Mooney", "WR"),
+        ("Bryce Young", "QB"), ("Trey Benson", "RB"), ("Chig Okonkwo", "TE"),
+        ("Brandon Aiyuk", "WR"),
+    )),
+    ("Fat Bastard", (
+        ("A.J. Brown", "WR"), ("Tetairoa McMillan", "WR"), ("Mike Evans", "WR"),
+        ("DeVonta Smith", "WR"), ("Josh Jacobs", "RB"), ("Joe Burrow", "QB"),
+        ("Kenneth Walker III", "RB"), ("Mark Andrews", "TE"),
+        ("Chris Godwin Jr.", "WR"), ("Jayden Reed", "WR"), ("Dylan Sampson", "RB"),
+        ("Hunter Henry", "TE"), ("Cam Ward", "QB"),
+    )),
+    ("Break your leg CMC", (
+        ("Ja'Marr Chase", "WR"), ("Malik Nabers", "WR"), ("Jaxon Smith-Njigba", "WR"),
+        ("Breece Hall", "RB"), ("Tyrone Tracy Jr.", "RB"), ("Justice Hill", "RB"),
+        ("Keon Coleman", "WR"), ("Jared Goff", "QB"), ("Isaiah Likely", "TE"),
+        ("Will Shipley", "RB"), ("Darren Waller", "TE"), ("Kenny Gainwell", "RB"),
+        ("Ray Davis", "RB"), ("Sam Darnold", "QB"),
+    )),
+    (USER_TEAM_NAME, (
+        ("Lamar Jackson", "QB"), ("Brock Bowers", "TE"), ("Ladd McConkey", "WR"),
+        ("Courtland Sutton", "WR"), ("Davante Adams", "WR"), ("James Conner", "RB"),
+        ("David Montgomery", "RB"), ("DJ Moore", "WR"), ("Jordan Addison", "WR"),
+        ("Tyler Allgeier", "RB"), ("Kareem Hunt", "RB"), ("Najee Harris", "RB"),
+        ("Raheem Mostert", "RB"),
+    )),
+    ("Joe Shiesty", (
+        ("De'Von Achane", "RB"), ("Bijan Robinson", "RB"), ("Terry McLaurin", "WR"),
+        ("George Pickens", "WR"), ("Brock Purdy", "QB"), ("Zay Flowers", "WR"),
+        ("T.J. Hockenson", "TE"), ("Travis Hunter", "WR"), ("Jaylen Warren", "RB"),
+        ("Bhayshul Tuten", "RB"), ("Wan'Dale Robinson", "WR"), ("C.J. Stroud", "QB"),
+        ("Jaylen Waddle", "WR"),
+    )),
+    ("PAIN", (
+        ("Ashton Jeanty", "RB"), ("Trey McBride", "TE"), ("Jalen Hurts", "QB"),
+        ("Tyreek Hill", "WR"), ("DK Metcalf", "WR"), ("TreVeyon Henderson", "RB"),
+        ("Khalil Shakir", "WR"), ("J.K. Dobbins", "RB"), ("Matthew Golden", "WR"),
+        ("Nick Chubb", "RB"), ("Josh Downs", "WR"), ("Jerome Ford", "RB"),
+        ("Rhamondre Stevenson", "RB"), ("Christian Kirk", "WR"),
+    )),
+    ("Big Black Cop", (
+        ("Bucky Irving", "RB"), ("Chase Brown", "RB"), ("Brian Thomas Jr.", "WR"),
+        ("Calvin Ridley", "WR"), ("Ricky Pearsall", "WR"), ("Rome Odunze", "WR"),
+        ("Tucker Kraft", "TE"), ("Jakobi Meyers", "WR"), ("Braelon Allen", "RB"),
+        ("Keenan Allen", "WR"), ("Colston Loveland", "TE"), ("Rashid Shaheed", "WR"),
+        ("Drake Maye", "QB"), ("Rachaad White", "RB"),
+    )),
+    ("Watson's Rub and...", (
+        ("Christian McCaffrey", "RB"), ("Puka Nacua", "WR"), ("Jonathan Taylor", "RB"),
+        ("Tony Pollard", "RB"), ("Bo Nix", "QB"), ("Emeka Egbuka", "WR"),
+        ("Rashee Rice", "WR"), ("Jerry Jeudy", "WR"), ("Zach Charbonnet", "RB"),
+        ("Cam Skattebo", "RB"), ("Dak Prescott", "QB"), ("Evan Engram", "TE"),
+        ("Kyle Pitts Sr.", "TE"),
+    )),
+    ("Koo Klux Klan", (
+        ("Jameson Williams", "WR"), ("Nico Collins", "WR"), ("Kyren Williams", "RB"),
+        ("Xavier Worthy", "WR"), ("Chuba Hubbard", "RB"), ("Marvin Harrison Jr.", "WR"),
+        ("Baker Mayfield", "QB"), ("Sam LaPorta", "TE"), ("Stefon Diggs", "WR"),
+        ("J.J. McCarthy", "QB"), ("Travis Etienne Jr.", "RB"), ("Dalton Kincaid", "TE"),
+        ("Tyjae Spears", "RB"),
+    )),
+    ("Agent Orange", (
+        ("Justin Jefferson", "WR"), ("Derrick Henry", "RB"), ("Jayden Daniels", "QB"),
+        ("RJ Harvey", "RB"), ("Isiah Pacheco", "RB"), ("Austin Ekeler", "RB"),
+        ("Michael Pittman Jr.", "WR"), ("David Njoku", "TE"), ("Jordan Love", "QB"),
+        ("Jauan Jennings", "WR"), ("Tank Bigsby", "RB"), ("Jake Ferguson", "TE"),
+        ("Justin Herbert", "QB"),
+    )),
+    ("Ben Dover", (
+        ("Josh Allen", "QB"), ("Alvin Kamara", "RB"), ("George Kittle", "TE"),
+        ("Omarion Hampton", "RB"), ("Garrett Wilson", "WR"), ("Chris Olave", "WR"),
+        ("Deebo Samuel", "WR"), ("Travis Kelce", "TE"), ("Aaron Jones Sr.", "RB"),
+        ("Cooper Kupp", "WR"), ("Justin Fields", "QB"), ("Jaxson Dart", "QB"),
+        ("Trevor Lawrence", "QB"),
+    )),
 ]
 
-# --- the planted cast (data-driven; preserves every ragged-history tier) ------
-# (player_name, position, team_index) — force-placed so the tiers + team-change
-# case survive the larger league. Spread ≤2 per team for a balanced distribution.
-#   studs(full) · sparse(insufficient) · partial(limited) · team-change(limited)
-#   · rising(buy_low) · falling(sell_high) · a real rookie.
-CASTING: list[tuple[str, str, int]] = [
-    ("Christian McCaffrey", "RB", 0),  # stud → full
-    ("A.J. Brown", "WR", 0),           # rising → buy_low
-    ("Jahmyr Gibbs", "RB", 1),         # stud → full
-    ("DJ Turner", "WR", 1),            # 1 played week → insufficient
-    ("Jonathan Taylor", "RB", 2),      # stud → full
-    ("Hunter Renfrow", "WR", 2),       # declining → sell_high
-    ("Brandin Cooks", "WR", 3),        # mid-season team change → limited+flag
-    ("Darius Cooper", "WR", 3),        # real 2025 rookie
-    ("Ja'Marr Chase", "WR", 4),        # stud
-    ("Najee Harris", "RB", 4),         # 3 played weeks → limited
-    ("Bijan Robinson", "RB", 5),       # stud
-    ("Jayden Reed", "WR", 5),          # 3 played weeks, declining → limited
-    ("Trey McBride", "TE", 6),         # stud TE
-    ("Puka Nacua", "WR", 6),           # stud
-    ("George Pickens", "WR", 7),       # stud
-]
+# Display alias for greppability / parity with the old constant name.
+DEMO_TEAM_NAMES = [mgr for mgr, _ in DEMO_ROSTERS]
 
 
 def trade_demo_enabled() -> bool:
@@ -114,11 +173,46 @@ class TradeDemoSource:
 # ---------------------------------------------------------------------------
 # pure assembly (DB-free, unit-testable)
 # ---------------------------------------------------------------------------
-def assign_starter_slots(players: list[dict]) -> None:
-    """Assign a sensible starting lineup in place. ``players`` is one team's
-    roster as dicts (each with 'position' + 'adp'); best-by-ADP fill the lineup,
-    the rest are BENCH. Mutates each dict's 'starter_slot'."""
-    ordered = sorted(players, key=lambda p: p.get("adp", 9999.0))
+def assemble_teams(
+    rosters: list[tuple[str, tuple[tuple[str, str], ...]]],
+    resolve: Callable[[str, str], Optional[tuple[str, Optional[str]]]],
+) -> tuple[list[dict], list[tuple[str, str, str]]]:
+    """Turn ``DEMO_ROSTERS`` into ``teams_data`` via an injected resolver.
+
+    ``resolve(name, position)`` returns ``(canonical_player_id, nfl_team)`` or
+    ``None`` when the player can't be resolved. Unresolved players are NEVER
+    silently dropped — they're collected and returned as ``(manager, name,
+    position)`` so the caller can report them. Pure (resolver injected) → testable
+    with no DB. ``starter_slot`` is left BENCH here; it's re-derived from forward
+    value after the engine runs.
+    """
+    teams_data: list[dict] = []
+    unresolved: list[tuple[str, str, str]] = []
+    for idx, (manager, picks) in enumerate(rosters):
+        players: list[dict] = []
+        for name, pos in picks:
+            resolved = resolve(name, pos)
+            if resolved is None:
+                unresolved.append((manager, name, pos))
+                continue
+            pid, nfl_team = resolved
+            players.append({
+                "id": pid, "name": name, "position": pos,
+                "nfl_team": nfl_team, "starter_slot": "BENCH",
+            })
+        teams_data.append({
+            "team_id": f"demo-team-{idx}", "team_name": manager,
+            "is_me": manager == USER_TEAM_NAME, "players": players,
+        })
+    return teams_data, unresolved
+
+
+def assign_starter_slots(players: list[dict], value_by_id: dict[str, float]) -> None:
+    """Assign the starting lineup in place by FORWARD VALUE (not draft cost).
+    ``players`` is one team's roster as dicts (each with 'id' + 'position');
+    the highest-value players fill 1QB/2RB/3WR/1TE/1FLEX, the rest are BENCH.
+    Mutates each dict's 'starter_slot'."""
+    ordered = sorted(players, key=lambda p: (-value_by_id.get(p["id"], 0.0), p["name"]))
     need = dict(STARTER_NEED)
     counts: Counter = Counter()
     flex_left = N_FLEX
@@ -165,110 +259,83 @@ def build_priors(prior_by_id: dict[str, Optional[float]]) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # real generation (DB + the #149 layer) — guarded; skipped where data is absent
 # ---------------------------------------------------------------------------
-async def _draft_league(db) -> tuple[list[dict], dict[str, Optional[float]]]:
-    """Deterministically build a 12-team league: snake-draft the real ADP pool,
-    force-place CASTING, populate nfl_team + starter_slot. Returns
-    (teams_data, prior_by_id)."""
+async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
+    """Resolve every drafted player to a Rook canonical id (== the #149 layer's
+    ``canonical_player_id``), preserving nfl_team + the drafted position. Resolution
+    is name-fuzzy (``find_by_name_fuzzy`` — handles Jr/Sr/II + initials, the same
+    crosswalk-backed path the live draft uses). Unresolved players are reported,
+    never silently dropped. Returns (teams_data, prior_by_id)."""
+    from backend.repositories.player_repo import PlayerRepository
+
+    repo = PlayerRepository(db)
+    # Resolve each distinct drafted name once.
+    resolved: dict[str, Optional[tuple[str, Optional[str]]]] = {}
+    for _, picks in DEMO_ROSTERS:
+        for name, _pos in picks:
+            if name in resolved:
+                continue
+            player = await repo.find_by_name_fuzzy(name)
+            resolved[name] = (str(player.id), player.team_abbr) if player else None
+
+    teams_data, unresolved = assemble_teams(DEMO_ROSTERS, lambda n, pos: resolved.get(n))
+
+    if unresolved:
+        total = sum(len(picks) for _, picks in DEMO_ROSTERS)
+        for manager, name, pos in unresolved:
+            logger.warning(
+                "demo seed: unresolved draft player %r (%s) on %r — dropped",
+                name, pos, manager,
+            )
+        logger.warning(
+            "demo seed: %d/%d drafted players unresolved (no DB match)",
+            len(unresolved), total,
+        )
+
+    prior_by_id = await _load_priors(db, [p["id"] for t in teams_data for p in t["players"]])
+    return teams_data, prior_by_id
+
+
+async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]]:
+    """Preseason prior ppg per rostered player (clean_season_baseline ppr / 17).
+    Players with no profile/baseline get None (null prior → prior_weight 0)."""
     from sqlalchemy import select
 
-    from backend.models.player import Player, PlayerProfile
+    from backend.models.player import PlayerProfile
 
-    # 1. The ADP pool — skill players, best first.
-    rows = (await db.execute(
-        select(Player.id, Player.name, Player.team_abbr, Player.position, Player.adp_ai)
-        .where(Player.adp_ai.isnot(None), Player.position.in_(_SKILL))
-        .order_by(Player.adp_ai.asc())
-    )).all()
-    pool: list[dict] = [
-        {"id": str(i), "name": n, "nfl_team": ta, "position": pos, "adp": float(a)}
-        for i, n, ta, pos, a in rows
-    ]
-
-    # 2. Resolve CASTING by name (some sit outside the ADP pool, e.g. a rookie).
-    cast_names = [c[0] for c in CASTING]
-    crows = (await db.execute(
-        select(Player.id, Player.name, Player.team_abbr, Player.position, Player.adp_ai)
-        .where(Player.name.in_(cast_names))
-    )).all()
-    cast_db = {n: (str(i), ta, a) for i, n, ta, pos, a in crows}
-
-    teams: list[dict] = [
-        {"team_id": f"demo-team-{idx}", "team_name": name, "is_me": idx == 0, "players": []}
-        for idx, name in enumerate(DEMO_TEAM_NAMES)
-    ]
-
-    cast_ids: set[str] = set()
-    for name, pos, ti in CASTING:
-        rec = cast_db.get(name)
-        if rec is None:
-            logger.warning("demo: casting player %r not in DB — skipping", name)
-            continue
-        pid, ta, adp = rec
-        cast_ids.add(pid)
-        teams[ti]["players"].append({
-            "id": pid, "name": name, "nfl_team": ta, "position": pos,
-            "adp": float(adp) if adp is not None else 9999.0,
-        })
-
-    # 3. Snake-draft the rest, respecting per-position quotas (lineup-viable).
-    by_pos: dict[str, list[dict]] = {
-        pos: [p for p in pool if p["position"] == pos and p["id"] not in cast_ids]
-        for pos in _SKILL
-    }
-
-    def _pick_for(team: dict) -> Optional[dict]:
-        cnt = Counter(p["position"] for p in team["players"])
-        needed = [pos for pos in _SKILL
-                  if cnt.get(pos, 0) < DRAFT_QUOTAS[pos] and by_pos[pos]]
-        candidates = needed or [pos for pos in _SKILL if by_pos[pos]]
-        if not candidates:
-            return None
-        best_pos = min(candidates, key=lambda pos: by_pos[pos][0]["adp"])
-        return by_pos[best_pos].pop(0)
-
-    order = list(range(N_TEAMS))
-    for round_i in range(TEAM_SIZE + 5):  # safety bound
-        if all(len(t["players"]) >= TEAM_SIZE for t in teams):
-            break
-        seq = order if round_i % 2 == 0 else order[::-1]
-        for ti in seq:
-            team = teams[ti]
-            if len(team["players"]) >= TEAM_SIZE:
-                continue
-            pick = _pick_for(team)
-            if pick is not None:
-                team["players"].append(pick)
-
-    # 4. Starter slots per team (best-by-ADP start; rest bench).
-    for team in teams:
-        assign_starter_slots(team["players"])
-
-    # 5. Priors for every rostered player (clean_season_baseline ppr / 17).
-    rostered_ids = [p["id"] for t in teams for p in t["players"]]
     prior_by_id: dict[str, Optional[float]] = {pid: None for pid in rostered_ids}
-    if rostered_ids:
-        prof_rows = (await db.execute(
-            select(PlayerProfile.player_id, PlayerProfile.clean_season_baseline)
-            .where(PlayerProfile.player_id.in_(rostered_ids))
-        )).all()
-        for pid, baseline in prof_rows:
-            if isinstance(baseline, dict) and baseline.get("ppr_points"):
-                prior_by_id[str(pid)] = float(baseline["ppr_points"]) / 17.0
-
-    return teams, prior_by_id
+    if not rostered_ids:
+        return prior_by_id
+    rows = (await db.execute(
+        select(PlayerProfile.player_id, PlayerProfile.clean_season_baseline)
+        .where(PlayerProfile.player_id.in_(rostered_ids))
+    )).all()
+    for pid, baseline in rows:
+        if isinstance(baseline, dict) and baseline.get("ppr_points"):
+            prior_by_id[str(pid)] = float(baseline["ppr_points"]) / 17.0
+    return prior_by_id
 
 
 async def seed_demo_league(db, *, weekly_usage: Optional[pd.DataFrame] = None) -> TradeDemoSource:
     """Build the demo source from the REAL DB + per-week layer. ``weekly_usage``
-    can be injected (tests) to avoid the live fetch."""
-    teams_data, prior_by_id = await _draft_league(db)
-    state = build_league_state(teams_data)
+    can be injected (tests) to avoid the live fetch. Starter slots are re-derived
+    from the engine's forward value, so the lineup reflects in-season production —
+    not draft order."""
+    teams_data, prior_by_id = await _resolve_rosters(db)
     priors = build_priors(prior_by_id)
     if weekly_usage is None:
         from backend.integrations.nfl_weekly import weekly_player_usage
         weekly_usage = await weekly_player_usage(
             DEMO_SEASON, weeks=range(1, DEMO_CURRENT_WEEK + 1), db=db,
         )
+
+    # Forward value first (slot-agnostic), then slot the lineup by that value.
+    provisional = build_league_state(teams_data)
+    values = evaluate_league(provisional, weekly_usage, priors=priors)
+    value_by_id = {pid: v.forward_value for pid, v in values.items()}
+    for team in teams_data:
+        assign_starter_slots(team["players"], value_by_id)
+
+    state = build_league_state(teams_data)
     return TradeDemoSource(state=state, weekly_usage=weekly_usage, priors=priors)
 
 

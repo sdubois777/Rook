@@ -941,11 +941,14 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
         full/limited/insufficient).
       - **flag-gated demo harness (TEARDOWN before prod):**
         `backend/services/trade/trade_demo_source.py` (provider + `TRADE_DEMO_MODE`
-        gate + a realistic **12-team / 15-slot** league snake-drafted from the real
-        ADP pool — `DEMO_TEAM_NAMES` + forced `CASTING` + `_draft_league` — with
-        `starter_slot`/`nfl_team` populated + demo anchor `DEMO_SEASON`/
-        `DEMO_CURRENT_WEEK` pinned HERE, currently **week 14** — not week 5, not in
-        the engine/data layer), `scripts/seed_demo_league.py` (CLI),
+        gate + a realistic **12-team** league seeded from a **REAL auction draft**
+        (`DEMO_ROSTERS` — real manager names + the players each drafted, K/DST
+        stripped; auction $ NOT modeled, roster membership only) resolved name-fuzzy
+        to canonical ids via `_resolve_rosters`, `starter_slot` re-derived per team
+        from the engine's `forward_value` (`assign_starter_slots`) + `nfl_team`
+        preserved, default acting team `USER_TEAM_NAME` ("Have you seen McConkeys"),
+        demo anchor `DEMO_SEASON`/`DEMO_CURRENT_WEEK` pinned HERE, currently **week
+        14** — not in the engine/data layer), `scripts/seed_demo_league.py` (CLI),
         `tests/unit/services/trade/test_trade_demo.py`.
       - analyzer agent + `POST /api/trade/analyze`; proposals agent +
         `POST /api/trade/ideas` (pro-only). PERMANENT.
@@ -957,7 +960,7 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
       `GET /api/trade/league` endpoint, the page team-switcher) is gated behind
       `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
       teardown checklist in the design doc; grep `TRADE_DEMO` / `DEMO_TEAM_NAMES` /
-      `CASTING` / `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
+      `DEMO_ROSTERS` / `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
       trade page (minus team-switcher), `/analyze` + `/ideas`, and the gates ONLY.**
       **Remaining:** teardown + real league-state provider (slice 6). Then: lineup
       optimizer, waiver wire, roster monitor, opponent analyzer, gameday.

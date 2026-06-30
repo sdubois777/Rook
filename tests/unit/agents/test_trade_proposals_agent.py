@@ -58,10 +58,11 @@ def _agent_with_llm(raw):
     return agent
 
 
-# Gronk-shaped: strong everywhere but a badly WEAK QB (need), surplus bench RB; the
-# opponent is mildly RB-thin with its flex already filled, and holds a SURPLUS QB
-# that's a big upgrade for me. The enumerator builds give(surplusRB) -> get(surplusQB);
-# it clears the LINEUP gate (my QB jump +15 ppg > their RB gain +7).
+# Gronk-shaped: strong everywhere but a badly WEAK QB (need), with RB depth to spend;
+# the opponent is RB-thin and holds a SURPLUS QB that's a big upgrade for me. The
+# broadened enumerator pays for that QB out of my RB depth — give(rb2) -> get(surplusQB),
+# a value-fair swap (RB2 20 ~= surplus QB 20) that clears the LINEUP gate (my QB jump
+# dwarfs the RB2 downgrade, and the RB-thin opponent maintains by adding a real RB).
 GRONK = [("weakQB", "QB", 5), ("rb1", "RB", 22), ("rb2", "RB", 20), ("surplusRB", "RB", 14),
          ("wr1", "WR", 18), ("wr2", "WR", 17), ("wr3", "WR", 16), ("wr4", "WR", 16),
          ("te", "TE", 14), ("te2", "TE", 12)]
@@ -69,7 +70,7 @@ OPP = [("oQB1", "QB", 24), ("surplusQB", "QB", 20), ("orb1", "RB", 8), ("orb2", 
        ("owr1", "WR", 20), ("owr2", "WR", 18), ("owr3", "WR", 16), ("owr4", "WR", 15),
        ("ote", "TE", 14)]
 
-_GOOD = Candidate(("surplusRB",), ("surplusQB",), "opp")   # what the enumerator builds
+_GOOD = Candidate(("rb2",), ("surplusQB",), "opp")   # what the enumerator builds
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ async def test_enumerator_candidates_are_evaluated_and_surface_on_hot_path():
 
     surfaced = evaluate_candidates(state, values, "me", combined, roster_limit=16)
     shapes = {(c.give_ids, c.get_ids) for c, _, _ in surfaced}
-    assert (("surplusRB",), ("surplusQB",)) in shapes          # the dead trade now clears + surfaces
+    assert (("rb2",), ("surplusQB",)) in shapes                # the dead trade now clears + surfaces
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ async def test_enumerator_candidates_are_evaluated_and_surface_on_hot_path():
 async def test_trade_from_both_generators_is_deduped_to_one():
     state, values = _league(GRONK, OPP)
     # LLM proposes the SAME trade the enumerator builds.
-    llm_raw = json.dumps([{"give": ["surplusRB"], "get": ["surplusQB"], "team_id": "opp"}])
+    llm_raw = json.dumps([{"give": ["rb2"], "get": ["surplusQB"], "team_id": "opp"}])
     agent = _agent_with_llm(llm_raw)
 
     combined = await agent.generate_candidates(state, "me", values)

@@ -18,9 +18,14 @@ import pytest
 
 from backend.services.trade.trade_demo_source import (
     DEMO_CURRENT_WEEK,
+    DEMO_ROSTERS,
     DEMO_SEASON,
+    N_STARTERS,
     N_TEAMS,
-    TEAM_SIZE,
+    USER_TEAM_NAME,
+    _SKILL,
+    assemble_teams,
+    assign_starter_slots,
     build_league_state,
     build_priors,
     maybe_demo_league_source,
@@ -53,6 +58,75 @@ async def test_gate_off_never_selects_demo_provider(monkeypatch):
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
     result = await maybe_demo_league_source(db=object())
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# REAL-DRAFT SEED — the auction roster constant + pure assembly (CI, no DB)
+# ---------------------------------------------------------------------------
+def test_demo_rosters_are_twelve_teams_skill_only():
+    assert len(DEMO_ROSTERS) == N_TEAMS == 12
+    # K/DST stripped — every drafted player is a value-engine skill position.
+    positions = {pos for _, picks in DEMO_ROSTERS for _, pos in picks}
+    assert positions <= set(_SKILL)
+    assert not positions & {"K", "DST", "DEF"}
+    # the real auction had 159 skill players across 13/14-man rosters.
+    assert sum(len(picks) for _, picks in DEMO_ROSTERS) == 159
+    assert {len(picks) for _, picks in DEMO_ROSTERS} == {13, 14}
+
+
+def test_user_team_present_and_is_the_default_acting_team():
+    names = [mgr for mgr, _ in DEMO_ROSTERS]
+    assert USER_TEAM_NAME in names
+    # exactly the user's team is flagged is_me by the pure assembler.
+    teams, _ = assemble_teams(DEMO_ROSTERS, lambda n, pos: ("id-" + n, "AAA"))
+    me = [t for t in teams if t["is_me"]]
+    assert len(me) == 1 and me[0]["team_name"] == USER_TEAM_NAME
+
+
+def test_assemble_resolves_players_and_reports_unresolved_without_dropping_silently():
+    # Resolver that fails for two specific names (e.g. an unmatched rookie).
+    missing = {"Jacory Croskey-Merritt", "Isaac TeSlaa"}
+
+    def resolve(name, pos):
+        return None if name in missing else (f"id-{name}", "BUF")
+
+    teams, unresolved = assemble_teams(DEMO_ROSTERS, resolve)
+    reported = {name for _, name, _ in unresolved}
+    assert reported == missing                       # reported, not silently dropped
+    # resolved players carry the preserved nfl_team + drafted position.
+    london = next(p for t in teams for p in t["players"] if p["name"] == "Drake London")
+    assert london["nfl_team"] == "BUF" and london["position"] == "WR"
+    # the unresolved players are absent from the rosters (dropped *after* reporting).
+    rostered = {p["name"] for t in teams for p in t["players"]}
+    assert not (missing & rostered)
+
+
+def test_starter_slots_derived_from_forward_value_not_draft_order():
+    # One team: lowest draft slot has the HIGHEST value → it must start.
+    players = [
+        {"id": "qb1", "name": "QB1", "position": "QB", "starter_slot": "BENCH"},
+        {"id": "qb2", "name": "QB2", "position": "QB", "starter_slot": "BENCH"},
+        {"id": "rb1", "name": "RB1", "position": "RB", "starter_slot": "BENCH"},
+        {"id": "rb2", "name": "RB2", "position": "RB", "starter_slot": "BENCH"},
+        {"id": "rb3", "name": "RB3", "position": "RB", "starter_slot": "BENCH"},
+        {"id": "wr1", "name": "WR1", "position": "WR", "starter_slot": "BENCH"},
+        {"id": "wr2", "name": "WR2", "position": "WR", "starter_slot": "BENCH"},
+        {"id": "wr3", "name": "WR3", "position": "WR", "starter_slot": "BENCH"},
+        {"id": "wr4", "name": "WR4", "position": "WR", "starter_slot": "BENCH"},
+        {"id": "te1", "name": "TE1", "position": "TE", "starter_slot": "BENCH"},
+    ]
+    value_by_id = {"qb1": 25, "qb2": 5, "rb1": 24, "rb2": 22, "rb3": 8,
+                   "wr1": 20, "wr2": 18, "wr3": 16, "wr4": 6, "te1": 14}
+    assign_starter_slots(players, value_by_id)
+    slots = {p["id"]: p["starter_slot"] for p in players}
+    starters = {pid for pid, s in slots.items() if s != "BENCH"}
+    # 1QB/2RB/3WR/1TE/1FLEX = 8 starters; the value-best fill them.
+    assert len(starters) == N_STARTERS == 8
+    assert slots["qb1"] == "QB" and slots["qb2"] == "BENCH"   # value, not draft order
+    assert slots["wr1"] == "WR1"                              # top WR starts
+    # FLEX goes to the best remaining flex-eligible (RB3 8 > WR4 6); WR4 benched.
+    assert slots["rb3"] == "FLEX"
+    assert slots["wr4"] == "BENCH"
 
 
 # ---------------------------------------------------------------------------
@@ -220,24 +294,26 @@ async def test_real_demo_seed_produces_sane_tiers():
         pytest.skip(f"demo DB unavailable: {exc}")
 
     state = source.get_league_state()
-    # Expanded to a realistic 12-team league, full rosters.
+    # The real 12-team auction league; rosters are the drafted sizes (13/14), not
+    # a fixed quota — K/DST were stripped.
     assert len(state.teams) == N_TEAMS
-    assert all(len(t.roster) == TEAM_SIZE for t in state.teams)
+    sizes = {t.team_name: len(t.roster) for t in state.teams}
+    assert set(sizes.values()) <= {13, 14}
     assert sum(t.is_me for t in state.teams) == 1
-    # starter_slot + nfl_team populated on the lineup.
+    assert state.my_team.team_name == USER_TEAM_NAME      # default acting team
+    # starter_slot derived from forward value; nfl_team preserved where the DB row
+    # has one (a few veterans carry a null team_abbr — that's real DB variance).
     me = state.my_team
-    assert sum(rp.starter_slot != "BENCH" for rp in me.roster) == 8   # 1QB/2RB/3WR/1TE/1FLEX
-    assert all(rp.nfl_team for rp in me.roster)
+    assert sum(rp.starter_slot != "BENCH" for rp in me.roster) == N_STARTERS  # 1QB/2RB/3WR/1TE/1FLEX
+    assert sum(bool(rp.nfl_team) for rp in me.roster) >= len(me.roster) - 4
 
     values, by_name = _values_by_name(source)
     confs = {v.confidence for v in values.values()}
 
+    # Ragged 2025 data across 159 players exercises every confidence tier.
     assert {Confidence.FULL, Confidence.LIMITED, Confidence.INSUFFICIENT} <= confs
+    # A bell-cow with a full 2025 reads FULL (CMC drafted by "Watson's Rub and...").
     assert by_name["Christian McCaffrey"].confidence is Confidence.FULL
-    assert by_name["DJ Turner"].confidence is Confidence.INSUFFICIENT
-    assert by_name["DJ Turner"].buy_low is False and by_name["DJ Turner"].sell_high is False
-    cooks = by_name["Brandin Cooks"]
-    assert "team change" in cooks.confidence_reason
-    assert cooks.buy_low is False and cooks.sell_high is False  # direction suppressed
-    assert by_name["A.J. Brown"].buy_low is True
-    assert by_name["Hunter Renfrow"].sell_high is True
+    # Real buy/sell signals fire somewhere in the league.
+    assert any(v.buy_low for v in values.values())
+    assert any(v.sell_high for v in values.values())

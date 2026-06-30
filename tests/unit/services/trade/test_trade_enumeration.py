@@ -93,7 +93,9 @@ def test_multiplayer_shapes_generated_and_judged_by_lineup_gain():
     state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, values, "me")
 
-    consolidation = Candidate(("rm4", "rm5"), ("wt5", "wt6"), "opp")
+    # Consolidate two surplus RBs into ONE of their starting WRs — a multi-player
+    # shape the old exhaustive 1-for-1 enumeration could never produce.
+    consolidation = Candidate(("rm4", "rm5"), ("wt1",), "opp")
     assert consolidation in cands             # GENERATED (1-for-1 never could)
 
     surfaced = evaluate_candidates(state, values, "me", cands, roster_limit=16)
@@ -110,13 +112,19 @@ def test_multiplayer_shapes_generated_and_judged_by_lineup_gain():
     assert two.your_lineup_gain <= one.your_lineup_gain + 0.01
 
 
-def test_enumeration_targets_matched_surplus_for_need_only():
+def test_enumeration_targets_my_need_and_acquires_their_starters():
+    # The FUNNEL FIX: the get-pool is no longer their bench surplus only — it now
+    # includes their STARTABLE WRs at my WR need, so I can trade FOR a starter (paid
+    # for fairly out of my RB depth), not just swap benchwarmers. Gives stay at
+    # their RB need; gets stay at my WR need (the targeting is preserved).
     state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, values, "me")
-    # only my surplus RBs are ever given; only their surplus WRs are ever gotten —
-    # starters on neither side are touched (that's the targeting / pruning).
-    assert {p for c in cands for p in c.give_ids} == {"rm4", "rm5"}
-    assert {p for c in cands for p in c.get_ids} == {"wt5", "wt6"}
+    gives = {p for c in cands for p in c.give_ids}
+    gets = {p for c in cands for p in c.get_ids}
+    assert gives <= {"rm1", "rm2", "rm3", "rm4", "rm5"}   # only my RBs (their need)
+    assert gets <= {"wt1", "wt2", "wt3", "wt4", "wt5"}    # only their WRs (my need)
+    # acquiring a STARTER (their WR1/WR2) is now possible — 0 such candidates before.
+    assert gets & {"wt1", "wt2", "wt3"}
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +230,43 @@ def test_merge_candidates_distinguishes_counterparty_and_sides():
     b = Candidate(("p",), ("q",), "opp2")    # same players, different counterparty
     c = Candidate(("p",), ("r",), "opp1")    # different get
     assert len(merge_candidates([a], [b], [c])) == 3
+
+
+# ---------------------------------------------------------------------------
+# FUNNEL FIX — broadened get-pool acquires STARTERS and spreads across sources
+# ---------------------------------------------------------------------------
+def test_starter_acquiring_trade_is_generated_where_zero_existed_before():
+    # Their WR1 (a clear STARTER, not bench surplus) at my WR need, paid for out of
+    # my RB depth. The surplus-only enumerator could NEVER build this; now it does.
+    state, values = _league(ME_STRONG, THEM)
+    cands = enumerate_candidates(state, values, "me")
+    starter_buys = [c for c in cands if "wt1" in c.get_ids]
+    assert starter_buys                                  # >= 1 (was exactly 0)
+    # and at least one is a fair, slot-legal swap that clears the gate.
+    surfaced = evaluate_candidates(state, values, "me", cands, roster_limit=16)
+    assert any("wt1" in c.get_ids for c, _, _ in surfaced)
+
+
+def test_candidates_spread_across_multiple_counterparties():
+    # Two distinct WR-rich opponents, each with a startable WR at my need. The
+    # broadened pool should surface get-pieces sourced from BOTH — not funnel every
+    # trade onto one counterparty.
+    my_spec = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
+               ("rm4", "RB", 15), ("rm5", "RB", 13), ("wm1", "WR", 16), ("wm2", "WR", 14),
+               ("tm", "TE", 15)]
+    oppA = [("aq", "QB", 19), ("ar1", "RB", 9), ("ar2", "RB", 7),
+            ("aw1", "WR", 21), ("aw2", "WR", 19), ("aw3", "WR", 17), ("aw4", "WR", 15),
+            ("at", "TE", 14)]
+    oppB = [("bq", "QB", 18), ("br1", "RB", 8), ("br2", "RB", 6),
+            ("bw1", "WR", 20), ("bw2", "WR", 18), ("bw3", "WR", 16), ("bw4", "WR", 14),
+            ("bt", "TE", 13)]
+    state = LeagueState(2025, 14, (_team("me", "Me", True, my_spec),
+                                   _team("oppA", "OppA", False, oppA),
+                                   _team("oppB", "OppB", False, oppB)))
+    values = {pid: _iv(pid, pos, fv) for pid, pos, fv in (*my_spec, *oppA, *oppB)}
+    cands = enumerate_candidates(state, values, "me")
+    counterparties = {c.counterparty_team_id for c in cands}
+    assert counterparties == {"oppA", "oppB"}            # sourced from BOTH
 
 
 def test_never_pads_when_no_targeted_candidate_clears():

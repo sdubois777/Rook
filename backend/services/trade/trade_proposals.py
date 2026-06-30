@@ -65,6 +65,13 @@ _COMFORT_THRESHOLD = 2.0
 # combined, and at most this many per side.
 _MAX_PER_SIDE = 3
 _MATCH_POOL_CAP = 5
+# Per-SHAPE generation cap. With the pools BROADENED to include startable players
+# (not just bench surplus), the raw 1..3-per-side cross-product can blow up in
+# value-clustered rosters. For each shape (give_n, get_n) we keep only the few most
+# value-BALANCED packages — so every shape stays represented (a clean 1-for-1 starter
+# swap isn't crowded out by the many near-zero-imbalance 3-for-3s a bigger package
+# trivially hits) while the count stays bounded. The gate still judges every survivor.
+_PER_SHAPE_CAP = 2
 # A dedicated starter weaker than this fraction of the team's MEDIAN starter is a
 # fixable weakness → that position is a NEED (scale-free, relative to the roster).
 _NEED_REL_FRACTION = 0.6
@@ -364,21 +371,27 @@ def enumerate_candidates(
             continue
         them = analyze_roster(opp, values, rules)
         their_roster_lp = _lineup_roster(opp, values)
-        # MY surplus at a position THEY need AND that materially helps THEM —
-        # capped. The help screen drops junk that would pad multi-player trades.
-        give_pool = [
-            pid for pid in me.surplus_ids
-            if pid in values and values[pid].position in them.needs
-            and contextual_value(_lp(pid), their_roster_lp, rules) > _HELP_EPSILON
-        ][:_MATCH_POOL_CAP]
-        # THEIR surplus at a position I need AND that materially helps ME — capped.
-        get_pool = [
-            pid for pid in them.surplus_ids
-            if pid in values and values[pid].position in me.needs
-            and contextual_value(_lp(pid), my_roster_lp, rules) > _HELP_EPSILON
-        ][:_MATCH_POOL_CAP]
+        # GIVE-pool: ANY of my players (surplus OR a startable piece I can spare) at
+        # a position THEY need that materially helps THEM — so I can pay fair value
+        # for a starter, not only dump bench. Top-valued, capped.
+        give_pool = sorted(
+            (rp.canonical_player_id for rp in my_team.roster
+             if rp.canonical_player_id in values
+             and values[rp.canonical_player_id].position in them.needs
+             and contextual_value(_lp(rp.canonical_player_id), their_roster_lp, rules) > _HELP_EPSILON),
+            key=lambda pid: -values[pid].forward_value,
+        )[:_MATCH_POOL_CAP]
+        # GET-pool: ANY of their players at a position I need that materially improves
+        # MY lineup — STARTABLE players, not just their bench surplus (the funnel fix).
+        get_pool = sorted(
+            (rp.canonical_player_id for rp in opp.roster
+             if rp.canonical_player_id in values
+             and values[rp.canonical_player_id].position in me.needs
+             and contextual_value(_lp(rp.canonical_player_id), my_roster_lp, rules) > _HELP_EPSILON),
+            key=lambda pid: -values[pid].forward_value,
+        )[:_MATCH_POOL_CAP]
         if not give_pool or not get_pool:
-            continue  # no two-sided surplus-for-need fit with this opponent
+            continue  # no two-sided fit with this opponent
 
         opp_size = len(opp.roster)
         for give_n in range(1, _MAX_PER_SIDE + 1):
@@ -387,9 +400,22 @@ def enumerate_candidates(
                     continue
                 if not _both_sides_fit(my_size, opp_size, give_n, get_n, roster_limit):
                     continue
+                shape: list[tuple[float, float, tuple[str, ...], tuple[str, ...]]] = []
                 for give in itertools.combinations(give_pool, give_n):
+                    give_val = sum(values[g].forward_value for g in give)
                     for get in itertools.combinations(get_pool, get_n):
-                        out.append(Candidate(tuple(give), tuple(get), opp.team_id))
+                        # VALUE-FAIRNESS pre-filter (the gate's cond-3 rule): only
+                        # build packages of comparable asset value, so a starter is
+                        # paid for fairly — and the candidate space stays bounded (no
+                        # give-junk-for-their-stud fleeces are even generated).
+                        get_val = sum(values[g].forward_value for g in get)
+                        if not _value_fair(get_val, give_val):
+                            continue
+                        # Rank within the shape by value-balance (then richer target).
+                        shape.append((abs(get_val - give_val), -get_val, give, get))
+                shape.sort(key=lambda s: (s[0], s[1], s[2], s[3]))
+                for _, _, give, get in shape[:_PER_SHAPE_CAP]:
+                    out.append(Candidate(give, get, opp.team_id))
     return out
 
 

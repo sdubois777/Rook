@@ -32,10 +32,12 @@ single env flag and namespaced for one-pass deletion.
     the demo teams and prints engine verdicts (slice 2)
   - the demo league-state source (provider + gate + roster assembly, serving the
     real 2025 per-week layer at a pinned demo week) —
-    `backend/services/trade/trade_demo_source.py`. A realistic **12-team / 15-slot**
-    league snake-drafted from the real ADP pool (`DEMO_TEAM_NAMES` + forced
-    `CASTING` + `_draft_league`, with `starter_slot`/`nfl_team` populated; slice 5b
-    expanded it from the slice-2 ~5-player casting set), the `TRADE_DEMO_MODE` gate
+    `backend/services/trade/trade_demo_source.py`. A realistic **12-team** league
+    seeded from a **REAL auction draft** (`DEMO_ROSTERS` — real manager names + the
+    players each drafted, K/DST stripped, auction $ NOT modeled) resolved name-fuzzy
+    to canonical ids (`_resolve_rosters`), `starter_slot` re-derived from the
+    engine's `forward_value` (`assign_starter_slots`) + `nfl_team` preserved, default
+    acting team `USER_TEAM_NAME`; the `TRADE_DEMO_MODE` gate
     (`trade_demo_enabled` / `maybe_demo_league_source`), and the demo anchor
     `DEMO_SEASON = 2025` / `DEMO_CURRENT_WEEK` (pinned HERE, currently week 14 —
     NOT in the engine or #149 data layer)
@@ -50,7 +52,7 @@ single env flag and namespaced for one-pass deletion.
     redesigned trade page (`frontend/src/pages/Trade.jsx`, behind `league.demo_mode`)
     + `frontend/src/api/trade.js#fetchTradeLeague` consumer (slice 5/5b). The
     opponent selector + the rest of the page are PERMANENT.
-  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_TEAM_NAMES` / `CASTING` /
+  - grep `TRADE_DEMO` / `trade_demo` / `DEMO_TEAM_NAMES` / `DEMO_ROSTERS` /
     `fetchTradeLeague` to find every surface
 - **What is PERMANENT (the real feature, not test):** the league-state **interface**,
   the **in-season value engine**, the **analyzer** + **proposals** agents, the trade

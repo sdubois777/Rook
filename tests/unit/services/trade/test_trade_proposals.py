@@ -154,12 +154,14 @@ def test_cap_at_five():
     assert len(out) <= 5
 
 
-def test_enumerate_candidates_is_now_targeted_need_surplus():
-    # Slice 6 targeting unchanged: my surplus RBs (rm4/rm5) ↔ their RB need; their
-    # surplus WRs (wt5/wt6) ↔ my WR need. give-pool {rm4,rm5} × get-pool {wt5,wt6}.
+def test_enumerate_candidates_is_targeted_and_acquires_starters():
+    # Targeting preserved (gives at their RB need, gets at my WR need) but the
+    # get-pool is BROADENED past bench surplus to their startable WRs, so I can buy
+    # a starter. Bounded by the per-shape cap; every candidate is vs the opponent.
     state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, values, "me")
-    assert len(cands) == 9
+    assert 0 < len(cands) <= 50                                   # bounded
     assert all(c.counterparty_team_id == "opp" for c in cands)
-    assert {p for c in cands for p in c.give_ids} == {"rm4", "rm5"}
-    assert {p for c in cands for p in c.get_ids} == {"wt5", "wt6"}
+    assert {p for c in cands for p in c.give_ids} <= {"rm1", "rm2", "rm3", "rm4", "rm5"}
+    assert {p for c in cands for p in c.get_ids} <= {"wt1", "wt2", "wt3", "wt4", "wt5"}
+    assert {p for c in cands for p in c.get_ids} & {"wt1", "wt2", "wt3"}   # a starter
