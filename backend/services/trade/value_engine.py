@@ -143,11 +143,20 @@ _TREND_WINDOW = 5
 # sustained absence. Free-weeks guard (decision 8c): weeks_stale ≤ 1 → NO decay and
 # NO confidence hit, so a single missed game / a bye at the data edge is tolerated.
 _STALENESS_FREE_WEEKS = 1          # ≤ this many stale weeks → untouched (bye / 1 game)
-# Accelerating decay factor = 1 / (1 + RATE · effective²), effective = stale − free.
-# eff 0 →1.00 (unchanged) · eff 1 →0.67 (gentle) · eff 2 →0.33 · eff 4 →0.11 (Kraft,
-# near floor) · eff 9 →0.02 (Tyreek, floor). Tunable in ONE place.
+# Accelerating decay factor = 1 / (1 + RATE · effective^POWER), effective = stale − free.
+# POWER is the TAIL-STEEPNESS knob: because effective=1 (a 2-week gap) is pinned at
+# RATE·1=0.5 for ANY power, raising POWER steepens ONLY the long-absence tail
+# (weeks_stale ≥ 3) while leaving the short-gap band byte-identical. POWER was 2.0 in
+# #177 (too gentle: a 3-week-out player only ~halved → 0.33, and London read a
+# still-startable 9.2 that masked The Lord's WR need). POWER 5.0 floors true
+# season-enders so a multi-week absentee isn't startable:
+#   stale 1 →1.00 · 2 →0.667 (UNCHANGED from #177) · 3 →0.059 (London → ~floor) ·
+#   5 →0.002 (Kraft, floor) · 10 →~0 (Tyreek, floor). Short gaps (≤2) are NOT touched;
+# only the tail. This is the minimum power that floors the 3-week London enough to
+# deflate The Lord's inflated WR lineup AND unlock Fat Bastard at the UNCHANGED #174
+# gate (recon-verified). Tunable in ONE place.
 _STALENESS_DECAY_RATE = 0.5
-_STALENESS_DECAY_POWER = 2.0
+_STALENESS_DECAY_POWER = 5.0
 # Confidence downgrade by staleness past the free guard (effective stale weeks):
 _STALENESS_LIMITED_WEEKS = 1       # eff ≥ 1 (stale ≥ 2) → at most LIMITED (trend dampened)
 _STALENESS_INSUFFICIENT_WEEKS = 2  # eff ≥ 2 (stale ≥ 3) → INSUFFICIENT (no actionable flag)
