@@ -30,8 +30,8 @@ def _iv(pid, pos, fv):
         canonical_player_id=pid, name=f"P-{pid}", position=pos, forward_value=fv,
         value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -58,14 +58,16 @@ def _agent_with_llm(raw):
     return agent
 
 
-# Gronk-shaped: strong everywhere but WEAK QB (need), surplus bench RB; the opponent
-# is RB-thin (need RB) and holds a SURPLUS QB that upgrades me. The enumerator builds
-# give(surplusRB) -> get(surplusQB); it clears (your +6.6 / their +5.9).
-GRONK = [("weakQB", "QB", 8), ("rb1", "RB", 22), ("rb2", "RB", 20), ("surplusRB", "RB", 14),
+# Gronk-shaped: strong everywhere but a badly WEAK QB (need), surplus bench RB; the
+# opponent is mildly RB-thin with its flex already filled, and holds a SURPLUS QB
+# that's a big upgrade for me. The enumerator builds give(surplusRB) -> get(surplusQB);
+# it clears the LINEUP gate (my QB jump +15 ppg > their RB gain +7).
+GRONK = [("weakQB", "QB", 5), ("rb1", "RB", 22), ("rb2", "RB", 20), ("surplusRB", "RB", 14),
          ("wr1", "WR", 18), ("wr2", "WR", 17), ("wr3", "WR", 16), ("wr4", "WR", 16),
          ("te", "TE", 14), ("te2", "TE", 12)]
-OPP = [("oQB1", "QB", 19), ("surplusQB", "QB", 18), ("orb1", "RB", 7), ("orb2", "RB", 6),
-       ("owr1", "WR", 20), ("owr2", "WR", 18), ("owr3", "WR", 16), ("ote", "TE", 14)]
+OPP = [("oQB1", "QB", 24), ("surplusQB", "QB", 20), ("orb1", "RB", 8), ("orb2", "RB", 7),
+       ("owr1", "WR", 20), ("owr2", "WR", 18), ("owr3", "WR", 16), ("owr4", "WR", 15),
+       ("ote", "TE", 14)]
 
 _GOOD = Candidate(("surplusRB",), ("surplusQB",), "opp")   # what the enumerator builds
 

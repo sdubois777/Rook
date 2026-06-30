@@ -85,6 +85,7 @@ Monetization: free-to-play-style **subscription tiers** (intro/standard/pro) gat
 | ESPN / Sleeper resolvers | `docs/espn_resolver_design.md` · `docs/sleeper_resolver_design.md` |
 | Stripe / billing | `docs/stripe_billing_design.md` (decisions locked) |
 | Trade agent / acceptability model | `docs/trade_agent_design.md` · `docs/trade_acceptability_design.md` (locked) |
+| Trade value / lineup objective | `docs/trade_value_trajectory_design.md` · `docs/trade_lineup_value_design.md` (locked) |
 | Testing/commits | `docs/rules/GIT_RULES.md` |
 | In-season features | `docs/INSEASON.md` |
 | Current stage | `docs/stages/stage-XX-name.md` |

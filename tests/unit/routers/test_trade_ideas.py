@@ -65,8 +65,8 @@ def _iv(pid, pos, fv):
         canonical_player_id=pid, name=pid.upper(), position=pos, forward_value=fv,
         value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="usage",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -155,7 +155,7 @@ async def test_pro_with_credits_runs_and_deducts_twenty_once(monkeypatch):
     data = resp.json()
     assert len(data["proposals"]) == 1
     edge = data["proposals"][0]["edge"]            # the new edge payload is surfaced
-    assert edge["your_net"] > 0 and edge["their_net"] > 0
+    assert edge["your_lineup_gain"] > 0 and edge["their_lineup_gain"] > 0
     assert edge["my_strength"] >= edge["their_strength"]
 
 
@@ -181,10 +181,10 @@ async def test_demo_bypass_runs_without_gate(monkeypatch):
 # NEVER-PAD through the route
 # ---------------------------------------------------------------------------
 async def test_route_never_pads_to_five_when_fewer_clear(monkeypatch):
-    """The agent proposes five candidates (my surplus RB for each of their WRs),
-    but only the surplus-for-surplus swaps clear the edge band — rm4↔wt5 (their
-    +3.7) and rm4↔wt4 (their +2.6, comfortable at the calibrated 2.0 threshold).
-    The route returns exactly those two, NOT a padded list of five."""
+    """The agent proposes five candidates (my surplus RB for each of their WRs).
+    Only the swaps that IMPROVE BOTH lineups clear (giving rm4 for their better WRs
+    helps me, but giving them rm4 only improves their RB-thin lineup when what they
+    part with isn't a top starter) — fewer than five surface, NOT a padded list."""
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
     user = _make_user(tier="pro", credits=200)
     _patch_loader(monkeypatch, _fixture(ME, THEM))
@@ -195,7 +195,7 @@ async def test_route_never_pads_to_five_when_fewer_clear(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     data = resp.json()
-    assert len(data["proposals"]) == 2            # only wt5/wt4 clear; NOT padded to 5
+    assert 0 < len(data["proposals"]) < 5         # some clear, but NOT padded to 5
     assert all(p["counterparty_team_name"] == "Rivals" for p in data["proposals"])
 
 

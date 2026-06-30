@@ -7,6 +7,7 @@ function makeVerdict(overrides = {}) {
     my_team_id: 'me',
     winner: 'you',
     fairness: 'lopsided you',
+    lineup_gain: 12,
     value_delta: 40,
     give_value: 20,
     get_value: 60,
@@ -57,22 +58,22 @@ describe('VerdictPanel — confidence/hedge visibility', () => {
     expect(screen.getByText(/Benchwarmer/)).toBeInTheDocument()
   })
 
-  it('renders exactly the backend value_delta (never re-derived)', () => {
-    render(<VerdictPanel verdict={makeVerdict({ value_delta: 17 })} />)
-    expect(screen.getByText('+17')).toBeInTheDocument()
+  it('renders the lineup gain headline in points/week (never a value-delta)', () => {
+    render(<VerdictPanel verdict={makeVerdict({ lineup_gain: 7.5 })} />)
+    expect(screen.getByText(/\+7\.5 pts\/wk/)).toBeInTheDocument()
   })
 })
 
 describe('VerdictPanel — acceptability read (the other side)', () => {
   it('"likely to accept" renders as a positive read with the grounded why', () => {
     const v = makeVerdict({
-      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: false,
+      acceptability: { verdict: 'likely_accept', their_lineup_gain: 3.7, overtake_flag: false,
         hedged: false, why: 'P-rm4 fills a RB need on their roster' },
     })
     render(<VerdictPanel verdict={v} />)
     expect(screen.getByText('Likely to accept')).toBeInTheDocument()
     expect(screen.getByText(/fills a RB need/)).toBeInTheDocument()
-    expect(screen.getByText('+3.7')).toBeInTheDocument()      // their gain, exact
+    expect(screen.getByText(/\+3\.7 pts\/wk/)).toBeInTheDocument()   // their lineup, exact
   })
 
   it('a trade you WIN but they would reject does NOT look like a win', () => {
@@ -80,19 +81,19 @@ describe('VerdictPanel — acceptability read (the other side)', () => {
     // clear caution — "Likely to reject", their gain negative.
     const v = makeVerdict({
       winner: 'you', fairness: 'lopsided you',
-      acceptability: { verdict: 'likely_reject', their_net: -19, overtake_flag: false,
+      acceptability: { verdict: 'likely_reject', their_lineup_gain: -19, overtake_flag: false,
         hedged: false, why: "they're set at RB — P-scrub adds little for them" },
     })
     render(<VerdictPanel verdict={v} />)
     expect(screen.getByText('You win')).toBeInTheDocument()      // your-side verdict
     expect(screen.getByText('Likely to reject')).toBeInTheDocument()  // their-side caution
-    expect(screen.getByText('-19')).toBeInTheDocument()          // their loss, not rounded up
+    expect(screen.getByText(/-19 pts\/wk/)).toBeInTheDocument()       // their lineup falls, not rounded up
     expect(screen.getByText(/adds little for them/)).toBeInTheDocument()
   })
 
   it('"may haggle" renders tentatively', () => {
     const v = makeVerdict({
-      acceptability: { verdict: 'marginal', their_net: 2.6, overtake_flag: false,
+      acceptability: { verdict: 'marginal', their_lineup_gain: 2.6, overtake_flag: false,
         hedged: false, why: 'P-rm4 is a modest WR upgrade for them; they may haggle' },
     })
     render(<VerdictPanel verdict={v} />)
@@ -102,7 +103,7 @@ describe('VerdictPanel — acceptability read (the other side)', () => {
 
   it('surfaces the overtake flag when the trade helps them more on the field', () => {
     const v = makeVerdict({
-      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: true,
+      acceptability: { verdict: 'likely_accept', their_lineup_gain: 3.7, overtake_flag: true,
         hedged: false, why: 'P-rm4 fills a RB need on their roster' },
     })
     render(<VerdictPanel verdict={v} />)
@@ -111,7 +112,7 @@ describe('VerdictPanel — acceptability read (the other side)', () => {
 
   it('a hedged read shows the tentative chip on the acceptability section', () => {
     const v = makeVerdict({
-      acceptability: { verdict: 'likely_accept', their_net: 3.7, overtake_flag: false,
+      acceptability: { verdict: 'likely_accept', their_lineup_gain: 3.7, overtake_flag: false,
         hedged: true, why: 'P-rm4 fills a RB need on their roster (tentative — limited data on a player involved)' },
     })
     render(<VerdictPanel verdict={v} />)

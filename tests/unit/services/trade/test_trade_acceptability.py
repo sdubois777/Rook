@@ -13,7 +13,7 @@ from backend.services.trade.trade_proposals import (
     ACCEPT_LIKELY,
     ACCEPT_MARGINAL,
     ACCEPT_REJECT,
-    _COMFORT_THRESHOLD,
+    _LINEUP_GAIN_THRESHOLD,
     acceptability_read,
 )
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
@@ -31,12 +31,14 @@ THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
 
 
 def _iv(pid, pos, fv):
+    # forward_ppg == forward_value so lineup_strength_ppg (the acceptability basis)
+    # is exercised in the same units as the gate threshold.
     return InSeasonValue(
         canonical_player_id=pid, name=f"P-{pid}", position=pos, forward_value=fv,
         value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -53,25 +55,25 @@ def _league(my_spec, opp_spec):
 
 
 # ---------------------------------------------------------------------------
-# LIKELY ACCEPT — they improve comfortably (their_net > _COMFORT_THRESHOLD)
+# LIKELY ACCEPT — the trade improves THEIR starting lineup (>= threshold)
 # ---------------------------------------------------------------------------
-def test_likely_accept_when_their_net_clears_comfort():
+def test_likely_accept_when_their_lineup_improves():
     state, values = _league(ME_STRONG, THEM)
-    # Give my surplus RB (rm4) for their surplus WR (wt5): I'm WR-thin so wt5
-    # starts for me; they're RB-thin so rm4 fills a need for them.
+    # Give my surplus RB (rm4) for their surplus WR (wt5): rm4 starts at RB for the
+    # RB-thin opponent → their lineup improves comfortably.
     acc = acceptability_read(state, values, "me", ["rm4"], ["wt5"], hedged=False)
     assert acc.verdict == ACCEPT_LIKELY
-    assert acc.their_net > _COMFORT_THRESHOLD     # 3.7 in this fixture
+    assert acc.their_lineup_gain >= _LINEUP_GAIN_THRESHOLD
     assert acc.overtake_flag is False             # I stay stronger on the field
     assert "need" in acc.why                      # grounded in their roster
 
 
 # ---------------------------------------------------------------------------
-# LIKELY REJECT — the headline: great for YOU, they'd never take it
+# LIKELY REJECT — the headline: great for YOU, their lineup falls → they'd reject
 # ---------------------------------------------------------------------------
 def test_likely_reject_when_trade_is_a_robbery_for_you():
-    # I give a scrub WR (5) and get their RB stud (24): huge for me, but they
-    # LOSE value — their_net goes negative → likely_reject, NOT a win.
+    # I give a scrub WR (5) and get their RB stud (24): huge for me, but they LOSE
+    # their RB1 → THEIR lineup falls → likely_reject, NOT a win.
     me = [("q", "QB", 22), ("r1", "RB", 20), ("r2", "RB", 18), ("w1", "WR", 16),
           ("w2", "WR", 14), ("w3", "WR", 12), ("t", "TE", 13), ("scrub", "WR", 5)]
     them = [("q2", "QB", 19), ("stud", "RB", 24), ("r9", "RB", 9), ("w4", "WR", 15),
@@ -79,19 +81,22 @@ def test_likely_reject_when_trade_is_a_robbery_for_you():
     state, values = _league(me, them)
     acc = acceptability_read(state, values, "me", ["scrub"], ["stud"], hedged=False)
     assert acc.verdict == ACCEPT_REJECT
-    assert acc.their_net <= 0                      # they lose value
+    assert acc.their_lineup_gain <= 0              # their lineup falls
     assert "little" in acc.why                     # honest: no value to them
 
 
 # ---------------------------------------------------------------------------
-# MARGINAL — positive for them but below comfort → they may haggle
+# MARGINAL — small lineup improvement, below the threshold → they may haggle
 # ---------------------------------------------------------------------------
-def test_marginal_when_their_net_is_positive_but_below_comfort():
-    state, values = _league(ME_STRONG, THEM)
-    # rm5 -> wt4: their_net 1.1 (0 < x <= comfort) — a modest upgrade for them.
-    acc = acceptability_read(state, values, "me", ["rm5"], ["wt4"], hedged=False)
+def test_marginal_when_their_lineup_barely_improves():
+    # Give them a modest surplus RB (10) — their RB-thin lineup (9, 7) improves only
+    # a little (a ~3 ppg bump), below the threshold → marginal.
+    me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
+          ("rmid", "RB", 10), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
+    state, values = _league(me, THEM)
+    acc = acceptability_read(state, values, "me", ["rmid"], ["wt6"], hedged=False)
     assert acc.verdict == ACCEPT_MARGINAL
-    assert 0 < acc.their_net <= _COMFORT_THRESHOLD
+    assert 0 < acc.their_lineup_gain < _LINEUP_GAIN_THRESHOLD
     assert "haggle" in acc.why
 
 
@@ -101,9 +106,9 @@ def test_marginal_when_their_net_is_positive_but_below_comfort():
 def test_overtake_flag_when_trade_lets_them_pass_you_on_the_field():
     state, values = _league(ME_WEAK, THEM)
     # Same beneficial swap, but my roster is weak everywhere except the RB I send
-    # → I fall behind on the field even though they'd happily accept.
+    # → I fall behind on the field even though their lineup happily improves.
     acc = acceptability_read(state, values, "me", ["rm4"], ["wt5"], hedged=False)
-    assert acc.verdict == ACCEPT_LIKELY            # they still improve comfortably
+    assert acc.verdict == ACCEPT_LIKELY            # their lineup still improves
     assert acc.overtake_flag is True               # but it makes them stronger than me
     assert "stronger than yours" in acc.why
 
@@ -126,4 +131,4 @@ def test_safe_read_when_counterparty_not_found():
     # "ghost" isn't on any team → no counterparty holds it.
     acc = acceptability_read(state, values, "me", ["rm4"], ["ghost"], hedged=False)
     assert acc.verdict == ACCEPT_REJECT
-    assert acc.their_net == 0.0
+    assert acc.their_lineup_gain == 0.0

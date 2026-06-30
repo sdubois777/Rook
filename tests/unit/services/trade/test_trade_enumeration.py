@@ -2,7 +2,7 @@
 Targeted multi-player ENUMERATION tests (slice 6, trade_acceptability_design.md
 §6d/§6e). This slice changes only WHICH candidates get generated — need/surplus
 targeting + bounded multi-player shapes — never how they're judged. The slice-4
-edge-band gate + rank-by-your_net are reused UNCHANGED, so every test that asserts
+edge-band gate + ranking are reused (now on lineup gain), so every test that asserts
 "surfaces" / "doesn't clear" exercises the SAME gate.
 
 The headline: a multi-player consolidation the old exhaustive 1-for-1 enumeration
@@ -27,9 +27,11 @@ from backend.services.trade.trade_analysis import analyze_trade
 from backend.services.trade.trade_proposals import (
     Candidate,
     _can_fit,
+    _lineup_roster,
     analyze_roster,
     enumerate_candidates,
     evaluate_candidates,
+    evaluate_edge_band,
     merge_candidates,
 )
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
@@ -40,8 +42,8 @@ def _iv(pid, pos, fv):
         canonical_player_id=pid, name=f"P-{pid}", position=pos, forward_value=fv,
         value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -84,9 +86,10 @@ def test_need_surplus_identifies_rb_surplus_and_wr_need():
 
 
 # ---------------------------------------------------------------------------
-# BUILD 2 — the HEADLINE: a multi-player consolidation impossible under 1-for-1
+# BUILD 2 — multi-player shapes are GENERATED; the lineup objective judges them
+# (the old per-player double-count that made a 2-for-2 look better is now dead).
 # ---------------------------------------------------------------------------
-def test_multiplayer_consolidation_is_generated_and_surfaces():
+def test_multiplayer_shapes_generated_and_judged_by_lineup_gain():
     state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, values, "me")
 
@@ -94,12 +97,17 @@ def test_multiplayer_consolidation_is_generated_and_surfaces():
     assert consolidation in cands             # GENERATED (1-for-1 never could)
 
     surfaced = evaluate_candidates(state, values, "me", cands, roster_limit=16)
-    shapes = {(c.give_ids, c.get_ids) for c, _, _ in surfaced}
-    assert (("rm4", "rm5"), ("wt5", "wt6")) in shapes   # CLEARS the gate + surfaces
-    # it is genuinely multi-player on both sides — no 1-for-1 produces it.
-    multi = [(c, e) for c, _, e in surfaced
-             if len(c.give_ids) == 2 and len(c.get_ids) == 2]
-    assert multi and all(e.your_net > 0 and e.their_net > 0 for _, e in multi)
+    assert surfaced                                          # genuine swaps still surface
+    # every surfaced trade IMPROVES the starting lineup — not value accumulation.
+    assert all(e.your_lineup_gain > 0 for _, _, e in surfaced)
+
+    # Double-count killed: getting a SECOND WR for the one empty WR slot adds no
+    # lineup gain over getting one — the 2-for-2 is not credited beyond the 1-for-1.
+    my = _lineup_roster(state.my_team, values)
+    their = _lineup_roster(state.teams[1], values)
+    one = evaluate_edge_band(my, their, ["rm4"], ["wt5"], roster_limit=16)
+    two = evaluate_edge_band(my, their, ["rm4", "rm5"], ["wt5", "wt6"], roster_limit=16)
+    assert two.your_lineup_gain <= one.your_lineup_gain + 0.01
 
 
 def test_enumeration_targets_matched_surplus_for_need_only():

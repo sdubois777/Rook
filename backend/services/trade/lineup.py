@@ -33,10 +33,20 @@ from typing import Optional
 @dataclass(frozen=True)
 class LineupPlayer:
     """A roster entry as the optimizer needs it: a stable id (for deterministic
-    tie-breaking), a position, and the player's forward_value."""
+    tie-breaking), a position, and the player's forward_value.
+
+    ``forward_ppg`` is the player's projected points/week (the pre-scaling level
+    the pipeline computes) — the optimizer still RANKS by the 0-100 forward_value,
+    but ``lineup_strength_ppg`` reads forward_ppg to report lineup change in real
+    points (trade_lineup_value_design.md §3). ``rising`` carries the #170 buy-low /
+    ascending-usage signal for the depth clause (§5a). Both default-safe so
+    existing callers that build a bare LineupPlayer are unaffected; the optimizer
+    ignores them."""
     player_id: str
     position: str
     forward_value: float
+    forward_ppg: float = 0.0
+    rising: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,3 +141,22 @@ def roster_strength(roster: list[LineupPlayer], rules: Optional[LineupRules] = N
     fantasy is won by who you start). Thin wrapper over optimal_lineup; bench
     depth is explicitly a v2 refinement (see the design's deferred ledger)."""
     return optimal_lineup(roster, rules).strength
+
+
+def fit_to_limit(roster: list[LineupPlayer], limit: int) -> list[LineupPlayer]:
+    """The roster after forced drops: keep the top ``limit`` players by
+    forward_value, dropping the lowest (the roster-slot guard's lowest-value rule).
+    Shared by the edge band and the verdict so the 'resulting roster' is identical."""
+    if len(roster) <= limit:
+        return roster
+    ranked = sorted(roster, key=lambda p: (p.forward_value, p.player_id))
+    return ranked[len(roster) - limit:]
+
+
+def lineup_strength_ppg(roster: list[LineupPlayer], rules: Optional[LineupRules] = None) -> float:
+    """The optimal starting lineup's total projected POINTS/WEEK — the same
+    starters optimal_lineup chooses (ranked by 0-100 forward_value), summed by
+    their forward_ppg (trade_lineup_value_design.md §3). This is the honest unit
+    the trade verdict + lineup gate use; 0-100 deltas are non-additive and
+    meaningless. Degenerate rosters (empty slots) sum what legally starts."""
+    return round(sum(p.forward_ppg for p in optimal_lineup(roster, rules).starters), 2)

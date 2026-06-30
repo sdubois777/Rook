@@ -60,8 +60,8 @@ def _iv(pid, name, fv):
         canonical_player_id=pid, name=name, position="WR", forward_value=fv,
         value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="usage",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -260,11 +260,11 @@ async def test_response_is_additive_and_carries_acceptability(monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     # existing fields still present + intact (additive change)
-    for f in ("winner", "fairness", "value_delta", "give_value", "get_value",
+    for f in ("winner", "fairness", "lineup_gain", "value_delta", "give_value", "get_value",
               "confidence", "hedged", "roster_guard", "rationale", "demo_mode"):
         assert f in data
     acc = data["acceptability"]
-    assert set(acc) == {"verdict", "their_net", "overtake_flag", "hedged", "why"}
+    assert set(acc) == {"verdict", "their_lineup_gain", "overtake_flag", "hedged", "why"}
     assert acc["verdict"] in {"likely_accept", "marginal", "likely_reject"}
 
 
@@ -281,9 +281,9 @@ async def test_winning_trade_they_would_reject_is_not_a_win(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     data = resp.json()
-    assert data["winner"] == "you"                       # great for me
+    assert data["winner"] == "you"                       # my lineup jumps (WR 20 → 90)
     assert data["acceptability"]["verdict"] == "likely_reject"
-    assert data["acceptability"]["their_net"] <= 0       # they lose value
+    assert data["acceptability"]["their_lineup_gain"] <= 0   # their lineup falls
 
 
 # ---------------------------------------------------------------------------

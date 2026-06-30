@@ -18,11 +18,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from backend.services.trade.league_state import LeagueState
+from backend.services.trade.lineup import (
+    DEFAULT_LINEUP_RULES,
+    LineupPlayer,
+    fit_to_limit,
+    lineup_strength_ppg,
+)
 from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
-# Verdict thresholds on summed forward_value (each player 0-100).
-_FAIR_DELTA = 8.0     # |delta| within this → even / fair
-_LEAN_DELTA = 28.0    # within this → a lean; beyond → lopsided
+# Verdict is the change in your STARTING LINEUP's points/week on the RESULTING
+# roster (trade_lineup_value_design.md §7), NOT summed forward_value. Thresholds
+# in lineup ppg: within the maintains-tolerance reads "even"; a gain at/above the
+# value threshold reads "lopsided", between is a "lean".
+_MAINTAINS_TOLERANCE = 0.5    # |Δlineup| within this → even / barely moves
+_LINEUP_GAIN_THRESHOLD = 5.0  # |Δlineup| at/above this → lopsided; between → lean
 
 _CONF_RANK = {Confidence.FULL: 2, Confidence.LIMITED: 1, Confidence.INSUFFICIENT: 0}
 
@@ -63,8 +72,9 @@ class TradeAnalysis:
     get: list[PlayerGrounding]
     give_value: float
     get_value: float
-    value_delta: float            # get − give (positive ⇒ you gain value)
-    winner: str                   # "you" | "opponent" | "even"
+    value_delta: float            # get − give of raw forward_value (grounding only; does NOT drive the verdict)
+    lineup_gain: float            # HEADLINE: Δ your starting-lineup points/week (resulting roster, net of drops)
+    winner: str                   # "you" | "opponent" | "even" — from lineup_gain
     fairness: str                 # fair | lean you/opponent | lopsided you/opponent
     confidence: str               # floor confidence across involved players
     hedged: bool
@@ -175,16 +185,35 @@ def analyze_trade(
     get = [_grounding(values[pid], "get") for pid in get_ids]
     give_value = round(sum(g.forward_value for g in give), 1)
     get_value = round(sum(g.forward_value for g in get), 1)
-    value_delta = round(get_value - give_value, 1)
+    value_delta = round(get_value - give_value, 1)   # grounding only; NOT the verdict
 
-    side = "you" if value_delta > 0 else "opponent"
-    abs_d = abs(value_delta)
-    if abs_d <= _FAIR_DELTA:
+    # HEADLINE (§7): the change in YOUR optimal STARTING LINEUP's points/week on the
+    # RESULTING roster (incoming + outgoing + forced drops), evaluated ONCE — not a
+    # per-player value sum. This is what "did the trade make my team better" means.
+    my_team = next(t for t in state.teams if t.team_id == my_team_id)
+
+    def _lp(pid: str) -> LineupPlayer:
+        v = values[pid]
+        return LineupPlayer(pid, v.position, v.forward_value, v.forward_ppg, bool(v.buy_low))
+
+    give_set = set(give_ids)
+    my_pre = [_lp(rp.canonical_player_id) for rp in my_team.roster if rp.canonical_player_id in values]
+    my_post = fit_to_limit(
+        [p for p in my_pre if p.player_id not in give_set] + [_lp(g) for g in get_ids],
+        roster_limit,
+    )
+    lineup_gain = round(
+        lineup_strength_ppg(my_post, DEFAULT_LINEUP_RULES)
+        - lineup_strength_ppg(my_pre, DEFAULT_LINEUP_RULES), 2,
+    )
+
+    abs_g = abs(lineup_gain)
+    if abs_g <= _MAINTAINS_TOLERANCE:
         winner, fairness = "even", "fair"
-    elif abs_d <= _LEAN_DELTA:
-        winner, fairness = side, f"lean {side}"
     else:
-        winner, fairness = side, f"lopsided {side}"
+        side = "you" if lineup_gain > 0 else "opponent"
+        fairness = f"lopsided {side}" if abs_g >= _LINEUP_GAIN_THRESHOLD else f"lean {side}"
+        winner = side
 
     # Confidence floor + hedge: any non-full player softens the verdict.
     involved = [values[pid] for pid in (*give_ids, *get_ids)]
@@ -205,6 +234,7 @@ def analyze_trade(
     return TradeAnalysis(
         my_team_id=my_team_id, give=give, get=get,
         give_value=give_value, get_value=get_value, value_delta=value_delta,
+        lineup_gain=lineup_gain,
         winner=winner, fairness=fairness, confidence=floor.value,
         hedged=hedged, hedge_reason=hedge_reason, roster_guard=guard,
     )

@@ -22,9 +22,11 @@ from backend.services.trade.lineup import (
     DEFAULT_LINEUP_RULES,
     LineupPlayer,
     LineupRules,
+    fit_to_limit,
+    lineup_strength_ppg,
     optimal_lineup,
 )
-from backend.services.trade.overtake import overtake_guard
+from backend.services.trade.overtake import apply_trade, overtake_guard
 from backend.services.trade.trade_analysis import (
     DEFAULT_ROSTER_LIMIT,
     TradeAnalysis,
@@ -35,11 +37,18 @@ from backend.services.trade.value_engine import InSeasonValue
 
 MAX_PROPOSALS = 5
 
-# Condition 2 (Fork 3a): the opponent must improve COMFORTABLY, not by a
-# rounding-error margin they'd haggle over. Named tunable constant (contextual-
-# value points; the forward_value scale). CALIBRATED v1 default (§8 ledger):
-# at 3.0, against the real 12-team league only equal 1-for-1 swaps cleared; 2.0
-# loosens slightly so genuine surplus-for-need consolidations surface.
+# --- LINEUP-IMPROVEMENT OBJECTIVE (trade_lineup_value_design.md) --------------
+# A trade is judged by the change in your STARTING LINEUP's projected points/week,
+# computed ONCE on the RESULTING roster (incoming + outgoing + forced drops) — NOT
+# by summing the values of the players involved (which double-counted multi-player
+# gets and never debited drops). §4 two-clause value rule:
+_LINEUP_GAIN_THRESHOLD = 5.0   # clause (a): ppg starting-lineup gain to have value
+                               # (anchor LOW ~5; below this is dwarfed by weekly variance)
+_MAINTAINS_TOLERANCE = 0.5     # clause (b): "maintains" = Δlineup >= -this (anti-churn)
+
+# DEPRECATED (superseded by the lineup objective): the old contextual-value comfort
+# epsilon. Kept only as the acceptability READ's marginal-band label; the GATE's
+# "acceptable to them" is now "improves their lineup" (§9), not a value epsilon.
 _COMFORT_THRESHOLD = 2.0
 
 # Targeted-enumeration bounds (slice 6, §6d/§6e). HARD CAP 3 players per side
@@ -90,41 +99,54 @@ def merge_candidates(*candidate_lists: list[Candidate]) -> list[Candidate]:
 
 @dataclass(frozen=True)
 class EdgeBand:
-    """The §3 edge-band scoring of a candidate (all contextual). Surfaced numbers
-    so the analyzer/UI can show why a trade cleared (or didn't)."""
-    your_net: float
-    their_net: float
-    my_strength: float        # post-trade starting strength (mine)
-    their_strength: float     # post-trade starting strength (theirs)
+    """The §6 edge-band scoring of a candidate, in LINEUP points/week. Both sides
+    are evaluated on their RESULTING roster (net of forced drops), once — not as a
+    per-player value sum."""
+    your_lineup_gain: float   # Δ my starting-lineup ppg (resulting roster, net of drops)
+    their_lineup_gain: float  # Δ their starting-lineup ppg (resulting roster)
+    my_strength: float        # post-trade 0-100 lineup strength (mine) — for the overtake guard
+    their_strength: float     # post-trade 0-100 lineup strength (theirs)
     clears: bool
 
 
-# Acceptability verdicts (the analyzer's opponent-side READ, §5/§6c). NOT a gate:
-# any trade is evaluated and reported honestly — "great for you, they'd reject it"
-# is surfaced as a rejection, never rounded up to a win.
-ACCEPT_LIKELY = "likely_accept"      # their_net > _COMFORT_THRESHOLD
-ACCEPT_MARGINAL = "marginal"         # 0 < their_net <= _COMFORT_THRESHOLD
-ACCEPT_REJECT = "likely_reject"      # their_net <= 0
+def _has_value(lineup_gain: float, gets_rising_bench: bool) -> bool:
+    """§4 two-clause value rule (in lineup ppg). (a) a real starting-lineup upgrade,
+    OR (b) the lineup is maintained AND an incoming bench piece is a rising/buy-low
+    stash. A flat-usage bench add maintains the lineup but fails (b) → no value."""
+    if lineup_gain >= _LINEUP_GAIN_THRESHOLD:
+        return True                                              # clause (a)
+    if lineup_gain >= -_MAINTAINS_TOLERANCE and gets_rising_bench:
+        return True                                              # clause (b)
+    return False
+
+
+# Acceptability verdicts (the analyzer's opponent-side READ, §7). NOT a gate: any
+# trade is evaluated and reported honestly — the verdict is whether the trade
+# IMPROVES THEIR STARTING LINEUP (their resulting-roster lineup gain in ppg), not a
+# value epsilon. "great for you, they'd reject it" surfaces as a rejection.
+ACCEPT_LIKELY = "likely_accept"      # their_lineup_gain >= _LINEUP_GAIN_THRESHOLD
+ACCEPT_MARGINAL = "marginal"         # 0 < their_lineup_gain < _LINEUP_GAIN_THRESHOLD
+ACCEPT_REJECT = "likely_reject"      # their_lineup_gain <= 0 (their lineup doesn't improve)
 
 
 @dataclass(frozen=True)
 class Acceptability:
     """Would the OTHER side likely accept the trade the user built? A read derived
-    from the slice-4 edge band evaluated from the counterparty's perspective —
-    their_net (their contextual gain) drives the verdict, the overtake guard adds
-    the 'helps them more on the field' flag, and ``why`` is grounded in their
-    roster. It is a READ, not a filter (§6c)."""
+    from the edge band evaluated from the counterparty's perspective — their
+    resulting-roster LINEUP gain (ppg) drives the verdict (§7: does it improve their
+    lineup), the overtake guard adds the 'helps them more on the field' flag, and
+    ``why`` is grounded in their roster. It is a READ, not a filter."""
     verdict: str
-    their_net: float
+    their_lineup_gain: float  # their resulting-roster starting-lineup change (ppg)
     overtake_flag: bool       # the trade would make THEIR lineup overtake yours
     hedged: bool              # opponent-side data is limited/insufficient → soft read
     why: str
 
 
-def _verdict_for(their_net: float) -> str:
-    if their_net > _COMFORT_THRESHOLD:
+def _verdict_for(their_lineup_gain: float) -> str:
+    if their_lineup_gain >= _LINEUP_GAIN_THRESHOLD:
         return ACCEPT_LIKELY
-    if their_net <= 0:
+    if their_lineup_gain <= 0:
         return ACCEPT_REJECT
     return ACCEPT_MARGINAL
 
@@ -170,6 +192,7 @@ def acceptability_read(
     get_ids: tuple[str, ...] | list[str],
     *,
     hedged: bool,
+    roster_limit: int = DEFAULT_ROSTER_LIMIT,
 ) -> Acceptability:
     """The §5/§6c analyzer read: evaluate the SAME trade from the counterparty's
     side and report whether they'd likely accept it. The counterparty is the team
@@ -191,15 +214,15 @@ def acceptability_read(
     my_roster = _lineup_roster(my_team, values)
     their_roster = _lineup_roster(counterparty, values)
     try:
-        edge = evaluate_edge_band(my_roster, their_roster, give_ids, get_ids)
+        edge = evaluate_edge_band(my_roster, their_roster, give_ids, get_ids, roster_limit=roster_limit)
     except Exception:
         return Acceptability(ACCEPT_REJECT, 0.0, False, hedged,
                              "could not evaluate the other side of this trade")
 
     overtake_flag = edge.my_strength < edge.their_strength   # guard failed → they overtake
-    verdict = _verdict_for(edge.their_net)
+    verdict = _verdict_for(edge.their_lineup_gain)
     why = _acceptability_why(values, their_roster, give_ids, verdict, overtake_flag, hedged)
-    return Acceptability(verdict, edge.their_net, overtake_flag, hedged, why)
+    return Acceptability(verdict, edge.their_lineup_gain, overtake_flag, hedged, why)
 
 
 @dataclass(frozen=True)
@@ -345,13 +368,19 @@ def enumerate_candidates(
 
 
 def _lineup_roster(team: TeamState, values: dict[str, InSeasonValue]) -> list[LineupPlayer]:
-    """A team's roster as LineupPlayers (position + forward_value) for the lineup
-    / contextual primitives. Players without a computed value are skipped."""
-    return [
-        LineupPlayer(rp.canonical_player_id, rp.position, values[rp.canonical_player_id].forward_value)
-        for rp in team.roster
-        if rp.canonical_player_id in values
-    ]
+    """A team's roster as LineupPlayers for the lineup / contextual primitives.
+    Carries forward_ppg (for lineup_strength_ppg) and the #170 buy-low/ascending
+    signal (for the depth clause §5a). Players without a computed value are skipped."""
+    out = []
+    for rp in team.roster:
+        v = values.get(rp.canonical_player_id)
+        if v is None:
+            continue
+        out.append(LineupPlayer(
+            rp.canonical_player_id, rp.position, v.forward_value,
+            forward_ppg=v.forward_ppg, rising=bool(v.buy_low),
+        ))
+    return out
 
 
 def evaluate_edge_band(
@@ -359,39 +388,47 @@ def evaluate_edge_band(
     their_roster: list[LineupPlayer],
     give_ids: tuple[str, ...] | list[str],
     get_ids: tuple[str, ...] | list[str],
+    *,
+    roster_limit: int = DEFAULT_ROSTER_LIMIT,
+    rules: LineupRules | None = None,
 ) -> EdgeBand:
-    """Score a candidate against the §3 edge band. PERSPECTIVE is the crux: each
-    player is valued against the roster EVALUATING the trade — a player CURRENTLY
-    ON a roster is valued against that roster WITHOUT him (what that side loses),
-    an INCOMING player against the roster as-is (what that side gains)."""
-    my_by = {p.player_id: p for p in my_roster}
-    their_by = {p.player_id: p for p in their_roster}
-    give = [my_by[g] for g in give_ids]      # on MY roster, going to them
-    get = [their_by[g] for g in get_ids]     # on THEIR roster, coming to me
+    """Score a candidate by the §6 lineup objective. Each side's gain is the change
+    in its OPTIMAL STARTING LINEUP's points/week, computed ONCE on the RESULTING
+    roster (after incoming + outgoing + forced drops) — not a per-player value sum.
+    This kills the multi-player double-count and debits forced drops automatically.
+    The §4 two-clause value rule decides "has value"; cond 3 keeps the edge; cond 4
+    is the #168 relative overtake guard."""
+    rules = rules or DEFAULT_LINEUP_RULES
+    give_set, get_set = set(give_ids), set(get_ids)
 
-    def _without(roster, pid):
-        return [p for p in roster if p.player_id != pid]
+    post = apply_trade(my_roster, their_roster, list(give_ids), list(get_ids))
+    my_post = fit_to_limit(list(post.my_roster), roster_limit)
+    their_post = fit_to_limit(list(post.their_roster), roster_limit)
 
-    # Your perspective (against MY roster).
-    your_get_ctx = sum(contextual_value(x, my_roster) for x in get)                       # incoming
-    your_give_ctx = sum(contextual_value(g, _without(my_roster, g.player_id)) for g in give)  # what I lose
-    your_net = round(your_get_ctx - your_give_ctx, 1)
+    your_lineup_gain = round(lineup_strength_ppg(my_post, rules) - lineup_strength_ppg(my_roster, rules), 2)
+    their_lineup_gain = round(lineup_strength_ppg(their_post, rules) - lineup_strength_ppg(their_roster, rules), 2)
 
-    # Their perspective (against THEIR roster) — NOT the negation of your_net.
-    their_get_ctx = sum(contextual_value(g, their_roster) for g in give)                  # my players, incoming to them
-    their_give_ctx = sum(contextual_value(x, _without(their_roster, x.player_id)) for x in get)  # what they lose
-    their_net = round(their_get_ctx - their_give_ctx, 1)
+    # Depth clause (§5a): an INCOMING bench piece (not in the resulting starting
+    # lineup) carrying the #170 rising/buy-low signal — a stash, not flat churn.
+    my_starters = {p.player_id for p in optimal_lineup(my_post, rules).starters}
+    their_starters = {p.player_id for p in optimal_lineup(their_post, rules).starters}
+    my_rising_bench = any(
+        p.rising and p.player_id not in my_starters for p in my_post if p.player_id in get_set
+    )
+    their_rising_bench = any(
+        p.rising and p.player_id not in their_starters for p in their_post if p.player_id in give_set
+    )
 
-    guard = overtake_guard(my_roster, their_roster, list(give_ids), list(get_ids))  # condition 4
+    guard = overtake_guard(my_roster, their_roster, list(give_ids), list(get_ids), rules)  # cond 4 (#168)
 
     clears = (
-        your_net > 0                          # 1: you improve
-        and their_net > _COMFORT_THRESHOLD    # 2: they improve comfortably
-        and your_net > their_net              # 3: you keep the edge
-        and guard.passes                      # 4: you don't fall behind on the field
+        _has_value(your_lineup_gain, my_rising_bench)           # 1: value to you (§4)
+        and _has_value(their_lineup_gain, their_rising_bench)   # 2: acceptable to them (§4, their roster)
+        and your_lineup_gain > their_lineup_gain                # 3: you keep the edge
+        and guard.passes                                        # 4: no overtake
     )
     return EdgeBand(
-        your_net=your_net, their_net=their_net,
+        your_lineup_gain=your_lineup_gain, their_lineup_gain=their_lineup_gain,
         my_strength=guard.my_strength, their_strength=guard.their_strength, clears=clears,
     )
 
@@ -430,7 +467,9 @@ def evaluate_candidates(
             continue
         try:
             validate_trade(state, values, my_team_id, list(cand.give_ids), list(cand.get_ids))
-            edge = evaluate_edge_band(my_roster, their_roster, cand.give_ids, cand.get_ids)
+            edge = evaluate_edge_band(
+                my_roster, their_roster, cand.give_ids, cand.get_ids, roster_limit=roster_limit,
+            )
             if not edge.clears:
                 continue
             analysis = analyze_trade(
@@ -441,5 +480,5 @@ def evaluate_candidates(
             continue  # unresolvable candidate — skip, never surface
         scored.append((cand, analysis, edge))
 
-    scored.sort(key=lambda ce: ce[2].your_net, reverse=True)
+    scored.sort(key=lambda ce: ce[2].your_lineup_gain, reverse=True)
     return scored[:max_results]

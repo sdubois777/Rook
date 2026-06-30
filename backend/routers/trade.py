@@ -65,10 +65,11 @@ class RosterGuardOut(BaseModel):
 
 
 class AcceptabilityOut(BaseModel):
-    """Would the OTHER side likely accept (§5/§6c)? A READ, not a gate — a trade
-    that's great for you but they'd reject is reported as a rejection, never a win."""
+    """Would the OTHER side likely accept? A READ, not a gate — the verdict is
+    whether the trade IMPROVES THEIR STARTING LINEUP (their resulting-roster lineup
+    gain, ppg), not a value epsilon. Great-for-you/they'd-reject reads as a rejection."""
     verdict: str             # "likely_accept" | "marginal" | "likely_reject"
-    their_net: float         # their contextual gain (drives the verdict)
+    their_lineup_gain: float # their resulting-roster starting-lineup change (points/week)
     overtake_flag: bool      # the trade would make their lineup stronger than yours
     hedged: bool             # opponent-side data limited/insufficient → soft read
     why: str                 # one-line, grounded in their roster
@@ -78,7 +79,8 @@ class TradeAnalyzeResponse(BaseModel):
     my_team_id: str
     winner: str
     fairness: str
-    value_delta: float
+    lineup_gain: float       # HEADLINE: Δ your starting-lineup points/week (resulting roster)
+    value_delta: float       # raw forward_value delta — grounding only, does NOT drive the verdict
     give_value: float
     get_value: float
     confidence: str
@@ -89,9 +91,6 @@ class TradeAnalyzeResponse(BaseModel):
     roster_guard: RosterGuardOut
     rationale: str
     demo_mode: bool
-    # Additive (slice 5): the opponent-side acceptability read. Optional so the
-    # /ideas verdicts (which already cleared the band + carry their own edge
-    # payload) need no change.
     acceptability: Optional[AcceptabilityOut] = None
 
 
@@ -102,10 +101,10 @@ class TradeIdeasRequest(BaseModel):
 
 
 class EdgeBandOut(BaseModel):
-    your_net: float          # your contextual gain
-    their_net: float         # their contextual gain (comfortable per the gate)
-    my_strength: float       # post-trade starting strength (yours)
-    their_strength: float    # post-trade starting strength (theirs)
+    your_lineup_gain: float  # your resulting-roster starting-lineup change (points/week)
+    their_lineup_gain: float # their resulting-roster starting-lineup change (points/week)
+    my_strength: float       # post-trade 0-100 lineup strength (yours)
+    their_strength: float    # post-trade 0-100 lineup strength (theirs)
 
 
 class TradeIdea(BaseModel):
@@ -200,6 +199,7 @@ def _to_response(
         )
     return TradeAnalyzeResponse(
         my_team_id=a.my_team_id, winner=a.winner, fairness=a.fairness,
+        lineup_gain=a.lineup_gain,
         value_delta=a.value_delta, give_value=a.give_value, get_value=a.get_value,
         confidence=a.confidence, hedged=a.hedged, hedge_reason=a.hedge_reason,
         give=[out(p) for p in a.give], get=[out(p) for p in a.get],
@@ -255,11 +255,12 @@ async def analyze(
     #    Additive, reuses the slice-4 edge band; hedges with the verdict's own
     #    confidence. Never gates — it only annotates the verdict.
     acc = acceptability_read(
-        state, values, body.my_team_id, body.give, body.get, hedged=analysis.hedged,
+        state, values, body.my_team_id, body.give, body.get,
+        hedged=analysis.hedged, roster_limit=roster_limit,
     )
     acceptability = AcceptabilityOut(
-        verdict=acc.verdict, their_net=acc.their_net, overtake_flag=acc.overtake_flag,
-        hedged=acc.hedged, why=acc.why,
+        verdict=acc.verdict, their_lineup_gain=acc.their_lineup_gain,
+        overtake_flag=acc.overtake_flag, hedged=acc.hedged, why=acc.why,
     )
 
     return _to_response(analysis, demo, acceptability)
@@ -320,7 +321,7 @@ async def ideas(
             why=analysis.rationale,
             verdict=_to_response(analysis, demo),
             edge=EdgeBandOut(
-                your_net=edge.your_net, their_net=edge.their_net,
+                your_lineup_gain=edge.your_lineup_gain, their_lineup_gain=edge.their_lineup_gain,
                 my_strength=edge.my_strength, their_strength=edge.their_strength,
             ),
         ))

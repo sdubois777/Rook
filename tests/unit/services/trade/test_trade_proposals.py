@@ -1,8 +1,13 @@
 """
-Edge-band gate tests (slice 4, trade_acceptability_design.md §3). The headline:
-the gate REJECTS the zero-sum robbery the old winner=="you" bar surfaced, and
-SURFACES genuine positive-sum trades — judged in contextual value against BOTH
-rosters, with the overtake guard as condition 4.
+Edge-band gate tests — now on the LINEUP-IMPROVEMENT objective
+(trade_lineup_value_design.md §6). A candidate surfaces only if it IMPROVES YOUR
+STARTING LINEUP (clause a) or maintains-it-with-rising-depth (clause b), the SAME
+rule holds for the opponent's resulting roster, you keep the edge, and you don't
+fall behind. Gains are in real points/week on the RESULTING roster — not a
+per-player contextual-value sum.
+
+Fixture numbers double as forward_ppg (so lineup_strength_ppg is meaningful), and
+the gate threshold applies in those points/week units.
 """
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamS
 from backend.services.trade.lineup import LineupPlayer
 from backend.services.trade.trade_proposals import (
     Candidate,
-    _COMFORT_THRESHOLD,
+    _LINEUP_GAIN_THRESHOLD,
     enumerate_candidates,
     evaluate_candidates,
     evaluate_edge_band,
@@ -19,11 +24,12 @@ from backend.services.trade.value_engine import Confidence, InSeasonValue, Value
 
 
 def _lp(spec):
-    return [LineupPlayer(pid, pos, fv) for pid, pos, fv in spec]
+    # forward_ppg == forward_value here so lineup_strength_ppg is exercised.
+    return [LineupPlayer(pid, pos, fv, forward_ppg=fv) for pid, pos, fv in spec]
 
 
-# Roster shapes (pid, pos, forward_value). Me: RB-rich / WR-thin (strong);
-# Them: WR-rich / RB-thin. The slice-2 asymmetry that makes positive-sum exist.
+# Me: RB-rich / WR-thin (only 2 WR → an empty WR3 slot an incoming WR fills);
+# Them: WR-rich / RB-thin. The asymmetry that makes a positive-sum trade exist.
 ME_STRONG = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
              ("rm4", "RB", 15), ("rm5", "RB", 13),  # rm4/rm5: surplus RBs (below my FLEX)
              ("wm1", "WR", 16), ("wm2", "WR", 14), ("tm", "TE", 15)]
@@ -34,66 +40,64 @@ THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
 
 
 # ---------------------------------------------------------------------------
-# evaluate_edge_band — the four conditions
+# evaluate_edge_band — the lineup-objective gate
 # ---------------------------------------------------------------------------
-def test_mutual_benefit_trade_clears_all_four_conditions():
-    # Give my surplus RB (rm4, my 4th) for their surplus WR (wt5, benched): I'm
-    # WR-thin so wt5 starts for me; they're RB-thin so rm4 starts for them.
+def test_mutual_benefit_trade_clears_on_lineup_improvement():
+    # Give my surplus RB (rm4) for their surplus WR (wt5): wt5 fills my empty WR3
+    # slot (lineup up), rm4 starts at RB for the RB-thin opponent (their lineup up).
     e = evaluate_edge_band(_lp(ME_STRONG), _lp(THEM), ["rm4"], ["wt5"])
     assert e.clears is True
-    assert e.your_net > 0                      # 1: I improve
-    assert e.their_net > _COMFORT_THRESHOLD    # 2: they improve comfortably
-    assert e.your_net > e.their_net            # 3: I keep the edge
-    assert e.my_strength >= e.their_strength   # 4: I stay stronger on the field
+    assert e.your_lineup_gain >= _LINEUP_GAIN_THRESHOLD   # 1: my starting lineup improves
+    assert e.their_lineup_gain >= _LINEUP_GAIN_THRESHOLD  # 2: theirs improves too
+    assert e.your_lineup_gain > e.their_lineup_gain       # 3: I keep the edge
+    assert e.my_strength >= e.their_strength              # 4: I don't fall behind
 
 
-def test_robbery_is_rejected_by_condition_2():
-    # The Najee-for-Taylor class: I give a scrub, get their stud → huge your_net,
-    # but they LOSE — the OLD winner=="you" bar would have surfaced it.
+def test_robbery_is_rejected_because_their_lineup_craters():
+    # I give a scrub, get their RB stud — great for me, but they lose their RB1, so
+    # THEIR lineup falls → fails the "acceptable to them" clause. Was a "win" under
+    # the old winner=="you" / value-sum bar.
     me = _lp([("q", "QB", 22), ("r1", "RB", 20), ("r2", "RB", 18),
               ("w1", "WR", 16), ("w2", "WR", 14), ("w3", "WR", 12),
               ("t", "TE", 13), ("scrub", "WR", 5)])
     them = _lp([("q2", "QB", 19), ("stud", "RB", 24), ("r9", "RB", 9),
                 ("w4", "WR", 15), ("w5", "WR", 13), ("w6", "WR", 11), ("t2", "TE", 10)])
     e = evaluate_edge_band(me, them, ["scrub"], ["stud"])
-    assert e.your_net > 0          # I'd clearly win (old bar would surface this)
-    assert e.their_net < 0         # but they lose — fails condition 2
+    assert e.your_lineup_gain > 0          # I'd clearly improve (old bar would surface this)
+    assert e.their_lineup_gain < 0         # but their lineup falls → they'd reject
     assert e.clears is False
 
 
-def test_perspective_is_per_roster_not_zero_sum():
-    # In a positive-sum trade BOTH nets are positive — impossible under the old
-    # intrinsic/zero-sum value (where their_net would be exactly −your_net).
+def test_both_lineups_improve_in_a_positive_sum_trade():
+    # A real positive-sum trade improves BOTH starting lineups — only representable
+    # because value is roster-relative (the swap fills each side's hole).
     e = evaluate_edge_band(_lp(ME_STRONG), _lp(THEM), ["rm4"], ["wt5"])
-    assert e.your_net > 0 and e.their_net > 0
-    assert e.their_net != -e.your_net
+    assert e.your_lineup_gain > 0 and e.their_lineup_gain > 0
 
 
 def test_condition_4_allows_an_already_behind_team_to_trade_up():
-    # SEMANTICS CHANGE (fix/overtake-guard-relative): condition 4 is now no-
-    # overtake-only (relative), not absolute. My roster is weak everywhere except
-    # the RB I give → I'm BEHIND on the field pre-trade (91 vs 117) and still
-    # behind post-trade (104 vs 125) — but the trade caused NO overtake (I was
-    # never ahead). The OLD absolute guard wrongly blocked this; it now CLEARS.
+    # No-overtake-only guard (#168): my roster is weak, I'm behind pre- and post-
+    # trade, but the trade causes no ahead→behind flip → c4 doesn't block. The
+    # incoming WR still fills my empty WR3 slot, so my lineup improves.
     me_weak = _lp([("qm", "QB", 8), ("rm1", "RB", 24), ("rm2", "RB", 22),
                    ("rm3", "RB", 20), ("rm4", "RB", 15),
                    ("wm1", "WR", 6), ("wm2", "WR", 5), ("tm", "TE", 6)])
     e = evaluate_edge_band(me_weak, _lp(THEM), ["rm4"], ["wt5"])
-    assert e.your_net > 0 and e.their_net > _COMFORT_THRESHOLD and e.your_net > e.their_net
+    assert e.your_lineup_gain > 0 and e.their_lineup_gain > 0
     assert e.my_strength < e.their_strength    # I stay behind on the field...
-    assert e.clears is True                    # ...but c4 no longer blocks it
+    assert e.clears is True                    # ...but c4 (no-overtake) no longer blocks it
 
 
 # ---------------------------------------------------------------------------
 # evaluate_candidates — surfacing, never-pad, ranking (LeagueState path)
 # ---------------------------------------------------------------------------
-def _iv(pid, pos, fv):
+def _iv(pid, pos, fv, *, buy_low=False, trend=ValueTrend.STABLE):
     return InSeasonValue(
         canonical_player_id=pid, name=f"P-{pid}", position=pos, forward_value=fv,
-        value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="",
+        value_trend=trend, buy_low=buy_low, sell_high=False, why="",
         games_played=10, usage_recent=0.5, usage_prior=0.5, usage_delta=0.0,
-        recency_ppg=fv / 5, expected_ppg=fv / 5, opportunity_gap=0.0, sustainable=True,
-        forward_ppg=fv / 5, schedule_modifier=0.0, prior_projection=None,
+        recency_ppg=fv, expected_ppg=fv, opportunity_gap=0.0, sustainable=True,
+        forward_ppg=fv, schedule_modifier=0.0, prior_projection=None,
         prior_weight=0.0, name_bias_guard_applied=False, confidence=Confidence.FULL,
         confidence_reason="",
     )
@@ -115,11 +119,11 @@ def test_evaluate_candidates_surfaces_the_mutual_benefit_trade():
     out = evaluate_candidates(state, values, "me", [cand], roster_limit=16)
     assert len(out) == 1
     _, _, edge = out[0]
-    assert edge.clears and edge.your_net > 0 and edge.their_net > _COMFORT_THRESHOLD
+    assert edge.clears and edge.your_lineup_gain >= _LINEUP_GAIN_THRESHOLD
 
 
 def test_never_pads_when_nothing_clears():
-    # I'm strictly stronger at every position → no swap helps both sides.
+    # I'm strictly stronger at every position → no swap improves my lineup.
     my_spec = [("q", "QB", 25), ("r1", "RB", 24), ("r2", "RB", 22),
                ("w1", "WR", 20), ("w2", "WR", 18), ("w3", "WR", 16),
                ("t", "TE", 14), ("br", "RB", 13), ("bw", "WR", 12)]
@@ -132,34 +136,30 @@ def test_never_pads_when_nothing_clears():
     assert out == []        # first-class empty — not padded/loosened
 
 
-def test_cleared_candidates_ranked_by_your_net_descending():
+def test_cleared_candidates_ranked_by_lineup_gain_descending():
     state, values = _league(ME_STRONG, THEM)
-    # Three beneficial swaps of surplus RBs for surplus WRs, distinct your_net.
     cands = [Candidate(("rm4",), ("wt5",), "opp"),
              Candidate(("rm4",), ("wt6",), "opp"),
              Candidate(("rm5",), ("wt6",), "opp")]
     out = evaluate_candidates(state, values, "me", cands, roster_limit=16)
     assert len(out) >= 2
-    nets = [edge.your_net for _, _, edge in out]
-    assert nets == sorted(nets, reverse=True)    # highest your_net first
+    gains = [edge.your_lineup_gain for _, _, edge in out]
+    assert gains == sorted(gains, reverse=True)    # highest lineup gain first
 
 
 def test_cap_at_five():
     state, values = _league(ME_STRONG, THEM)
-    # Many duplicate-ish candidates; even if all cleared, never more than 5.
     cands = [Candidate(("rm4",), (w,), "opp") for w in ("wt5", "wt4", "wt3", "wt2", "wt1")]
     out = evaluate_candidates(state, values, "me", cands * 3, roster_limit=16)
     assert len(out) <= 5
 
 
 def test_enumerate_candidates_is_now_targeted_need_surplus():
-    # Slice 6 replaced exhaustive 1-for-1 with need/surplus targeting: my surplus
-    # RBs (rm4/rm5) ↔ their need (RB); their surplus WRs (wt5/wt6) ↔ my need (WR).
-    # give-pool {rm4,rm5} × get-pool {wt5,wt6}, shapes 1-2 per side = 3×3 = 9.
+    # Slice 6 targeting unchanged: my surplus RBs (rm4/rm5) ↔ their RB need; their
+    # surplus WRs (wt5/wt6) ↔ my WR need. give-pool {rm4,rm5} × get-pool {wt5,wt6}.
     state, values = _league(ME_STRONG, THEM)
     cands = enumerate_candidates(state, values, "me")
     assert len(cands) == 9
     assert all(c.counterparty_team_id == "opp" for c in cands)
-    # only the matched surplus pieces appear — never their starters.
     assert {p for c in cands for p in c.give_ids} == {"rm4", "rm5"}
     assert {p for c in cands for p in c.get_ids} == {"wt5", "wt6"}

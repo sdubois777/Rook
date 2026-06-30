@@ -78,7 +78,8 @@ const ACCEPT = {
 function AcceptabilitySection({ a }) {
   if (!a) return null
   const s = ACCEPT[a.verdict] || ACCEPT.marginal
-  const netSign = a.their_net > 0 ? '+' : ''
+  const gain = a.their_lineup_gain
+  const netSign = gain > 0 ? '+' : ''
   return (
     <div className={`rounded-md border px-3 py-2.5 ${s.box}`}>
       <div className="flex items-center justify-between gap-3">
@@ -93,9 +94,9 @@ function AcceptabilitySection({ a }) {
           )}
         </div>
         <div className="text-right text-xs text-slate-400 tabular-nums">
-          <span className="text-slate-300">their gain </span>
-          <span className={a.their_net > 0 ? 'text-emerald-400' : 'text-red-400'}>
-            {netSign}{a.their_net}
+          <span className="text-slate-300">their lineup </span>
+          <span className={gain > 0 ? 'text-emerald-400' : 'text-red-400'}>
+            {netSign}{gain} pts/wk
           </span>
         </div>
       </div>
@@ -119,7 +120,8 @@ export default function VerdictPanel({ verdict: v, className = '' }) {
     ? 'border-brand-accent/40 bg-brand/10'
     : 'border-amber-500/40 bg-amber-500/[0.06]'
 
-  const deltaSign = v.value_delta > 0 ? '+' : ''
+  const gain = v.lineup_gain ?? 0
+  const gainSign = gain > 0 ? '+' : ''
 
   return (
     <div className={`rounded-lg border border-border bg-surface-1 ${className}`}>
@@ -142,9 +144,9 @@ export default function VerdictPanel({ verdict: v, className = '' }) {
           </div>
           <div className="text-right text-xs text-slate-400">
             <div className="tabular-nums">
-              <span className="text-slate-300">value </span>
-              <span className={v.value_delta >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                {deltaSign}{v.value_delta}
+              <span className="text-slate-300">your lineup </span>
+              <span className={gain >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                {gainSign}{gain} pts/wk
               </span>
             </div>
             <div className="tabular-nums">get {v.get_value} · give {v.give_value}</div>
