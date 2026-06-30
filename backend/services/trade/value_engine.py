@@ -126,6 +126,32 @@ _FULL_TREND_GAMES = 4    # ≥ this (and same team) → FULL confidence
 # it means the two halves are different offenses → widen uncertainty.
 _TREND_WINDOW = 5
 
+# --- player availability / staleness (docs/trade_value_availability_design.md) ---
+# The window operates over games PLAYED with no notion of WHEN — so an injured
+# player keeps pre-injury value forever (the Kraft bug: out since wk9, read 70.9
+# "sell-high" at wk14). The fix keys on weeks_stale = weeks since the last played
+# game, BYES NOT COUNTED (a bye is neither a zero nor staleness — §2). Two SEPARATE
+# mechanics ride that primitive:
+#   (3a) staleness → CONFIDENCE: a stale player downgrades, and because the #170
+#        trajectory/opp-gap factors are ALREADY confidence-scaled, the trend signal
+#        dampens for free — no new trajectory machinery.
+#   (3b) staleness → BASE-LEVEL DECAY: confidence-scaling only touches the trend
+#        multiplier, NOT the base level (Kraft's 70.9 IS the stale base; prior_w=0
+#        at ≥5 games). So decay the base forward_ppg toward the floor, applied like
+#        the #170 factors (before anchor-scaling). This is the actual inflation fix.
+# CONSERVATIVE curve (decision 8b): gentle for the first stale week, steep for a
+# sustained absence. Free-weeks guard (decision 8c): weeks_stale ≤ 1 → NO decay and
+# NO confidence hit, so a single missed game / a bye at the data edge is tolerated.
+_STALENESS_FREE_WEEKS = 1          # ≤ this many stale weeks → untouched (bye / 1 game)
+# Accelerating decay factor = 1 / (1 + RATE · effective²), effective = stale − free.
+# eff 0 →1.00 (unchanged) · eff 1 →0.67 (gentle) · eff 2 →0.33 · eff 4 →0.11 (Kraft,
+# near floor) · eff 9 →0.02 (Tyreek, floor). Tunable in ONE place.
+_STALENESS_DECAY_RATE = 0.5
+_STALENESS_DECAY_POWER = 2.0
+# Confidence downgrade by staleness past the free guard (effective stale weeks):
+_STALENESS_LIMITED_WEEKS = 1       # eff ≥ 1 (stale ≥ 2) → at most LIMITED (trend dampened)
+_STALENESS_INSUFFICIENT_WEEKS = 2  # eff ≥ 2 (stale ≥ 3) → INSUFFICIENT (no actionable flag)
+
 
 class ValueTrend(str, Enum):
     RISING = "rising"
@@ -224,16 +250,80 @@ def _team_changed_in_window(df_played: pd.DataFrame, window: int = _TREND_WINDOW
     return len(set(teams)) > 1
 
 
-def _assess_confidence(games: int, team_changed: bool) -> tuple[Confidence, str]:
-    """Grade the in-season read by how much (and how clean) the history is."""
+# ---------------------------------------------------------------------------
+# availability / staleness (schedule-driven; the engine never fetches — byes are
+# injected, exactly like weekly_usage)
+# ---------------------------------------------------------------------------
+def bye_weeks_from_schedule(schedule_df) -> dict[str, set[int]]:
+    """{team: {bye_week, …}} from an nflverse schedule frame (REG only): a team
+    absent from a week's games is on bye. PURE — pass the ALREADY-CACHED schedule
+    (fetch_schedules / warehouse.schedule); the value engine never fetches."""
+    out: dict[str, set[int]] = {}
+    if schedule_df is None or getattr(schedule_df, "empty", True):
+        return out
+    df = schedule_df
+    if "game_type" in df.columns:
+        df = df[df["game_type"] == "REG"]
+    teams = set(df["home_team"]).union(df["away_team"])
+    weeks = set(int(w) for w in df["week"].tolist())
+    played: dict[str, set[int]] = {t: set() for t in teams}
+    for row in df.itertuples(index=False):
+        played[getattr(row, "home_team")].add(int(getattr(row, "week")))
+        played[getattr(row, "away_team")].add(int(getattr(row, "week")))
+    for t in teams:
+        out[t] = {w for w in weeks if w not in played[t]}
+    return out
+
+
+def weeks_stale(
+    last_played_week: Optional[int],
+    current_week: int,
+    team_bye_weeks: Optional[set[int]] = None,
+) -> int:
+    """Weeks since the player last played — BYES NOT COUNTED (§2). A bye in the gap
+    is neither an absence nor a zero, so it is subtracted: a player whose only
+    missed week is his team's bye reads 0 stale, while a sustained injury reads the
+    full run of missed games. Returns 0 when the player is current (or no history)."""
+    if last_played_week is None or last_played_week >= current_week:
+        return 0
+    byes = team_bye_weeks or set()
+    span = range(last_played_week + 1, current_week + 1)
+    missed_byes = sum(1 for w in span if w in byes)
+    return (current_week - last_played_week) - missed_byes
+
+
+def _staleness_decay(stale: float) -> float:
+    """Base-level decay multiplier (3b) — accelerating: gentle for the first stale
+    week past the free guard, steep for a sustained absence. Centered at 1.0 (the
+    #158 safety: a current player, stale ≤ free, is UNTOUCHED)."""
+    effective = max(0.0, stale - _STALENESS_FREE_WEEKS)
+    if effective <= 0:
+        return 1.0
+    return 1.0 / (1.0 + _STALENESS_DECAY_RATE * effective ** _STALENESS_DECAY_POWER)
+
+
+def _assess_confidence(
+    games: int, team_changed: bool, stale: float = 0.0,
+) -> tuple[Confidence, str]:
+    """Grade the in-season read by how much (and how clean) the history is — and
+    how STALE it is. A long-absent player with plenty of (old) games is no longer
+    FULL: staleness past the free guard downgrades confidence, which (because the
+    #170 factors are confidence-scaled) automatically dampens his trend signal."""
     if games < _MIN_TREND_GAMES:
         return Confidence.INSUFFICIENT, f"only {games} played game(s) — no trend"
+    effective_stale = stale - _STALENESS_FREE_WEEKS
+    if effective_stale >= _STALENESS_INSUFFICIENT_WEEKS:
+        return Confidence.INSUFFICIENT, (
+            f"{int(stale)} weeks since last game — stale, no actionable read"
+        )
     if team_changed:
         return Confidence.LIMITED, (
             f"team change within last-{_TREND_WINDOW} window — trajectory not "
             f"cleanly computable across a mid-window team change (cross-team "
             f"share denominator)"
         )
+    if effective_stale >= _STALENESS_LIMITED_WEEKS:
+        return Confidence.LIMITED, f"{int(stale)} weeks since last game — stale trend"
     if games < _FULL_TREND_GAMES:
         return Confidence.LIMITED, f"{games} played games — partial trend window"
     return Confidence.FULL, f"{games} played games"
@@ -459,12 +549,18 @@ def compute_player_value(
     prior_projection_ppg: Optional[float] = None,
     schedule_modifier: float = 0.0,
     anchors: Optional[dict] = None,
+    stale_weeks: float = 0.0,
 ) -> InSeasonValue:
     """Derive one player's in-season value from their per-week rows.
 
     ``prior_projection_ppg`` is the preseason expectation expressed as PPR per
     game — it enters ONLY as a weak prior, down-weighted as the in-season sample
     grows and discounted further when the role decays (name-bias guard).
+
+    ``stale_weeks`` is weeks since the last played game (byes excluded — see
+    ``weeks_stale``). 0 for a current player → the value is UNCHANGED (the #158
+    safety). A sustained absence both downgrades confidence (dampening the #170
+    trend factor) and decays the base level toward the floor.
     """
     df = _played_weeks(weeks, current_week)
     games = int(len(df))
@@ -489,7 +585,7 @@ def compute_player_value(
         )
 
     team_changed = _team_changed_in_window(df)
-    confidence, confidence_reason = _assess_confidence(games, team_changed)
+    confidence, confidence_reason = _assess_confidence(games, team_changed, stale_weeks)
 
     u_recent, u_prior, u_delta, trend = usage_trend(df)
     form = recency_ppg(df)
@@ -541,6 +637,13 @@ def compute_player_value(
         usage_trajectory_factor(u_delta, tscale) * opp_gap_factor(gap, expected, tscale)
     )
     forward_ppg = round(forward_ppg * combined_factor, 2)
+
+    # --- STALENESS base-level decay (3b): the availability fix. Applied like the
+    # #170 factors — per-player, BEFORE anchor-scaling — so a player who hasn't
+    # played in weeks decays toward the floor instead of holding stale pre-injury
+    # value. Unconditional on confidence (confidence handles the trend half); 1.0
+    # for a current player, so the frozen calibration is untouched.
+    forward_ppg = round(forward_ppg * _staleness_decay(stale_weeks), 2)
 
     forward_value = _scale_0_100(forward_ppg + schedule_modifier, position, anchors)
 
@@ -637,12 +740,20 @@ def evaluate_league(
     *,
     priors: Optional[dict[str, float]] = None,
     schedule_modifiers: Optional[dict[str, float]] = None,
+    bye_weeks: Optional[dict[str, set[int]]] = None,
 ) -> dict[str, InSeasonValue]:
     """Value every rostered player in a ``LeagueState`` against the per-week
     usage table (the #149 layer output). Pure — inject ``weekly_usage`` for tests.
+
+    ``bye_weeks`` ({team: {bye_week, …}}, from the already-cached schedule via
+    ``bye_weeks_from_schedule``) lets per-player staleness EXCLUDE byes. When
+    omitted, staleness uses the raw played-week gap (a single bye is still absorbed
+    by the free-weeks guard); pass it to correctly discount multi-week absences
+    that straddle a bye.
     """
     priors = priors or {}
     schedule_modifiers = schedule_modifiers or {}
+    bye_weeks = bye_weeks or {}
     by_player = {
         pid: grp for pid, grp in weekly_usage.groupby("canonical_player_id")
     } if not weekly_usage.empty else {}
@@ -671,6 +782,7 @@ def evaluate_league(
                 pd.DataFrame(columns=["week", "snap_pct", "target_share",
                                       "fantasy_points_ppr", "targets", "carries"]),
             )
+            stale = _stale_weeks_for(weeks, rp, league_state.week, bye_weeks)
             out[rp.canonical_player_id] = compute_player_value(
                 canonical_player_id=rp.canonical_player_id,
                 name=rp.name,
@@ -680,5 +792,25 @@ def evaluate_league(
                 prior_projection_ppg=priors.get(rp.canonical_player_id),
                 schedule_modifier=schedule_modifiers.get(rp.canonical_player_id, 0.0),
                 anchors=anchors,
+                stale_weeks=stale,
             )
     return out
+
+
+def _stale_weeks_for(weeks, rp, current_week: int, bye_weeks: dict[str, set[int]]) -> float:
+    """Per-player staleness for ``evaluate_league``: last played week from the
+    #149 rows, team resolved from the most-recent row's ``nfl_team`` (falling back
+    to ``RosterPlayer.nfl_team``), byes from the injected schedule map."""
+    if weeks is None or getattr(weeks, "empty", True):
+        return 0.0
+    played = weeks[weeks["week"] <= current_week]
+    if played.empty:
+        return 0.0
+    played = played.sort_values("week")
+    last_played = int(played["week"].max())
+    team = None
+    if "nfl_team" in played.columns:
+        recent_team = played["nfl_team"].dropna()
+        team = recent_team.iloc[-1] if len(recent_team) else None
+    team = team or getattr(rp, "nfl_team", None)
+    return weeks_stale(last_played, current_week, bye_weeks.get(team, set()) if team else set())

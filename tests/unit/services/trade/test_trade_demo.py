@@ -136,7 +136,10 @@ def _series(tier: str):
     """Return (rows, prior_ppg) for a tier, mirroring the real-cast shapes."""
     def rows(snaps, targets, points, *, teams=None, weeks=None, tgts=None, carries=None):
         n = len(snaps)
-        weeks = weeks or list(range(1, n + 1))
+        # Anchor the synthetic games to END at the demo's current week so these are
+        # CURRENTLY-ACTIVE players with N recent games (not games stranded in weeks
+        # 1..N, which the availability model would correctly read as a stale absence).
+        weeks = weeks or list(range(DEMO_CURRENT_WEEK - n + 1, DEMO_CURRENT_WEEK + 1))
         teams = teams or ["AAA"] * n
         return [
             {"week": weeks[i], "snap_pct": snaps[i], "target_share": targets[i],
