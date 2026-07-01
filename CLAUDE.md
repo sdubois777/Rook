@@ -1,7 +1,9 @@
-# Fantasy Football AI Platform — Claude Code Entry Point
+# Rook — Fantasy Football AI Platform — Claude Code Entry Point
 
 This file is read automatically at the start of every session.
-Read it fully before writing any code.
+Read it fully before writing any code. (Branding/repo are all **Rook**. The Railway
+service hostname remains `fantasymanager-production.up.railway.app` — the extension's
+hardcoded API base; it works, intentionally left as-is.)
 
 ---
 
@@ -20,25 +22,55 @@ git push origin feature/your-change
 gh pr create --base develop --fill
 # Wait for CI green, then:
 gh pr merge --squash --delete-branch
-
-# To release develop -> production (main):
-gh pr create --base main --head develop --title "Release"
-gh pr merge --squash
 ```
+
+**Releasing develop → main (reconcile-branch — IMPORTANT).** A direct
+`develop → main` PR comes up `BEHIND` (main carries squash/merge release commits
+develop lacks), and develop's branch protection **blocks `gh pr update-branch`**.
+So releases use a reconcile branch whose tree equals develop's:
+
+```
+git fetch origin main develop
+git checkout -B release-NN origin/main
+git merge origin/develop -X theirs --no-edit       # develop is authoritative
+git diff origin/develop release-NN --stat          # MUST be empty (tree == develop)
+git push -u origin release-NN
+gh pr create --base main --head release-NN --title "Release: ... ; develop authoritative"
+# CI green → MERGE COMMIT (not squash), then verify:
+git diff origin/main origin/develop --stat         # MUST be empty
+```
+
+- **Stephen drives every `release → main` manually** — never auto-release; a bug
+  report or a "fix it" is NOT a release go-ahead.
+- Backend changes do **nothing in prod until released** (Railway deploys from main).
+  Extension changes take effect on local rebuild + reload — no release needed to
+  *test*, but they're not live for users until shipped.
+- Keep unrelated working-tree files out of commits. Known junk artifact:
+  `frontend/public/android-chrome-192x192.png` keeps reappearing —
+  `git checkout --` it, never commit. Also `docs/PROJECT_STATE.md` (untracked audit).
 
 ---
 
 ## What This Project Is
 
-Full-season fantasy football management platform powered by AI agents.
-The user's league is on **Yahoo Fantasy**, **auction draft format**.
+**Rook** (rookff.com) — a full-season fantasy football management SaaS powered by
+AI agents. Multi-user, multi-platform: **Yahoo, ESPN, and Sleeper**, both **auction
+and snake** draft formats (all four platform×format combinations live in production
+as of June 2026).
 
 Three phases:
 1. **Pre-draft pipeline** — 6 research agents build a structured "draft bible"
-2. **Live draft** — Agent controls Yahoo draft room via Playwright, gives real-time recommendations
-3. **In-season** — Trade analyzer, lineup optimizer, waiver wire agent
+2. **Live draft** — a **sideloaded browser extension** reads the draft room and
+   relays events to the backend, which gives real-time AI recommendations. One
+   poller per platform/format; all map onto a single backend event contract. (The
+   old Playwright bridge is superseded — see the Live-Draft Extension section.)
+3. **In-season** — Trade analyzer, lineup optimizer, waiver wire agent (not yet built)
 
 Core philosophy: **never trust third-party projections**. Build valuations from raw data and chain-of-reasoning. The canonical failure case this system exists to prevent: Keenan Allen signing with LAC should have automatically flagged Ladd McConkey's target share as capped. It didn't in 2024. It must in this system.
+
+Monetization: free-to-play-style **subscription tiers** (intro/standard/pro) gated by
+`User.tier`; Stripe billing is **designed but not yet implemented** — see
+`docs/stripe_billing_design.md`.
 
 ---
 
@@ -49,7 +81,11 @@ Core philosophy: **never trust third-party projections**. Build valuations from 
 | Any agent | `docs/rules/COST_RULES.md` + `docs/rules/PATTERNS.md` |
 | Any agent | `docs/AGENTS.md` for that agent's spec |
 | Database work | `docs/SCHEMA.md` |
-| Yahoo/Playwright | `docs/LIVE_DRAFT.md` |
+| Live-draft extension (any platform) | the "Live Draft — Browser Extension Architecture" section below |
+| ESPN / Sleeper resolvers | `docs/espn_resolver_design.md` · `docs/sleeper_resolver_design.md` |
+| Stripe / billing | `docs/stripe_billing_design.md` (decisions locked) |
+| Trade agent / acceptability model | `docs/trade_agent_design.md` · `docs/trade_acceptability_design.md` (locked) |
+| Trade value / lineup objective | `docs/trade_value_trajectory_design.md` · `docs/trade_lineup_value_design.md` · `docs/trade_value_availability_design.md` (locked) |
 | Testing/commits | `docs/rules/GIT_RULES.md` |
 | In-season features | `docs/INSEASON.md` |
 | Current stage | `docs/stages/stage-XX-name.md` |
@@ -72,10 +108,15 @@ Core philosophy: **never trust third-party projections**. Build valuations from 
 | Migrations | Alembic |
 | Backend | FastAPI + WebSockets |
 | Task scheduling | APScheduler |
-| Yahoo draft control | Playwright |
+| Live draft control | **Browser extension** (MV3, content scripts) — `extension/` |
+| Auth | Clerk (production mode) |
+| Billing | Stripe (designed, not yet implemented) |
 | Frontend | React + Vite + Tailwind + Zustand |
-| Hosting | Railway |
-| CI/CD | GitHub Actions |
+| Hosting | Railway (backend deploys from `main`) |
+| CI/CD | GitHub Actions (`backend` / `frontend` / `extension` checks, all green) |
+
+> Playwright (`yahoo_playwright.py`) was the original draft bridge — **superseded**
+> by the browser-extension pollers. Kept only for reference.
 
 ---
 
@@ -284,8 +325,12 @@ fantasy-football-ai/
 │   │   ├── yahoo_api.py         # Yahoo Fantasy OAuth + league data
 │   │   └── yahoo_playwright.py  # Yahoo draft room automation
 │   ├── models/
-│   ├── routers/
+│   ├── routers/                # draft.py = live-draft relay; webhooks.py = Clerk (+Stripe future)
 │   └── websocket/
+├── extension/                  # MV3 browser extension — live-draft pollers (Yahoo/ESPN/Sleeper)
+│   ├── src/content_scripts/    # *_draft.js pollers + *_resolve.mjs pure parse logic
+│   ├── manifest.json
+│   └── test/fixtures/{auction,espn,sleeper}/   # REAL captured DOM/frames
 ├── frontend/
 ├── tests/
 │   ├── unit/
@@ -303,7 +348,10 @@ fantasy-football-ai/
 
 ## Current Project Status
 
-1228 backend tests. 33 frontend tests. 12 extension tests.
+**~1401 backend tests · ~203 frontend tests · 113 extension tests (112 pass / 1
+skip).** All three CI checks green. Last major work (June 2026): **ESPN + Sleeper
+live-draft pollers shipped to prod; draft refresh-resilience hardened; Stripe billing
+design locked (not implemented).**
 
 - [x] Stage 1: Foundation
 - [x] Stage 2: Data ingestion
@@ -493,10 +541,50 @@ fantasy-football-ai/
     board grid) → your_turn / your_turn_soon / snake_status / snake_pick. Gate is
     content-based in both directions (see Cross-Poller Rule). Verified against
     real captures (snake-{onclock,waiting,postpick}.html).
-  REMAINING (see Known Issues):
-  - Serpentine board mapping is asserted from the rule, not yet from a real
-    round-boundary (round-turn) capture — re-verify to lock pick 12→13.
-  - 2-3 low-tier QBs (Tua, Purdy) sit slightly early (~38); minor.
+  Yahoo snake (yahoo_snake_resolve.mjs) + auction both live in prod.
+  Snake board mapping (incl. the round boundary) confirmed working in real drafts.
+  Minor open: 2-3 low-tier QBs (Tua, Purdy) adp_ai ~38, slightly early.
+- [x] ESPN live-draft poller — SHIPPED to prod (both formats), June 2026
+  React + styled-jsx SPA, no stable root → content-gated. Two resolvers:
+  espn_salarycap_resolve.mjs (nomination/bid_update/clock/draft_pick/teams_update),
+  espn_snake_resolve.mjs (your_turn/your_turn_soon/snake_status/snake_pick).
+  Board column→team via .draft-board-grid-header-cell + .myTeam/.onTheClock;
+  sale = completedPick delta (.winningPrice); high-bidder = the auction-pick whose
+  .bid-amount == the current offer. Name-only surfaces → name backstop.
+  Design: docs/espn_resolver_design.md. Fixtures: extension/test/fixtures/espn/.
+  Required a CORS allowlist add for https://fantasy.espn.com (#127).
+- [x] Sleeper live-draft poller — SHIPPED to prod (snake + auction), June 2026
+  Phoenix Channels over WebSocket — cleanest transport (pure JSON, no DOM).
+  world:"MAIN" interceptor (sleeper_draft_main.js) patches window.WebSocket (CSP
+  blocks inline injection); relays frames to the ISOLATED poller via postMessage.
+  sleeper_resolve.mjs (Phoenix parse + serpentine), sleeper_snake_resolve.mjs,
+  sleeper_auction_resolve.mjs. player_id is a Sleeper id → exact match on
+  players.sleeper_id (backend find_by_sleeper_id, the cleanest resolution).
+  Self = localStorage user_id (JSON-quoted → parseUserId unwraps) → draft_order slot.
+  Design: docs/sleeper_resolver_design.md. Fixtures: extension/test/fixtures/sleeper/.
+  Required CORS for sleeper.com/sleeper.app (#131).
+- [x] Draft refresh-resilience + own-pick attribution — SHIPPED, June 2026
+  - is_yours flag now drives backend pick attribution (record_pick(is_yours)):
+    Sleeper/ESPN slot-label winners ("Team 5") no longer mis-file the user's own
+    buys into opponent_rosters (#140).
+  - /draft/state sources the snake roster from _my_picks (was the empty auction
+    your_roster) (#136).
+  - RESUME_WINDOW_SECONDS 1h → 6h so a live draft survives a connection gap without
+    a refresh 409'ing to the empty board (#136).
+  - Extension orphaned-context recovery: a reload/auto-update orphans the content
+    script ("Extension context invalidated") → it reloads the tab once (capped) to
+    re-inject a fresh poller, so a live draft survives an extension update (#138).
+- [x] Stripe billing — DESIGN PASS complete (NOT implemented), June 2026
+  docs/stripe_billing_design.md. Decisions LOCKED: entitlement SoT = DB users.tier
+  (Stripe syncs via webhook, read on hot path); monthly recurring subs only
+  (/season deferred); cancel → downgrade to intro at period_end, credits persist;
+  honor Stripe retries; monthly credit grant on invoice.payment_succeeded +
+  billing_reason=subscription_cycle, idempotent on event.id + invoice.id; no Clerk
+  mirror. Security: card data never touches Rook (Stripe Checkout redirect → PCI
+  SAQ-A), webhook is sole entitlement grantor (mandatory signature verify), prices
+  server-defined, customer bound to authed user. Entitlement+gate layer already
+  exists (TIER_LIMITS, require_feature/require_credits, upgrade_tier waiting on the
+  webhook). NEXT PASS = actual billing code.
 - [ ] Stage 30: Half PPR — see docs/stages/stage-30-half-ppr.md
   Half PPR scoring, replacement level adjustments. Note: valuation_agent +
   sync_adp currently hardcode scoring="ppr" (VALUATION_SCORING); make
@@ -560,6 +648,62 @@ Etienne buy at $3→254 PPR ✓, Olave buy at $9→268 PPR ✓
 By position: RB r=0.940 (excellent), WR r=0.790, TE r=0.715, QB r=0.376
 QB MAE=77.2, bias=+64.4 — injury-driven (Daniels, Burrow, Purdy missed games).
 Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
+
+---
+
+## Live Draft — Browser Extension Architecture (Yahoo / ESPN / Sleeper)
+
+The extension (`extension/`, MV3, sideloaded) reads each draft room and POSTs events
+to the backend; the backend enriches + runs the AI rec + broadcasts to the React room
+over WebSocket. **One poller per platform/format**, all mapping onto **one backend
+event contract** (so backend/frontend are platform-agnostic — a new platform that maps
+onto the contract needs zero downstream changes).
+
+**Event contract** (`backend/routers/draft.py` keys on `event.type`, not platform):
+- Auction: `nomination`, `bid_update`, `clock`, `draft_pick`, `teams_update`
+- Snake: `your_turn`, `your_turn_soon`, `snake_status`, `snake_pick`
+
+**Pollers / resolvers** (pure parse/detect logic in `*_resolve.mjs`, linkedom/JSON-
+tested against real captures in `extension/test/fixtures/<platform>/`):
+- Yahoo: `yahoo_draft.js` + `yahoo_auction_resolve.mjs`; `yahoo_snake_draft.js` +
+  `yahoo_snake_resolve.mjs`. React DOM, shared root `#main-0-DraftClientBootstrap-Proxy`.
+- ESPN: `espn_draft.js` + `espn_salarycap_resolve.mjs` / `espn_snake_resolve.mjs` +
+  `espn_shared.mjs`. React/styled-jsx, content-gated, no stable root.
+- Sleeper: `sleeper_draft.js` (ISOLATED) + `sleeper_draft_main.js` (world:MAIN WS
+  interceptor) + `sleeper_resolve.mjs` / `sleeper_snake_resolve.mjs` /
+  `sleeper_auction_resolve.mjs`. Phoenix Channels over WS (JSON, no DOM).
+
+**Hard-won universal rules (each cost a prod bug — keep them):**
+1. **Content-based cross-poller gate.** When pollers share a page/root, each MUST
+   positively detect its OWN format from positive content — host/root presence is
+   never a discriminator. Asserted active-on-own + inert-on-others, both directions,
+   in the same test pass. (Yahoo auction↔snake share a React root; the test net is
+   non-negotiable.)
+2. **CSP blocks inline WS interception → use a `world:"MAIN"` content script.** Pages
+   (Yahoo, Sleeper) block injected inline `<script>`. A manifest `world:"MAIN"` entry
+   at `document_start` is browser-injected (CSP-exempt) and patches `window.WebSocket`
+   before the page opens it. Relay frames to the ISOLATED poller via
+   `window.postMessage` (CustomEvent `detail` does NOT cross worlds in Chrome).
+3. **Each platform's page origin needs a CORS allowlist entry** in `backend/main.py`
+   `allow_origin_regex` (bounded, dot-escaped; Starlette uses `fullmatch`). The poller
+   posts from the page origin — ESPN (`fantasy.espn.com`) and Sleeper (`sleeper.com`/
+   `.app`) each 400'd until added. **Backend change → needs a release to take effect.**
+4. **The SPA persistent socket opens at app boot.** Sleeper opens one WS on the lobby
+   and joins the draft as a channel — so the interceptor + poller match ALL of the
+   site (`sleeper.com/*`), not just `/draft/*`, or it misses early picks.
+5. **Orphaned-context recovery.** An extension reload/auto-update orphans the running
+   content script (`browser.*` throws "Extension context invalidated"); the poller
+   detects a dead `browser.runtime.id` on a draft frame and reloads the tab once
+   (capped, reset on healthy relay) to re-inject a fresh poller.
+6. **Anchor policy.** `data-testid` + hand-authored semantic classes = PRIMARY;
+   build-hash classes (`_ys_*`, `jsx-<digits>`) ROTATE per deploy → FALLBACK ONLY,
+   behind a text/structure check, with loud `console.warn` + `selector_health`.
+7. **Player resolution: id-first, then name backstop.** Sleeper id → exact
+   `players.sleeper_id` (`find_by_sleeper_id`); else name+pos fuzzy
+   (`find_by_name_fuzzy`). ESPN/Yahoo surfaces are name-only → name backstop.
+8. **`is_yours` is authoritative for own-pick attribution** (slot labels like "Team 5"
+   don't equal `your_team_id`); `record_pick(is_yours=...)` routes own buys to
+   `your_roster`. Self-team label "You" so the frontend folds it into `myTeamName`.
 
 ---
 
@@ -689,15 +833,9 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
   auto-invalidate (no manual clear needed).
 
 ### SaaS / Auth
-- Clerk running in dev mode (pk_test_) in
-  production. Custom domain required for
-  production Clerk instance. Deferred until
-  domain purchased. See backlog item below.
-- Production /api prefix mismatch — frontend
-  calls /api/* but FastAPI serves /* in
-  production. Vite proxy handles in dev.
-  Fix requires custom domain + nginx rewrite.
-  Both items must be done together.
+- Clerk is in **production mode** on the live `rookff.com` domain (no longer
+  pk_test_/dev). The custom-domain + /api-prefix items that depended on it are
+  resolved.
 - Yahoo OAuth multi-user — buddy confirmed
   his own leagues loaded (not Stephen's),
   so OAuth is working for other users.
@@ -727,9 +865,7 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
       + serpentine board (snake_pick), all relayed
       via /draft/event. Content-based cross-poller
       guard; non-destructive (no Picks-tab click).
-- [ ] Re-verify the serpentine board mapping
-      against a real round-boundary (round-turn)
-      capture — currently asserted from the rule.
+- [x] Serpentine board mapping (incl. round boundary) — confirmed in real drafts.
 - [ ] A few low-tier QBs (Tua, Purdy) get
       adp_ai ~38, slightly early.
 - [x] Snake signal quality: two-sided draftable
@@ -786,41 +922,65 @@ Lamar Jackson proj=368 vs actual=213 is the main non-injury QB miss.
       the agent path.
 
 ### Stages Remaining
-- [~] Stage 29: Snake draft — data/UI/engine
-      shipped; see follow-ups above
+- [x] Stage 29: Snake draft — shipped (all platforms)
+- [x] ESPN + Sleeper live-draft pollers — shipped to prod
+- [x] CI/CD: GitHub Actions — DONE (backend/frontend/extension checks gate every PR)
+- [~] **In-season feature build (PRE-SEASON PRIORITY): Trade page + Trade agent**
+      (analyzer + proposals). Design: `docs/trade_agent_design.md`. Built behind a
+      clean league-state interface so the SAME agents later run on real data. The
+      VALUE MODEL is the differentiator: in-season value is driven by actual
+      production + usage TRAJECTORY (target/snap share rising or falling,
+      opportunity-vs-production gap), NOT preseason projections — with a name-bias
+      guard. **Slices shipped to develop:**
+      - per-week NFL data layer `backend/integrations/nfl_weekly.py` (snap%/target
+        share/fantasy pts keyed (canonical_player_id, season, week); 2025 production
+        from PBP since import_weekly_data([2025]) 404s).
+      - league-state seam `backend/services/trade/league_state.py` + in-season value
+        engine `backend/services/trade/value_engine.py` (forward_value, usage
+        trend, buy_low/sell_high, name-bias guard, ragged-history `confidence`
+        full/limited/insufficient).
+      - **flag-gated demo harness (TEARDOWN before prod):**
+        `backend/services/trade/trade_demo_source.py` (provider + `TRADE_DEMO_MODE`
+        gate + a realistic **12-team** league seeded from a **REAL auction draft**
+        (`DEMO_ROSTERS` — real manager names + the players each drafted, K/DST
+        stripped; auction $ NOT modeled, roster membership only) resolved name-fuzzy
+        to canonical ids via `_resolve_rosters`, `starter_slot` re-derived per team
+        from the engine's `forward_value` (`assign_starter_slots`) + `nfl_team`
+        preserved, default acting team `USER_TEAM_NAME` ("Have you seen McConkeys"),
+        demo anchor `DEMO_SEASON`/`DEMO_CURRENT_WEEK` pinned HERE, currently **week
+        14** — not in the engine/data layer), `scripts/seed_demo_league.py` (CLI),
+        `tests/unit/services/trade/test_trade_demo.py`.
+      - analyzer agent + `POST /api/trade/analyze`; proposals agent +
+        `POST /api/trade/ideas` (pro-only). PERMANENT.
+      - **trade page** `frontend/src/pages/Trade.jsx` + `frontend/src/api/trade.js`
+        (PERMANENT minus the team-switcher) and the read-only demo
+        **`GET /api/trade/league`** + the page **team-switcher** (TEARDOWN — both
+        demo-only, gated/greppable via `TRADE_DEMO` / `fetchTradeLeague`).
+      ⚠️ **ALL demo scaffolding (the demo source/seeder/tests, the pinned week, the
+      `GET /api/trade/league` endpoint, the page team-switcher) is gated behind
+      `TRADE_DEMO_MODE` (default false) and MUST be removed before prod — see the
+      teardown checklist in the design doc; grep `TRADE_DEMO` / `DEMO_TEAM_NAMES` /
+      `DEMO_ROSTERS` / `fetchTradeLeague`. Permanent = the interface, value engine, agents, the
+      trade page (minus team-switcher), `/analyze` + `/ideas`, and the gates ONLY.**
+      **Remaining:** teardown + real league-state provider (slice 6). Then: lineup
+      optimizer, waiver wire, roster monitor, opponent analyzer, gameday.
+- [ ] **Stripe billing implementation** (design locked — docs/stripe_billing_design.md)
 - [ ] Stage 30: Half PPR support
-- [ ] Browser extension Chrome/Firefox
-      store submission
+- [ ] Generalize extension orphaned-context recovery to the Yahoo/ESPN pollers
+      (currently only Sleeper)
+- [ ] Browser extension Chrome/Firefox store submission
 - [ ] my_nomination/my_bid → DraftStateManager
       integration (auto-roster + budget sync)
 - [ ] teams_snapshot → engine state reconcile
-- [ ] CI/CD: GitHub Actions workflow
-      (highest leverage safety improvement)
 - [ ] Soft-delete stale player rows
 - [ ] Convert dense div-grid views (DraftBoard,
       Teams) to semantic <table> w/ th scope for
       screen-reader accessibility — deferred from
       mobile-responsive work to keep scope isolated.
-- [ ] Old-name infra cleanup (DraftMind/FantasyManager →
-      Rook) — deliberately EXCLUDED from the branding
-      PR because it has CORS/deploy/store blast radius.
-      Each needs coordination, not a presentation edit:
-        - Railway hostname fantasymanager-production
-          .up.railway.app (extension/manifest.json +
-          dist, extension/src/utils/api.js, backend/
-          main.py CORS regex, tests test_cors.py /
-          test_extension_config.py, docs) — rename
-          requires a Railway service rename + redeploy
-          + CORS + extension host-permission update.
-        - Firefox addon id draftmind@fantasymanager
-          (extension/manifest.json + dist) — changing
-          it is a store-identity change.
-        - CI test DB draftmind_test (.github/workflows/
-          ci.yml) — cosmetic, rename with a CI run.
-        - git repo origin still named FantasyManager
-          (README badge/URL) — GitHub repo rename.
-      Note: the only USER-FACING stale name (LandingNav
-      "DraftMind") was already fixed in the branding pass.
+
+Old-name infra rename is **DONE** — branding/repo are Rook; the only remaining
+old-name reference is the Railway service hostname `fantasymanager-production`
+(intentional — the extension's working API base, see title note).
 
 ---
 
@@ -862,3 +1022,13 @@ Credit packs: $5=75cr, $10=175cr, $25=500cr
 Credits carry over month to month (never reset)
 No free tier, no battle passes, no stash tab monetization
 ```
+
+**Source of truth:** `backend/models/user.py` (`TIER_LIMITS` / `CREDIT_COSTS` /
+`CREDIT_PACKS`) — the prose above mirrors it. The stale `stage-25` tier block
+(`free|starter|pro|league`) is superseded; remove it in a cleanup PR.
+
+**Stripe billing design:** `docs/stripe_billing_design.md` (decisions LOCKED).
+Entitlement layer (tier store + `FeatureService` + `require_feature`/`require_credits`
++ `upgrade_tier`/`apply_signup_bonus`) is already built and waiting on the Stripe
+webhook. Billing code (Checkout, `/webhooks/stripe`, gate-attach, frontend CTAs) is
+the next implementation pass — not yet started. `/season` deferred (monthly only v1).

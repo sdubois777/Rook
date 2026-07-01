@@ -12,7 +12,7 @@ from backend.core.exceptions import AppError
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, assistant, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
-from backend.routers import account, webhooks
+from backend.routers import account, trade, webhooks
 from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ for _router in (
     teams.router,
     account.router,
     league_connect.router,
+    trade.router,
 ):
     app.include_router(_router, prefix="/api")
 
