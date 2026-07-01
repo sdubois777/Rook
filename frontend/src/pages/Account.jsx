@@ -1,9 +1,43 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useUser, useClerk } from '@clerk/clerk-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
+import { createPortal, redirectTo } from '../api/billing'
 import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
+
+const SUBSCRIPTION_STATUS_COPY = {
+  past_due: 'Your last payment failed — update your payment method to keep your plan.',
+  canceling: 'Your plan is set to cancel and will end at the end of the current billing period.',
+}
+
+// Manage subscription (Stripe Customer Portal) — cancel, update card, etc.
+function ManageSubscriptionButton() {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const open = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      redirectTo(await createPortal())
+    } catch {
+      setError('Could not open the billing portal.')
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="text-right">
+      <button
+        onClick={open}
+        disabled={busy}
+        className="bg-brand hover:bg-brand-hover disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+      >
+        {busy ? 'Opening…' : 'Manage subscription'}
+      </button>
+      {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
+    </div>
+  )
+}
 
 async function fetchAccountData() {
   const [me, credits, leagues, tokenResp] = await Promise.all([
@@ -191,6 +225,31 @@ export default function AccountPage() {
     enabled: isLoaded && !!clerkUser,
   })
 
+  const queryClient = useQueryClient()
+  // Derived from the URL at mount so we don't setState synchronously in the effect.
+  const [confirming, setConfirming] = useState(
+    () => new URLSearchParams(window.location.search).get('billing') === 'success'
+  )
+
+  // Checkout success return: the URL grants NOTHING — the webhook is authoritative.
+  // Poll /account/me a few times so the freshly-flipped tier appears without a
+  // manual refresh, handling the webhook-vs-redirect race, then clean the URL.
+  useEffect(() => {
+    if (!confirming) return
+    let tries = 0
+    const iv = setInterval(() => {
+      tries += 1
+      queryClient.invalidateQueries({ queryKey: ['account'] })
+      const latest = queryClient.getQueryData(['account'])
+      if (tries >= 6 || latest?.user?.subscription_status) {
+        clearInterval(iv)
+        setConfirming(false)
+        window.history.replaceState({}, '', '/account')
+      }
+    }, 1500)
+    return () => clearInterval(iv)
+  }, [confirming, queryClient])
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -208,7 +267,6 @@ export default function AccountPage() {
   }
 
   const { user, credits, leagues, draftToken } = data
-  const queryClient = useQueryClient()
 
   const handleRevokeToken = async () => {
     await apiClient.post('/account/draft-token/revoke')
@@ -227,21 +285,42 @@ export default function AccountPage() {
           </p>
         </div>
 
+        {/* Checkout-return confirmation — the webhook flips the tier, we just poll. */}
+        {confirming && (
+          <div className="bg-brand/10 border border-brand rounded-xl p-4 mb-6 text-sm text-blue-200">
+            Confirming your upgrade…
+          </div>
+        )}
+
         {/* Plan */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-2">
             <div>
               <div className="text-sm text-gray-400 mb-1">Current Plan</div>
               <div className={`text-xl font-semibold ${TIER_COLORS[user.tier]}`}>
                 {TIER_LABELS[user.tier] || user.tier}
               </div>
             </div>
-            {user.tier !== 'pro' && (
-              <button className="bg-brand hover:bg-brand-hover text-white text-sm px-4 py-2 rounded-lg transition-colors">
+            {user.subscription_status ? (
+              <ManageSubscriptionButton />
+            ) : user.tier !== 'pro' ? (
+              <Link
+                to="/pricing"
+                className="bg-brand hover:bg-brand-hover text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              >
                 Upgrade
-              </button>
-            )}
+              </Link>
+            ) : null}
           </div>
+          {SUBSCRIPTION_STATUS_COPY[user.subscription_status] && (
+            <p
+              className={`text-sm mt-2 ${
+                user.subscription_status === 'past_due' ? 'text-red-400' : 'text-yellow-500'
+              }`}
+            >
+              {SUBSCRIPTION_STATUS_COPY[user.subscription_status]}
+            </p>
+          )}
         </section>
 
         {/* Credits */}

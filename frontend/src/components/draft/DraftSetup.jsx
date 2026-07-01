@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
+import { useEntitlements, isFeatureLocked } from '../../hooks/useEntitlements'
 
 export default function DraftSetup() {
   const [teamId, setTeamId] = useState('')
@@ -10,6 +12,11 @@ export default function DraftSetup() {
 
   const startDraft = useDraftStore((s) => s.startDraft)
   const { selectedLeague } = useLeague()
+  const { tierLimits } = useEntitlements()
+  // Live draft is a standard+ entitlement. Show a locked state instead of a
+  // dead button when we KNOW the tier lacks it (fail-open otherwise). The
+  // backend gate remains the real boundary — this is affordance only.
+  const liveDraftLocked = isFeatureLocked(tierLimits, 'live_draft')
 
   const handleStart = async () => {
     if (!teamId.trim()) return
@@ -73,13 +80,27 @@ export default function DraftSetup() {
             </div>
           )}
 
-          <button
-            onClick={handleStart}
-            disabled={!teamId.trim() || loading}
-            className="w-full py-2.5 bg-brand text-white font-medium rounded-lg hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? 'Starting...' : 'Start Draft'}
-          </button>
+          {liveDraftLocked ? (
+            <div className="rounded-lg border border-border bg-surface-2 px-4 py-3 text-center">
+              <p className="text-sm text-slate-300">
+                🔒 Live draft is a <span className="font-semibold">Standard</span> feature.
+              </p>
+              <Link
+                to="/pricing"
+                className="mt-3 inline-block py-2 px-4 bg-brand text-white text-sm font-medium rounded-lg hover:bg-brand-hover transition-colors"
+              >
+                Upgrade to unlock
+              </Link>
+            </div>
+          ) : (
+            <button
+              onClick={handleStart}
+              disabled={!teamId.trim() || loading}
+              className="w-full py-2.5 bg-brand text-white font-medium rounded-lg hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loading ? 'Starting...' : 'Start Draft'}
+            </button>
+          )}
         </div>
       </div>
     </div>

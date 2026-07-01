@@ -4,6 +4,7 @@ import { SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react'
 import { usePreferencesStore } from './stores/preferences'
 import Layout from './components/layout/Layout'
 import { LeagueProvider } from './context/LeagueContext'
+import BillingNotice from './components/BillingNotice'
 import Landing from './pages/Landing'
 import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
@@ -84,6 +85,7 @@ function App() {
   return (
     <LeagueProvider>
       {isFullScreen ? routes : <Layout>{routes}</Layout>}
+      <BillingNotice />
     </LeagueProvider>
   )
 }
