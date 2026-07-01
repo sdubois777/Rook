@@ -11,7 +11,10 @@ AND the bye / healthy-stud cases must stay UNCHANGED, together.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from backend.services.trade.value_engine import (
     Confidence,
@@ -239,3 +242,104 @@ def test_evaluate_league_applies_staleness_from_injected_byes():
     assert vals["kraft"].forward_value < 5.0
     assert vals["stud"].confidence is Confidence.FULL                # current
     assert vals["stud"].forward_value > 40
+
+
+# ===========================================================================
+# STEEPER LONG-ABSENCE TAIL (docs/trade_value_availability_design.md follow-up):
+# the #177 power=2 decay was too GENTLE — a 3-week absentee only ~halved (London
+# read a still-startable 9.2 that masked The Lord's WR need). The tail-steepness
+# POWER is raised so 3+ week absences floor, while the short-gap band (≤2 weeks) is
+# pinned byte-identical (effective=1 → RATE·1 for ANY power). #174 gate untouched.
+# ===========================================================================
+def test_decay_tail_is_steeper_but_short_gaps_are_pinned():
+    # Short gaps UNCHANGED from #177 (the 8c guard + the pinned 2-week point):
+    assert _staleness_decay(0.0) == 1.0
+    assert _staleness_decay(1.0) == 1.0                 # free-weeks guard
+    assert abs(_staleness_decay(2.0) - 0.667) < 0.005   # 2-week gap == #177's gentle value
+    # Long-absence tail is now STEEP (was 0.333 at stale 3 under #177's power=2):
+    assert _staleness_decay(3.0) < 0.10                 # London-class → near floor
+    assert _staleness_decay(3.0) < 0.333 / 3            # materially steeper than #177
+    assert _staleness_decay(5.0) < 0.01                 # Kraft-class → floor
+    assert _staleness_decay(10.0) < 0.001               # Tyreek-class → floor
+    # strictly monotonic decreasing in the tail
+    assert _staleness_decay(2.0) > _staleness_decay(3.0) > _staleness_decay(4.0)
+
+
+def test_three_week_absence_floors_not_midband():
+    # The headline defect: a 3-week-out stud must read near the floor, NOT a
+    # still-startable mid-band value. Compare the SAME stud at stale 2 vs 3.
+    two = _val(_STUD_ROWS, pos="WR", stale=2.0)
+    three = _val(_STUD_ROWS, pos="WR", stale=3.0)
+    assert three.forward_value < 5.0                    # near floor (London was 9.2 under #177)
+    assert three.forward_value < two.forward_value * 0.2  # the tail cliff: 3w << 2w
+    assert three.confidence is Confidence.INSUFFICIENT
+
+
+def test_short_gap_still_barely_moves_a_stud():
+    # SHORT GAP UNCHANGED guard: a 1-week absence does not decay; a 2-week absence
+    # keeps its gentle #177 value (NOT dragged down by the steeper tail) and stays
+    # well above the floored 3-week value.
+    fresh = _val(_STUD_ROWS, pos="WR", stale=0.0)
+    one = _val(_STUD_ROWS, pos="WR", stale=1.0)
+    two = _val(_STUD_ROWS, pos="WR", stale=2.0)
+    three = _val(_STUD_ROWS, pos="WR", stale=3.0)
+    assert one.forward_value == fresh.forward_value         # no decay at 1 week
+    assert two.confidence is Confidence.LIMITED             # 2w → gentle, still startable
+    assert two.forward_value > 20                           # a strong stud only ~halved
+    assert two.forward_value > 5 * three.forward_value      # 2-week >> floored 3-week
+
+
+# ---------------------------------------------------------------------------
+# THE UNLOCK (guarded end-to-end) — flooring the 3-week London deflates The Lord's
+# inflated WR lineup so real acquisitions clear cond1; Fat Bastard unlocks too.
+# Runs only with the real 2025 cache + DB present (skips in CI, like the demo seed).
+# ---------------------------------------------------------------------------
+_WEEKLY_CACHE = Path("data/cache/weekly_pbp_2025.parquet")
+
+
+@pytest.mark.skipif(
+    not _WEEKLY_CACHE.exists(),
+    reason="real 2025 per-week data not on disk (CI) — synthetic tests cover the curve",
+)
+async def test_steeper_decay_unlocks_lord_and_fat_bastard_at_unchanged_gate():
+    from backend.database import AsyncSessionLocal
+    from backend.integrations.nfl_data import fetch_schedules
+    from backend.services.trade.trade_demo_source import seed_demo_league
+    from backend.services.trade.trade_proposals import (
+        enumerate_candidates, evaluate_candidates)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            src = await seed_demo_league(db)
+    except Exception as exc:  # no DB / not populated → skip, don't fail
+        pytest.skip(f"demo DB unavailable: {exc}")
+
+    state = src.get_league_state()
+    byes = bye_weeks_from_schedule(fetch_schedules(2025))
+    vals = evaluate_league(state, src.weekly_usage, priors=src.priors, bye_weeks=byes)
+
+    def value_of(nm):
+        for t in state.teams:
+            for rp in t.roster:
+                if rp.name == nm:
+                    return vals[rp.canonical_player_id].forward_value
+        return None
+
+    # London (out 3) floored — NOT the #177 mid-band 9.2.
+    assert value_of("Drake London") < 5.0
+    # Bye-at-edge studs untouched (proves we floor injuries, not byes).
+    assert value_of("Christian McCaffrey") > 90
+    assert value_of("Wan'Dale Robinson") > 40
+
+    def cleared(team_name):
+        t = next(x for x in state.teams if x.team_name == team_name)
+        cands = enumerate_candidates(state, vals, t.team_id)
+        return evaluate_candidates(state, vals, t.team_id, cands, roster_limit=20)
+
+    lord = cleared("The Lord")
+    fatb = cleared("Fat Bastard")
+    assert len(lord) >= 1        # unlocked (was 0 with London at 9.2)
+    assert len(fatb) >= 1        # unlocked
+    # every surfaced trade cleared the FULL unchanged #174 gate (real upgrade).
+    for _, _, e in lord + fatb:
+        assert e.clears is True and e.your_lineup_gain >= 5.0
