@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     vite_clerk_publishable_key: Optional[str] = None
     clerk_webhook_secret: Optional[str] = None
 
+    # Stripe billing — server-only secrets (never sent to the client, never logged).
+    # Mode-agnostic: whether these hold sk_test_/whsec_(test) or sk_live_/whsec_(live)
+    # and which price ids are populated is purely an environment concern, no code branch.
+    stripe_secret_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
+    # Subscription price ids (recurring monthly, one per tier)
+    stripe_price_intro_monthly: Optional[str] = None
+    stripe_price_standard_monthly: Optional[str] = None
+    stripe_price_pro_monthly: Optional[str] = None
+    # Credit-pack price ids (one-time payments)
+    stripe_price_pack_small: Optional[str] = None
+    stripe_price_pack_medium: Optional[str] = None
+    stripe_price_pack_large: Optional[str] = None
+
     # Rate limits — requests per minute, per client IP
     rate_limit_api_rpm: int = 120        # general API endpoints
     rate_limit_pipeline_rpm: int = 5     # expensive pipeline triggers
@@ -52,6 +66,11 @@ class Settings(BaseSettings):
     def clerk_enabled(self) -> bool:
         """True when Clerk is configured."""
         return bool(self.clerk_secret_key)
+
+    @property
+    def stripe_enabled(self) -> bool:
+        """True when Stripe billing is configured (secret key present)."""
+        return bool(self.stripe_secret_key)
 
 
 settings = Settings()

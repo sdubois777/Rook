@@ -25,6 +25,7 @@ def _make_user(
     user.display_name = "Test User"
     user.tier = tier
     user.credits_remaining = credits
+    user.subscription_status = None
     user.deleted_at = None
     user.created_at = datetime.now(timezone.utc)
     user.updated_at = datetime.now(timezone.utc)

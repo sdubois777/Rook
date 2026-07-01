@@ -12,10 +12,12 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.dependencies import get_db
 from backend.database import AsyncSessionLocal
 from backend.models.user import TIER_LIMITS, User
 
@@ -107,4 +109,69 @@ async def clerk_webhook(request: Request):
 
         await db.commit()
 
+    return {"ok": True}
+
+
+# ── Stripe ──────────────────────────────────────────────────────────────
+
+async def _verify_stripe_signature(request: Request) -> dict:
+    """
+    Verify a Stripe webhook signature and return the parsed event.
+
+    Mirrors the Clerk posture: production REQUIRES the signing secret (an
+    unverified endpoint is an entitlement-forgery hole, §0.B); development may
+    parse without verification for local Stripe-CLI convenience.
+
+    Raises 400 on an unverified/invalid payload — with NO side effects.
+    """
+    from backend.config import settings
+
+    body = await request.body()
+    webhook_secret = settings.stripe_webhook_secret
+
+    if not webhook_secret:
+        if settings.environment == "production":
+            raise HTTPException(
+                status_code=400,
+                detail="Webhook secret not configured",
+            )
+        # Dev: parse without verification
+        return json.loads(body)
+
+    sig_header = request.headers.get("stripe-signature", "")
+    try:
+        from backend.services.billing import stripe_gateway
+
+        return stripe_gateway.construct_event(body, sig_header, webhook_secret)
+    except Exception as e:
+        logger.warning("Stripe webhook signature invalid: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid webhook signature",
+        )
+
+
+@router.post("/stripe")
+async def stripe_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Handle Stripe subscription/billing events.
+
+    The SOLE entitlement-granting path: signature-verified, globally idempotent
+    on event.id, resolves the user by the stored customer id only, and drives the
+    §4 transitions through StripeWebhookService.
+    """
+    event = await _verify_stripe_signature(request)
+
+    from backend.services.billing.webhook_service import StripeWebhookService
+
+    service = StripeWebhookService.from_session(db)
+    result = await service.process(event)
+
+    logger.info(
+        "Stripe webhook: %s (duplicate=%s, handled=%s)",
+        result.event_type, result.duplicate, result.handled,
+    )
     return {"ok": True}

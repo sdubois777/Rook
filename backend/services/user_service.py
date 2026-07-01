@@ -83,8 +83,21 @@ class UserService:
         self,
         user: User,
         new_tier: str,
+        grant_signup_bonus: bool = True,
+        commit: bool = True,
     ) -> User:
-        """Change user tier. Adds signup bonus for new tier."""
+        """Change user tier.
+
+        grant_signup_bonus (default True) adds the new tier's one-time signup
+        bonus. The Stripe webhook passes grant_signup_bonus=False for
+        plan-change and downgrade transitions — the signup bonus is granted
+        exactly once, on the first purchase (checkout.session.completed), NOT
+        again on a mid-life tier swap or on the downgrade to intro (where
+        credits must persist).
+
+        commit (default True) lets a caller batch this into a larger
+        transaction (the webhook commits once, after all §4 side effects).
+        """
         if new_tier not in TIER_LIMITS:
             from backend.core.exceptions import ValidationError
             raise ValidationError(
@@ -92,13 +105,16 @@ class UserService:
                 f"Must be: {list(TIER_LIMITS.keys())}"
             )
 
-        bonus = TIER_LIMITS[new_tier].get(
-            "credits_signup_bonus", 0
+        bonus = (
+            TIER_LIMITS[new_tier].get("credits_signup_bonus", 0)
+            if grant_signup_bonus
+            else 0
         )
         updated = await self._repo.update_tier(
             user.id,
             tier=new_tier,
             credits_bonus=bonus,
         )
-        await self._repo.commit()
+        if commit:
+            await self._repo.commit()
         return updated

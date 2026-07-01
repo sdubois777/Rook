@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     tier: str
     credits_remaining: int
     tier_limits: dict
+    subscription_status: Optional[str] = None  # billing state (read-only)
 
 
 class CreditUsageItem(BaseModel):
@@ -92,6 +93,7 @@ async def get_me(
         tier=user.tier,
         credits_remaining=user.credits_remaining,
         tier_limits=TIER_LIMITS.get(user.tier, {}),
+        subscription_status=getattr(user, "subscription_status", None),
     )
 
 

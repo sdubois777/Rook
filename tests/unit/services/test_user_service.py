@@ -161,3 +161,31 @@ async def test_upgrade_tier_valid():
         user.id, tier="standard", credits_bonus=75
     )
     repo.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_tier_no_bonus_when_disabled():
+    """Stripe plan-change / downgrade path: set tier, grant no signup bonus."""
+    repo = _make_repo()
+    user = _make_user(tier="standard")
+    repo.update_tier.return_value = _make_user(tier="pro")
+
+    service = UserService(repo)
+    await service.upgrade_tier(user, "pro", grant_signup_bonus=False)
+
+    repo.update_tier.assert_awaited_once_with(
+        user.id, tier="pro", credits_bonus=0
+    )
+
+
+@pytest.mark.asyncio
+async def test_upgrade_tier_commit_false_defers_commit():
+    """Webhook batches the write into one transaction — no per-call commit."""
+    repo = _make_repo()
+    user = _make_user(tier="intro")
+    repo.update_tier.return_value = _make_user(tier="standard")
+
+    service = UserService(repo)
+    await service.upgrade_tier(user, "standard", commit=False)
+
+    repo.commit.assert_not_awaited()

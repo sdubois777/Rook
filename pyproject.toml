@@ -30,6 +30,9 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "svix>=1.21.0",
 
+    # Billing (Stripe subscriptions — Checkout redirect + webhook)
+    "stripe>=9.0.0",
+
     # Encryption (platform credentials)
     "cryptography>=42.0.0",
 

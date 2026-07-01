@@ -42,6 +42,51 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_stripe_customer_id(
+        self, customer_id: str
+    ) -> User | None:
+        """Resolve a user by their Stripe customer id.
+
+        The Stripe webhook uses this exclusively — never a client-influenced
+        payload field — to bind a verified event to the right user row.
+        """
+        result = await self._session.execute(
+            select(User).where(
+                User.stripe_customer_id == customer_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def set_stripe_customer_id(
+        self, user_id: uuid.UUID, customer_id: str
+    ) -> None:
+        """Persist the Stripe customer id (set at checkout creation). No commit."""
+        await self._session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(stripe_customer_id=customer_id)
+        )
+
+    async def set_stripe_subscription_id(
+        self, user_id: uuid.UUID, subscription_id: str | None
+    ) -> None:
+        """Set or clear (None) the Stripe subscription id. No commit."""
+        await self._session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(stripe_subscription_id=subscription_id)
+        )
+
+    async def set_subscription_status(
+        self, user_id: uuid.UUID, status: str | None
+    ) -> None:
+        """Set billing status ('active'|'past_due'|'canceling'|None). No commit."""
+        await self._session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(subscription_status=status)
+        )
+
     async def rotate_draft_token(self, user_id: uuid.UUID) -> str:
         """Assign a fresh draft token to the user and commit.
 
