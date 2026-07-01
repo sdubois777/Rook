@@ -211,6 +211,27 @@ async def test_route_empty_returns_no_clear_trade_message(monkeypatch):
     data = resp.json()
     assert data["proposals"] == []
     assert data["message"] == "no clear trade right now"
+    # the silence is EXPLAINED (not a bare empty state) — a dominant me reads
+    # "lineup_too_strong", with a message; additive field, absent-safe elsewhere.
+    sc = data["silence_context"]
+    assert sc is not None
+    assert sc["reason"] == "lineup_too_strong"
+    assert sc["message"]
+    assert "near_miss" in sc                      # present (may be null)
+
+
+async def test_silence_context_is_null_when_trades_surface(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    user = _make_user(tier="pro", credits=200)
+    _patch_loader(monkeypatch, _fixture(ME, THEM))
+    _wire(user, _CLEARING)
+    try:
+        resp = await _post("/api/trade/ideas", {})
+    finally:
+        app.dependency_overrides.clear()
+    data = resp.json()
+    assert len(data["proposals"]) >= 1
+    assert data["silence_context"] is None        # only present when 0 surface
 
 
 # ---------------------------------------------------------------------------
