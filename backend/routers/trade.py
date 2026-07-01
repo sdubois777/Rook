@@ -29,7 +29,11 @@ from backend.services.trade.trade_analysis import (
     validate_trade,
 )
 from backend.services.trade.trade_demo_source import trade_demo_enabled
-from backend.services.trade.trade_proposals import acceptability_read, evaluate_candidates
+from backend.services.trade.trade_proposals import (
+    acceptability_read,
+    build_silence_context,
+    evaluate_candidates,
+)
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
@@ -124,10 +128,35 @@ class TradeIdea(BaseModel):
     edge: EdgeBandOut               # why it cleared the edge band (slice 4)
 
 
+class PlayerRefOut(BaseModel):
+    id: str
+    name: str
+    position: str
+
+
+class NearMissOut(BaseModel):
+    """The closest non-surfaced trade — a negotiation starting point, NOT a
+    recommendation (the UI labels it as such)."""
+    give: list[PlayerRefOut]
+    get: list[PlayerRefOut]
+    would_be_ppg: float          # the your-lineup gain it WOULD give
+    shortfall_reason: str        # why it doesn't clear
+
+
+class SilenceContextOut(BaseModel):
+    """Team-level explanation of WHY 0 trades surfaced (the honest reason), plus
+    the closest near-miss if one is within range. Separate from per-trade
+    warnings[] (which annotate SURFACED trades)."""
+    reason: str                  # lineup_too_strong | asset_poor | scarcity | no_fair_trade
+    message: str
+    near_miss: Optional[NearMissOut] = None
+
+
 class TradeIdeasResponse(BaseModel):
     proposals: list[TradeIdea]      # 0-5; empty is a first-class result
     message: str                    # "" or "no clear trade right now"
     demo_mode: bool
+    silence_context: Optional[SilenceContextOut] = None   # only when proposals == []
 
 
 # --- GET /trade/league (read-only roster + value exposer for the picker) -----
@@ -339,8 +368,31 @@ async def ideas(
             ),
         ))
 
+    # When nothing surfaces, EXPLAIN the silence (honest reason + closest near-miss)
+    # instead of a bare empty state. Presentation only — reuses the gate's per-
+    # candidate results; never changes what surfaced.
+    silence_context = None
+    if not proposals:
+        sc = build_silence_context(state, values, my_team_id, candidates, roster_limit=roster_limit)
+        if sc is not None:
+            def _ref(pid: str) -> PlayerRefOut:
+                v = values[pid]
+                return PlayerRefOut(id=pid, name=v.name, position=v.position)
+            near = None
+            if sc.near_miss is not None:
+                near = NearMissOut(
+                    give=[_ref(g) for g in sc.near_miss.give_ids],
+                    get=[_ref(g) for g in sc.near_miss.get_ids],
+                    would_be_ppg=sc.near_miss.would_be_ppg,
+                    shortfall_reason=sc.near_miss.shortfall_reason,
+                )
+            silence_context = SilenceContextOut(reason=sc.reason, message=sc.message, near_miss=near)
+
     message = "" if proposals else "no clear trade right now"
-    return TradeIdeasResponse(proposals=proposals, message=message, demo_mode=demo)
+    return TradeIdeasResponse(
+        proposals=proposals, message=message, demo_mode=demo,
+        silence_context=silence_context,
+    )
 
 
 @router.get("/league", response_model=TradeLeagueResponse)

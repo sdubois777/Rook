@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import VerdictPanel from '../components/trade/VerdictPanel'
+import SilenceExplainer from '../components/trade/SilenceExplainer'
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400' },
@@ -272,13 +273,9 @@ export default function Trade() {
             </div>
           )}
 
-          {/* Empty state is first-class */}
+          {/* Empty state is first-class — explain the silence, don't look broken */}
           {ideas && ideas.proposals.length === 0 && (
-            <div className="rounded-lg border border-border bg-surface-1 px-4 py-8 text-center text-slate-400">
-              <Minus size={22} className="mx-auto mb-1 text-slate-600" />
-              {ideas.message || 'No clear trade right now.'}
-              <div className="mt-1 text-xs text-slate-600">Nothing on the board clears the bar — that's a real answer, not a miss.</div>
-            </div>
+            <SilenceExplainer context={ideas.silence_context} fallbackMessage={ideas.message} />
           )}
 
           {ideas?.proposals.map((idea, i) => (

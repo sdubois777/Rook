@@ -14,7 +14,10 @@ conditions, so "no clear trade right now" is the common, correct outcome.
 from __future__ import annotations
 
 import itertools
+import statistics
+from collections import Counter
 from dataclasses import dataclass
+from typing import Optional
 
 from backend.services.trade.contextual import contextual_value
 from backend.services.trade.league_state import LeagueState, TeamState
@@ -84,6 +87,10 @@ _PER_SHAPE_CAP = 2
 # worse trade or pads (never-pad holds).
 _MAX_TRADES_PER_GIVE_ASSET = 2
 _PREMIUM_GIVE_VALUE = 30.0   # forward_value bar for "premium" (above replacement/startable)
+# Explain-the-silence: when a team surfaces 0 trades, a near-miss is only worth
+# showing if it misses clearing by ≤ this many ppg (sum of the cond1/cond2
+# shortfalls). Beyond it, nothing is close enough to be a negotiation starter.
+_NEAR_MISS_PPG = 10.0
 # A dedicated starter weaker than this fraction of the team's MEDIAN starter is a
 # fixable weakness → that position is a NEED (scale-free, relative to the roster).
 _NEED_REL_FRACTION = 0.6
@@ -580,3 +587,144 @@ def _select_diverse(
         if len(selected) >= max_results:
             break
     return selected
+
+
+# ---------------------------------------------------------------------------
+# explain-the-silence — a plain-language reason (+ closest near-miss) when a team
+# surfaces 0 trades. Presentation only: reuses the SAME edge-band gate to READ each
+# non-clearing candidate's cond1-4; never changes what surfaces.
+# ---------------------------------------------------------------------------
+_SILENCE_MESSAGES = {
+    "lineup_too_strong":
+        "Your starting lineup is strong enough that no fair trade improves it "
+        "meaningfully right now.",
+    "asset_poor":
+        "You don't have enough tradeable depth to make a fair improving trade "
+        "right now.",
+    "scarcity":
+        "The players who'd upgrade your lineup are locked into other teams' "
+        "starting lineups — no owner would take a fair deal for them right now.",
+    "no_fair_trade":
+        "There's no fair trade that clears the bar for you right now.",
+}
+
+
+@dataclass
+class NearMiss:
+    """The CLOSEST-to-clearing non-surfaced trade — a negotiation starting point,
+    explicitly NOT a recommendation."""
+    give_ids: tuple[str, ...]
+    get_ids: tuple[str, ...]
+    counterparty_team_id: str
+    would_be_ppg: float        # the your-lineup gain this trade WOULD give
+    shortfall_reason: str      # why it falls short of clearing
+
+
+@dataclass
+class SilenceContext:
+    reason: str                # lineup_too_strong | asset_poor | scarcity | no_fair_trade
+    message: str
+    near_miss: Optional[NearMiss]
+
+
+def build_silence_context(
+    state: LeagueState,
+    values: dict[str, InSeasonValue],
+    my_team_id: str,
+    candidates: list[Candidate],
+    *,
+    roster_limit: int = DEFAULT_ROSTER_LIMIT,
+    rules: LineupRules | None = None,
+) -> Optional[SilenceContext]:
+    """Explain why a team surfaced NO trades. Re-reads each candidate through the
+    SAME ``evaluate_edge_band`` gate (no new condition math), classifies the
+    DOMINANT obstacle from the per-candidate cond1-4 pattern, and — if one is close
+    enough — attaches the nearest near-miss. Never changes surfacing; call only when
+    ``evaluate_candidates`` returned empty."""
+    rules = rules or DEFAULT_LINEUP_RULES
+    my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
+    if my_team is None:
+        return None
+    my_roster = _lineup_roster(my_team, values)
+    opp_rosters = {
+        t.team_id: _lineup_roster(t, values)
+        for t in state.teams if t.team_id != my_team_id
+    }
+    replacement_ppg = replacement_ppg_by_position(values)
+
+    # Am I strong or weak? — decides lineup_too_strong vs asset_poor. My optimal
+    # starting-lineup ppg vs the league's median team (no magic constant).
+    strengths = [lineup_strength_ppg(_lineup_roster(t, values), rules) for t in state.teams]
+    league_median = statistics.median(strengths) if strengths else 0.0
+    my_strength = lineup_strength_ppg(my_roster, rules)
+
+    # PRIMARY failure per candidate, priority cond1 > cond2 > cond3 > cond4 (if the
+    # trade doesn't even improve MY lineup, that's the primary reason regardless).
+    primary: Counter = Counter()
+    best_margin: Optional[tuple[float, Candidate, EdgeBand, str]] = None
+    seen: set[tuple] = set()
+    for cand in candidates:
+        key = (cand.give_ids, cand.get_ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        their_roster = opp_rosters.get(cand.counterparty_team_id)
+        if their_roster is None:
+            continue
+        try:
+            edge = evaluate_edge_band(
+                my_roster, their_roster, cand.give_ids, cand.get_ids,
+                roster_limit=roster_limit, replacement_ppg=replacement_ppg)
+        except Exception:
+            continue
+        give_val = sum(values[g].forward_value for g in cand.give_ids if g in values)
+        get_val = sum(values[g].forward_value for g in cand.get_ids if g in values)
+        c1 = edge.your_lineup_gain >= _LINEUP_GAIN_THRESHOLD
+        c2 = edge.their_lineup_gain >= -_MAINTAIN_TOL
+        c3 = _value_fair(get_val, give_val)
+        c4 = edge.my_strength >= edge.their_strength
+        if not c1:
+            primary["cant_improve"] += 1
+        elif not c2:
+            primary["scarcity"] += 1
+        elif not c3:
+            primary["unfair"] += 1
+        elif not c4:
+            primary["overtake"] += 1
+        # NEAR-MISS: only structurally-sound candidates (fair + no overtake) that
+        # miss on the ppg conditions (cond1/cond2). Margin = sum of the ppg
+        # shortfalls; the closest is the negotiation starter.
+        if c3 and c4 and not (c1 and c2):
+            c1_short = max(0.0, _LINEUP_GAIN_THRESHOLD - edge.your_lineup_gain)
+            c2_short = max(0.0, (-_MAINTAIN_TOL) - edge.their_lineup_gain)
+            margin = round(c1_short + c2_short, 2)
+            reason = ("their starting lineup would slip — they'd need convincing"
+                      if c2_short >= c1_short and c2_short > 0
+                      else "it improves your lineup, but not by the full margin")
+            if best_margin is None or margin < best_margin[0]:
+                best_margin = (margin, cand, edge, reason)
+
+    if not primary:
+        # No evaluable candidates (e.g. a strong team with no detected need at all).
+        reason = "lineup_too_strong" if my_strength >= league_median else "asset_poor"
+        return SilenceContext(reason, _SILENCE_MESSAGES[reason], None)
+
+    dominant = primary.most_common(1)[0][0]
+    if dominant == "scarcity":
+        reason = "scarcity"
+    elif dominant == "unfair":
+        reason = "asset_poor"
+    elif dominant == "cant_improve":
+        reason = "lineup_too_strong" if my_strength >= league_median else "asset_poor"
+    else:
+        reason = "no_fair_trade"
+
+    near_miss = None
+    if best_margin is not None and best_margin[0] <= _NEAR_MISS_PPG:
+        _, cand, edge, sf_reason = best_margin
+        near_miss = NearMiss(
+            give_ids=cand.give_ids, get_ids=cand.get_ids,
+            counterparty_team_id=cand.counterparty_team_id,
+            would_be_ppg=round(edge.your_lineup_gain, 2), shortfall_reason=sf_reason,
+        )
+    return SilenceContext(reason, _SILENCE_MESSAGES[reason], near_miss)
