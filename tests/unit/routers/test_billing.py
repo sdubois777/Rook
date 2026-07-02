@@ -233,6 +233,28 @@ async def test_checkout_pack_creates_payment_session(stripe_configured, monkeypa
     assert captured["metadata"]["credits"] == "75"
 
 
+@pytest.mark.asyncio
+async def test_checkout_pack_uses_fresh_idempotency_key_each_attempt(stripe_configured, monkeypatch):
+    """A stable key would hand back a prior COMPLETED session ("you're all done
+    here"); each purchase attempt must create a fresh Checkout session."""
+    from backend.services.billing import stripe_gateway
+    keys = []
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: keys.append(kw["idempotency_key"]) or "https://checkout.stripe.com/x",
+    )
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        await _post("/api/billing/checkout-pack", {"pack": "small"})
+        await _post("/api/billing/checkout-pack", {"pack": "small"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert len(keys) == 2
+    assert keys[0] != keys[1]   # unique per attempt
+
+
 # ── change-plan preview ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
