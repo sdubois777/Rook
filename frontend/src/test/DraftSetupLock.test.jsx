@@ -29,7 +29,7 @@ describe('DraftSetup live_draft lock affordance', () => {
     renderSetup()
     expect(screen.getByText(/Live draft is a/i)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: /Upgrade to unlock/i })
-    expect(link).toHaveAttribute('href', '/pricing')
+    expect(link).toHaveAttribute('href', '/account')
     expect(screen.queryByRole('button', { name: /Start Draft/i })).not.toBeInTheDocument()
   })
 
