@@ -86,7 +86,7 @@ export default function DraftSetup() {
                 🔒 Live draft is a <span className="font-semibold">Standard</span> feature.
               </p>
               <Link
-                to="/pricing"
+                to="/account"
                 className="mt-3 inline-block py-2 px-4 bg-brand text-white text-sm font-medium rounded-lg hover:bg-brand-hover transition-colors"
               >
                 Upgrade to unlock
