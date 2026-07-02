@@ -10,6 +10,7 @@ success-return URL grants nothing — entitlement flips solely in the webhook.
 from __future__ import annotations
 
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -105,7 +106,10 @@ def _create_pack_session(user: User, customer_id: str, pack: str) -> str:
         success_url=f"{settings.app_url}/account?billing=success",
         cancel_url=f"{settings.app_url}/account?billing=cancel",
         metadata={"pack": pack, "credits": str(credits), "user_id": str(user.id)},
-        idempotency_key=f"co_{user.id}_pack_{pack}",
+        # Unique per attempt: a Checkout session doesn't charge (the hosted page
+        # does), so each purchase must get a FRESH session. A stable key would
+        # return the prior, already-completed session ("you're all done here").
+        idempotency_key=f"co_{user.id}_pack_{pack}_{uuid.uuid4()}",
     )
 
 
@@ -136,7 +140,8 @@ async def create_checkout(
         success_url=f"{settings.app_url}/account?billing=success",
         cancel_url=f"{settings.app_url}/pricing?billing=cancel",
         metadata={"tier": body.tier, "user_id": str(user.id)},
-        idempotency_key=f"co_{user.id}_tier_{body.tier}",
+        # Fresh session per attempt (see _create_pack_session).
+        idempotency_key=f"co_{user.id}_tier_{body.tier}_{uuid.uuid4()}",
     )
     return CheckoutResponse(url=url)
 
