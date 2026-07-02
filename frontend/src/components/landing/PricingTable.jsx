@@ -1,8 +1,12 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '@clerk/clerk-react'
+import { createCheckout, redirectTo } from '../../api/billing'
 
 const TIERS = [
   {
     name: 'Intro',
+    id: 'intro',
     monthly: 5,
     season: 15,
     features: [
@@ -17,6 +21,7 @@ const TIERS = [
   },
   {
     name: 'Standard',
+    id: 'standard',
     monthly: 9,
     season: 29,
     features: [
@@ -32,6 +37,7 @@ const TIERS = [
   },
   {
     name: 'Pro',
+    id: 'pro',
     monthly: 18,
     season: 49,
     features: [
@@ -47,6 +53,21 @@ const TIERS = [
 ]
 
 export default function PricingTable({ showHeader = true }) {
+  const { isSignedIn } = useAuth()
+  const [busyTier, setBusyTier] = useState(null)
+  const [error, setError] = useState('')
+
+  const startCheckout = async (tierId) => {
+    setBusyTier(tierId)
+    setError('')
+    try {
+      redirectTo(await createCheckout(tierId))
+    } catch {
+      setError('Could not start checkout. Please try again.')
+      setBusyTier(null)
+    }
+  }
+
   return (
     <section id="pricing" className="py-20 px-4 sm:px-6">
       <div className="max-w-5xl mx-auto">
@@ -101,19 +122,37 @@ export default function PricingTable({ showHeader = true }) {
                 ))}
               </ul>
 
-              <Link
-                to="/sign-up"
-                className={`mt-8 block text-center py-3 rounded-lg font-semibold text-sm transition-colors ${
-                  tier.highlight
-                    ? 'bg-brand hover:bg-brand-hover text-white'
-                    : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
-                }`}
-              >
-                {tier.cta}
-              </Link>
+              {isSignedIn ? (
+                <button
+                  onClick={() => startCheckout(tier.id)}
+                  disabled={busyTier !== null}
+                  className={`mt-8 block w-full text-center py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 ${
+                    tier.highlight
+                      ? 'bg-brand hover:bg-brand-hover text-white'
+                      : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                  }`}
+                >
+                  {busyTier === tier.id ? 'Redirecting…' : tier.cta}
+                </button>
+              ) : (
+                <Link
+                  to="/sign-up"
+                  className={`mt-8 block text-center py-3 rounded-lg font-semibold text-sm transition-colors ${
+                    tier.highlight
+                      ? 'bg-brand hover:bg-brand-hover text-white'
+                      : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                  }`}
+                >
+                  {tier.cta}
+                </Link>
+              )}
             </div>
           ))}
         </div>
+
+        {error && (
+          <p className="mt-6 text-center text-sm text-red-400">{error}</p>
+        )}
 
         {/* Credit info */}
         <div className="mt-12 text-center text-sm text-gray-500 max-w-2xl mx-auto space-y-2">

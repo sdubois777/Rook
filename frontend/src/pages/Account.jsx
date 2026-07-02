@@ -1,9 +1,46 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useUser, useClerk } from '@clerk/clerk-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../api/client'
+import { createPortal, redirectTo } from '../api/billing'
+import ChangePlanCard from '../components/billing/ChangePlanCard'
+import BuyCreditsCard from '../components/billing/BuyCreditsCard'
+import LeagueChooser from '../components/billing/LeagueChooser'
 import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
+
+const SUBSCRIPTION_STATUS_COPY = {
+  past_due: 'Your last payment failed — update your payment method to keep your plan.',
+  canceling: 'Your plan is set to cancel and will end at the end of the current billing period.',
+}
+
+// Manage subscription (Stripe Customer Portal) — cancel, update card, etc.
+function ManageSubscriptionButton() {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const open = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      redirectTo(await createPortal())
+    } catch {
+      setError('Could not open the billing portal.')
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="text-right">
+      <button
+        onClick={open}
+        disabled={busy}
+        className="bg-brand hover:bg-brand-hover disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+      >
+        {busy ? 'Opening…' : 'Manage subscription'}
+      </button>
+      {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
+    </div>
+  )
+}
 
 async function fetchAccountData() {
   const [me, credits, leagues, tokenResp] = await Promise.all([
@@ -132,9 +169,10 @@ function LeagueCard({ league }) {
   const scoringLabel = SCORING_LABELS[league.scoring] || league.scoring?.toUpperCase() || '—'
 
   const isFinished = !league.is_active
+  const isParked = league.suspended
 
   return (
-    <div className={`bg-gray-800 rounded-lg p-4 ${isFinished ? 'opacity-75' : ''}`}>
+    <div className={`bg-gray-800 rounded-lg p-4 ${isFinished || isParked ? 'opacity-75' : ''}`}>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="min-w-0">
           <div className="font-medium flex flex-wrap items-center gap-2">
@@ -142,6 +180,11 @@ function LeagueCard({ league }) {
             {isFinished && (
               <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">
                 {league.season_year} Season &middot; Finished
+              </span>
+            )}
+            {isParked && !isFinished && (
+              <span className="text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-2 py-0.5 rounded">
+                Parked &middot; re-upgrade to reactivate
               </span>
             )}
           </div>
@@ -191,6 +234,31 @@ export default function AccountPage() {
     enabled: isLoaded && !!clerkUser,
   })
 
+  const queryClient = useQueryClient()
+  // Derived from the URL at mount so we don't setState synchronously in the effect.
+  const [confirming, setConfirming] = useState(
+    () => new URLSearchParams(window.location.search).get('billing') === 'success'
+  )
+
+  // Refresh /account/me a few times so a freshly-flipped tier/credits appears
+  // without a manual refresh — covers BOTH the checkout-redirect return and an
+  // in-app upgrade (webhook-vs-request race). The URL/return grants NOTHING; the
+  // webhook is authoritative. Poll a fixed number of times, then clean the URL.
+  useEffect(() => {
+    if (!confirming) return
+    let tries = 0
+    const iv = setInterval(() => {
+      tries += 1
+      queryClient.invalidateQueries({ queryKey: ['account'] })
+      if (tries >= 6) {
+        clearInterval(iv)
+        setConfirming(false)
+        window.history.replaceState({}, '', '/account')
+      }
+    }, 1500)
+    return () => clearInterval(iv)
+  }, [confirming, queryClient])
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -208,7 +276,6 @@ export default function AccountPage() {
   }
 
   const { user, credits, leagues, draftToken } = data
-  const queryClient = useQueryClient()
 
   const handleRevokeToken = async () => {
     await apiClient.post('/account/draft-token/revoke')
@@ -227,21 +294,55 @@ export default function AccountPage() {
           </p>
         </div>
 
+        {/* Checkout-return confirmation — the webhook flips the tier, we just poll. */}
+        {confirming && (
+          <div className="bg-brand/10 border border-brand rounded-xl p-4 mb-6 text-sm text-blue-200">
+            Confirming your upgrade…
+          </div>
+        )}
+
+        {/* Forced over-limit chooser — self-gates on the limit-state (renders only
+            when the account is over its active-league cap after a downgrade). */}
+        <LeagueChooser />
+
         {/* Plan */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-2">
             <div>
               <div className="text-sm text-gray-400 mb-1">Current Plan</div>
               <div className={`text-xl font-semibold ${TIER_COLORS[user.tier]}`}>
                 {TIER_LABELS[user.tier] || user.tier}
               </div>
             </div>
-            {user.tier !== 'pro' && (
-              <button className="bg-brand hover:bg-brand-hover text-white text-sm px-4 py-2 rounded-lg transition-colors">
+            {user.subscription_status ? (
+              <ManageSubscriptionButton />
+            ) : user.tier !== 'pro' ? (
+              <Link
+                to="/pricing"
+                className="bg-brand hover:bg-brand-hover text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              >
                 Upgrade
-              </button>
-            )}
+              </Link>
+            ) : null}
           </div>
+          {SUBSCRIPTION_STATUS_COPY[user.subscription_status] && (
+            <p
+              className={`text-sm mt-2 ${
+                user.subscription_status === 'past_due' ? 'text-red-400' : 'text-yellow-500'
+              }`}
+            >
+              {SUBSCRIPTION_STATUS_COPY[user.subscription_status]}
+            </p>
+          )}
+
+          {/* In-app change plan — only for active subscribers (they have a sub to
+              modify). Non-subscribers upgrade via the Upgrade -> /pricing path. */}
+          {user.subscription_status && (
+            <ChangePlanCard
+              currentTier={user.tier}
+              onApplied={() => setConfirming(true)}
+            />
+          )}
         </section>
 
         {/* Credits */}
@@ -296,6 +397,8 @@ export default function AccountPage() {
               </div>
             </div>
           )}
+
+          <BuyCreditsCard />
         </section>
 
         {/* Browser Extension */}

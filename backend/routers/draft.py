@@ -14,8 +14,9 @@ Concurrency model (single-worker, in-memory, per-user):
   - POST /draft/start|state|bid|nominate|pass|end|recommendation|opponents|frame
                          (React)      Clerk JWT (Depends(get_current_user))
 
-NOTE: require_feature("live_draft") (the billing entitlement gate) will attach at
-POST /draft/start and the WS connect — left as a marker; OUT OF SCOPE here.
+NOTE: require_feature("live_draft") (the billing entitlement gate) is now attached
+to POST /draft/start (standard+). The WS /ws/draft connect is not yet gated —
+deferred (the §5 mapping targets /draft/start; WS-dep gating is a separate follow-up).
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from backend.core.dependencies import _verify_clerk_jwt, get_current_user, get_db
+from backend.core.dependencies import _verify_clerk_jwt, get_current_user, get_db, require_feature
 from backend.database import AsyncSessionLocal
 from backend.models.user import User
 from backend.services.draft_session import DbSessionStore, DraftSessionManager
@@ -534,7 +535,12 @@ async def pass_nomination(user: User = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @router.post("/start", summary="Initialize draft engine and state manager")
-async def start_draft(req: StartDraftRequest, user: User = Depends(get_current_user)):
+async def start_draft(
+    req: StartDraftRequest,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+    _gate: None = Depends(require_feature("live_draft")),
+):
     """
     Create the current USER's draft session (DraftStateManager + LiveDraftEngine).
 
@@ -542,7 +548,9 @@ async def start_draft(req: StartDraftRequest, user: User = Depends(get_current_u
     session — never attaches to someone else's. No server-side browser is launched;
     the Rook extension drives the room and relays via POST /draft/event.
 
-    (require_feature("live_draft") will gate this endpoint — out of scope here.)
+    Live draft is a standard+ tier entitlement — the require_feature("live_draft")
+    dependency raises 403 feature_not_available for intro users. Enforcement lives
+    entirely in the gate; no manual tier check in this body.
     """
     # Short-circuit ONLY when there's a genuinely RESUMABLE draft (active + a
     # recent event) — the same gate /state uses, so the two never disagree. Keying
@@ -553,6 +561,20 @@ async def start_draft(req: StartDraftRequest, user: User = Depends(get_current_u
     # draft after a redeploy (warm gone) — so /start won't wipe a live draft either.
     # Not resumable (stale/abandoned, or none) → fall through and create fresh,
     # which overwrites the stale DB row + replaces any lingering warm session.
+    # Refuse a draft on a PARKED league (suspended over the tier cap) — it's
+    # readable history but not usable for tier-gated features.
+    if req.league_id:
+        from backend.core.exceptions import LeagueSuspendedError
+        from backend.repositories.league_repo import LeagueRepository
+        try:
+            league_uuid = uuid.UUID(req.league_id)
+        except ValueError:
+            league_uuid = None
+        if league_uuid is not None:
+            league = await LeagueRepository(db).get_user_league(user.id, league_uuid)
+            if league is not None and league.suspended_at is not None:
+                raise LeagueSuspendedError()
+
     if await session_manager.is_resumable(user.id, RESUME_WINDOW_SECONDS):
         return {
             "status": "ready",

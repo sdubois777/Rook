@@ -21,3 +21,11 @@ export const TIER_LABELS = {
   standard: 'Standard — $9/mo',
   pro: 'Pro — $18/mo',
 }
+
+// Mirrors CREDIT_COSTS in backend/models/user.py (server is the source of truth;
+// this is display-only — it labels how many credits an action will spend).
+export const CREDIT_COSTS = {
+  trade_analysis: 10,
+  trade_finder: 20,
+  waiver_wire: 8,
+}

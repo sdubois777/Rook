@@ -75,6 +75,15 @@ class UserLeague(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    # is_active = "this league's season is the current season" (finished past
+    # seasons are is_active=False). Do NOT overload it for tier caps.
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when a downgrade parks a current-season league over the tier cap. Data
+    # stays intact + readable; the league is NOT counted as active and NOT usable
+    # for tier-gated features until re-upgrade / re-choose clears it. Distinct
+    # from is_active (season) and from LeagueLimitError (transient add-time).
     last_synced: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

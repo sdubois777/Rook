@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     tier: str
     credits_remaining: int
     tier_limits: dict
+    subscription_status: Optional[str] = None  # billing state (read-only)
 
 
 class CreditUsageItem(BaseModel):
@@ -72,8 +73,20 @@ class LeagueResponse(BaseModel):
     budget: Optional[int]
     season_year: int
     is_active: bool
+    suspended: bool          # parked over the tier cap — readable, not usable
     last_synced: Optional[str]
     created_at: str
+
+
+class LeagueLimitStateResponse(BaseModel):
+    over_limit: bool
+    active_count: int
+    max_leagues: Optional[int]     # None = unlimited (pro)
+    candidates: list[LeagueResponse]  # current-season leagues (active + parked)
+
+
+class ResolveLimitRequest(BaseModel):
+    keep: list[str]  # league ids to keep active; the rest of the set is parked
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +105,7 @@ async def get_me(
         tier=user.tier,
         credits_remaining=user.credits_remaining,
         tier_limits=TIER_LIMITS.get(user.tier, {}),
+        subscription_status=getattr(user, "subscription_status", None),
     )
 
 
@@ -149,9 +163,9 @@ async def add_league(
     """
     from backend.services.feature_service import FeatureService
 
-    current_count = len(
-        await service.get_user_leagues(user.id)
-    )
+    # Count ACTIVE (current-season, non-suspended) leagues only — matches the
+    # connect paths. Finished history never counts against the cap.
+    current_count = await service.count_active_leagues(user.id)
     FeatureService.can_add_league(user, current_count)
 
     league = await service.add_league(
@@ -204,6 +218,61 @@ async def remove_league(
 
 
 # ---------------------------------------------------------------------------
+# Tier-cap over-limit chooser (downgrade reconciliation)
+# ---------------------------------------------------------------------------
+
+def _reconciler(db):
+    from backend.repositories.league_repo import LeagueRepository
+    from backend.services.league_reconcile import LeagueReconciler
+    repo = LeagueRepository(db)
+    return LeagueReconciler(repo), repo
+
+
+def _limit_state_response(state) -> LeagueLimitStateResponse:
+    return LeagueLimitStateResponse(
+        over_limit=state["over_limit"],
+        active_count=state["active_count"],
+        max_leagues=state["max_leagues"],
+        candidates=[_league_response(lg) for lg in state["candidates"]],
+    )
+
+
+@router.get("/leagues/limit-state", response_model=LeagueLimitStateResponse)
+async def get_league_limit_state(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Over-limit snapshot for the forced chooser: how many active leagues vs the
+    tier cap, and the current-season candidates (finished history excluded)."""
+    reconciler, _ = _reconciler(db)
+    state = await reconciler.limit_state(user.id, user.tier)
+    return _limit_state_response(state)
+
+
+@router.post("/leagues/resolve-limit", response_model=LeagueLimitStateResponse)
+async def resolve_league_limit(
+    body: ResolveLimitRequest,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Keep the chosen active leagues (<= cap); park the rest of the current-season
+    set (suspended, never deleted). Idempotent; rejects keeping more than the cap."""
+    from backend.core.exceptions import ValidationError
+
+    reconciler, repo = _reconciler(db)
+    try:
+        keep_ids = [uuid.UUID(k) for k in body.keep]
+    except ValueError:
+        raise ValidationError("Invalid league id in keep list")
+
+    await reconciler.resolve_keep(user.id, user.tier, keep_ids)
+    await repo.commit()
+
+    state = await reconciler.limit_state(user.id, user.tier)
+    return _limit_state_response(state)
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
@@ -220,6 +289,7 @@ def _league_response(league) -> LeagueResponse:
         budget=league.budget,
         season_year=league.season_year,
         is_active=league.is_active,
+        suspended=league.suspended_at is not None,
         last_synced=(
             league.last_synced.isoformat()
             if league.last_synced else None

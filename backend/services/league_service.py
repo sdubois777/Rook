@@ -33,6 +33,17 @@ class LeagueService:
     ) -> list[UserLeague]:
         return await self._repo.get_by_user(user_id)
 
+    async def count_active_leagues(
+        self, user_id: uuid.UUID
+    ) -> int:
+        """The cap denominator — current-season, non-suspended leagues only.
+
+        Finished (past-season) leagues are always-safe history and never count;
+        suspended (parked) leagues don't count either. Single source of truth so
+        every add-path agrees (was: account.py counted ALL leagues, the connect
+        paths counted active — they could disagree)."""
+        return await self._repo.count_active(user_id)
+
     async def add_league(
         self,
         user_id: uuid.UUID,

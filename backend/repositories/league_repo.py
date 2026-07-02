@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.models.user_league import UserLeague
@@ -64,24 +64,85 @@ class LeagueRepository(BaseRepository[UserLeague]):
     async def count_active(
         self, user_id: uuid.UUID
     ) -> int:
+        """Cap denominator: current-season (is_active) AND non-suspended."""
         result = await self._session.execute(
             select(func.count(UserLeague.id))
             .where(UserLeague.user_id == user_id)
             .where(UserLeague.is_active.is_(True))
+            .where(UserLeague.suspended_at.is_(None))
         )
         return result.scalar() or 0
+
+    async def get_active_leagues(
+        self, user_id: uuid.UUID
+    ) -> list[UserLeague]:
+        """The usable set — current-season, non-suspended — ordered oldest first
+        (deterministic for chooser candidates + restore ordering)."""
+        result = await self._session.execute(
+            select(UserLeague)
+            .where(UserLeague.user_id == user_id)
+            .where(UserLeague.is_active.is_(True))
+            .where(UserLeague.suspended_at.is_(None))
+            .order_by(UserLeague.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def get_current_season_leagues(
+        self, user_id: uuid.UUID
+    ) -> list[UserLeague]:
+        """All current-season leagues (active + suspended), oldest first — the
+        chooser's candidate set (finished/past-season leagues excluded)."""
+        result = await self._session.execute(
+            select(UserLeague)
+            .where(UserLeague.user_id == user_id)
+            .where(UserLeague.is_active.is_(True))
+            .order_by(UserLeague.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def get_suspended_leagues(
+        self, user_id: uuid.UUID
+    ) -> list[UserLeague]:
+        """Parked current-season leagues, longest-parked first (restore order)."""
+        result = await self._session.execute(
+            select(UserLeague)
+            .where(UserLeague.user_id == user_id)
+            .where(UserLeague.is_active.is_(True))
+            .where(UserLeague.suspended_at.is_not(None))
+            .order_by(UserLeague.suspended_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def set_suspended(
+        self,
+        user_id: uuid.UUID,
+        league_ids: list[uuid.UUID],
+        suspended_at: datetime | None,
+    ) -> None:
+        """Park (suspended_at=now) or restore (None) specific leagues, scoped to
+        the user. No commit — caller owns the transaction."""
+        if not league_ids:
+            return
+        await self._session.execute(
+            update(UserLeague)
+            .where(UserLeague.user_id == user_id)
+            .where(UserLeague.id.in_(league_ids))
+            .values(suspended_at=suspended_at)
+        )
 
     async def get_user_leagues_by_platform(
         self,
         user_id: uuid.UUID,
         platform: str,
     ) -> list[UserLeague]:
-        """All active leagues for a user on a specific platform."""
+        """Usable leagues for a platform — active, non-suspended (passive sync
+        must not touch parked leagues)."""
         result = await self._session.execute(
             select(UserLeague)
             .where(UserLeague.user_id == user_id)
             .where(UserLeague.platform == platform)
             .where(UserLeague.is_active.is_(True))
+            .where(UserLeague.suspended_at.is_(None))
         )
         return list(result.scalars().all())
 

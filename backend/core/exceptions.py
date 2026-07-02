@@ -89,6 +89,18 @@ class LeagueLimitError(AppError):
         )
 
 
+class LeagueSuspendedError(AppError):
+    status_code = 403
+    error_code = "league_suspended"
+
+    def __init__(self):
+        super().__init__(
+            "This league is parked over your plan's limit. Re-upgrade or choose "
+            "it as an active league to use it again.",
+            {"resolve_url": "/account"},
+        )
+
+
 class ValidationError(AppError):
     status_code = 422
     error_code = "validation_error"

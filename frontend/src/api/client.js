@@ -75,6 +75,27 @@ api.interceptors.response.use(
     if (status === 401) {
       window.dispatchEvent(new Event('clerk:auth-error'))
     }
+    // Billing gates (backend is the security boundary; these events only drive
+    // UX affordances). feature_not_available (wrong tier) -> upgrade prompt;
+    // insufficient_credits (402) -> out-of-credits prompt. Detail carries the
+    // backend body (required_tier / required / available).
+    const code = error.response?.data?.error
+    if (status === 403 && code === 'feature_not_available') {
+      window.dispatchEvent(
+        new CustomEvent('billing:feature-required', { detail: error.response.data })
+      )
+    }
+    if (status === 402 && code === 'insufficient_credits') {
+      window.dispatchEvent(
+        new CustomEvent('billing:insufficient-credits', { detail: error.response.data })
+      )
+    }
+    // A parked (over-cap) league was used for a tier-gated action.
+    if (status === 403 && code === 'league_suspended') {
+      window.dispatchEvent(
+        new CustomEvent('billing:league-suspended', { detail: error.response.data })
+      )
+    }
     return Promise.reject(error)
   },
 )

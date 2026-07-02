@@ -10,9 +10,11 @@ import {
   Swords,
   ArrowLeftRight,
   UserCircle,
+  Coins,
   X,
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
+import { useMe } from '../../hooks/useMe'
 import LeagueSelector from './LeagueSelector'
 import Logo from '../brand/Logo'
 
@@ -32,6 +34,7 @@ const navItems = [
 export default function Sidebar({ mobileOpen = false, onClose }) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggle = useUIStore((s) => s.toggleSidebar)
+  const { credits } = useMe()
   // Labels/brand hide only when desktop-collapsed; on mobile the drawer is full
   // width so they always show.
   const labelHidden = collapsed ? 'lg:hidden' : ''
@@ -107,8 +110,20 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
         </NavLink>
       </nav>
 
-      {/* Footer — user */}
-      <div className="p-4 border-t border-border">
+      {/* Footer — credits + user */}
+      <div className="p-4 border-t border-border space-y-3">
+        {credits !== null && (
+          <NavLink
+            to="/account"
+            onClick={onClose}
+            title={`${credits} credits`}
+            className="flex items-center gap-2 rounded-md bg-surface-2 px-2.5 py-2 text-sm text-slate-200 hover:bg-surface-3 transition-colors min-h-11 lg:min-h-0"
+          >
+            <Coins size={16} className="shrink-0 text-amber-400" />
+            <span className="font-semibold tabular-nums">{credits}</span>
+            <span className={`text-slate-400 ${labelHidden}`}>credits</span>
+          </NavLink>
+        )}
         <div className="flex items-center gap-2">
           <UserButton afterSignOutUrl="/sign-in" />
           <span className={`text-xs text-slate-400 truncate ${labelHidden}`}>

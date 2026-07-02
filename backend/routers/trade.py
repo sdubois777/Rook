@@ -28,7 +28,10 @@ from backend.services.trade.trade_analysis import (
     analyze_trade,
     validate_trade,
 )
-from backend.services.trade.trade_demo_source import trade_demo_enabled
+from backend.services.trade.trade_demo_source import (
+    trade_demo_enabled,
+    trade_demo_enforce_gates,
+)
 from backend.services.trade.trade_proposals import (
     acceptability_read,
     build_silence_context,
@@ -186,6 +189,7 @@ class TradeLeagueResponse(BaseModel):
     week: int
     teams: list[LeagueTeamOut]
     demo_mode: bool
+    enforced: bool = False  # demo still applies the tier gate + credit charge
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +271,12 @@ async def analyze(
     agent=Depends(get_trade_analyzer),
 ):
     demo = trade_demo_enabled()
+    # Demo bypasses the gate + charge UNLESS TRADE_DEMO_ENFORCE_GATES is set
+    # (so we can test tier gating + credit spend against the demo league).
+    enforce = (not demo) or trade_demo_enforce_gates()
 
-    # 1. FEATURE GATE (403) — before anything else; skipped in demo.
-    if not demo:
+    # 1. FEATURE GATE (403) — before anything else.
+    if enforce:
         from backend.services.feature_service import FeatureService
         FeatureService.check_feature_access(user, "trade_analyzer")
 
@@ -283,8 +290,8 @@ async def analyze(
     except TradeValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # 4. CREDIT DEDUCT (402) — only now, the analysis is about to run; skipped in demo.
-    if not demo:
+    # 4. CREDIT DEDUCT (402) — only now, the analysis is about to run.
+    if enforce:
         await credit_service.deduct(user, "trade_analysis", agent_name="trade_analyzer")
 
     # 5. Deterministic verdict + Sonnet rationale.
@@ -320,9 +327,10 @@ async def ideas(
     """Pro-only: the system finds trades. Each surfaced idea is an agent-built
     trade run through slice-3's EXACT verdict path — never a second engine."""
     demo = trade_demo_enabled()
+    enforce = (not demo) or trade_demo_enforce_gates()
 
-    # 1. FEATURE GATE (403, trade_finder = pro-only) — before anything; skipped in demo.
-    if not demo:
+    # 1. FEATURE GATE (403, trade_finder = pro-only) — before anything.
+    if enforce:
         from backend.services.feature_service import FeatureService
         FeatureService.check_feature_access(user, "trade_finder")
 
@@ -333,8 +341,8 @@ async def ideas(
     if my_team_id is None:
         raise HTTPException(status_code=400, detail="no team specified and no is_me team")
 
-    # 3. CREDIT DEDUCT (402, 20cr) — only now, generation is about to run; skipped in demo.
-    if not demo:
+    # 3. CREDIT DEDUCT (402, 20cr) — only now, generation is about to run.
+    if enforce:
         await credit_service.deduct(user, "trade_finder", agent_name="trade_proposals")
 
     # 4. Generate candidates (LLM, deterministic fallback) → filter through the
@@ -432,4 +440,5 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
 
     return TradeLeagueResponse(
         season=state.season, week=state.week, teams=teams, demo_mode=demo,
+        enforced=trade_demo_enforce_gates(),
     )

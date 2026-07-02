@@ -157,6 +157,16 @@ def trade_demo_enabled() -> bool:
     }
 
 
+def trade_demo_enforce_gates() -> bool:
+    """Opt-in: apply the real feature gate + credit charge even while running on
+    the demo league (default demo behavior is to bypass both). Lets us TEST the
+    tier gate and credit deduction against the seeded demo data + sandbox Stripe.
+    Off ⇒ demo keeps its bypass. Meaningless unless TRADE_DEMO_MODE is on."""
+    return os.environ.get("TRADE_DEMO_ENFORCE_GATES", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 @dataclass
 class TradeDemoSource:
     """A ``LeagueStateProvider`` (same Protocol as ``StaticLeagueStateProvider``)

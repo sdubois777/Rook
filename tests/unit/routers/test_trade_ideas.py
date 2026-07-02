@@ -177,6 +177,34 @@ async def test_demo_bypass_runs_without_gate(monkeypatch):
     assert resp.json()["demo_mode"] is True
 
 
+async def test_demo_enforce_gates_pro_only_and_charges(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    monkeypatch.setenv("TRADE_DEMO_ENFORCE_GATES", "true")
+    # standard is blocked (trade_finder is pro-only) even on the demo league
+    blocked = _make_user(tier="standard", credits=50)
+    credit = _FakeCredit()
+    _patch_loader(monkeypatch, _fixture(ME, THEM))
+    _wire(blocked, _CLEARING, credit)
+    try:
+        resp = await _post("/api/trade/ideas", {})
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403
+    assert credit.deducts == []
+
+    # pro runs and is charged 20 on the demo league
+    pro = _make_user(tier="pro", credits=50)
+    credit2 = _FakeCredit()
+    _patch_loader(monkeypatch, _fixture(ME, THEM))
+    _wire(pro, _CLEARING, credit2)
+    try:
+        resp = await _post("/api/trade/ideas", {})
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    assert credit2.deducts == [("trade_finder", 20)]
+
+
 # ---------------------------------------------------------------------------
 # NEVER-PAD through the route
 # ---------------------------------------------------------------------------

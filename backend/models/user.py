@@ -123,6 +123,12 @@ class User(Base):
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(
         String(100), unique=True, nullable=True
     )
+    subscription_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+    # None (no subscription) | "active" | "past_due" | "canceling".
+    # Written only by the verified Stripe webhook. NOT an entitlement source —
+    # tier remains the source of truth; this is billing state for the UI.
 
     # Lifecycle
     deleted_at: Mapped[Optional[datetime]] = mapped_column(

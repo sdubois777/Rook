@@ -178,6 +178,41 @@ async def test_demo_mode_bypasses_gate_for_intro_user(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# DEMO WITH ENFORCEMENT — gate + charge apply on the demo league (test toggle)
+# ---------------------------------------------------------------------------
+async def test_demo_enforce_gates_403_for_intro(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    monkeypatch.setenv("TRADE_DEMO_ENFORCE_GATES", "true")
+    user = _make_user(tier="intro", credits=100)
+    credit = _FakeCredit()
+    _patch_loader(monkeypatch)
+    _wire(user, credit)
+    try:
+        resp = await _post(_BODY)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403          # gate applies even in demo
+    assert credit.deducts == []
+    assert user.credits_remaining == 100
+
+
+async def test_demo_enforce_gates_charges_standard(monkeypatch):
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+    monkeypatch.setenv("TRADE_DEMO_ENFORCE_GATES", "true")
+    user = _make_user(tier="standard", credits=50)
+    credit = _FakeCredit()
+    _patch_loader(monkeypatch)
+    _wire(user, credit)
+    try:
+        resp = await _post(_BODY)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    assert credit.deducts == [("trade_analysis", 10)]   # charged on the demo league
+    assert user.credits_remaining == 40
+
+
+# ---------------------------------------------------------------------------
 # REAL PATH not yet available — 501 AFTER feature, BEFORE deduct
 # ---------------------------------------------------------------------------
 async def test_real_league_path_501_without_charging(monkeypatch):
