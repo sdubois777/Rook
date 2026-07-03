@@ -140,6 +140,12 @@ export default function useDraftSocket() {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          // Any event may carry the resolver-derived own-team name (ESPN emits
+          // it on teams_update / snake_status). Upgrade the generic label from
+          // it — non-destructive, cosmetic (attribution is is_yours).
+          if (data.payload?.your_team_name) {
+            useDraftStore.getState().upgradeTeamName(data.payload.your_team_name)
+          }
           switch (data.type) {
             // Engine broadcasts (flat shape)
             case 'recommendation':

@@ -5,8 +5,6 @@ import { useLeague } from '../../context/LeagueContext'
 import { useEntitlements, isFeatureLocked } from '../../hooks/useEntitlements'
 
 export default function DraftSetup() {
-  const [teamId, setTeamId] = useState('')
-  const [draftRoomUrl, setDraftRoomUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -19,13 +17,13 @@ export default function DraftSetup() {
   const liveDraftLocked = isFeatureLocked(tierLimits, 'live_draft')
 
   const handleStart = async () => {
-    if (!teamId.trim()) return
     setLoading(true)
     setError(null)
     try {
-      // Pass the selected league's type so the engine picks the snake vs
-      // auction path (and loads league settings via league_id).
-      await startDraft(teamId.trim(), draftRoomUrl.trim() || undefined, {
+      // No team name needed — the extension self-identifies your team and Rook
+      // derives the label. Pass the selected league so the engine picks the
+      // snake vs auction path and loads league settings.
+      await startDraft({
         leagueId: selectedLeague?.id,
         draftType: selectedLeague?.draft_type || 'auction',
       })
@@ -38,42 +36,13 @@ export default function DraftSetup() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0/90">
       <div className="bg-surface-1 border border-border rounded-xl p-8 w-full max-w-md">
-        <h2 className="text-xl font-semibold text-slate-100 mb-6">Start Draft Session</h2>
+        <h2 className="text-xl font-semibold text-slate-100 mb-2">Start Draft Session</h2>
+        <p className="text-sm text-slate-400 mb-6">
+          Rook detects your team automatically from the draft room — just start the
+          engine and open your draft in the browser with the extension active.
+        </p>
 
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-slate-400 mb-1">Your Team Name</label>
-            <input
-              type="text"
-              value={teamId}
-              onChange={(e) => setTeamId(e.target.value)}
-              placeholder="Stephen — exactly as in the draft room"
-              className="w-full px-3 py-2 bg-surface-2 text-slate-200 border border-border rounded-lg focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
-              disabled={loading}
-            />
-            <p className="text-xs text-slate-600 mt-1">
-              Must match your team name in the draft room's team list exactly —
-              this is how Rook detects the players you win.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-400 mb-1">
-              Draft Room URL <span className="text-slate-600">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={draftRoomUrl}
-              onChange={(e) => setDraftRoomUrl(e.target.value)}
-              placeholder="https://football.fantasysports.yahoo.com/..."
-              className="w-full px-3 py-2 bg-surface-2 text-slate-200 border border-border rounded-lg focus:outline-none focus:border-brand-accent/60 placeholder-slate-600"
-              disabled={loading}
-            />
-            <p className="text-xs text-slate-600 mt-1">
-              Leave empty for manual frame injection (testing)
-            </p>
-          </div>
-
           {error && (
             <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
               {error}
@@ -95,7 +64,7 @@ export default function DraftSetup() {
           ) : (
             <button
               onClick={handleStart}
-              disabled={!teamId.trim() || loading}
+              disabled={loading}
               className="w-full py-2.5 bg-brand text-white font-medium rounded-lg hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? 'Starting...' : 'Start Draft'}

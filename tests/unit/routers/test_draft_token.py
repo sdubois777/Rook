@@ -34,7 +34,7 @@ def _make_user(uid=None, draft_token=None, tier="standard"):
 
 def _fake_session():
     """A per-user session stand-in: an async engine + a state mock."""
-    return SimpleNamespace(engine=AsyncMock(), state=MagicMock())
+    return SimpleNamespace(engine=AsyncMock(), state=MagicMock(your_team_id="Your Team"))
 
 
 def _fake_manager(*, session=None, created=None, warm=None, resumable=False):
@@ -198,6 +198,47 @@ async def test_draft_event_relays_to_session_ws():
             key, data = mock_ws.broadcast_to_session.await_args[0]
             assert key == str(user.id)
             assert data["type"] == "nomination"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_teams_update_upgrades_generic_label_from_your_team_name():
+    """A teams_update carrying your_team_name (ESPN) upgrades the generic label
+    mid-session, then persists. A missing name would be a no-op."""
+    from types import SimpleNamespace
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+
+    user = _make_user(draft_token="valid-token")
+    real_state = DraftStateManager(LeagueConfig(auction_budget=200))  # label "Your Team"
+    session = SimpleNamespace(engine=AsyncMock(), state=real_state)
+    mgr = _fake_manager(session=session)
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={
+                        "type": "teams_update", "platform": "espn",
+                        "payload": {"teams": {}, "your_team_name": "Gridiron Gang"},
+                    },
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            assert real_state.your_team_id == "Gridiron Gang"  # upgraded
+            mgr.persist.assert_awaited_once_with(user.id)
+            # Raw event (with the name) still broadcast so the UI can relabel too.
+            _, data = mock_ws.broadcast_to_session.await_args[0]
+            assert data["payload"]["your_team_name"] == "Gridiron Gang"
         finally:
             app.dependency_overrides.clear()
 
@@ -435,19 +476,20 @@ async def test_start_draft_creates_session_for_user():
     from backend.core.dependencies import get_current_user
 
     app.dependency_overrides[get_current_user] = lambda: user
-    build = AsyncMock(return_value="STATE")
+    build = AsyncMock(return_value=MagicMock(your_team_id="Your Team"))
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", build):
+        "backend.routers.draft._build_state", build
+    ):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+                resp = await ac.post("/api/draft/start", json={})  # no team name
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "ready"
             assert data["mode"] == "extension"
-            build.assert_awaited_once_with("team_5", None, None)
+            assert data["team_name"] == "Your Team"  # generic label until a name streams
+            build.assert_awaited_once_with(None, None)
             mgr.create.assert_awaited_once()
             assert mgr.create.await_args[0][0] == user.id
         finally:
@@ -465,11 +507,11 @@ async def test_start_draft_denied_for_intro_tier():
     app.dependency_overrides[get_current_user] = lambda: user
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", AsyncMock()) as build:
+        "backend.routers.draft._build_state", AsyncMock()
+    ) as build:
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+                resp = await ac.post("/api/draft/start", json={})
             assert resp.status_code == 403
             assert resp.json()["error"] == "feature_not_available"
             mgr.create.assert_not_awaited()
@@ -498,7 +540,7 @@ async def test_start_draft_refused_on_suspended_league():
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 resp = await ac.post(
                     "/api/draft/start",
-                    json={"your_team_id": "team_5", "league_id": str(uuid.uuid4())},
+                    json={"league_id": str(uuid.uuid4())},
                 )
             assert resp.status_code == 403
             assert resp.json()["error"] == "league_suspended"
@@ -517,11 +559,12 @@ async def test_start_draft_allowed_for_pro_tier():
     app.dependency_overrides[get_current_user] = lambda: user
 
     with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ), patch("backend.routers.draft._build_state", AsyncMock(return_value="STATE")):
+        "backend.routers.draft._build_state",
+        AsyncMock(return_value=MagicMock(your_team_id="Your Team")),
+    ):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+                resp = await ac.post("/api/draft/start", json={})
             assert resp.status_code == 200
             mgr.create.assert_awaited_once()
         finally:
@@ -544,7 +587,7 @@ async def test_start_draft_idempotent_when_session_resumable():
     ) as build:
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                resp = await ac.post("/api/draft/start", json={"your_team_id": "team_5"})
+                resp = await ac.post("/api/draft/start", json={})
             assert resp.status_code == 200
             assert resp.json()["status"] == "ready"
             mgr.create.assert_not_awaited()
@@ -585,12 +628,10 @@ async def test_start_recreates_stale_but_warm_session_then_state_200():
     assert await mgr.is_resumable(user.id, 3600) is False  # but stale → not resumable
 
     app.dependency_overrides[get_current_user] = lambda: user
-    with patch("backend.routers.draft.session_manager", mgr), patch(
-        "backend.routers.draft._bridge", None
-    ):
+    with patch("backend.routers.draft.session_manager", mgr):
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                start = await ac.post("/api/draft/start", json={"your_team_id": "team_new"})
+                start = await ac.post("/api/draft/start", json={})
                 assert start.status_code == 200
                 assert start.json()["status"] == "ready"
                 # The fresh draft is now resumable → /state 200, not the 409 regression.
