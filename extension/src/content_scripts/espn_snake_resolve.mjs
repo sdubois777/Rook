@@ -104,6 +104,35 @@ export function detectSnakeEvents(prev, curr) {
   const events = []
   const next = { ...prev, sentPickKeys: prev.sentPickKeys.slice() }
 
+  // SNAKE PICKS FIRST — every NEW completed board cell, deduped by its
+  // roundPick. Emitted BEFORE your_turn so the backend records the pick before
+  // generating the on-the-clock recommendation — a pick landing in the same
+  // tick as your turn (picked right before you) was otherwise still "available"
+  // to the engine and it could recommend a just-drafted player.
+  for (const p of curr.completedPicks) {
+    if (!p.name || !p.roundPick) continue
+    if (next.sentPickKeys.includes(p.roundPick)) continue
+    next.sentPickKeys.push(p.roundPick)
+    const pickNumber =
+      p.round != null && p.pickInRound != null && curr.teamCount
+        ? (p.round - 1) * curr.teamCount + p.pickInRound
+        : null
+    events.push({
+      type: 'snake_pick',
+      platform: 'espn',
+      payload: {
+        pick_number: pickNumber,
+        player_name: p.name,
+        position: p.position,
+        nfl_team: p.proTeam,
+        espn_player_id: null,
+        picker: p.team,
+        is_yours: p.isMine,
+        round: p.round,
+      },
+    })
+  }
+
   // YOUR TURN — rising edge.
   if (curr.isYourTurn && !prev.wasYourTurn) {
     events.push({
@@ -144,31 +173,6 @@ export function detectSnakeEvents(prev, curr) {
     events.push({
       type: 'snake_status', platform: 'espn',
       payload: { ...status, your_team_name: curr.myTeam || null },
-    })
-  }
-
-  // SNAKE PICK — every NEW completed board cell, deduped by its roundPick.
-  for (const p of curr.completedPicks) {
-    if (!p.name || !p.roundPick) continue
-    if (next.sentPickKeys.includes(p.roundPick)) continue
-    next.sentPickKeys.push(p.roundPick)
-    const pickNumber =
-      p.round != null && p.pickInRound != null && curr.teamCount
-        ? (p.round - 1) * curr.teamCount + p.pickInRound
-        : null
-    events.push({
-      type: 'snake_pick',
-      platform: 'espn',
-      payload: {
-        pick_number: pickNumber,
-        player_name: p.name,
-        position: p.position,
-        nfl_team: p.proTeam,
-        espn_player_id: null,
-        picker: p.team,
-        is_yours: p.isMine,
-        round: p.round,
-      },
     })
   }
 

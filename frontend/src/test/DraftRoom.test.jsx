@@ -970,6 +970,58 @@ describe('DraftRoom', () => {
     expect(s.currentBid.current_bid).toBe(43)
   })
 
+  it('setNomination preserves the bid across NAME VARIANTS of the same player', () => {
+    // The nomination is backend-ENRICHED to the canonical name while bid_update
+    // carries the raw DOM name — a strict === treated "D.J. Moore" (DOM bid) vs
+    // "DJ Moore" (enriched nomination) as different players and reset the live
+    // bid to $1. The guard must fuzzy-match name variants.
+    useDraftStore.setState({
+      currentNomination: null,
+      currentBid: { current_bid: 27, player_name: 'D.J. Moore' },
+    })
+    act(() => {
+      useDraftStore.getState().setNomination({
+        player_name: 'DJ Moore', // enriched canonical variant
+        opening_bid: 1,
+        clock: '0:25',
+      })
+    })
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.currentBid).toBe(27) // NOT reset to $1
+  })
+
+  it('a re-fired nomination with a suffix variant is treated as a clock refresh', async () => {
+    // "James Cook III" (DOM) vs "James Cook" (canonical): the socket handler's
+    // same-player check must fuzzy-match so the re-nomination only refreshes the
+    // clock instead of resetting the bid.
+    useDraftStore.setState({
+      phase: 'live',
+      currentNomination: { playerName: 'James Cook III', currentBid: 22, clock: '0:05' },
+      currentBid: { current_bid: 22, player_name: 'James Cook III' },
+    })
+
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'nomination',
+          payload: { player_name: 'James Cook', opening_bid: 1, clock: '0:30' },
+        }),
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.currentBid).toBe(22) // bid preserved
+    expect(s.currentNomination.clock).toBe('0:30') // clock refreshed
+  })
+
   it('setNomination resets the bid for a different player', () => {
     useDraftStore.setState({
       currentBid: { current_bid: 43, player_name: 'Josh Allen' },
