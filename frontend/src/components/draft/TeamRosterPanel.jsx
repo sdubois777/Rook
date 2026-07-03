@@ -1,4 +1,5 @@
 import { useDraftStore } from '../../stores/draft'
+import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
 import { POSITION_SLOTS, assignToSlot } from './MyRoster'
 
@@ -11,7 +12,7 @@ export const THREAT_THRESHOLD = 150
 // assignment logic. Used identically for your team AND opponents — every pick
 // (yours via myRoster, opponents' via teamPicks) carries position/player_name/
 // price, and a null position falls through to the bench.
-function RosterSlotGrid({ roster }) {
+function RosterSlotGrid({ roster, showPrices = true }) {
   const grouped = {}
   for (const pick of roster) {
     assignToSlot(pick, grouped, POSITION_SLOTS)
@@ -38,7 +39,10 @@ function RosterSlotGrid({ roster }) {
                   <span className="text-sm text-slate-300 flex-1 truncate">
                     {pick.player_name}
                   </span>
-                  <span className="text-xs font-mono text-slate-500">${pick.price}</span>
+                  {/* Prices are auction-only — a snake pick has no $ amount. */}
+                  {showPrices && (
+                    <span className="text-xs font-mono text-slate-500">${pick.price}</span>
+                  )}
                 </>
               ) : (
                 <span className="text-xs text-slate-700 italic">Empty</span>
@@ -60,6 +64,7 @@ export default function TeamRosterPanel() {
   const selectedTeam = useDraftStore((s) => s.selectedTeam)
   const setSelectedTeam = useDraftStore((s) => s.setSelectedTeam)
   const myRoster = useDraftStore((s) => s.myRoster)
+  const { isSnake } = useLeague()
 
   // All teams seen in the draft — union of scraped budgets and recorded picks,
   // so a team with picks but no scraped budget (or vice versa) still shows.
@@ -109,31 +114,38 @@ export default function TeamRosterPanel() {
         </select>
       </div>
 
-      {/* Team info bar */}
+      {/* Team info bar. Budget is auction-only — snake drafts have no budgets,
+          so showing "$--" there was just noise. Slots-used falls back to the
+          displayed roster's pick count: only the Yahoo auction resolver scrapes
+          slotsUsed; ESPN/Sleeper never send it, which left "--/16" forever. */}
       <div className="p-3 border-b border-border">
         {isHighThreat && (
           <div className="text-amber-400 text-xs mb-2">
             ⚠️ High threat — ${threatScore} ceiling value
           </div>
         )}
-        <div className="flex justify-between text-sm text-slate-400">
+        <div className={`flex text-sm text-slate-400 ${isSnake ? 'justify-end' : 'justify-between'}`}>
+          {!isSnake && (
+            <span>
+              Budget: <span className="font-mono">${teamInfo?.budget ?? '--'}</span>
+            </span>
+          )}
           <span>
-            Budget: <span className="font-mono">${teamInfo?.budget ?? '--'}</span>
-          </span>
-          <span>
-            <span className="font-mono">{teamInfo?.slotsUsed ?? '--'}</span>/
+            <span className="font-mono">{teamInfo?.slotsUsed ?? roster.length}</span>/
             {teamInfo?.totalSlots ?? 16} slots
           </span>
         </div>
-        {/* Budget bar */}
-        <div className="mt-2 h-1.5 bg-surface-0 rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full bg-blue-500"
-            style={{
-              width: `${Math.min(((teamInfo?.budget || 0) / 200) * 100, 100)}%`,
-            }}
-          />
-        </div>
+        {/* Budget bar — auction only */}
+        {!isSnake && (
+          <div className="mt-2 h-1.5 bg-surface-0 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full bg-blue-500"
+              style={{
+                width: `${Math.min(((teamInfo?.budget || 0) / 200) * 100, 100)}%`,
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Roster slot grid — identical for your team and opponents */}
@@ -141,7 +153,7 @@ export default function TeamRosterPanel() {
         {roster.length === 0 ? (
           <div className="text-slate-500 text-sm p-3 text-center">No picks yet</div>
         ) : (
-          <RosterSlotGrid roster={roster} />
+          <RosterSlotGrid roster={roster} showPrices={!isSnake} />
         )}
       </div>
     </div>

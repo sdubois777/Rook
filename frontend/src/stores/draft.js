@@ -155,9 +155,13 @@ export const useDraftStore = create((set, get) => ({
     set((state) => {
       // The backend sometimes emits a bid_update (the real bid) just BEFORE the
       // nomination event, which carries opening_bid=1. Don't clobber a real,
-      // higher bid for the SAME player with the opening bid.
+      // higher bid for the SAME player with the opening bid. FUZZY match: the
+      // nomination is backend-enriched to the canonical name while bid_update
+      // carries the raw DOM name — strict equality missed name variants
+      // ("D.J. Moore" vs "DJ Moore") and reset their bids to $1.
       const sameHigherBid =
-        state.currentBid?.player_name === payload.player_name &&
+        !!state.currentBid?.player_name &&
+        matchesPickName(state.currentBid.player_name, payload.player_name) &&
         state.currentBid?.current_bid > payload.opening_bid
       const bidAmount = sameHigherBid
         ? state.currentBid.current_bid

@@ -49,20 +49,35 @@ function markDraftActive() {
 
 let memory = initSnakeMemory()
 
+// Relay queue: detection is synchronous (per tick), but posting awaits the
+// network — serialize posts in DETECTION order so a mutation-driven tick can't
+// interleave its events ahead of an earlier tick's still-in-flight ones (the
+// backend must record a pick before the your_turn that follows it).
+let postQueue = Promise.resolve()
+
 /** One non-destructive read of the React board → relay any new events. */
-async function tick() {
+function tick() {
   const root = snakeRoot(document)
   if (!root) return
   const state = resolveSnakeState(root)
   const { events, next } = detectSnakeEvents(memory, state)
+  // LOUD gap alarm: a skipped pick number means a pick was never captured (the
+  // Board view only ever shows the single latest pick — nothing can backfill
+  // it). Surface it instead of losing it silently.
+  if (next.missedPickNumbers && next.missedPickNumbers.length) {
+    console.warn(
+      `Rook snake: MISSED pick(s) #${next.missedPickNumbers.join(', #')} — ` +
+        'not captured from the board (only the latest pick is rendered)'
+    )
+  }
   memory = next
   for (const event of events) {
     if (event.type === 'your_turn' || event.type === 'snake_pick') markDraftActive()
-    try {
-      await postDraftEvent(event)
-    } catch {
-      // Network hiccup — drop this event, keep polling.
-    }
+    postQueue = postQueue.then(() =>
+      postDraftEvent(event).catch(() => {
+        // Network hiccup — drop this event, keep polling.
+      })
+    )
   }
 }
 
@@ -71,6 +86,25 @@ function startPoller() {
   active = true
   markDraftActive()
   setInterval(tick, POLL_INTERVAL_MS)
+
+  // MUTATION-DRIVEN READS — the dropped-pick fix. The Board view renders only
+  // ONE completed pick (the "Last:" indicator), so two picks landing inside a
+  // single 500ms poll window meant the earlier one was never the "Last:" value
+  // at any read → its snake_pick never fired, and (delta-only capture) nothing
+  // could ever backfill it. React commits each pick update separately, so
+  // observing the root and reading on EVERY mutation batch sees each "Last:"
+  // value in turn — including back-to-back autopicks at the snake turn
+  // boundary. tick() is cheap (three span scans) and detectSnakeEvents dedupes
+  // by pick number, so redundant reads are no-ops. The 500ms interval stays as
+  // a fallback for anything an observer miss could drop.
+  const root = snakeRoot(document)
+  if (root) {
+    new MutationObserver(() => tick()).observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  }
 }
 
 // ---------------------------------------------------------------------------
