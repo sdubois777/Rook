@@ -34,15 +34,6 @@ from backend.models.user import User
 from backend.services.draft_session import DbSessionStore, DraftSessionManager
 from backend.websocket.manager import SessionScopedBroadcaster, ws_manager
 
-# The Playwright bridge is an optional, legacy server-side control path. The
-# browser extension now drives the draft room, so a missing Playwright install
-# must not break this module — guard the import.
-try:
-    from backend.integrations.yahoo_playwright import YahooPlaywrightBridge
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draft", tags=["draft"])
 
@@ -56,31 +47,14 @@ router = APIRouter(prefix="/draft", tags=["draft"])
 # button is the immediate-forget signal. Env-overridable. Default 6h.
 RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 6 * 60 * 60))
 
-# Legacy Playwright bridge — single optional server-side control path (not part
-# of the per-user extension draft flow).
-_bridge = None
-
 
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
 
-class BidRequest(BaseModel):
-    amount: int
-
-
-class NominateRequest(BaseModel):
-    yahoo_player_id: str
-    opening_bid: int = 1
-
-
-class ConnectRequest(BaseModel):
-    draft_room_url: str
-
-
 class StartDraftRequest(BaseModel):
-    your_team_id: str
-    draft_room_url: str | None = None
+    # No team name — the extension self-identifies your team (is_yours) and, on
+    # ESPN, streams its display name; the backend derives the label (§below).
     league_id: str | None = None  # user_leagues.id — loads budget/team_count
     draft_type: str | None = None  # overrides the league's draft_type if provided
 
@@ -103,11 +77,14 @@ class DraftEventPayload(BaseModel):
 
 
 async def _build_state(
-    your_team_id: str = "",
     league_id: str | None = None,
     draft_type: str | None = None,
 ):
-    """Construct a DraftStateManager from a user's connected league (or defaults)."""
+    """Construct a DraftStateManager from a user's connected league (or defaults).
+
+    No team name is passed — the manager starts with the generic label and is
+    upgraded to the real own-team name when a resolver streams one.
+    """
     from backend.engines.draft_state_manager import DraftStateManager
 
     user_league = None
@@ -123,7 +100,7 @@ async def _build_state(
     config = DraftStateManager.config_from_user_league(user_league)
     if draft_type:
         config.draft_type = draft_type
-    return DraftStateManager(config, your_team_id)
+    return DraftStateManager(config)
 
 
 async def _make_engine_for(state, session_key: str):
@@ -251,6 +228,20 @@ async def relay_draft_event(
             "event to the UI anyway",
             event.type, session_key,
         )
+
+    # Upgrade the generic label to a resolver-derived own-team name if this event
+    # carries one (ESPN emits your_team_name on teams_update (salary-cap) and
+    # snake_status (snake); Sleeper/Yahoo omit it). Cosmetic + best-effort: a
+    # missing name is a no-op, and a failure here never blocks the raw relay.
+    if event.payload.get("your_team_name"):
+        try:
+            session = await session_manager.get_or_rehydrate(user.id)
+            if session is not None and session.state.set_your_team_name(
+                event.payload["your_team_name"]
+            ):
+                await session_manager.persist(user.id)
+        except Exception:
+            logger.exception("your_team_name capture failed (user %s)", session_key)
 
     # Always relay the raw event — but ONLY to this user's WebSocket clients.
     await ws_manager.broadcast_to_session(session_key, {
@@ -466,71 +457,6 @@ async def draft_websocket(websocket: WebSocket, token: str | None = None):
 
 
 # ---------------------------------------------------------------------------
-# Bridge lifecycle (legacy Playwright — single optional path)
-# ---------------------------------------------------------------------------
-
-@router.post("/connect", summary="Connect Playwright bridge to Yahoo draft room")
-async def connect_bridge(req: ConnectRequest):
-    """Launch Playwright and connect to the Yahoo draft room (legacy/optional)."""
-    global _bridge
-
-    if not PLAYWRIGHT_AVAILABLE:
-        raise HTTPException(
-            status_code=503,
-            detail="Playwright not available — use the Rook browser extension",
-        )
-
-    if _bridge and getattr(_bridge, "_connected", False):
-        return {"status": "already_connected", "url": _bridge._draft_room_url}
-
-    _bridge = YahooPlaywrightBridge(ws_manager)
-    try:
-        await _bridge.connect(req.draft_room_url)
-        return {"status": "connected", "url": req.draft_room_url}
-    except RuntimeError as exc:
-        if "Chromium not installed" in str(exc):
-            logger.error("Chromium not installed: %s", exc)
-            raise HTTPException(status_code=503, detail=str(exc))
-        logger.error("Bridge connect failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Bridge connection failed: {exc}")
-    except Exception as exc:
-        logger.error("Bridge connect failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Bridge connection failed: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# Draft action endpoints (legacy bridge — now authenticated)
-# ---------------------------------------------------------------------------
-
-@router.post("/bid", summary="Place a bid on the currently nominated player")
-async def place_bid(req: BidRequest, user: User = Depends(get_current_user)):
-    """Submit a bid. Bridge must be connected (POST /draft/connect first)."""
-    _require_bridge()
-    await _bridge.place_bid(req.amount)
-    return {"status": "bid_placed", "amount": req.amount}
-
-
-@router.post("/nominate", summary="Nominate a player for auction")
-async def nominate_player(req: NominateRequest, user: User = Depends(get_current_user)):
-    """Nominate a player. Bridge must be connected."""
-    _require_bridge()
-    await _bridge.nominate_player(req.yahoo_player_id, req.opening_bid)
-    return {
-        "status": "nominated",
-        "yahoo_player_id": req.yahoo_player_id,
-        "opening_bid": req.opening_bid,
-    }
-
-
-@router.post("/pass", summary="Pass on the current nomination")
-async def pass_nomination(user: User = Depends(get_current_user)):
-    """Pass on the current nomination. Bridge must be connected."""
-    _require_bridge()
-    await _bridge.pass_nomination()
-    return {"status": "passed"}
-
-
-# ---------------------------------------------------------------------------
 # Draft engine lifecycle (per-user session)
 # ---------------------------------------------------------------------------
 
@@ -576,28 +502,29 @@ async def start_draft(
                 raise LeagueSuspendedError()
 
     if await session_manager.is_resumable(user.id, RESUME_WINDOW_SECONDS):
+        # Echo the EXISTING session's derived label (warm); /draft/state carries it
+        # too for a cold-but-resumable rehydrate.
+        warm = session_manager.get_warm(user.id)
         return {
             "status": "ready",
             "mode": "extension",
-            "team_name": req.your_team_id,
+            "team_name": warm.state.your_team_id if warm else "Your Team",
             "message": (
                 "Draft engine already running. Make sure the Rook "
                 "extension is active on the Yahoo draft page."
             ),
         }
 
-    state = await _build_state(req.your_team_id, req.league_id, req.draft_type)
+    state = await _build_state(req.league_id, req.draft_type)
     await session_manager.create(user.id, state)
 
-    if _bridge is not None:
-        session = session_manager.get_warm(user.id)
-        _bridge.register_event_callback(session.engine.handle_event)
-
-    logger.info("Draft session ready for user %s team %s", user.id, req.your_team_id)
+    logger.info("Draft session ready for user %s (team label %s)", user.id, state.your_team_id)
     return {
         "status": "ready",
         "mode": "extension",
-        "team_name": req.your_team_id,
+        # The generic label until a resolver streams the real name (ESPN); the
+        # frontend upgrades it on the first teams_update that carries your_team_name.
+        "team_name": state.your_team_id,
         "message": (
             "Draft engine ready. Make sure the Rook extension is "
             "active on the Yahoo draft page."
@@ -643,6 +570,10 @@ async def get_draft_state(user: User = Depends(get_current_user)):
         "your_roster": your_roster,
         "total_picks": len(state.picks),
         "positional_counts": state.get_your_positional_counts(),
+        # Derived own-team label (real name once a resolver streamed one, else the
+        # generic default) so a rehydrate restores a stable label without relying
+        # solely on localStorage.
+        "team_name": state.your_team_id,
     }
 
 
@@ -728,11 +659,3 @@ async def _require_session(user: User):
             detail="Draft engine not started — POST /draft/start first",
         )
     return session
-
-
-def _require_bridge() -> None:
-    if _bridge is None or not getattr(_bridge, "_connected", False):
-        raise HTTPException(
-            status_code=409,
-            detail="Bridge not connected — POST /draft/connect first",
-        )

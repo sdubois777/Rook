@@ -285,9 +285,9 @@ def test_snake_prompt_includes_injury_guardrails():
 
 
 def test_start_draft_request_accepts_draft_type():
-    assert StartDraftRequest(your_team_id="Stephen", draft_type="snake").draft_type == "snake"
-    # Still optional — defaults to None.
-    assert StartDraftRequest(your_team_id="X").draft_type is None
+    assert StartDraftRequest(draft_type="snake").draft_type == "snake"
+    # Still optional — defaults to None. No team name is accepted anymore.
+    assert StartDraftRequest().draft_type is None
 
 
 # --- on_your_turn (best-available snake recommendation) ----------------------

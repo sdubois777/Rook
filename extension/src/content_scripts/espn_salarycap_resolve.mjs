@@ -225,7 +225,9 @@ export function detectSalaryCapEvents(prev, curr) {
     events.push({
       type: 'teams_update',
       platform: 'espn',
-      payload: { teams: curr.teams, your_team_id: curr.myTeam },
+      // your_team_name = the derived own-team DISPLAY name (ESPN surfaces it);
+      // the backend upgrades the generic label from it. Cosmetic, additive.
+      payload: { teams: curr.teams, your_team_id: curr.myTeam, your_team_name: curr.myTeam },
     })
     next.prevTeams = { ...curr.teams }
   }
