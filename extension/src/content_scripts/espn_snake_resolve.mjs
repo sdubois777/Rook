@@ -138,7 +138,13 @@ export function detectSnakeEvents(prev, curr) {
     status.on_clock_team !== ps.on_clock_team ||
     status.seconds_remaining !== ps.seconds_remaining
   ) {
-    events.push({ type: 'snake_status', platform: 'espn', payload: status })
+    // your_team_name = derived own-team DISPLAY name (from the .myTeam board
+    // header); the backend upgrades the generic label from it. Additive/cosmetic,
+    // kept out of the change-detection `status` object above.
+    events.push({
+      type: 'snake_status', platform: 'espn',
+      payload: { ...status, your_team_name: curr.myTeam || null },
+    })
   }
 
   // SNAKE PICK — every NEW completed board cell, deduped by its roundPick.

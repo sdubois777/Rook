@@ -1,10 +1,11 @@
 import api from './client'
 import { fetchDraftboard } from './draftboard'
 
-export async function startDraft(teamId, opts = {}) {
-  const body = { your_team_id: teamId }
-  // From the selected league context — lets the engine pick the snake vs
-  // auction recommendation path (draft_type) and load league settings.
+export async function startDraft(opts = {}) {
+  // No team name — the extension self-identifies your team; Rook derives the
+  // label. From the selected league context: draft_type picks the snake vs
+  // auction recommendation path and league_id loads league settings.
+  const body = {}
   if (opts.leagueId) body.league_id = opts.leagueId
   if (opts.draftType) body.draft_type = opts.draftType
   const { data } = await api.post('/draft/start', body)

@@ -39,6 +39,12 @@ class LeagueConfig:
         return sum(self.roster_slots.values())
 
 
+# Generic self label used until (and unless) a resolver streams the user's real
+# own-team name. The team name is COSMETIC — attribution rides on the is_yours
+# flag, never this label — so a generic value must never block or misattribute.
+DEFAULT_TEAM_LABEL = "Your Team"
+
+
 @dataclass
 class DraftPick:
     """Immutable record of a single draft pick."""
@@ -83,9 +89,11 @@ class DraftStateManager:
             scoring_format=getattr(league, "scoring", None) or "ppr",
         )
 
-    def __init__(self, league_config: LeagueConfig, your_team_id: str):
+    def __init__(self, league_config: LeagueConfig, your_team_id: str = ""):
         self.league_config = league_config
-        self.your_team_id = your_team_id
+        # Display label for your team. Defaults to the generic label; upgraded to
+        # the real name via set_your_team_name() when a resolver streams one.
+        self.your_team_id = your_team_id or DEFAULT_TEAM_LABEL
 
         self.picks: list[DraftPick] = []
         self.opponent_rosters: dict[str, list[DraftPick]] = {}
@@ -109,6 +117,23 @@ class DraftStateManager:
         # label), which never equals your_team_id (your team name), so record_pick
         # never files them. The is_yours flag is the reliable signal.
         self._my_picks: list[dict] = []
+
+    def set_your_team_name(self, name: str | None) -> bool:
+        """Upgrade the generic label to the real own-team name a resolver derived
+        (ESPN). Idempotent + non-destructive: only upgrades FROM the generic
+        default, so a real name already set is never clobbered by a later frame,
+        and a missing/blank name is a no-op. Returns True if the label changed.
+
+        Purely cosmetic — never affects pick attribution (that is is_yours)."""
+        if not name or not name.strip():
+            return False
+        name = name.strip()
+        if self.your_team_id and self.your_team_id != DEFAULT_TEAM_LABEL:
+            return False  # a real name is already set — keep it
+        if self.your_team_id == name:
+            return False
+        self.your_team_id = name
+        return True
 
     def record_snake_pick(
         self,

@@ -113,21 +113,19 @@ describe('DraftRoom', () => {
     )
     expect(screen.getByText('Start Draft Session')).toBeInTheDocument()
     expect(screen.getByText('Start Draft')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Stephen — exactly as in the draft room')).toBeInTheDocument()
+    // No team-name input anymore — Rook detects your team automatically.
+    expect(screen.getByText(/detects your team automatically/i)).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/exactly as in the draft room/i)).not.toBeInTheDocument()
   })
 
   it('start button calls API and transitions to live', async () => {
-    const { startDraft } = await import('../api/draft')
-
     render(
       <MemoryRouter>
         <DraftSetup />
       </MemoryRouter>
     )
 
-    const input = screen.getByPlaceholderText('Stephen — exactly as in the draft room')
-    fireEvent.change(input, { target: { value: 'team_5' } })
-
+    // No input to fill — just start.
     const button = screen.getByText('Start Draft')
     await act(async () => {
       fireEvent.click(button)

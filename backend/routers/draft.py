@@ -53,7 +53,8 @@ RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 6 * 60
 # ---------------------------------------------------------------------------
 
 class StartDraftRequest(BaseModel):
-    your_team_id: str
+    # No team name — the extension self-identifies your team (is_yours) and, on
+    # ESPN, streams its display name; the backend derives the label (§below).
     league_id: str | None = None  # user_leagues.id — loads budget/team_count
     draft_type: str | None = None  # overrides the league's draft_type if provided
 
@@ -76,11 +77,14 @@ class DraftEventPayload(BaseModel):
 
 
 async def _build_state(
-    your_team_id: str = "",
     league_id: str | None = None,
     draft_type: str | None = None,
 ):
-    """Construct a DraftStateManager from a user's connected league (or defaults)."""
+    """Construct a DraftStateManager from a user's connected league (or defaults).
+
+    No team name is passed — the manager starts with the generic label and is
+    upgraded to the real own-team name when a resolver streams one.
+    """
     from backend.engines.draft_state_manager import DraftStateManager
 
     user_league = None
@@ -96,7 +100,7 @@ async def _build_state(
     config = DraftStateManager.config_from_user_league(user_league)
     if draft_type:
         config.draft_type = draft_type
-    return DraftStateManager(config, your_team_id)
+    return DraftStateManager(config)
 
 
 async def _make_engine_for(state, session_key: str):
@@ -224,6 +228,20 @@ async def relay_draft_event(
             "event to the UI anyway",
             event.type, session_key,
         )
+
+    # Upgrade the generic label to a resolver-derived own-team name if this event
+    # carries one (ESPN emits your_team_name on teams_update (salary-cap) and
+    # snake_status (snake); Sleeper/Yahoo omit it). Cosmetic + best-effort: a
+    # missing name is a no-op, and a failure here never blocks the raw relay.
+    if event.payload.get("your_team_name"):
+        try:
+            session = await session_manager.get_or_rehydrate(user.id)
+            if session is not None and session.state.set_your_team_name(
+                event.payload["your_team_name"]
+            ):
+                await session_manager.persist(user.id)
+        except Exception:
+            logger.exception("your_team_name capture failed (user %s)", session_key)
 
     # Always relay the raw event — but ONLY to this user's WebSocket clients.
     await ws_manager.broadcast_to_session(session_key, {
@@ -484,24 +502,29 @@ async def start_draft(
                 raise LeagueSuspendedError()
 
     if await session_manager.is_resumable(user.id, RESUME_WINDOW_SECONDS):
+        # Echo the EXISTING session's derived label (warm); /draft/state carries it
+        # too for a cold-but-resumable rehydrate.
+        warm = session_manager.get_warm(user.id)
         return {
             "status": "ready",
             "mode": "extension",
-            "team_name": req.your_team_id,
+            "team_name": warm.state.your_team_id if warm else "Your Team",
             "message": (
                 "Draft engine already running. Make sure the Rook "
                 "extension is active on the Yahoo draft page."
             ),
         }
 
-    state = await _build_state(req.your_team_id, req.league_id, req.draft_type)
+    state = await _build_state(req.league_id, req.draft_type)
     await session_manager.create(user.id, state)
 
-    logger.info("Draft session ready for user %s team %s", user.id, req.your_team_id)
+    logger.info("Draft session ready for user %s (team label %s)", user.id, state.your_team_id)
     return {
         "status": "ready",
         "mode": "extension",
-        "team_name": req.your_team_id,
+        # The generic label until a resolver streams the real name (ESPN); the
+        # frontend upgrades it on the first teams_update that carries your_team_name.
+        "team_name": state.your_team_id,
         "message": (
             "Draft engine ready. Make sure the Rook extension is "
             "active on the Yahoo draft page."
@@ -547,6 +570,10 @@ async def get_draft_state(user: User = Depends(get_current_user)):
         "your_roster": your_roster,
         "total_picks": len(state.picks),
         "positional_counts": state.get_your_positional_counts(),
+        # Derived own-team label (real name once a resolver streamed one, else the
+        # generic default) so a rehydrate restores a stable label without relying
+        # solely on localStorage.
+        "team_name": state.your_team_id,
     }
 
 

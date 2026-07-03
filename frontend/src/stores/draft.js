@@ -72,8 +72,8 @@ export const useDraftStore = create((set, get) => ({
 
   // --- Actions ---
 
-  startDraft: async (teamId, opts = {}) => {
-    const startResp = await apiStartDraft(teamId, opts)
+  startDraft: async (opts = {}) => {
+    const startResp = await apiStartDraft(opts)
 
     // Load initial state + available players in parallel
     const [state, board] = await Promise.all([
@@ -86,7 +86,9 @@ export const useDraftStore = create((set, get) => ({
     const players = Object.values(tiers).flat()
     console.debug('Rook: draftboard players loaded:', players.length)
 
-    const myTeamName = startResp?.team_name || teamId || null
+    // Backend-derived label — the generic "Your Team" until a resolver streams
+    // the real own-team name (ESPN), applied mid-draft by upgradeTeamName().
+    const myTeamName = startResp?.team_name || 'Your Team'
     // Persist for page-refresh rehydration (see rehydrate()).
     try {
       if (myTeamName) localStorage.setItem(TEAM_KEY, myTeamName)
@@ -109,6 +111,19 @@ export const useDraftStore = create((set, get) => ({
   },
 
   setMyTeamName: (name) => set({ myTeamName: name }),
+
+  // Mid-draft upgrade of the generic label to a resolver-derived real name
+  // (ESPN streams your_team_name). Non-destructive: only replaces the generic
+  // default, never a real name already set; persists for refresh rehydration.
+  // Cosmetic — attribution is is_yours, never this label.
+  upgradeTeamName: (name) => {
+    if (!name || !name.trim()) return
+    const trimmed = name.trim()
+    const cur = get().myTeamName
+    if (cur && cur !== 'Your Team') return // a real name is already set
+    set({ myTeamName: trimmed })
+    try { localStorage.setItem(TEAM_KEY, trimmed) } catch { /* ignore */ }
+  },
 
   // Replace the available list, but never with an empty array (a failed or
   // empty /draftboard fetch must not wipe a populated list).
@@ -491,9 +506,11 @@ export const useDraftStore = create((set, get) => ({
     // localStorage; /state doesn't return your_team_id).
     const myRoster = state.your_roster || []
     for (const p of myRoster) draftedNames.add(normalizeName(p.player_name))
-    let myTeamName = get().myTeamName
+    // Prefer the backend-derived label (real name or generic), then the
+    // localStorage copy, then whatever's already in the store.
+    let myTeamName = state.team_name || get().myTeamName
     try {
-      myTeamName = localStorage.getItem(TEAM_KEY) || myTeamName
+      myTeamName = state.team_name || localStorage.getItem(TEAM_KEY) || myTeamName
     } catch { /* ignore */ }
     if (myTeamName && myRoster.length > 0) {
       teamPicks[myTeamName] = myRoster.map((p) => ({
