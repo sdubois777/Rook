@@ -130,12 +130,13 @@ test('draft_pick (sale): board-delta picks → winner via column header + price'
   assert.equal(detectSalaryCapEvents(next, st).events.filter((e) => e.type === 'draft_pick').length, 0)
 })
 
-test('teams_update: 12 teams + your_team_id', () => {
+test('teams_update: 12 teams + your_team_id + your_team_name', () => {
   const st = resolveSalaryCapState(docFor('nomination-active.html'))
   const ev = detectSalaryCapEvents(initSalaryCapMemory(), st).events.find((e) => e.type === 'teams_update')
   assert.ok(ev)
   assert.equal(Object.keys(ev.payload.teams).length, 12)
   assert.equal(ev.payload.your_team_id, MY_TEAM)
+  assert.equal(ev.payload.your_team_name, MY_TEAM)  // derived display name
 })
 
 test('sanitizer strips data-darkreader-* (defensive; fixtures are already clean)', () => {

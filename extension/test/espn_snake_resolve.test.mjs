@@ -102,6 +102,7 @@ test('snake_status carries pick/round/countdown, deduped then re-fires on change
   assert.equal(s1.payload.current_pick, 9)
   assert.equal(s1.payload.current_round, 1)
   assert.equal(s1.payload.picks_until_your_turn, 2)
+  assert.equal(s1.payload.your_team_name, MY_TEAM)  // derived display name rides along
   assert.equal(detectSnakeEvents(r1.next, a).events.some((e) => e.type === 'snake_status'), false)
   const b = resolveSnakeState(docFor('post-pick.html'), { myTeam: MY_TEAM })
   assert.ok(detectSnakeEvents(r1.next, b).events.some((e) => e.type === 'snake_status'))
