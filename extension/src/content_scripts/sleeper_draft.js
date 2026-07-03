@@ -74,7 +74,16 @@ function withClock(payload) {
   return payload
 }
 
-const ACTIVITY_EVENTS = new Set(['your_turn', 'snake_pick', 'nomination', 'draft_pick'])
+// Events that prove the draft is live. bid_update included: a Sleeper auction can
+// sit in a long bidding war with no nomination/pick for stretches longer than the
+// inactivity window — without it, the popup flipped to "inactive" mid-auction.
+const ACTIVITY_EVENTS = new Set([
+  'your_turn',
+  'snake_pick',
+  'nomination',
+  'draft_pick',
+  'bid_update',
+])
 
 async function handleFrame(frame) {
   if (!isDraftFrame(frame)) return
@@ -139,6 +148,23 @@ function extensionAlive() {
  * an extension update without the user noticing.
  */
 const CTX_RELOAD_KEY = 'rook_ctx_reloads'
+
+// Fresh, healthy injection ⇒ reset the reload cap. The cap previously only reset
+// on a healthy DRAFT frame, so a tab that sat on the lobby through two extension
+// reloads (a normal dev session) exhausted it PERMANENTLY — the third orphaning
+// then only console.warned and the draft silently relayed nothing until a manual
+// reload ("extension showed inactive; reloading fixed it"). Resetting at startup
+// makes the cap per-orphaning-episode, not per-tab-lifetime; the reload loop it
+// guards against can't happen here because a disabled/broken extension never
+// injects this script at all (guarded by extensionAlive()).
+if (extensionAlive()) {
+  try {
+    sessionStorage.setItem(CTX_RELOAD_KEY, '0')
+  } catch {
+    // sessionStorage blocked — the in-page cap still applies
+  }
+}
+
 function recoverInvalidatedContext() {
   try {
     const n = Number(sessionStorage.getItem(CTX_RELOAD_KEY) || 0)
