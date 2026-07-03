@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useDraftStore, parseClockSeconds } from '../stores/draft'
 import { getRecommendation } from '../api/draft'
+import { matchesPickName } from '../utils/playerUtils'
 
 const MAX_RECONNECT_DELAY = 10000
 // Backend WS endpoint is /api/draft/ws/draft (the draft router is mounted under
@@ -164,9 +165,13 @@ export default function useDraftSocket() {
               // Yahoo sometimes re-fires a nomination for the SAME player when
               // the clock resets after bidding. Treat that as a clock refresh,
               // not a new nomination — otherwise the bid snaps back to $1.
+              // FUZZY name match: the nomination is backend-ENRICHED to the
+              // canonical name while bid_update carries the raw DOM name, so a
+              // strict === missed players whose names differ ("D.J. Moore" vs
+              // "DJ Moore", suffixes) and their bids reset to $1.
               if (
                 currentNom?.playerName &&
-                currentNom.playerName === payload.player_name
+                matchesPickName(currentNom.playerName, payload.player_name)
               ) {
                 if (payload.clock) {
                   updateClock({

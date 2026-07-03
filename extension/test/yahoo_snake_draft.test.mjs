@@ -253,6 +253,37 @@ test('events: YOUR snake_pick carries is_yours=true', () => {
   assert.equal(pick.payload.player_name, 'C. Lamb')
 })
 
+test('events: snake_pick is emitted BEFORE your_turn in the same tick', () => {
+  // The pick right before your turn lands in the same read as the your-turn
+  // banner. The pick must relay FIRST so the backend records it before
+  // generating the recommendation — else the engine can recommend the
+  // just-drafted player.
+  const curr = resolveSnakeState(rootFor('snake-onclock.html'))
+  const { events } = detectSnakeEvents(initSnakeMemory(), curr)
+  const pickIdx = events.findIndex((e) => e.type === 'snake_pick')
+  const turnIdx = events.findIndex((e) => e.type === 'your_turn')
+  assert.ok(pickIdx >= 0 && turnIdx >= 0, 'both events fire in this tick')
+  assert.ok(pickIdx < turnIdx, 'snake_pick relays before your_turn')
+})
+
+test('events: a skipped pick number is recorded in missedPickNumbers (gap alarm)', () => {
+  // The Board view renders only the single latest pick — if two land between
+  // reads the earlier one is unrecoverable. The resolver must SURFACE the gap
+  // (the poller warns loudly) instead of losing it silently.
+  const curr = resolveSnakeState(rootFor('snake-onclock.html')) // lastPick #10
+  const memory = { ...initSnakeMemory(), sentPickNumbers: [7] }
+  const { events, next } = detectSnakeEvents(memory, curr)
+  assert.ok(events.find((e) => e.type === 'snake_pick')) // #10 still emitted
+  assert.deepEqual(next.missedPickNumbers, [8, 9]) // the unseen picks flagged
+})
+
+test('events: consecutive pick numbers report no gap', () => {
+  const curr = resolveSnakeState(rootFor('snake-onclock.html')) // lastPick #10
+  const memory = { ...initSnakeMemory(), sentPickNumbers: [9] }
+  const { next } = detectSnakeEvents(memory, curr)
+  assert.deepEqual(next.missedPickNumbers, [])
+})
+
 // ---------------------------------------------------------------------------
 // CROSS-POLLER GUARD — content-only, both directions, in the SAME pass:
 // snake activates on its turn banner; auction on a Proj-$ nominee / $-budget

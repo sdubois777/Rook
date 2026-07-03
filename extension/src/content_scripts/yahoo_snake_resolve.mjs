@@ -157,12 +157,45 @@ export function initSnakeMemory() {
     lastPicksUntil: null,
     lastStatus: null,
     sentPickNumbers: [], // dedupe snake_pick per pick number
+    missedPickNumbers: [], // pick numbers skipped since the last read (gap alarm)
   }
 }
 
 export function detectSnakeEvents(prev, curr) {
   const events = []
-  const next = { ...prev, sentPickNumbers: prev.sentPickNumbers.slice() }
+  const next = { ...prev, sentPickNumbers: prev.sentPickNumbers.slice(), missedPickNumbers: [] }
+
+  // SNAKE PICK FIRST — the just-completed pick (from "Last:"), deduped by pick
+  // number. Emitted BEFORE your_turn/status so the backend records the pick
+  // before generating the on-the-clock recommendation — otherwise a pick landing
+  // in the same tick as your turn is still "available" to the engine and it can
+  // recommend a just-drafted player.
+  if (curr.lastPick && !next.sentPickNumbers.includes(curr.lastPick.pick_number)) {
+    const lp = curr.lastPick
+    // GAP DETECTION — the Board view renders only the single latest pick, so a
+    // skipped number here means that pick was NEVER captured and cannot be
+    // recovered from the DOM. Record it so the poller alarms loudly.
+    const maxSent = next.sentPickNumbers.length
+      ? Math.max(...next.sentPickNumbers)
+      : null
+    if (maxSent != null && lp.pick_number > maxSent + 1) {
+      for (let n = maxSent + 1; n < lp.pick_number; n++) next.missedPickNumbers.push(n)
+    }
+    events.push({
+      type: 'snake_pick',
+      platform: 'yahoo',
+      payload: {
+        pick_number: lp.pick_number,
+        player_name: lp.player_name,
+        position: lp.position,
+        nfl_team: lp.nfl_team,
+        picker: lp.picker,
+        is_yours: lp.is_yours,
+        round: lp.round,
+      },
+    })
+    next.sentPickNumbers.push(lp.pick_number)
+  }
 
   // YOUR TURN — rising edge of the on-the-clock state.
   if (curr.isYourTurn && !prev.wasYourTurn) {
@@ -195,25 +228,6 @@ export function detectSnakeEvents(prev, curr) {
     status.picks_until_your_turn !== ps.picks_until_your_turn
   ) {
     events.push({ type: 'snake_status', platform: 'yahoo', payload: status })
-  }
-
-  // SNAKE PICK — the just-completed pick (from "Last:"), deduped by pick number.
-  if (curr.lastPick && !next.sentPickNumbers.includes(curr.lastPick.pick_number)) {
-    const lp = curr.lastPick
-    events.push({
-      type: 'snake_pick',
-      platform: 'yahoo',
-      payload: {
-        pick_number: lp.pick_number,
-        player_name: lp.player_name,
-        position: lp.position,
-        nfl_team: lp.nfl_team,
-        picker: lp.picker,
-        is_yours: lp.is_yours,
-        round: lp.round,
-      },
-    })
-    next.sentPickNumbers.push(lp.pick_number)
   }
 
   next.wasYourTurn = curr.isYourTurn

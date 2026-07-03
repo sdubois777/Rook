@@ -85,6 +85,22 @@ test('your_turn fires on the rising edge only', () => {
   assert.equal(detectSnakeEvents(first.next, st).events.some((e) => e.type === 'your_turn'), false)
 })
 
+test('ALL snake_picks relay BEFORE your_turn in the same tick', () => {
+  // The pick right before your turn lands in the same tick as the your-turn
+  // signal. Picks must relay FIRST so the backend records them before
+  // generating the recommendation — else the engine recommends a just-drafted
+  // player (the McConkey bug).
+  const board = resolveSnakeState(docFor('board-mid.html'), { myTeam: MY_TEAM })
+  const curr = { ...board, isYourTurn: true, picksUntil: 0 }
+  const { events } = detectSnakeEvents(initSnakeMemory(), curr)
+  const types = events.map((e) => e.type)
+  const lastPickIdx = types.lastIndexOf('snake_pick')
+  const turnIdx = types.indexOf('your_turn')
+  assert.ok(lastPickIdx >= 0, 'board-mid has completed picks')
+  assert.ok(turnIdx >= 0, 'your_turn fires')
+  assert.ok(lastPickIdx < turnIdx, 'every snake_pick relays before your_turn')
+})
+
 test('your_turn_soon fires once at exactly 2 away', () => {
   const st = resolveSnakeState(docFor('your-turn-soon.html'), { myTeam: MY_TEAM })
   const start = { ...initSnakeMemory(), lastPicksUntil: 3 }
