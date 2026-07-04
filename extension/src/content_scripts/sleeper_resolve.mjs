@@ -38,6 +38,17 @@ export function draftIdFromTopic(topic) {
   return m ? m[1] : null
 }
 
+/**
+ * Draft id from a Sleeper draft-room URL path ("/draft/nfl/1376707234477662208").
+ * Drives the full-state sync even when NO WS frame ever arrives (the socket
+ * opened before the interceptor, the extension was reloaded mid-draft, …) —
+ * the page URL alone is enough to recover everything via the REST API.
+ */
+export function draftIdFromPath(pathname) {
+  const m = /\/draft\/[a-z0-9_]+\/(\d+)/i.exec(pathname || '')
+  return m ? m[1] : null
+}
+
 export const roundOf = (pickNo, teams) => (teams ? Math.ceil(pickNo / teams) : null)
 
 /**

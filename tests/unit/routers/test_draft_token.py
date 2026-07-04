@@ -244,6 +244,119 @@ async def test_teams_update_upgrades_generic_label_from_your_team_name():
 
 
 @pytest.mark.asyncio
+async def test_draft_sync_backfills_missed_picks_idempotently():
+    """draft_sync reconciles the engine against Sleeper's full REST state:
+    missed picks are recorded + broadcast; a re-sync is a complete no-op."""
+    from types import SimpleNamespace
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+
+    user = _make_user(draft_token="valid-token")
+    real_state = DraftStateManager(LeagueConfig(auction_budget=200, draft_type="snake"))
+    # The engine already has pick 1 (captured live) — only 2 & 3 were missed.
+    real_state.record_snake_pick("Jahmyr Gibbs", position="RB", pick_number=1)
+    session = SimpleNamespace(engine=AsyncMock(), state=real_state)
+    mgr = _fake_manager(session=session)
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
+
+    draft_meta = {
+        "type": "snake",
+        "status": "drafting",
+        "draft_order": {"my-uid": 3},
+        "settings": {"teams": 12},
+    }
+    rest_picks = [
+        {"pick_no": 1, "round": 1, "draft_slot": 1, "picked_by": "", "player_id": "s1",
+         "metadata": {"first_name": "Jahmyr", "last_name": "Gibbs", "position": "RB", "team": "DET"}},
+        {"pick_no": 2, "round": 1, "draft_slot": 2, "picked_by": "", "player_id": "s2",
+         "metadata": {"first_name": "Bijan", "last_name": "Robinson", "position": "RB", "team": "ATL"}},
+        {"pick_no": 3, "round": 1, "draft_slot": 3, "picked_by": "", "player_id": "s3",
+         "metadata": {"first_name": "CeeDee", "last_name": "Lamb", "position": "WR", "team": "DAL"}},
+    ]
+
+    async def _post_sync(ac):
+        return await ac.post(
+            "/api/draft/event",
+            json={"type": "draft_sync", "platform": "sleeper",
+                  "payload": {"draft_id": "999", "my_user_id": "my-uid"}},
+            headers={"X-Draft-Token": "valid-token"},
+        )
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.services.sleeper_backfill.fetch_draft", AsyncMock(return_value=draft_meta)
+    ), patch(
+        "backend.services.sleeper_backfill.fetch_picks", AsyncMock(return_value=rest_picks)
+    ), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=None)
+    ):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={"type": "draft_sync", "platform": "sleeper",
+                          "payload": {"draft_id": "999", "my_user_id": "my-uid"}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+                assert resp.status_code == 200
+                assert resp.json() == {"status": "synced", "recovered": 2}  # picks 2+3 only
+                # Both recovered picks broadcast in the live event shape; pick 3
+                # (slot 3 == my slot) attributed to me via the slot fallback.
+                assert mock_ws.broadcast_to_session.await_count == 2
+                payloads = [c.args[1]["payload"] for c in mock_ws.broadcast_to_session.await_args_list]
+                assert payloads[0]["player_name"] == "Bijan Robinson"
+                assert payloads[1]["is_yours"] is True
+                # Engine state now complete.
+                assert real_state.is_drafted("CeeDee Lamb")
+                assert len(real_state.get_my_roster()) == 1  # only MY pick
+                mgr.persist.assert_awaited()
+
+                # RE-SYNC: everything already recorded → zero recovered, no broadcasts.
+                mock_ws.broadcast_to_session.reset_mock()
+                resp2 = await _post_sync(ac)
+                assert resp2.json() == {"status": "synced", "recovered": 0}
+                mock_ws.broadcast_to_session.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_draft_sync_api_failure_is_a_safe_noop():
+    """A Sleeper API hiccup (None) must not crash or mutate anything."""
+    user = _make_user(draft_token="valid-token")
+    mgr = _fake_manager(session=_fake_session())
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.session_manager", mgr
+    ), patch(
+        "backend.services.sleeper_backfill.fetch_draft", AsyncMock(return_value=None)
+    ), patch(
+        "backend.services.sleeper_backfill.fetch_picks", AsyncMock(return_value=None)
+    ):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={"type": "draft_sync", "platform": "sleeper",
+                          "payload": {"draft_id": "999", "my_user_id": "u"}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "synced", "recovered": 0}
+            mgr.persist.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_nomination_triggers_engine():
     """A nomination resolves the player and runs the user's engine."""
     user = _make_user(draft_token="valid-token")
