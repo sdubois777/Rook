@@ -7,6 +7,7 @@ import {
   parseFrame,
   isDraftFrame,
   draftIdFromTopic,
+  draftIdFromPath,
   snakeSlot,
   roundOf,
   mySlotFrom,
@@ -37,6 +38,16 @@ test('isDraftFrame: only the draft:<id> channel (not presence/heartbeat)', () =>
   assert.equal(isDraftFrame(parseFrame('[null,null,"presence_draft:42","presence_diff",{}]')), false)
   assert.equal(isDraftFrame(parseFrame('[null,"2","phoenix","heartbeat",{}]')), false)
   assert.equal(draftIdFromTopic('draft:42'), '42')
+})
+
+test('draftIdFromPath: draft-room URLs across sports; null elsewhere', () => {
+  // Drives the full-state sync even with ZERO frames flowing — the URL alone
+  // is enough to recover the whole draft via the REST API.
+  assert.equal(draftIdFromPath('/draft/nfl/1376707234477662208'), '1376707234477662208')
+  assert.equal(draftIdFromPath('/draft/nfl/1376707234477662208/board'), '1376707234477662208')
+  assert.equal(draftIdFromPath('/leagues/12345'), null)
+  assert.equal(draftIdFromPath('/'), null)
+  assert.equal(draftIdFromPath(null), null)
 })
 
 // ---------------------------------------------------------------------------

@@ -167,6 +167,19 @@ async def relay_draft_event(
 
     session_key = str(user.id)
 
+    # FULL-STATE SYNC (Sleeper) — reconcile the engine against the platform's
+    # authoritative draft state and broadcast any recovered picks. Handled apart
+    # from the delta events below; the raw draft_sync itself carries nothing the
+    # UI wants, so it is not relayed.
+    if event.type == "draft_sync":
+        recovered = 0
+        if event.platform == "sleeper":
+            try:
+                recovered = await _sync_sleeper_draft(event, user, session_key)
+            except Exception:
+                logger.exception("Sleeper draft_sync failed (user %s)", session_key)
+        return {"status": "synced", "recovered": recovered}
+
     # Resolve this user's session. get_or_rehydrate restores a real mid-draft
     # state from the DB snapshot after a redeploy (replacing the old "build a
     # default engine" band-aid). nomination/your_turn lazily CREATE a default
@@ -389,6 +402,92 @@ async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
             "position": payload.get("position", "") or "",
             "is_yours": bool(payload.get("is_yours")),
         })
+
+
+# ---------------------------------------------------------------------------
+# Full-state sync (Sleeper) — reconcile against the platform's REST draft state
+# ---------------------------------------------------------------------------
+
+def _already_sold(state, player_name: str) -> bool:
+    """Auction dup check against recorded sales (same key record_pick dedupes on)."""
+    from backend.engines.draft_state_manager import _pick_key
+
+    key = _pick_key(player_name)
+    if not key:
+        return False
+    return any(
+        p.player_name and _pick_key(p.player_name) == key for p in state.picks
+    )
+
+
+async def _sync_sleeper_draft(event: "DraftEventPayload", user, session_key: str) -> int:
+    """Reconcile the engine against Sleeper's full REST draft state.
+
+    Fetches every pick made so far (public API — verified shape), records any
+    the engine is missing through the SAME record paths the live relay uses
+    (idempotent), and broadcasts each recovered pick to the UI in the live event
+    shape. This is what makes a dead WS / orphaned extension / page refresh
+    recoverable instead of permanently out of sync. Returns the recovered count.
+    """
+    from backend.services.sleeper_backfill import (
+        build_pick_events,
+        fetch_draft,
+        fetch_picks,
+    )
+
+    draft_id = event.payload.get("draft_id")
+    if not draft_id:
+        return 0
+    draft = await fetch_draft(str(draft_id))
+    picks = await fetch_picks(str(draft_id))
+    if not isinstance(draft, dict) or not isinstance(picks, list):
+        return 0  # API hiccup / unknown draft — the next periodic sync retries
+
+    session = await session_manager.get_or_rehydrate(user.id)
+    if session is None:
+        if not picks:
+            return 0  # idle lobby — don't spawn sessions for drafts with no picks
+        draft_type = "auction" if draft.get("type") == "auction" else "snake"
+        logger.warning(
+            "draft_sync with no session for user %s — creating a default %s session",
+            session_key, draft_type,
+        )
+        state = await _build_state(draft_type=draft_type)
+        session = await session_manager.create(user.id, state)
+
+    state = session.state
+    recovered = 0
+    for ev in build_pick_events(draft, picks, event.payload.get("my_user_id")):
+        name = ev["payload"].get("player_name") or ""
+        if not name:
+            continue
+        if ev["type"] == "snake_pick":
+            if state.is_drafted(name):
+                continue
+            fake = DraftEventPayload(type="snake_pick", platform="sleeper", payload=ev["payload"])
+            await _record_snake_pick(fake, engine=session.engine, state=state)
+        else:
+            if _already_sold(state, name):
+                continue
+            fake = DraftEventPayload(type="draft_pick", platform="sleeper", payload=ev["payload"])
+            await _record_pick(fake, session.engine, state)
+        recovered += 1
+        # Broadcast the ENRICHED payload (the record helpers resolve the player
+        # and add the full name + canonical id) in the live event shape, so the
+        # frontend handles recovered picks exactly like live ones.
+        await ws_manager.broadcast_to_session(session_key, {
+            "type": ev["type"],
+            "payload": fake.payload,
+            "platform": "sleeper",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    if recovered:
+        await session_manager.persist(user.id)
+        logger.info(
+            "Sleeper backfill: recovered %d missed pick(s) for user %s",
+            recovered, session_key,
+        )
+    return recovered
 
 
 # ---------------------------------------------------------------------------
