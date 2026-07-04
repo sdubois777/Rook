@@ -26,6 +26,26 @@ export function parseClockSeconds(clock) {
   return mins * 60 + secs
 }
 
+/**
+ * Has this player already been recorded in THIS draft session? A player can
+ * only be drafted once per draft, so a re-relayed pick (extension reload
+ * re-scans the full board, backend state backfill, socket redelivery) is a
+ * duplicate no matter how long ago the original landed. Checks every place a
+ * recorded pick lives — picks[], teamPicks (covers a post-refresh rehydrate,
+ * where picks[] is empty but rosters are rebuilt), and myRoster. Fresh drafts
+ * are unblocked because startDraft clears all three.
+ */
+export function isAlreadyRecorded(state, playerName) {
+  const key = normalizeName(playerName || '')
+  if (!key) return false
+  if (state.picks.some((p) => normalizeName(p.player_name) === key)) return true
+  if (state.myRoster.some((p) => normalizeName(p.player_name) === key)) return true
+  for (const roster of Object.values(state.teamPicks || {})) {
+    if (roster.some((p) => normalizeName(p.player_name) === key)) return true
+  }
+  return false
+}
+
 export const useDraftStore = create((set, get) => ({
   // Connection
   phase: 'setup', // 'setup' | 'live' | 'ended'
@@ -104,6 +124,23 @@ export const useDraftStore = create((set, get) => ({
       rosterSlotsRemaining: state.roster_slots_remaining,
       spendable: state.spendable_on_next_player,
       positionalCounts: state.positional_counts || {},
+      // FRESH SESSION RESET — clear everything a prior draft left behind. The
+      // session-wide pick dedupe depends on this: stale picks/rosters from a
+      // previous draft must never block (or pollute) a new one.
+      picks: [],
+      teamPicks: {},
+      teamThreatScores: {},
+      opponentBudgets: {},
+      teamsState: {},
+      comboAlerts: [],
+      selectedTeam: null,
+      currentNomination: null,
+      currentBid: null,
+      recommendation: null,
+      isYourTurn: false,
+      currentPick: null,
+      currentRound: null,
+      picksUntilYourTurn: null,
       // Never wipe an already-loaded list with an empty fetch result — only
       // overwrite when the draftboard actually returned players.
       ...(players.length > 0 ? { availablePlayers: players } : {}),
@@ -237,24 +274,13 @@ export const useDraftStore = create((set, get) => ({
 
   recordPick: (pick) => {
     const state = get()
-    // Normalized key so punctuation/casing differences between the DOM poller
-    // and the draftboard ("Amon-Ra St. Brown" vs "Amon Ra St Brown") still match.
-    const pickName = normalizeName(pick.player_name)
-
-    // DEDUP (time-bounded): a duplicate delivery of the same pick (e.g. a
-    // double-mounted socket in dev, or a relay retry) arrives within a moment,
-    // so only ignore a same-name pick recorded in the last 2s. A stale pick
-    // left in state from a previous session must NOT block a fresh one.
-    const TWO_SECONDS = 2000
     const now = Date.now()
-    if (
-      pickName &&
-      state.picks.some(
-        (p) =>
-          normalizeName(p.player_name) === pickName &&
-          now - (p.timestamp || 0) < TWO_SECONDS
-      )
-    ) {
+
+    // DEDUP (session-wide): a player can only be sold once per draft, so a
+    // re-relayed pick — extension reload re-scanning the board, backend state
+    // backfill, a socket redelivery — is a duplicate regardless of age. Fresh
+    // drafts are unblocked because startDraft clears the session arrays.
+    if (isAlreadyRecorded(state, pick.player_name)) {
       console.debug('Rook: dedup blocked duplicate pick:', pick.player_name)
       return
     }
@@ -360,18 +386,12 @@ export const useDraftStore = create((set, get) => ({
   // list, track it under the winning team, and if it's ours, add to roster.
   recordSnakePick: (pick) =>
     set((state) => {
-      const pickName = normalizeName(pick.player_name || '')
-
-      // DEDUP: ignore a same-pick redelivery within 2s (double socket / retry).
       const now = Date.now()
-      if (
-        pickName &&
-        state.picks.some(
-          (p) =>
-            normalizeName(p.player_name) === pickName &&
-            now - (p.timestamp || 0) < 2000
-        )
-      ) {
+
+      // DEDUP (session-wide): a player can only be drafted once per draft, so a
+      // re-relayed pick (board re-scan, state backfill, redelivery) is a
+      // duplicate regardless of age. startDraft clears the arrays for a fresh one.
+      if (isAlreadyRecorded(state, pick.player_name)) {
         return state
       }
 

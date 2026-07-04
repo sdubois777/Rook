@@ -5,7 +5,13 @@ import {
   DRAFT_INACTIVITY_MS,
   MAX_CAPTURED_FRAMES,
 } from '../utils/constants.js'
-import { parseFrame, isDraftFrame, parseUserId } from './sleeper_resolve.mjs'
+import {
+  parseFrame,
+  isDraftFrame,
+  parseUserId,
+  draftIdFromTopic,
+  draftIdFromPath,
+} from './sleeper_resolve.mjs'
 import { initSnakeMemory, detectSnakeEvents } from './sleeper_snake_resolve.mjs'
 import { initAuctionMemory, detectAuctionEvents } from './sleeper_auction_resolve.mjs'
 
@@ -29,6 +35,7 @@ let snakeMem = null
 let auctionMem = null
 let inactivityTimer = null
 let myUserId = null
+let knownDraftId = null // from WS frame topics (URL is the other source)
 
 function getMyUserId() {
   if (myUserId == null) {
@@ -85,8 +92,45 @@ const ACTIVITY_EVENTS = new Set([
   'bid_update',
 ])
 
+// ---------------------------------------------------------------------------
+// FULL-STATE SYNC — the recovery net. Sleeper publishes the ENTIRE draft
+// (every pick, with players + slots) on its public REST API, so the backend can
+// reconcile no matter what this content script missed: a dead/unpatched WS, an
+// extension reload mid-draft, a page refresh — anything. We just tell it WHICH
+// draft (from the page URL or the frame topic) and WHO we are; it fetches,
+// records the missing picks idempotently, and pushes them to the Rook UI.
+// Runs at startup + every 30s + immediately on entering a draft channel — so
+// even with ZERO frames flowing, capture degrades to 30s latency, never to
+// permanent desync.
+// ---------------------------------------------------------------------------
+const DRAFT_SYNC_INTERVAL_MS = 30 * 1000
+
+async function syncDraftState() {
+  const draftId = draftIdFromPath(location.pathname) || knownDraftId
+  if (!draftId || !extensionAlive()) return
+  try {
+    await postDraftEvent({
+      type: 'draft_sync',
+      platform: 'sleeper',
+      payload: { draft_id: draftId, my_user_id: getMyUserId() },
+    })
+  } catch {
+    // Network hiccup — the next interval retries.
+  }
+}
+
+setInterval(syncDraftState, DRAFT_SYNC_INTERVAL_MS)
+syncDraftState() // startup: recover anything missed before this injection
+
 async function handleFrame(frame) {
   if (!isDraftFrame(frame)) return
+  // Entering a draft channel (fresh join or SPA nav into a new draft): sync the
+  // full state immediately so anything missed before this moment is recovered.
+  const frameDraftId = draftIdFromTopic(frame.topic)
+  if (frameDraftId && frameDraftId !== knownDraftId) {
+    knownDraftId = frameDraftId
+    syncDraftState()
+  }
   if (!format) format = detectFormat(frame)
   if (!format) return // wait for the first format-bearing frame (the join reply)
 

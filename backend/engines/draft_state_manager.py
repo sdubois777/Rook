@@ -45,6 +45,20 @@ class LeagueConfig:
 DEFAULT_TEAM_LABEL = "Your Team"
 
 
+def _pick_key(name: str | None) -> str:
+    """Strong cross-source name key for pick dedupe: suffixes stripped, hyphens
+    to spaces, periods/apostrophes dropped ("D.J. Moore" == "DJ Moore",
+    "Amon-Ra St. Brown" == "Amon Ra St Brown"). Mirrors the frontend's
+    normalizeName so both layers agree on what "the same player" means."""
+    import re
+
+    n = (name or "").lower()
+    n = re.sub(r"\s+(jr\.?|sr\.?|ii|iii|iv|v)$", "", n)
+    n = n.replace("-", " ")
+    n = re.sub(r"[.'’]", "", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
 @dataclass
 class DraftPick:
     """Immutable record of a single draft pick."""
@@ -142,9 +156,17 @@ class DraftStateManager:
         pick_number: int | None = None,
         round_num: int | None = None,
         is_yours: bool = False,
-    ) -> None:
+    ) -> bool:
         """Track a snake pick: add its name to the drafted set (for exclusion),
-        and — when it's yours — append it to your roster (for recommendations)."""
+        and — when it's yours — append it to your roster (for recommendations).
+
+        IDEMPOTENT: a re-relayed pick (extension reload re-scan, page refresh,
+        state backfill) is a no-op — a player can only be drafted once per draft,
+        so a name already in the drafted set never double-books _my_picks.
+        Returns True when the pick was NEWLY recorded, False on a duplicate.
+        """
+        if player_name and self.is_drafted(player_name):
+            return False
         if player_name:
             from backend.agents.roster_changes import _norm_name
 
@@ -156,6 +178,7 @@ class DraftStateManager:
                 "pick_number": pick_number,
                 "round": round_num,
             })
+        return bool(player_name)
 
     def get_my_roster(self) -> list[dict]:
         """Your snake picks in draft order (player_name/position/pick_number/round)."""
@@ -265,14 +288,27 @@ class DraftStateManager:
             )
         return summary
 
-    def record_pick(self, pick: DraftPick, is_yours: bool = False) -> None:
+    def record_pick(self, pick: DraftPick, is_yours: bool = False) -> bool:
         """Called after every draft_pick event from the bridge.
 
         `is_yours` (the extension's own-pick flag) routes the pick to YOUR roster
         even when team_id is an anonymous slot label ("Team 5") that doesn't match
         your_team_id — without it, Sleeper/ESPN buys landed in opponent_rosters
         under your own slot, and a refresh showed them there with your roster empty.
+
+        IDEMPOTENT: a re-relayed sale (extension reload re-scans the full board,
+        page refresh, state backfill) must not double-charge budgets or duplicate
+        rosters — a player can only be sold once per draft. Matched by player_id
+        when both sides have one, else by normalized name. Returns True when the
+        pick was NEWLY recorded, False on a duplicate.
         """
+        new_key = _pick_key(pick.player_name) or None
+        for p in self.picks:
+            if pick.player_id and p.player_id and p.player_id == pick.player_id:
+                return False
+            if new_key and p.player_name and _pick_key(p.player_name) == new_key:
+                return False
+
         self.picks.append(pick)
 
         if is_yours or (pick.team_id and pick.team_id == self.your_team_id):
@@ -286,6 +322,7 @@ class DraftStateManager:
                 )
                 - pick.price
             )
+        return True
 
     def get_drafted_player_ids(self) -> set[str]:
         """All player_ids that have been drafted so far."""

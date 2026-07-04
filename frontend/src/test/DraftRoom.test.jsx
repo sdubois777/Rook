@@ -161,7 +161,7 @@ describe('DraftRoom', () => {
       },
     })
 
-    const { container } = render(
+    render(
       <MemoryRouter>
         <RecommendationPanel />
       </MemoryRouter>
@@ -930,10 +930,16 @@ describe('DraftRoom', () => {
     expect(s.recommendation).toBeNull()
   })
 
-  it('recordPick dedup is time-bounded — a stale prior pick does not block', () => {
+  it('recordPick dedup is session-wide — a re-relayed pick never double-records', () => {
+    // A player can only be sold once per draft: a re-relay (extension reload
+    // re-scanning the board, backend backfill, socket redelivery) is a dup no
+    // matter how old the original is. Fresh drafts are unblocked by the
+    // startDraft session reset instead of a time bound.
     useDraftStore.setState({
       phase: 'live',
       myTeamName: null,
+      teamPicks: {},
+      myRoster: [],
       picks: [{ player_name: 'Josh Allen', timestamp: Date.now() - 3000 }], // 3s ago
       availablePlayers: [
         { id: 'p1', name: 'Josh Allen', position: 'QB', yahoo_player_id: 'y1' },
@@ -948,8 +954,52 @@ describe('DraftRoom', () => {
       })
     })
 
-    // Recorded again because the prior pick is older than 2s
-    expect(useDraftStore.getState().picks).toHaveLength(2)
+    expect(useDraftStore.getState().picks).toHaveLength(1) // blocked — already sold
+  })
+
+  it('recordPick dedupes against rehydrated rosters (picks[] empty after refresh)', () => {
+    // After a page refresh, rehydrate rebuilds teamPicks but picks[] starts
+    // empty — a full-board re-emit (extension reload) must still not
+    // double-book players already on a roster.
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      picks: [],
+      myRoster: [],
+      teamPicks: { 'Team 3': [{ player_name: 'Josh Allen', price: 36 }] },
+      availablePlayers: [],
+    })
+
+    act(() => {
+      useDraftStore.getState().recordPick({
+        player_name: 'Josh Allen',
+        final_price: 36,
+        winner: 'Team 3',
+      })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.picks).toHaveLength(0)
+    expect(s.teamPicks['Team 3']).toHaveLength(1) // not duplicated
+  })
+
+  it('recordSnakePick dedup is session-wide too', () => {
+    useDraftStore.setState({
+      phase: 'live',
+      myTeamName: null,
+      teamPicks: {},
+      myRoster: [],
+      picks: [{ player_name: 'Jahmyr Gibbs', timestamp: Date.now() - 60_000 }],
+      availablePlayers: [],
+    })
+    act(() => {
+      useDraftStore.getState().recordSnakePick({
+        player_name: 'Jahmyr Gibbs',
+        pick_number: 1,
+        picker: 'Team 1',
+      })
+    })
+    expect(useDraftStore.getState().picks).toHaveLength(1)
   })
 
   it('setNomination preserves a higher existing bid for the same player', () => {
