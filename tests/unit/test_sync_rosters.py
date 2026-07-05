@@ -499,3 +499,34 @@ def test_no_gsis_and_no_depth_chart_filtered():
     wh = _gate_warehouse(depth_sleeper_ids=["111"], stats_gsis_by_season={2025: ["00-0011111"]})
     udfa = {"player_id": "55555", "gsis_id": "", "full_name": "Practice Squad Guy"}
     assert is_relevant_player(udfa, wh) is False
+
+
+def test_kicker_on_team_kept_at_sync():
+    """Kickers have no skill depth-chart / stats signal to gate on, but an
+    on-a-team kicker is always draft-relevant -> kept (short-circuits the
+    warehouse checks)."""
+    wh = _gate_warehouse(depth_sleeper_ids=[], stats_gsis_by_season={})
+    k = {"player_id": "11533", "gsis_id": "", "full_name": "Brandon Aubrey",
+         "position": "K", "team": "DAL"}
+    assert is_relevant_player(k, wh) is True
+
+
+def test_defense_kept_at_sync():
+    """Team defenses (no gsis, no depth-chart slot, team-abbr id) are always
+    relevant -> kept."""
+    wh = _gate_warehouse(depth_sleeper_ids=[], stats_gsis_by_season={})
+    dst = {"player_id": "SF", "gsis_id": "", "full_name": "San Francisco 49ers",
+           "position": "DEF", "team": "SF"}
+    assert is_relevant_player(dst, wh) is True
+
+
+def test_free_agent_kicker_filtered():
+    """A K with no team (FA) is NOT ingested — only on-a-team K/DEF are relevant."""
+    wh = _gate_warehouse(depth_sleeper_ids=[], stats_gsis_by_season={})
+    fa_k = {"player_id": "5838", "gsis_id": "", "full_name": "Practice Kicker",
+            "position": "K", "team": None}
+    assert is_relevant_player(fa_k, wh) is False
+    # NaN team (pandas FA) also filtered.
+    fa_k_nan = {"player_id": "5839", "gsis_id": "", "full_name": "Practice Kicker 2",
+                "position": "K", "team": float("nan")}
+    assert is_relevant_player(fa_k_nan, wh) is False

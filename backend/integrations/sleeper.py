@@ -98,15 +98,35 @@ def fetch_sleeper_players() -> pd.DataFrame:
         logger.warning("Sleeper players: empty response")
         return df
 
-    # Filter to active skill positions only
-    # Include Inactive — injured starters matter
+    # Filter to draftable positions: skill (QB/RB/WR/TE) + kickers + team defenses.
+    # Include Inactive — injured starters matter.
+    #   K  behave like skill players: numeric player_id, Active/Inactive status.
+    #   DEF are TEAM UNITS — their player_id IS the team abbreviation ("SF", "LAR")
+    #        and Sleeper leaves their `status` NULL, so they must bypass the
+    #        Active/Inactive gate or all 32 defenses would drop.
+    # SKILL_POSITIONS itself is left unchanged — every downstream agent/repo that
+    # imports it must keep excluding K/DEF (they get no skill profiles/usage). Only
+    # this ingestion source admits them.
+    _ingest_with_status = SKILL_POSITIONS | {"K"}
     skill = df[
-        df["position"].isin(SKILL_POSITIONS)
-        & df["status"].isin(["Active", "Inactive"])
+        (df["position"].isin(_ingest_with_status) & df["status"].isin(["Active", "Inactive"]))
+        | (df["position"] == "DEF")
     ].copy()
 
     # Normalize: empty string team → None (FA)
     skill["team"] = skill["team"].replace("", None)
+
+    # Team defenses carry NO full_name from Sleeper (only first/last = city/nickname),
+    # and sync_rosters skips rows with an empty full_name — build one from the parts.
+    # NOTE: player_id (→ sleeper_id) stays the RAW team abbr ("LAR"), the anchor
+    # live-draft pick resolution matches on; only `team` below is alias-normalized.
+    if {"full_name", "first_name", "last_name"}.issubset(skill.columns):
+        is_def = skill["position"] == "DEF"
+        skill.loc[is_def, "full_name"] = (
+            skill.loc[is_def, "first_name"].fillna("").astype(str)
+            + " "
+            + skill.loc[is_def, "last_name"].fillna("").astype(str)
+        ).str.strip()
 
     # Normalize team abbreviations to match pipeline conventions (NFL_TEAMS)
     # Sleeper uses "LAR" for Rams; our pipeline uses "LA"

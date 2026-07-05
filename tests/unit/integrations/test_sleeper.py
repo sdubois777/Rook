@@ -190,7 +190,7 @@ def _mock_players_response():
             "birth_date": "1994-01-04",
             "team_changed_at": None,
         },
-        # Non-skill position player — should be filtered out
+        # Kicker — now INGESTED (numeric player_id, Active status, like a skill player).
         "9999": {
             "player_id": "9999",
             "full_name": "Some Kicker",
@@ -208,6 +208,48 @@ def _mock_players_response():
             "gsis_id": None,
             "yahoo_id": None,
             "birth_date": "1996-01-01",
+            "team_changed_at": None,
+        },
+        # Team defense — player_id IS the team abbr, status is NULL, full_name absent.
+        "SF": {
+            "player_id": "SF",
+            "full_name": None,
+            "first_name": "San Francisco",
+            "last_name": "49ers",
+            "position": "DEF",
+            "team": "SF",
+            "status": None,
+            "depth_chart_order": None,
+            "injury_status": None,
+            "age": None,
+            "years_exp": None,
+            "college": None,
+            "sportradar_id": None,
+            "gsis_id": None,
+            "yahoo_id": None,
+            "birth_date": None,
+            "team_changed_at": None,
+        },
+        # Rams defense — Sleeper keys it "LAR"; our pipeline team convention is "LA".
+        # The player_id ("LAR") must survive as the sleeper_id anchor even though
+        # `team` gets alias-normalized to "LA".
+        "LAR": {
+            "player_id": "LAR",
+            "full_name": None,
+            "first_name": "Los Angeles",
+            "last_name": "Rams",
+            "position": "DEF",
+            "team": "LAR",
+            "status": None,
+            "depth_chart_order": None,
+            "injury_status": None,
+            "age": None,
+            "years_exp": None,
+            "college": None,
+            "sportradar_id": None,
+            "gsis_id": None,
+            "yahoo_id": None,
+            "birth_date": None,
             "team_changed_at": None,
         },
     }
@@ -297,10 +339,39 @@ class TestFetchSleeperPlayers:
         from backend.integrations.sleeper import fetch_sleeper_players
         df = fetch_sleeper_players()
         assert not df.empty
-        # Kicker should be filtered out
-        assert "K" not in df["position"].values
-        # All remaining should be skill positions
-        assert set(df["position"].unique()) <= {"QB", "RB", "WR", "TE"}
+        # K and DEF are now INGESTED alongside the skill positions.
+        assert set(df["position"].unique()) <= {"QB", "RB", "WR", "TE", "K", "DEF"}
+
+    def test_kicker_ingested(self, mock_sleeper_api):
+        """Kickers come through with their numeric player_id (they behave like
+        skill players — Active/Inactive status)."""
+        from backend.integrations.sleeper import fetch_sleeper_players
+        df = fetch_sleeper_players()
+        k = df[df["position"] == "K"]
+        assert len(k) == 1
+        assert k.iloc[0]["player_id"] == "9999"
+        assert k.iloc[0]["full_name"] == "Some Kicker"
+
+    def test_defense_ingested_with_team_abbr_id_and_built_name(self, mock_sleeper_api):
+        """Team defenses ingest despite NULL status; player_id IS the team abbr
+        (the sleeper_id anchor), and a full_name is constructed from city+nickname."""
+        from backend.integrations.sleeper import fetch_sleeper_players
+        df = fetch_sleeper_players()
+        defs = df[df["position"] == "DEF"]
+        assert len(defs) == 2  # SF + LAR both survive the NULL-status gate
+        sf = defs[defs["player_id"] == "SF"].iloc[0]
+        assert sf["full_name"] == "San Francisco 49ers"  # built from first+last
+        assert sf["team"] == "SF"
+
+    def test_defense_id_stays_raw_while_team_alias_normalizes(self, mock_sleeper_api):
+        """The Rams DEF keeps player_id='LAR' (the live-draft resolution anchor)
+        even though its `team` alias-normalizes to 'LA'."""
+        from backend.integrations.sleeper import fetch_sleeper_players
+        df = fetch_sleeper_players()
+        rams = df[(df["position"] == "DEF") & (df["player_id"] == "LAR")].iloc[0]
+        assert rams["player_id"] == "LAR"   # anchor unchanged
+        assert rams["team"] == "LA"          # team normalized to pipeline convention
+        assert rams["full_name"] == "Los Angeles Rams"
 
     def test_cmc_on_sf_active(self, mock_sleeper_api):
         from backend.integrations.sleeper import fetch_sleeper_players
@@ -339,7 +410,10 @@ class TestFetchSleeperPlayers:
     def test_sportradar_id_100pct_coverage(self, mock_sleeper_api):
         from backend.integrations.sleeper import fetch_sleeper_players
         df = fetch_sleeper_players()
-        coverage = df["sportradar_id"].notna().sum() / len(df)
+        # Team defenses are units with no sportradar_id — coverage is 100% across
+        # the individual-player positions (skill + K).
+        individuals = df[df["position"] != "DEF"]
+        coverage = individuals["sportradar_id"].notna().sum() / len(individuals)
         assert coverage == 1.0
 
 
