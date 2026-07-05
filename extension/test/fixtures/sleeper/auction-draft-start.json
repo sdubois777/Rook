@@ -1,0 +1,2164 @@
+[
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "6",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282467475",
+    "highest_offer": "25",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": "1373225184038764544",
+   "time": 1783282470334,
+   "slot": 4,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 50
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "1373225184038764544",
+    "offering_slot": "4",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282470336",
+    "highest_offer": "50",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282472478,
+   "slot": 5,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 60
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "5",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282472480",
+    "highest_offer": "60",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282475481,
+   "slot": 8,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 61
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "8",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282475483",
+    "highest_offer": "61",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282478484,
+   "slot": 1,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 66
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "1",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282478486",
+    "highest_offer": "66",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282481487,
+   "slot": 6,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 69
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "6",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282481490",
+    "highest_offer": "69",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": "1373225184038764544",
+   "time": 1783282487284,
+   "slot": 4,
+   "player_id": "7564",
+   "pick_no": 2,
+   "draft_id": "1379589869847715843",
+   "amount": 70
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:18.538153Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "1373225184038764544",
+    "offering_slot": "4",
+    "nominating_slot": "2",
+    "nominated_player_id": "7564",
+    "name": "",
+    "last_action_at": "1783282487286",
+    "highest_offer": "70",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282457463,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "7564",
+   "picked_by": "1373225184038764544",
+   "pick_no": 2,
+   "metadata": {
+    "years_exp": "5",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "CIN",
+    "status": "Active",
+    "sport": "nfl",
+    "slot": "4",
+    "position": "WR",
+    "player_id": "7564",
+    "number": "1",
+    "news_updated": "1782315030595",
+    "last_name": "Chase",
+    "injury_status": "",
+    "first_name": "Ja'Marr",
+    "amount": "70"
+   },
+   "is_keeper": null,
+   "draft_id": "1379589869847715843"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_pick",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:15:48.606041Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "nominating_slot": "3",
+    "name": "",
+    "last_action_at": "1783282518606",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_nomination",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "3",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282519676",
+    "highest_offer": "1",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "5",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282522608",
+    "highest_offer": "4",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282525609,
+   "slot": 8,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 6
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "8",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282525611",
+    "highest_offer": "6",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282528612,
+   "slot": 1,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 16
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "1",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282528615",
+    "highest_offer": "16",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282531615,
+   "slot": 10,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 23
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "10",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282531617",
+    "highest_offer": "23",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282534618,
+   "slot": 11,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 29
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "11",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282534621",
+    "highest_offer": "29",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282537621,
+   "slot": 10,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 30
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "10",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282537623",
+    "highest_offer": "30",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282540624,
+   "slot": 2,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 38
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "2",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282540626",
+    "highest_offer": "38",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": "1373225184038764544",
+   "time": 1783282541341,
+   "slot": 4,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 60
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "1373225184038764544",
+    "offering_slot": "4",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282541344",
+    "highest_offer": "60",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282543627,
+   "slot": 6,
+   "player_id": "9493",
+   "pick_no": 3,
+   "draft_id": "1379589869847715843",
+   "amount": 62
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:19.676680Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "6",
+    "nominating_slot": "3",
+    "nominated_player_id": "9493",
+    "name": "",
+    "last_action_at": "1783282543629",
+    "highest_offer": "62",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282518602,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9493",
+   "picked_by": "0",
+   "pick_no": 3,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "LAR",
+    "status": "Active",
+    "sport": "nfl",
+    "slot": "6",
+    "position": "WR",
+    "player_id": "9493",
+    "number": "12",
+    "news_updated": "1782231320553",
+    "last_name": "Nacua",
+    "injury_status": "",
+    "first_name": "Puka",
+    "amount": "62"
+   },
+   "is_keeper": null,
+   "draft_id": "1379589869847715843"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_pick",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:49.666167Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "name": "",
+    "last_action_at": "1783282579666",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_hover",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:16:49.666167Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "name": "",
+    "last_action_at": "1783282587895",
+    "hovered_player_id": "9221",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_nomination",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "1373225184038764544",
+    "offering_slot": "4",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282591814",
+    "hovered_player_id": "9221",
+    "highest_offer": "55",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282594678,
+   "slot": 1,
+   "player_id": "9221",
+   "pick_no": 4,
+   "draft_id": "1379589869847715843",
+   "amount": 57
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "1",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282594680",
+    "hovered_player_id": "9221",
+    "highest_offer": "57",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282597681,
+   "slot": 8,
+   "player_id": "9221",
+   "pick_no": 4,
+   "draft_id": "1379589869847715843",
+   "amount": 61
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "8",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282597682",
+    "hovered_player_id": "9221",
+    "highest_offer": "61",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282600684,
+   "slot": 9,
+   "player_id": "9221",
+   "pick_no": 4,
+   "draft_id": "1379589869847715843",
+   "amount": 65
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "9",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282600686",
+    "hovered_player_id": "9221",
+    "highest_offer": "65",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282603687,
+   "slot": 11,
+   "player_id": "9221",
+   "pick_no": 4,
+   "draft_id": "1379589869847715843",
+   "amount": 74
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "11",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282603689",
+    "hovered_player_id": "9221",
+    "highest_offer": "74",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "new_draft_offer",
+  {
+   "user_id": null,
+   "time": 1783282606690,
+   "slot": 8,
+   "player_id": "9221",
+   "pick_no": 4,
+   "draft_id": "1379589869847715843",
+   "amount": 75
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_offer",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:17:31.814050Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "8",
+    "nominating_user_id": "1373225184038764544",
+    "nominating_slot": "4",
+    "nominated_player_id": "9221",
+    "name": "",
+    "last_action_at": "1783282606692",
+    "hovered_player_id": "9221",
+    "highest_offer": "75",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282579663,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9221",
+   "picked_by": "0",
+   "pick_no": 4,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "DET",
+    "status": "Active",
+    "sport": "nfl",
+    "slot": "8",
+    "position": "RB",
+    "player_id": "9221",
+    "number": "0",
+    "news_updated": "1782655517999",
+    "last_name": "Gibbs",
+    "injury_status": "",
+    "first_name": "Jahmyr",
+    "amount": "75"
+   },
+   "is_keeper": null,
+   "draft_id": "1379589869847715843"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_pick",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:18:01.738206Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "nominating_slot": "5",
+    "name": "",
+    "last_action_at": "1783282651738",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282651735,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379589869847715843",
+  "draft_updated_by_nomination",
+  {
+   "type": "auction",
+   "status": "drafting",
+   "start_time": 1783282395379,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 30,
+    "cpu_autopick": 1,
+    "budget": 200,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0,
+    "afk_rounds_5": 1,
+    "afk_rounds_3": 1,
+    "afk_rounds_2": 1,
+    "afk_rounds_1": 1
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "timer_end_at": "2026-07-05T20:18:32.807791Z",
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "offering_user_id": "",
+    "offering_slot": "5",
+    "nominating_slot": "5",
+    "nominated_player_id": "9488",
+    "name": "",
+    "last_action_at": "1783282652807",
+    "highest_offer": "1",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783282651735,
+   "last_message_time": 1783282365807,
+   "last_message_id": "1379589869847715843",
+   "draft_order": {
+    "1373225184038764544": 4
+   },
+   "draft_id": "1379589869847715843",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783282365807
+  }
+ ]
+]

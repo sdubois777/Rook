@@ -58,6 +58,13 @@ export const useDraftStore = create((set, get) => ({
   currentNomination: null, // { playerName, posTeam, currentBid, clock, secondsRemaining }
   teamsState: {}, // live scraped team budgets from the extension poller
 
+  // Live-detected draft format ('auction' | 'snake'), propagated by the backend
+  // (`draft_format` on relay messages) from the session it reconciled to the
+  // LIVE draft. The SINGLE authoritative format source — the panel selector
+  // reads this over the statically-selected sidebar league. Null until the first
+  // format-defining event (nomination/your_turn) arrives.
+  liveDraftType: null,
+
   // Snake draft turn tracking (auction leaves these at their defaults)
   isYourTurn: false,
   currentPick: null,
@@ -134,6 +141,7 @@ export const useDraftStore = create((set, get) => ({
       teamsState: {},
       comboAlerts: [],
       selectedTeam: null,
+      liveDraftType: null,
       currentNomination: null,
       currentBid: null,
       recommendation: null,
@@ -203,6 +211,15 @@ export const useDraftStore = create((set, get) => ({
       const bidAmount = sameHigherBid
         ? state.currentBid.current_bid
         : payload.opening_bid
+      // NON-DESTRUCTIVE recommendation handling. setNomination must NOT blow
+      // away a rec that belongs to THIS nominee — the engine broadcasts the rec
+      // right around the nomination (and could land just before it in any future
+      // ordering), so unconditionally nulling it is a footgun that reintroduces
+      // the AI-rec flicker/blank. Clear the rec ONLY when the nominee actually
+      // changes to a DIFFERENT player; keep a rec whose player matches.
+      const recMatchesNominee =
+        !!state.recommendation?.player_name &&
+        matchesPickName(state.recommendation.player_name, payload.player_name)
       return {
         currentNomination: {
           playerName: payload.player_name,
@@ -217,9 +234,15 @@ export const useDraftStore = create((set, get) => ({
               current_bid: payload.opening_bid,
               player_name: payload.player_name,
             },
-        recommendation: null,
+        // Keep a matching rec; drop a stale one for a different player.
+        ...(recMatchesNominee ? {} : { recommendation: null }),
       }
     }),
+
+  // The backend echoes the live-reconciled draft format on relay messages; this
+  // is the single authoritative format source the panel selector reads.
+  setLiveDraftType: (draftType) =>
+    set((s) => (s.liveDraftType === draftType ? s : { liveDraftType: draftType })),
 
   updateBid: (bid) =>
     set((s) => ({

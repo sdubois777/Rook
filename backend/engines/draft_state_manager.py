@@ -274,6 +274,34 @@ class DraftStateManager:
     def is_auction(self) -> bool:
         return self.league_config.draft_type == "auction"
 
+    def reconcile_draft_type(self, target: str) -> bool:
+        """Reconcile this session's format to the LIVE-detected draft type.
+
+        The live draft is the single source of truth for format (the extension
+        detects it at frame 0). A stale session inside the resume window can hold
+        the WRONG format and mis-route recommendations — the reported case is a
+        snake session mis-routing an auction draft, but the SYMMETRIC case (an
+        auction session mis-routing a snake draft) is equally real. Reconcile in
+        BOTH directions. Switching to auction restores the budget a snake config
+        zeroes, so the auction recommendation has a real budget to reason with.
+
+        Called on both freshly-built AND rehydrated/resumed sessions — the bug
+        lives specifically in the resume path, so setting format only on create
+        would miss it. Returns True if the format actually changed.
+        """
+        if target not in ("auction", "snake"):
+            return False
+        cfg = self.league_config
+        if cfg.draft_type == target:
+            return False
+        cfg.draft_type = target
+        # A format change means the resume window matched a DIFFERENT draft, so
+        # the auction budget from a snake config (0) must be restored.
+        if target == "auction" and cfg.auction_budget <= 0:
+            cfg.auction_budget = LeagueConfig().auction_budget
+            self.your_budget = cfg.auction_budget
+        return True
+
     def get_roster_summary(self) -> dict[str, list[dict]]:
         """Your roster grouped by position — for snake roster-need reasoning.
 

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback } from 'react'
+import { useDraftStore } from '../stores/draft'
 
 const STORAGE_KEY = 'selectedLeague'
 
@@ -34,7 +35,13 @@ export function LeagueProvider({ children }) {
     setSelected(league)
   }, [])
 
-  const draftType = selectedLeague?.draft_type
+  // The LIVE draft's detected format (propagated by the backend into the store)
+  // is the single source of truth for the panel selector — it OVERRIDES the
+  // statically-selected sidebar league, so an auction draft opened under a
+  // snake-selected league self-corrects to auction (and vice versa). Falls back
+  // to the selected league before the first format-defining event arrives.
+  const liveDraftType = useDraftStore((s) => s.liveDraftType)
+  const draftType = liveDraftType || selectedLeague?.draft_type
   const value = {
     selectedLeague,
     setSelectedLeague,
