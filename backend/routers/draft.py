@@ -147,6 +147,20 @@ session_manager = DraftSessionManager(
 # Extension relay — receives draft events via X-Draft-Token
 # ---------------------------------------------------------------------------
 
+def _relay_message(event: "DraftEventPayload", draft_format: str | None = None) -> dict:
+    """The WS envelope broadcast to a user's React clients. `draft_format` (the
+    session's live-reconciled draft_type) is echoed so the frontend panel
+    selector reads ONE authoritative format instead of re-inferring it."""
+    msg = {
+        "type": event.type,
+        "payload": event.payload,
+        "platform": event.platform,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if draft_format:
+        msg["draft_format"] = draft_format
+    return msg
+
 @router.post("/event", summary="Relay draft event from browser extension")
 async def relay_draft_event(
     event: DraftEventPayload,
@@ -190,8 +204,19 @@ async def relay_draft_event(
     # relay below. The room has to keep ticking — nominee on the block, timer,
     # bids, picks leaving the list, opponent budgets — even if the AI
     # recommendation or a state write throws; the rec simply arrives when it can.
+    # Format is sourced from the LIVE draft (single source of truth): a
+    # format-defining event (nomination ⇒ auction, your_turn ⇒ snake) reconciles
+    # the session's draft_type and is echoed to the frontend as `draft_format`,
+    # which the panel selector reads INSTEAD of the static sidebar league. One
+    # inference site (here); both consumers (engine routing + UI panel) read it.
+    broadcast_format: str | None = None
+    nomination_broadcasted = False
     try:
         if event.type in ("nomination", "your_turn"):
+            # SYMMETRIC live-format propagation. Replaces the old asymmetry
+            # (your_turn hard-set "snake", nomination passed None): assert the
+            # actual live format in BOTH directions.
+            live_format = "snake" if event.type == "your_turn" else "auction"
             session = await session_manager.get_or_rehydrate(user.id)
             if session is None:
                 logger.warning(
@@ -199,13 +224,27 @@ async def relay_draft_event(
                     "(call POST /draft/start for full budget/opponent fidelity).",
                     event.type, session_key,
                 )
-                state = await _build_state(
-                    draft_type="snake" if event.type == "your_turn" else None,
-                )
+                state = await _build_state(draft_type=live_format)
                 session = await session_manager.create(user.id, state)
+            elif session.state.reconcile_draft_type(live_format):
+                # Resume-path fix: a stale session inside the resume window held
+                # the wrong format and would mis-route. Reconcile it live.
+                logger.info(
+                    "Reconciled session %s to live format %s", session_key, live_format
+                )
+            broadcast_format = session.state.draft_type
 
             if event.type == "nomination":
-                await _trigger_nomination(event, session.engine)
+                # B2 ordering: enrich + broadcast the NOMINEE first, THEN run the
+                # engine rec (which broadcasts `recommendation`). This guarantees
+                # the frontend sets the nominee before the rec arrives, so the rec
+                # survives instead of being clobbered by setNomination.
+                player = await _enrich_nomination(event)
+                await ws_manager.broadcast_to_session(
+                    session_key, _relay_message(event, broadcast_format)
+                )
+                nomination_broadcasted = True
+                await _run_nomination_recommendation(event, session.engine, player)
             else:
                 await _trigger_your_turn(event, session.engine)
             await session_manager.persist(user.id)
@@ -219,12 +258,14 @@ async def relay_draft_event(
                 state=session.state if session else None,
             )
             if session is not None:
+                broadcast_format = session.state.draft_type
                 await session_manager.persist(user.id)
 
         elif event.type == "draft_pick":
             session = await session_manager.get_or_rehydrate(user.id)
             if session is not None:
                 await _record_pick(event, session.engine, session.state)
+                broadcast_format = session.state.draft_type
                 await session_manager.persist(user.id)
 
         elif event.type == "my_bid":
@@ -256,13 +297,12 @@ async def relay_draft_event(
         except Exception:
             logger.exception("your_team_name capture failed (user %s)", session_key)
 
-    # Always relay the raw event — but ONLY to this user's WebSocket clients.
-    await ws_manager.broadcast_to_session(session_key, {
-        "type": event.type,
-        "payload": event.payload,
-        "platform": event.platform,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    # Relay the raw event — ONLY to this user's WS clients. Skipped for a
+    # nomination already broadcast above (B2: it goes out BEFORE the rec).
+    if not nomination_broadcasted:
+        await ws_manager.broadcast_to_session(
+            session_key, _relay_message(event, broadcast_format)
+        )
     return {"status": "relayed"}
 
 
@@ -287,26 +327,48 @@ async def _resolve_player(player_name: str, sleeper_id: str | None = None):
         return await repo.find_by_name_fuzzy(player_name)
 
 
-async def _trigger_nomination(event: "DraftEventPayload", engine) -> None:
-    """Resolve the nominated player and run the engine's recommendation.
-
-    Sleeper nominations are id-only (`sleeper_player_id`, no name), so enrich the
-    broadcast payload with the resolved name/id/position — otherwise the UI shows
-    a blank nominee. Yahoo/ESPN already carry the name, so this is idempotent there.
+async def _enrich_nomination(event: "DraftEventPayload"):
+    """Resolve the nominated player (Sleeper sends id-only) and enrich the payload
+    IN PLACE with the resolved name/id/position — otherwise the UI shows a blank
+    nominee. Yahoo/ESPN already carry the name, so this is idempotent there.
+    Returns the resolved Player (or None). Split from the recommendation so the
+    relay can broadcast the enriched nominee BEFORE the engine computes the rec.
     """
     payload = event.payload
-    player_name = payload.get("player_name", "")
-    player = await _resolve_player(player_name, payload.get("sleeper_player_id"))
+    player = await _resolve_player(
+        payload.get("player_name") or "", payload.get("sleeper_player_id")
+    )
     if player is not None:
         payload["player_name"] = player.name
         payload["player_id"] = str(player.id)
         if not payload.get("pos_team") and player.position:
             payload["pos_team"] = player.position
+    return player
+
+
+async def _run_nomination_recommendation(
+    event: "DraftEventPayload", engine, player
+) -> None:
+    """Run the engine's recommendation for an ALREADY-enriched nomination.
+
+    Kept separate from enrichment + broadcast so the nominee reaches the UI
+    first: the engine broadcasts its `recommendation` here, and it must arrive
+    AFTER the `nomination` broadcast so the frontend's setNomination doesn't
+    clobber it (the rec-before-nomination ordering was the AI-rec-blank root).
+    """
+    payload = event.payload
     await engine.on_nomination({
         "type": "nomination",
         "player_id": player.yahoo_player_id if player else "",
-        "player_name": payload.get("player_name", "") or player_name,
+        "player_name": payload.get("player_name", "") or "",
     })
+
+
+async def _trigger_nomination(event: "DraftEventPayload", engine) -> None:
+    """Enrich + recommend in one call (back-compat; the relay now sequences the
+    two around the nominee broadcast itself — see B2 ordering)."""
+    player = await _enrich_nomination(event)
+    await _run_nomination_recommendation(event, engine, player)
 
 
 async def _record_pick(event: "DraftEventPayload", engine, state) -> None:

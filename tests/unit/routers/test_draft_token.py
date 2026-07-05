@@ -408,6 +408,140 @@ async def test_draft_sync_reconnect_backlog_from_real_capture():
 
 
 @pytest.mark.asyncio
+async def test_nomination_broadcasts_before_the_recommendation():
+    """B2 ordering guard: the nominee reaches the UI BEFORE the engine runs its
+    recommendation — so the frontend sets the nominee first and the rec (which
+    the engine broadcasts inside on_nomination) arrives AFTER and survives. Also
+    asserts the live draft_format is echoed on the nomination broadcast."""
+    order = []
+    engine = AsyncMock()
+
+    async def _on_nom(_evt):
+        order.append("on_nomination")
+
+    engine.on_nomination.side_effect = _on_nom
+    state = MagicMock()
+    state.draft_type = "auction"
+    state.reconcile_draft_type = MagicMock(return_value=False)
+    session = SimpleNamespace(engine=engine, state=state)
+    mgr = _fake_manager(session=session)
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+
+    async def _bcast(_key, msg):
+        order.append(("broadcast", msg.get("type"), msg.get("draft_format")))
+
+    mock_ws.broadcast_to_session = AsyncMock(side_effect=_bcast)
+    fake_player = MagicMock(yahoo_player_id="nfl_x", position="WR")
+    fake_player.name = "Puka Nacua"
+    fake_player.id = "uuid-1"
+    user = _make_user(draft_token="valid-token")
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=fake_player)
+    ):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                await ac.post(
+                    "/api/draft/event",
+                    json={"type": "nomination", "platform": "sleeper",
+                          "payload": {"player_name": None, "sleeper_player_id": "9493"}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            nom_idx = next(i for i, o in enumerate(order)
+                           if isinstance(o, tuple) and o[1] == "nomination")
+            rec_idx = order.index("on_nomination")
+            assert nom_idx < rec_idx  # nominee broadcast BEFORE the engine rec
+            assert order[nom_idx][2] == "auction"  # draft_format echoed
+            # And it is broadcast exactly ONCE (not double via the trailing relay).
+            assert sum(1 for o in order if isinstance(o, tuple) and o[1] == "nomination") == 1
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_stale_snake_session_reconciles_to_auction_on_nomination():
+    """B1 resume-path fix: a rehydrated stale SNAKE session on an auction draft
+    is reconciled to auction so on_nomination routes to the auction path."""
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+
+    state = DraftStateManager(LeagueConfig(draft_type="snake", auction_budget=0))
+    assert state.is_snake
+    engine = AsyncMock()
+    session = SimpleNamespace(engine=engine, state=state)
+    mgr = _fake_manager(session=session)  # get_or_rehydrate returns the stale session
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock(); mock_ws.broadcast_to_session = AsyncMock()
+    fake_player = MagicMock(yahoo_player_id="nfl_x", position="WR"); fake_player.name = "Puka Nacua"; fake_player.id = "u"
+    user = _make_user(draft_token="valid-token")
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._resolve_player", AsyncMock(return_value=fake_player)
+    ):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                await ac.post(
+                    "/api/draft/event",
+                    json={"type": "nomination", "platform": "sleeper",
+                          "payload": {"player_name": None, "sleeper_player_id": "9493"}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert state.is_auction  # reconciled from the live nomination
+            assert state.your_budget == 200
+            engine.on_nomination.assert_awaited_once()
+            # The echoed format matches the reconciled (live) format, not the stale one.
+            _, msg = mock_ws.broadcast_to_session.await_args_list[0].args
+            assert msg["draft_format"] == "auction"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_stale_auction_session_reconciles_to_snake_on_your_turn():
+    """B1 symmetric: a rehydrated stale AUCTION session on a snake draft is
+    reconciled to snake by a your_turn event."""
+    from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
+
+    state = DraftStateManager(LeagueConfig(draft_type="auction", auction_budget=200))
+    assert state.is_auction
+    session = SimpleNamespace(engine=AsyncMock(), state=state)
+    mgr = _fake_manager(session=session)
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock(); mock_ws.broadcast_to_session = AsyncMock()
+    user = _make_user(draft_token="valid-token")
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr):
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                await ac.post(
+                    "/api/draft/event",
+                    json={"type": "your_turn", "platform": "sleeper",
+                          "payload": {"pick": 5, "round": 1}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert state.is_snake  # reconciled from the live your_turn
+            _, msg = mock_ws.broadcast_to_session.await_args_list[0].args
+            assert msg["draft_format"] == "snake"
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_draft_sync_api_failure_is_a_safe_noop():
     """A Sleeper API hiccup (None) must not crash or mutate anything."""
     user = _make_user(draft_token="valid-token")

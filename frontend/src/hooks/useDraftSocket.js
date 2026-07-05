@@ -147,6 +147,14 @@ export default function useDraftSocket() {
           if (data.payload?.your_team_name) {
             useDraftStore.getState().upgradeTeamName(data.payload.your_team_name)
           }
+          // Single authoritative live format: the backend echoes the session's
+          // reconciled draft_type. The panel selector reads THIS, not the
+          // statically-selected sidebar league. (We only READ the propagated
+          // value here — we do not re-infer format from event types, so the
+          // frontend and backend can't disagree.)
+          if (data.draft_format) {
+            useDraftStore.getState().setLiveDraftType(data.draft_format)
+          }
           switch (data.type) {
             // Engine broadcasts (flat shape)
             case 'recommendation':
