@@ -572,13 +572,13 @@ describe('DraftRoom', () => {
     expect(useDraftStore.getState().myRoster).toHaveLength(0)
   })
 
-  it('a nomination clears the recommendation and polls for a fresh one', async () => {
+  it('a nomination for a DIFFERENT player clears the stale rec, then polls for a fresh one', async () => {
     vi.useFakeTimers()
     try {
       const { getRecommendation } = await import('../api/draft')
       const rec = {
         type: 'recommendation',
-        player_name: 'Sam LaPorta',
+        player_name: 'Bijan Robinson',
         action: 'buy',
         bid_ceiling: 18,
         confidence: 'high',
@@ -598,7 +598,6 @@ describe('DraftRoom', () => {
           <DraftRoom />
         </MemoryRouter>
       )
-      // Flush mount effects (on-mount poll + ws onopen timer)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1)
       })
@@ -606,14 +605,23 @@ describe('DraftRoom', () => {
       const ws = MockWebSocket.instances.at(-1)
       expect(ws).toBeTruthy()
 
-      // Fire a nomination over the socket
+      // A stale rec for a DIFFERENT player is sitting in the store (set AFTER the
+      // mount resync so it isn't overwritten by it).
+      act(() => {
+        useDraftStore.setState({
+          recommendation: {
+            type: 'recommendation', player_name: 'Old Guy', action: 'buy', bid_ceiling: 5,
+          },
+        })
+      })
+
       act(() => {
         ws.onmessage({
           data: JSON.stringify({
             type: 'nomination',
             payload: {
-              player_name: 'Sam LaPorta',
-              pos_team: 'DET – TE',
+              player_name: 'Bijan Robinson',
+              pos_team: 'ATL – RB',
               opening_bid: 1,
               clock: '0:30',
             },
@@ -621,17 +629,17 @@ describe('DraftRoom', () => {
         })
       })
 
-      // Recommendation cleared immediately; nominee shown
+      // Stale rec for the DIFFERENT player cleared immediately; nominee shown.
       expect(useDraftStore.getState().recommendation).toBeNull()
-      expect(useDraftStore.getState().currentNomination.playerName).toBe('Sam LaPorta')
+      expect(useDraftStore.getState().currentNomination.playerName).toBe('Bijan Robinson')
 
-      // The 2.5s fallback poll fetches and applies the fresh recommendation
+      // The 2.5s fallback poll fetches and applies the fresh recommendation.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2600)
       })
 
       expect(getRecommendation).toHaveBeenCalled()
-      expect(useDraftStore.getState().recommendation?.player_name).toBe('Sam LaPorta')
+      expect(useDraftStore.getState().recommendation?.player_name).toBe('Bijan Robinson')
     } finally {
       vi.useRealTimers()
     }
@@ -1038,6 +1046,63 @@ describe('DraftRoom', () => {
     })
     const s = useDraftStore.getState()
     expect(s.currentNomination.currentBid).toBe(27) // NOT reset to $1
+  })
+
+  it('setNomination KEEPS a recommendation that matches the incoming nominee', () => {
+    // B2 non-destructive guard: the engine broadcasts the rec around the
+    // nomination; setNomination must NOT wipe a rec for THIS nominee (fuzzy
+    // match), or the AI rec flickers/blanks.
+    useDraftStore.setState({
+      currentNomination: null,
+      currentBid: null,
+      recommendation: { type: 'recommendation', player_name: 'D.J. Moore', action: 'bid_to', bid_ceiling: 30 },
+    })
+    act(() => {
+      useDraftStore.getState().setNomination({ player_name: 'DJ Moore', opening_bid: 1, clock: '0:25' })
+    })
+    const s = useDraftStore.getState()
+    expect(s.recommendation).not.toBeNull() // survives the nomination
+    expect(s.recommendation.bid_ceiling).toBe(30)
+    expect(s.currentNomination.playerName).toBe('DJ Moore')
+  })
+
+  it('setNomination CLEARS a stale recommendation for a different player', () => {
+    useDraftStore.setState({
+      currentNomination: null,
+      currentBid: null,
+      recommendation: { type: 'recommendation', player_name: 'Old Guy', action: 'bid_to', bid_ceiling: 10 },
+    })
+    act(() => {
+      useDraftStore.getState().setNomination({ player_name: 'Puka Nacua', opening_bid: 1, clock: '0:30' })
+    })
+    const s = useDraftStore.getState()
+    expect(s.recommendation).toBeNull() // stale rec dropped
+    expect(s.currentNomination.playerName).toBe('Puka Nacua')
+  })
+
+  it('rec-then-nomination: the recommendation SURVIVES a tick after the nomination lands', async () => {
+    // The real B2 ordering regression guard. The backend broadcasts
+    // `recommendation` then `nomination` for the SAME player; the rec must still
+    // be present after the nomination is processed.
+    useDraftStore.setState({ phase: 'live', currentNomination: null, recommendation: null })
+    render(
+      <MemoryRouter>
+        <DraftRoom />
+      </MemoryRouter>
+    )
+    await act(async () => { await Promise.resolve() })
+    const ws = MockWebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'recommendation', player_name: 'Puka Nacua', action: 'bid_to', bid_ceiling: 58 }) })
+      ws.onmessage({ data: JSON.stringify({ type: 'nomination', draft_format: 'auction', payload: { player_name: 'Puka Nacua', opening_bid: 1, clock: '0:30' } }) })
+    })
+
+    const s = useDraftStore.getState()
+    expect(s.currentNomination.playerName).toBe('Puka Nacua') // nominee populated
+    expect(s.recommendation).not.toBeNull() // rec NOT clobbered by the nomination
+    expect(s.recommendation.bid_ceiling).toBe(58)
+    expect(s.liveDraftType).toBe('auction') // format propagated from the event
   })
 
   it('a re-fired nomination with a suffix variant is treated as a clock refresh', async () => {

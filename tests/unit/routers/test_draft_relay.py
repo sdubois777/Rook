@@ -51,11 +51,14 @@ def _fake_ws():
     return ws
 
 
-# event.type -> the engine helper that runs for it (patched to raise / no-op)
+# event.type -> the engine helper that runs for it (patched to raise / no-op).
+# For nomination the engine step is now _run_nomination_recommendation — the
+# nominee is enriched + broadcast BEFORE it (B2 ordering), so an engine throw is
+# even more strongly non-suppressing.
 _ENGINE_HELPER = {
-    "nomination": "_trigger_nomination",   # auction
-    "draft_pick": "_record_pick",          # auction
-    "your_turn": "_trigger_your_turn",     # snake
+    "nomination": "_run_nomination_recommendation",  # auction (post-broadcast rec)
+    "draft_pick": "_record_pick",                    # auction
+    "your_turn": "_trigger_your_turn",               # snake
 }
 
 
@@ -72,6 +75,7 @@ async def test_raw_event_relayed_even_when_engine_throws(event_type):
     with _patch_user(user), \
             patch.object(draft_mod, "session_manager", sm), \
             patch.object(draft_mod, "ws_manager", ws), \
+            patch.object(draft_mod, "_enrich_nomination", new=AsyncMock(return_value=None)), \
             patch.object(
                 draft_mod, _ENGINE_HELPER[event_type],
                 new=AsyncMock(side_effect=RuntimeError("engine boom")),
