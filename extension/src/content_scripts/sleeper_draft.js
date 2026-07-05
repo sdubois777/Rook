@@ -14,6 +14,7 @@ import {
 } from './sleeper_resolve.mjs'
 import { initSnakeMemory, detectSnakeEvents } from './sleeper_snake_resolve.mjs'
 import { initAuctionMemory, detectAuctionEvents } from './sleeper_auction_resolve.mjs'
+import { createGapReconciler } from './sleeper_gap_sync.mjs'
 
 /**
  * Sleeper Draft Room poller — ISOLATED world (Phoenix Channels over WS).
@@ -108,6 +109,18 @@ const DRAFT_SYNC_INTERVAL_MS = 30 * 1000
 async function syncDraftState() {
   const draftId = draftIdFromPath(location.pathname) || knownDraftId
   if (!draftId || !extensionAlive()) return
+  // NULL-USER GUARD (shared by the idle nets too): a reconciliation with an
+  // unresolved user_id attributes every pick is_yours=False and files your own
+  // autopicked picks onto opponent rosters — and backend is_drafted dedup makes
+  // that stick against later correct syncs. Skip + warn instead; the fast lane
+  // (gap reconciler) retries on a short backoff and the 30s poll backstops.
+  if (getMyUserId() == null) {
+    console.warn(
+      'Rook Sleeper: draft_sync skipped — user_id not resolved yet ' +
+        '(avoids mis-filing own picks to opponents); will retry.'
+    )
+    return
+  }
   try {
     await postDraftEvent({
       type: 'draft_sync',
@@ -118,6 +131,16 @@ async function syncDraftState() {
     // Network hiccup — the next interval retries.
   }
 }
+
+// Fast lane: a `draft_updated_by_pick` frame means "a pick happened" even when
+// Sleeper sent no `player_picked` for it (opening autopicks). Debounced +
+// single-in-flight so an autopick burst collapses into minimal REST syncs, and
+// deferred while user_id is unresolved so recovered own-picks aren't mis-filed.
+const gapReconciler = createGapReconciler({
+  sync: syncDraftState,
+  getUserId: getMyUserId,
+  warn: (msg) => console.warn(msg),
+})
 
 setInterval(syncDraftState, DRAFT_SYNC_INTERVAL_MS)
 syncDraftState() // startup: recover anything missed before this injection
@@ -140,6 +163,14 @@ async function handleFrame(frame) {
     if (!snakeMem) snakeMem = initSnakeMemory(uid)
     result = detectSnakeEvents(snakeMem, frame)
     snakeMem = result.next
+    // SNAKE gap fast-lane (additive — the resolver above still runs statusEvents
+    // on this frame). Match `draft_updated_by_pick` EXACTLY: it's the once-per-pick
+    // signal, distinct from auction's _by_offer/_by_nomination and from the broad
+    // draft_updated* prefix. Auction is intentionally NOT wired (its autopick
+    // emission is unconfirmed — separate follow-up).
+    if (frame.event === 'draft_updated_by_pick') {
+      gapReconciler.onPickSignal()
+    }
   } else {
     if (!auctionMem) auctionMem = initAuctionMemory(uid)
     result = detectAuctionEvents(auctionMem, frame)

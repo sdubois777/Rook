@@ -1,0 +1,2000 @@
+[
+ [
+  "435",
+  "435",
+  "draft:1379548386075627520",
+  "phx_reply",
+  {
+   "response": {},
+   "status": "ok"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated",
+  {
+   "type": "snake",
+   "status": "pre_draft",
+   "start_time": null,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": null,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272483598,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "message_created",
+  {
+   "user_reactions": null,
+   "text_map": {
+    "flairs": {
+     "type": "flair",
+     "data": []
+    }
+   },
+   "text": "This draft has begun!",
+   "shard_min": 0,
+   "shard_max": 100,
+   "reactions": null,
+   "pinned": false,
+   "parent_type": "draft",
+   "parent_id": "1379548386075627520",
+   "message_id": "1379548420867391488",
+   "edited": null,
+   "created": 1783272483607,
+   "client_id": null,
+   "client_context": null,
+   "author_role_id": null,
+   "author_real_name": null,
+   "author_is_bot": true,
+   "author_id": "166666666666666666",
+   "author_display_name": "sys",
+   "author_avatar": null,
+   "author_achievement": null,
+   "attachment": {
+    "type": "draft_begin",
+    "data": {
+     "timestamp": 1783272483
+    }
+   }
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272484590,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272485625,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272487719,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9221",
+   "picked_by": "0",
+   "pick_no": 4,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "DET",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "9221",
+    "number": "0",
+    "news_updated": "1782655517999",
+    "last_name": "Gibbs",
+    "injury_status": "",
+    "first_name": "Jahmyr"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272488663,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272489706,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272490762,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272491852,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9488",
+   "picked_by": "0",
+   "pick_no": 7,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "SEA",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "9488",
+    "number": "11",
+    "news_updated": "1781276151383",
+    "last_name": "Smith-Njigba",
+    "injury_status": "",
+    "first_name": "Jaxon"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272492898,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "7547",
+   "picked_by": "0",
+   "pick_no": 9,
+   "metadata": {
+    "years_exp": "5",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "DET",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "7547",
+    "number": "14",
+    "news_updated": "1782324631838",
+    "last_name": "St. Brown",
+    "injury_status": "",
+    "first_name": "Amon-Ra"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272493981,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272495039,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "6813",
+   "picked_by": "0",
+   "pick_no": 10,
+   "metadata": {
+    "years_exp": "6",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "IND",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "6813",
+    "number": "28",
+    "news_updated": "1782963025216",
+    "last_name": "Taylor",
+    "injury_status": "",
+    "first_name": "Jonathan"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9226",
+   "picked_by": "0",
+   "pick_no": 11,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "MIA",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "9226",
+    "number": "28",
+    "news_updated": "1782507303801",
+    "last_name": "Achane",
+    "injury_status": "Questionable",
+    "first_name": "De'Von"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272496115,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "8112",
+   "picked_by": "0",
+   "pick_no": 12,
+   "metadata": {
+    "years_exp": "4",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "ATL",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "8112",
+    "number": "5",
+    "news_updated": "1781721311276",
+    "last_name": "London",
+    "injury_status": "Questionable",
+    "first_name": "Drake"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272497189,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "12527",
+   "picked_by": "0",
+   "pick_no": 13,
+   "metadata": {
+    "years_exp": "1",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "LV",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "12527",
+    "number": "2",
+    "news_updated": "1782506403622",
+    "last_name": "Jeanty",
+    "injury_status": "",
+    "first_name": "Ashton"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272498264,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272499307,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "8151",
+   "picked_by": "0",
+   "pick_no": 15,
+   "metadata": {
+    "years_exp": "4",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "KC",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "8151",
+    "number": "9",
+    "news_updated": "1781800516982",
+    "last_name": "Walker",
+    "injury_status": "",
+    "first_name": "Kenneth"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272500364,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "12507",
+   "picked_by": "0",
+   "pick_no": 16,
+   "metadata": {
+    "years_exp": "1",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "LAC",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "12507",
+    "number": "8",
+    "news_updated": "1781807140578",
+    "last_name": "Hampton",
+    "injury_status": "",
+    "first_name": "Omarion"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272501402,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "8130",
+   "picked_by": "0",
+   "pick_no": 17,
+   "metadata": {
+    "years_exp": "4",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "ARI",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "TE",
+    "player_id": "8130",
+    "number": "85",
+    "news_updated": "1782317730889",
+    "last_name": "McBride",
+    "injury_status": "",
+    "first_name": "Trey"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272502433,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "8137",
+   "picked_by": "0",
+   "pick_no": 18,
+   "metadata": {
+    "years_exp": "4",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "DAL",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "8137",
+    "number": "3",
+    "news_updated": "1781817923953",
+    "last_name": "Pickens",
+    "injury_status": "",
+    "first_name": "George"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272503465,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272504516,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "9224",
+   "picked_by": "0",
+   "pick_no": 20,
+   "metadata": {
+    "years_exp": "3",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "CIN",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "9224",
+    "number": "30",
+    "news_updated": "1783084843754",
+    "last_name": "Brown",
+    "injury_status": "",
+    "first_name": "Chase"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272505550,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272506612,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "4866",
+   "picked_by": "1373225184038764544",
+   "pick_no": 22,
+   "metadata": {
+    "years_exp": "8",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "PHI",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "RB",
+    "player_id": "4866",
+    "number": "26",
+    "news_updated": "1782999929033",
+    "last_name": "Barkley",
+    "injury_status": "",
+    "first_name": "Saquon"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272509824,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272510646,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "11604",
+   "picked_by": "0",
+   "pick_no": 24,
+   "metadata": {
+    "years_exp": "2",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "LV",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "TE",
+    "player_id": "11604",
+    "number": "89",
+    "news_updated": "1782963925229",
+    "last_name": "Bowers",
+    "injury_status": "",
+    "first_name": "Brock"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272511684,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "7569",
+   "picked_by": "0",
+   "pick_no": 25,
+   "metadata": {
+    "years_exp": "5",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "HOU",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "7569",
+    "number": "12",
+    "news_updated": "1781530256558",
+    "last_name": "Collins",
+    "injury_status": "",
+    "first_name": "Nico"
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272512718,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "player_picked",
+  {
+   "reactions": null,
+   "player_id": "5859",
+   "picked_by": "0",
+   "pick_no": 26,
+   "metadata": {
+    "years_exp": "7",
+    "team_changed_at": "",
+    "team_abbr": "",
+    "team": "NE",
+    "status": "Active",
+    "sport": "nfl",
+    "position": "WR",
+    "player_id": "5859",
+    "number": "1",
+    "news_updated": "1782675319869",
+    "last_name": "Brown",
+    "injury_status": "",
+    "first_name": "A.J."
+   },
+   "is_keeper": null,
+   "draft_id": "1379548386075627520"
+  }
+ ],
+ [
+  null,
+  null,
+  "draft:1379548386075627520",
+  "draft_updated_by_pick",
+  {
+   "type": "snake",
+   "status": "drafting",
+   "start_time": 1783272483598,
+   "sport": "nfl",
+   "settings": {
+    "teams": 12,
+    "slots_wr": 2,
+    "slots_te": 1,
+    "slots_rb": 2,
+    "slots_qb": 1,
+    "slots_k": 1,
+    "slots_flex": 2,
+    "slots_def": 1,
+    "rounds": 15,
+    "reversal_round": 0,
+    "player_type": 0,
+    "pick_timer": 60,
+    "nomination_timer": 60,
+    "cpu_autopick": 1,
+    "autostart": 0,
+    "autopause_start_time": 240,
+    "autopause_end_time": 960,
+    "autopause_enabled": 0,
+    "alpha_sort": 0
+   },
+   "season_type": "regular",
+   "season": "2026",
+   "metadata": {
+    "show_team_names": "0",
+    "scoring_type": "ppr",
+    "name": "",
+    "description": ""
+   },
+   "league_id": null,
+   "last_picked": 1783272513776,
+   "last_message_time": 1783272475303,
+   "last_message_id": "1379548386075627520",
+   "draft_order": {
+    "1373225184038764544": 3
+   },
+   "draft_id": "1379548386075627520",
+   "creators": [
+    "1373225184038764544"
+   ],
+   "created": 1783272475303
+  }
+ ]
+]
