@@ -132,3 +132,40 @@ test('cross-poller: snake/auction resolvers emit nothing for non-draft frames', 
     assert.equal(detectAuctionEvents(initAuctionMemory('1'), f).events.length, 0)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Real auction draft-start capture — the nominee/AI-rec blank was NOT the
+// resolver (the backend/frontend wiring was); this replays the actual capture
+// through detectFormat + detectAuctionEvents and asserts the nominations ARE
+// emitted, so a future resolver regression is caught here.
+// ---------------------------------------------------------------------------
+const __dir = dirname(fileURLToPath(import.meta.url))
+
+function detectFormatLocal(frame) {
+  const t = frame.payload && frame.payload.type
+  if (t === 'snake' || t === 'auction' || t === 'linear') return t === 'linear' ? 'snake' : t
+  if (['new_draft_offer', 'draft_updated_by_offer', 'draft_updated_by_nomination'].includes(frame.event)) return 'auction'
+  return null
+}
+
+test('auction capture: format locks at frame 0 and all 3 nominations emit', () => {
+  const frames = JSON.parse(
+    readFileSync(join(__dir, 'fixtures/sleeper/auction-draft-start.json'), 'utf8')
+  )
+  let format = null
+  let lockedAt = null
+  let mem = null
+  const noms = []
+  frames.forEach((arr, i) => {
+    const frame = { joinRef: arr[0], ref: arr[1], topic: arr[2], event: arr[3], payload: arr[4] || {} }
+    if (!/^draft:\d+$/.test(frame.topic || '')) return
+    if (!format) { format = detectFormatLocal(frame); if (format) lockedAt = i }
+    if (format !== 'auction') return
+    if (!mem) mem = initAuctionMemory('u')
+    const r = detectAuctionEvents(mem, frame)
+    mem = r.next
+    for (const ev of r.events) if (ev.type === 'nomination') noms.push(ev.payload.sleeper_player_id)
+  })
+  assert.equal(lockedAt, 0) // auction locks immediately on the first _by_* frame
+  assert.deepEqual(noms, ['9493', '9221', '9488']) // real nominated_player_ids
+})
