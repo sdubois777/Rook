@@ -58,6 +58,16 @@ def is_relevant_player(player_row: dict, warehouse) -> bool:
     ~16% on-team); the gsis check is a secondary catch for players with
     recent games who are off the depth chart.
     """
+    # Kickers and team defenses have no skill depth-chart / usage signal to gate
+    # on — the warehouse frames (depth charts, seasonal stats) are skill-only, and
+    # DEF carry no gsis_id — yet every fielded team has exactly one starting K and
+    # DEF, so an on-a-team K/DEF is always draft-relevant. This is the ONLY
+    # K/DEF-specific branch here; all other gating stays skill-only (ingest scope).
+    pos = str(player_row.get("position", "") or "").upper()
+    if pos in ("K", "DEF"):
+        team = player_row.get("team")
+        return bool(team) and not pd.isna(team)
+
     sleeper_id = str(player_row.get("player_id", "") or "").strip()
     gsis_id = str(player_row.get("gsis_id", "") or "").strip()
 
