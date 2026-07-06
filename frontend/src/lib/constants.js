@@ -4,11 +4,16 @@
 
 export const SKILL_POSITIONS = ['QB', 'RB', 'WR', 'TE']
 
+// The draft-board / available-players position-filter set. K and DEF are now
+// valued ($1 streamers) and appear in the lists, so the dropdown offers them too.
+// Kept separate from SKILL_POSITIONS so the latter stays the true skill set.
+export const DRAFT_FILTER_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF']
+
 /** Filter-select options for positions; the all-entry label varies by page. */
 export function buildPositionOptions(allLabel = 'All Positions') {
   return [
     { value: '', label: allLabel },
-    ...SKILL_POSITIONS.map((p) => ({ value: p, label: p })),
+    ...DRAFT_FILTER_POSITIONS.map((p) => ({ value: p, label: p })),
   ]
 }
 

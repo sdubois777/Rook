@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from backend.models.dependency import PlayerDependency
@@ -24,10 +24,16 @@ def draftable_filter():
     rows — valued at $1 with no ADP — without deleting anything. Used by the
     player list and draft board so the same definition of "draftable" applies
     to both.
+
+    K/DEF exception: they are $1 streamers BY DESIGN (ai_bid_ceiling == 1, and no
+    FantasyPros ADP), so the generic "$1 + no ADP = noise" gate would hide every
+    valued kicker/defense. A VALUED K/DEF (tier assigned by the T1 static pass) is
+    legitimately draftable — the tier check keeps any future unvalued row hidden.
     """
     return or_(
         Player.market_value_fantasypros.isnot(None),
         Player.ai_bid_ceiling > 1,
+        and_(Player.position.in_(("K", "DEF")), Player.tier.isnot(None)),
     )
 
 # Relationships needed to build a PlayerSummary response.
