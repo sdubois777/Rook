@@ -446,11 +446,13 @@ async def test_run_valuation_pass_skips_players_without_ppr():
     assert result["skipped"] == 1
 
 
-async def test_run_valuation_pass_non_skill_positions_ignored():
-    """K and DEF players are not in DRAFTABLE_POSITIONS — not processed."""
-    k   = _make_player("K",   ppr_points=50)
+async def test_run_valuation_pass_values_kdef_via_static_path():
+    """K and DEF are still excluded from the skill PAR machinery, but now take the
+    SEPARATE static streaming path (tier 5, $1 clamped to the $2 cap, adp at the
+    range start) — while the WR goes through the skill path. All three are valued."""
+    k    = _make_player("K",   ppr_points=50)
     def_ = _make_player("DEF", ppr_points=120)
-    wr  = _make_player("WR",  ppr_points=200)
+    wr   = _make_player("WR",  ppr_points=200)
     mock_players = [k, def_, wr]
 
     session = AsyncMock()
@@ -465,7 +467,13 @@ async def test_run_valuation_pass_non_skill_positions_ignored():
     with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
         result = await run_valuation_pass()
 
-    assert result["updated"] == 1
+    assert result["updated"] == 3  # WR (PAR path) + K + DEF (static streaming path)
+    # K/DEF carry the static streaming values — NOT PAR-derived.
+    assert k.tier == 5 and def_.tier == 5
+    assert k.baseline_value == Decimal("1") and def_.baseline_value == Decimal("1")
+    assert k.ai_bid_ceiling == 1 and def_.ai_bid_ceiling == 1
+    assert k.adp_ai == Decimal("140") and def_.adp_ai == Decimal("130")
+    assert k.data_confidence == "low"
 
 
 async def test_run_valuation_pass_returns_analysis_year():

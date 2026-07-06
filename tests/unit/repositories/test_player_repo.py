@@ -33,3 +33,12 @@ def test_draftable_filter_hides_dollar_floor_no_adp():
     # fails it, so a no-ADP $1 player is excluded.
     assert "ai_bid_ceiling > 1" in sql
     assert "ai_bid_ceiling >= 1" not in sql
+
+
+def test_draftable_filter_keeps_valued_kdef():
+    """K/DEF are $1 streamers (ai_bid_ceiling == 1, no FP ADP), so the generic
+    gate would hide them — a dedicated clause keeps any VALUED (tier-set) K/DEF
+    draftable so they appear on the board."""
+    sql = _sql(draftable_filter()).lower()
+    assert "position in ('k', 'def')" in sql
+    assert "tier is not null" in sql
