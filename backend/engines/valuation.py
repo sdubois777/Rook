@@ -169,6 +169,66 @@ SCARCITY_MODIFIERS: dict[str, Decimal] = {
     "TE": Decimal("1.10"),
 }
 
+# ---------------------------------------------------------------------------
+# K / DEF — separate STATIC streaming valuation (NOT the skill pipeline)
+# ---------------------------------------------------------------------------
+# K and DEF have no profile, no usage/snap data, and no positional anchors, so
+# the PAR / scarcity / trajectory machinery is undefined or wrong-scale for them
+# and would produce garbage. They are $1 streamers: assign a flat, STATIC value
+# and write the SAME shared output fields skill players use, so the draft/trade
+# surfaces (T4) read them with zero position awareness. Within-position ordering
+# is intentionally FLAT for launch (every K identical, every DEF identical) — see
+# the FantasyPros hook in value_kdef().
+_KDEF_POSITIONS = frozenset({"K", "DEF"})
+_KDEF_TIER = 5          # assign_tier's floor (streamer) tier
+_KDEF_BASE_BID = 1      # $1 base — clamped to MAX_REALISTIC_BID ($2) below
+
+
+def value_kdef(player: Player) -> None:
+    """Static streaming valuation for one K or DEF.
+
+    Writes the shared output fields DIRECTLY — no projection→PAR→value chain (K/DEF
+    have no clean_season_baseline). Deliberately position-agnostic on output so the
+    rejoin is complete: tier, baseline/ceiling/floor value, risk-adjusted value,
+    recommended + ai bid ceiling (clamped to the $2 K/DEF cap), and adp_ai (adp_rank
+    is then assigned globally by valuation_agent.assign_adp_ranks, which ranks any
+    player with a non-null adp_ai). Idempotent.
+    """
+    # Lazy import: the ADP ranges live in valuation_agent; import at call time so
+    # module import order can't create a cycle.
+    from backend.agents.valuation_agent import ADP_POSITION_RANGES
+
+    pos = player.position
+    bid = min(_KDEF_BASE_BID, MAX_REALISTIC_BID.get(pos, _KDEF_BASE_BID))  # $1, cap $2
+    bid_dec = Decimal(str(bid))
+
+    # adp_ai = the START of the position's clamp range (DEF=130 / K=140) — places
+    # them in the final rounds. FLAT: every DEF shares 130, every K 140, so
+    # within-position ordering is a tie for launch.
+    #
+    # >>> FANTASYPROS K/DEF ADP HOOK <<<
+    # To give real per-defense / per-kicker ordering, look up a scraped FantasyPros
+    # K/DEF ADP for this player here and use it in place of `range_start`. Building
+    # that scrape is an optional later enhancement — OUT OF SCOPE for T1.
+    range_start = ADP_POSITION_RANGES.get(pos, (200, 200))[0]
+    adp = Decimal(str(range_start))
+
+    player.tier                         = _KDEF_TIER
+    player.baseline_value               = bid_dec
+    player.ceiling_value                = bid_dec
+    player.floor_value                  = bid_dec
+    player.risk_adjusted_value          = bid_dec
+    player.recommended_bid_ceiling      = bid_dec
+    player.let_go_threshold             = bid_dec
+    player.ai_bid_ceiling               = bid            # auction surface (int)
+    player.adp_ai                       = adp            # snake surface
+    player.elite_anchor_weight          = ANCHOR_WEIGHTS.get(_KDEF_TIER, Decimal("0.00"))
+    player.positional_scarcity_modifier = Decimal("1.00")
+    player.value_gap                    = None           # no market comparison for $1 streamers
+    player.value_gap_signal             = "aligned"
+    player.data_confidence              = "low"
+
+
 # Risk market discount — applied to market_value BEFORE blending.
 # Higher risk = larger discount to what the room is willing to pay.
 # This replaces the old approach of multiplying risk_modifier on the final ceiling,
@@ -630,6 +690,23 @@ async def run_valuation_pass(
         processed = 0
         updated   = 0
         skipped   = 0
+
+        # K/DEF take the SEPARATE static streaming path — they NEVER enter the
+        # skill PAR/scarcity machinery above (pos_groups holds only DRAFTABLE_POSITIONS,
+        # so K/DEF were skipped at the grouping gate). Value them here, writing the
+        # shared output fields so the rejoin is position-agnostic. FA K/DEF (no team)
+        # are skipped; T2 ingestion already excludes them, this is belt-and-suspenders.
+        for player in players:
+            if (
+                player.position in _KDEF_POSITIONS
+                and player.team_abbr
+                and player.team_abbr != "FA"
+            ):
+                value_kdef(player)
+                session.add(player)
+                valued_player_ids.add(player.id)
+                processed += 1
+                updated   += 1
 
         for pos, group in pos_groups.items():
             ctx = par_context[pos]

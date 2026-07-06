@@ -745,21 +745,30 @@ class LiveDraftEngine:
             )
 
     async def _get_top_available(self) -> list[dict]:
-        """Top available skill players by adp_rank, excluding drafted players.
+        """Top available players by adp_rank, excluding drafted players.
 
         Excludes by NAME (state.is_drafted), since the snake pick id is a
-        Yahoo-internal id that doesn't match our DB yahoo_player_id. Pulls 60 so
-        enough remain after removing already-drafted players for a top-15 list.
+        Yahoo-internal id that doesn't match our DB yahoo_player_id.
+
+        K/DEF are included (they carry adp_rank from the T1 static pass, ranking
+        near the bottom at ~460+), so a kicker/defense surfaces in the LATE rounds
+        instead of the list going empty when only K/DEF remain. We can't cap the
+        query with a small LIMIT: the old limit(60) only ever fetched ranks 1-60,
+        so the late-round available pool (and K/DEF specifically) was never
+        reachable once those were drafted. Instead we scan by ascending rank and
+        stop once TOP_N undrafted are collected — the fetch is bounded by the
+        ranked pool (~720) and the scan short-circuits, so early rounds cost the
+        same and late rounds walk deeper until the real best-available appear.
         """
+        TOP_N = 20
         async with self._db_session_factory() as session:
             stmt = (
                 select(Player)
                 .where(
                     Player.adp_rank.isnot(None),
-                    Player.position.in_(["QB", "RB", "WR", "TE"]),
+                    Player.position.in_(["QB", "RB", "WR", "TE", "K", "DEF"]),
                 )
                 .order_by(Player.adp_rank.asc())
-                .limit(60)
             )
             result = await session.execute(stmt)
             players = result.scalars().all()
@@ -781,6 +790,8 @@ class LiveDraftEngine:
                 "snake_flag": p.snake_flag,
                 "tier": p.tier,
             })
+            if len(out) >= TOP_N:
+                break
         return out
 
     def _format_my_roster(self, roster: list[dict]) -> str:
