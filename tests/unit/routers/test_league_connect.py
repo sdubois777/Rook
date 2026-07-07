@@ -400,3 +400,118 @@ async def test_finished_league_still_deletable():
         assert resp.json()["status"] == "deleted"
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# ESPN connect FROM THE EXTENSION (X-Draft-Token auth) — PR 1 of 2
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_espn_extension_connect_valid_token_converges_with_manual():
+    """Valid draft token + valid cookies → same end state as the manual JWT path:
+    validate → upsert → add_league (detected draft type) → sync."""
+    user = _make_user()
+    from backend.core.dependencies import get_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+
+    mock_api = AsyncMock()
+    mock_api.validate_cookies.return_value = True
+    mock_api.detect_draft_type.return_value = ("snake", None)
+    mock_league = _make_league(user.id, platform="espn")
+
+    user_repo = MagicMock()
+    user_repo.get_by_draft_token = AsyncMock(return_value=user)
+
+    with patch("backend.repositories.user_repo.UserRepository", return_value=user_repo), patch(
+        "backend.integrations.espn_league_api.ESPNLeagueAPI", return_value=mock_api
+    ), patch(
+        "backend.routers.league_connect.CredentialRepository"
+    ) as MockCredRepo, patch(
+        "backend.routers.league_connect.LeagueRepository"
+    ) as MockLeagueRepo, patch("backend.services.feature_service.FeatureService"), patch(
+        "backend.services.league_sync.LeagueSyncService"
+    ) as MockSync:
+        MockCredRepo.return_value.upsert_espn = AsyncMock()
+        MockLeagueRepo.return_value.count_active = AsyncMock(return_value=0)
+        mock_service = AsyncMock()
+        mock_service.add_league = AsyncMock(return_value=mock_league)
+        with patch("backend.services.league_service.LeagueService", return_value=mock_service):
+            MockSync.return_value.sync_league = AsyncMock(
+                return_value={"picks_imported": 3, "seasons_imported": 1,
+                              "managers_found": 12, "free_agents_cached": 0}
+            )
+            try:
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                    resp = await ac.post(
+                        "/api/leagues/connect/espn/extension",
+                        json={"league_id": "999", "espn_s2": "cookieval", "swid": "{SWID}"},
+                        headers={"X-Draft-Token": "valid-token"},
+                    )
+                assert resp.status_code == 200
+                body = resp.json()
+                assert body["status"] == "connected"
+                assert body["picks_imported"] == 3
+                # resolved via the draft token (NOT get_current_user)
+                user_repo.get_by_draft_token.assert_awaited_once_with("valid-token")
+                # same end state: credential upserted + league created with detected type
+                MockCredRepo.return_value.upsert_espn.assert_awaited_once()
+                assert mock_service.add_league.call_args[1]["draft_type"] == "snake"
+                # cookie values never echoed back
+                assert "cookieval" not in resp.text
+            finally:
+                app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_espn_extension_connect_invalid_token_401():
+    from backend.core.dependencies import get_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    user_repo = MagicMock()
+    user_repo.get_by_draft_token = AsyncMock(return_value=None)
+    with patch("backend.repositories.user_repo.UserRepository", return_value=user_repo):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/leagues/connect/espn/extension",
+                    json={"league_id": "999", "espn_s2": "x", "swid": "{SWID}"},
+                    headers={"X-Draft-Token": "bad-token"},
+                )
+            assert resp.status_code == 401
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_espn_extension_connect_bad_cookies_422_no_secret_echo():
+    user = _make_user()
+    from backend.core.dependencies import get_db
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    user_repo = MagicMock()
+    user_repo.get_by_draft_token = AsyncMock(return_value=user)
+    mock_api = AsyncMock()
+    mock_api.validate_cookies.side_effect = RuntimeError("ESPN 401")
+    with patch("backend.repositories.user_repo.UserRepository", return_value=user_repo), patch(
+        "backend.integrations.espn_league_api.ESPNLeagueAPI", return_value=mock_api
+    ):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/leagues/connect/espn/extension",
+                    json={"league_id": "999", "espn_s2": "supersecret", "swid": "{SWID}"},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 422
+            assert "supersecret" not in resp.text  # never echo cookie values
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_espn_extension_connect_requires_draft_token_header():
+    # No X-Draft-Token → 422 (missing required header), not a silent success.
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/api/leagues/connect/espn/extension",
+            json={"league_id": "999", "espn_s2": "x", "swid": "{SWID}"},
+        )
+    assert resp.status_code == 422

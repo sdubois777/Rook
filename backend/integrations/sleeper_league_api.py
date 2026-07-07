@@ -32,6 +32,21 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
             resp.raise_for_status()
             return resp.json()
 
+    async def get_roster_slots(self) -> dict | None:
+        """Sleeper `/v1/league/{id}.roster_positions` (unauthenticated) → canonical
+        {slot_type: count}. The array IS the token list; bench = explicit BN count.
+        VERIFIED LIVE in recon. None on any failure → default lineup."""
+        from backend.services.roster_slots import slots_from_sleeper_league
+        try:
+            lg = await self._get(f"/league/{self._league.league_id}")
+        except Exception:
+            return None
+        if not isinstance(lg, dict):
+            return None
+        return slots_from_sleeper_league(
+            lg.get("roster_positions"), league=str(self._league.league_id)
+        )
+
     async def get_rosters(self) -> list[TeamRoster]:
         rosters = await self._get(
             f"/league/{self._league.league_id}/rosters"
