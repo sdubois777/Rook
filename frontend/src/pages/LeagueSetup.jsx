@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient, API_BASE } from '../api/client'
 import { fetchYahooConnectUrl } from '../api/league'
 import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
-import { getBookmarkletCode } from '../utils/espnBookmarklet'
 
 // Single source of truth for the API base (includes /api) — see api/client.js.
 const API_URL = API_BASE
@@ -353,23 +352,10 @@ function EspnConnect({ onConnected, onBack }) {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold mb-2">Connect Your ESPN League</h2>
+      <h2 className="text-2xl font-bold mb-2">Connect ESPN via the Rook extension</h2>
       <p className="text-gray-400 mb-6">
-        Make sure you're logged in to ESPN Fantasy, then drag the button below to your bookmarks bar.
-        Visit your ESPN league page and click the bookmark.
-      </p>
-
-      <a
-        href={getBookmarkletCode(API_URL)}
-        className="bg-orange-600 hover:bg-orange-500 text-white font-medium px-6 py-3 rounded-lg inline-flex items-center gap-2 transition-colors cursor-grab"
-        onClick={(e) => e.preventDefault()}
-        draggable
-      >
-        Rook ESPN Connect
-      </a>
-
-      <p className="text-sm text-gray-500 mt-3 mb-6">
-        Drag this to your bookmarks bar, then click it on your ESPN Fantasy league page.
+        Install the Rook browser extension and open your ESPN Fantasy league page while
+        logged in. The extension connects your league automatically — no cookies to copy.
       </p>
 
       <button

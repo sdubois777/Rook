@@ -12,38 +12,44 @@ if (document.readyState === 'loading') {
 }
 
 async function run() {
-  extractAndSendCookies()
+  await connectEspnLeague()
   await triggerPassiveSync('espn')
 }
 
-async function extractAndSendCookies() {
-  const cookies = document.cookie.split(';').reduce((acc, c) => {
-    const [k, v] = c.trim().split('=')
-    if (k) acc[k.trim()] = v || ''
-    return acc
-  }, {})
-
-  const espn_s2 = cookies['espn_s2']
-  const swid = cookies['SWID']
-
-  if (!espn_s2 || !swid) return
-
+/**
+ * Supply the league id from the URL and let the service worker read the ESPN
+ * cookies (httpOnly-capable) and relay them. This script never touches cookie
+ * values — the old document.cookie read couldn't see httpOnly espn_s2/SWID,
+ * which is exactly what made the old capture unreliable.
+ */
+async function connectEspnLeague() {
   const leagueMatch = window.location.href.match(
     /leagueId=(\d+)|\/football\/.*?\/(\d+)/
   )
   const league_id = leagueMatch?.[1] || leagueMatch?.[2] || null
+  if (!league_id) return
 
+  let result
   try {
-    await browser.runtime.sendMessage({
+    result = await browser.runtime.sendMessage({
       type: MESSAGE_TYPES.ESPN_COOKIES,
-      payload: { espn_s2, swid, league_id },
+      payload: { league_id },
     })
   } catch (err) {
-    console.debug('Rook: ESPN cookie relay failed', err)
+    console.debug('Rook: ESPN connect relay failed', err)
+    return
   }
 
-  await browser.storage.local.set({
-    [STORAGE_KEYS.ESPN_CONNECTED]: true,
-    [STORAGE_KEYS.ESPN_LEAGUE_ID]: league_id,
-  })
+  if (result?.ok) {
+    await browser.storage.local.set({
+      [STORAGE_KEYS.ESPN_CONNECTED]: true,
+      [STORAGE_KEYS.ESPN_LEAGUE_ID]: league_id,
+      [STORAGE_KEYS.ESPN_ERROR]: '',
+    })
+  } else {
+    await browser.storage.local.set({
+      [STORAGE_KEYS.ESPN_CONNECTED]: false,
+      [STORAGE_KEYS.ESPN_ERROR]: result?.error || 'connect_failed',
+    })
+  }
 }
