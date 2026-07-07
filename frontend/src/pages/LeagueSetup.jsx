@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient, API_BASE } from '../api/client'
-import { fetchYahooConnectUrl } from '../api/league'
+import { fetchYahooConnectUrl, fetchUserLeagues } from '../api/league'
 import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
 
 // Single source of truth for the API base (includes /api) — see api/client.js.
@@ -324,6 +324,11 @@ function YahooConfirmStep({ league, onImport, onBack }) {
   )
 }
 
+// How often the ESPN Connect step polls /account/leagues for a new connection,
+// and how long before it gives up and points at the manual fallback.
+const ESPN_POLL_MS = 3000
+const ESPN_POLL_TIMEOUT_MS = 90000
+
 function EspnConnect({ onConnected, onBack }) {
   const [showManual, setShowManual] = useState(false)
   const [espnS2, setEspnS2] = useState('')
@@ -331,6 +336,96 @@ function EspnConnect({ onConnected, onBack }) {
   const [leagueId, setLeagueId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Extension-connect detection: the extension pairs + relays cookies + syncs the
+  // league out-of-band (backend creates the UserLeague and fully imports it), so
+  // the wizard learns of success by polling the same source of truth the Account
+  // page uses (/account/leagues). Baseline is captured once on mount so a user who
+  // ALREADY has an ESPN league isn't instantly advanced — we advance only on the
+  // transition to a NEW league_id, or an existing ESPN league's last_synced moving
+  // (a re-connect of the same league). Because the league is already imported,
+  // "advance" = the shared done screen via onConnected (step 4), NOT re-running
+  // Select/Confirm — identical to the Sleeper/manual-ESPN success path.
+  const [waiting, setWaiting] = useState(true)
+  const [timedOut, setTimedOut] = useState(false)
+  const [pollNonce, setPollNonce] = useState(0)
+  const baselineRef = useRef(null)
+  const advancedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let intervalId
+    let timeoutId
+
+    const espnOf = (ls) => (ls || []).filter((l) => l.platform === 'espn')
+    const captureBaseline = (ls) =>
+      new Map(espnOf(ls).map((l) => [l.league_id, l.last_synced || null]))
+    const detectNew = (ls) => {
+      const base = baselineRef.current
+      if (!base) return null
+      for (const l of espnOf(ls)) {
+        const prev = base.get(l.league_id)
+        if (prev === undefined) return l // brand-new league
+        if (l.last_synced && l.last_synced !== prev) return l // re-synced existing
+      }
+      return null
+    }
+    const stop = () => {
+      clearInterval(intervalId)
+      clearTimeout(timeoutId)
+    }
+    const advance = (l) => {
+      if (advancedRef.current) return
+      advancedRef.current = true
+      stop()
+      onConnected({
+        platform: 'espn',
+        league_id: l.league_id,
+        league_name: l.league_name || l.league_id,
+      })
+    }
+    const poll = async () => {
+      try {
+        const ls = await fetchUserLeagues()
+        const found = detectNew(ls)
+        if (found && !cancelled) advance(found)
+      } catch {
+        // Transient — keep polling until the timeout fires.
+      }
+    }
+
+    const start = async () => {
+      if (baselineRef.current === null) {
+        try {
+          baselineRef.current = captureBaseline(await fetchUserLeagues())
+        } catch {
+          baselineRef.current = new Map() // treat as none connected yet
+        }
+      }
+      if (cancelled || advancedRef.current) return
+      await poll() // catch a connect that landed between mount and first tick
+      if (cancelled || advancedRef.current) return
+      intervalId = setInterval(poll, ESPN_POLL_MS)
+      timeoutId = setTimeout(() => {
+        if (cancelled) return
+        clearInterval(intervalId)
+        setTimedOut(true)
+        setWaiting(false)
+      }, ESPN_POLL_TIMEOUT_MS)
+    }
+    start()
+
+    return () => {
+      cancelled = true
+      stop()
+    }
+  }, [pollNonce]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleRetry = () => {
+    setTimedOut(false)
+    setWaiting(true)
+    setPollNonce((n) => n + 1) // re-arm polling; baseline (mount) is preserved
+  }
 
   const handleManualSubmit = async (e) => {
     e.preventDefault()
@@ -342,6 +437,7 @@ function EspnConnect({ onConnected, onBack }) {
         espn_s2: espnS2,
         swid,
       })
+      advancedRef.current = true // stop the poller from also advancing
       onConnected(resp.data)
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to connect ESPN league')
@@ -357,6 +453,31 @@ function EspnConnect({ onConnected, onBack }) {
         Install the Rook browser extension and open your ESPN Fantasy league page while
         logged in. The extension connects your league automatically — no cookies to copy.
       </p>
+
+      {waiting && (
+        <div className="flex items-center gap-3 bg-gray-800 rounded-lg px-4 py-3 mb-6 max-w-md">
+          <span className="inline-block w-4 h-4 border-2 border-gray-500 border-t-orange-500 rounded-full animate-spin" />
+          <span className="text-sm text-gray-300">
+            Waiting for the extension to connect your league…
+          </span>
+        </div>
+      )}
+
+      {timedOut && (
+        <div className="bg-gray-800 rounded-lg px-4 py-3 mb-6 max-w-md">
+          <p className="text-sm text-gray-300 mb-3">
+            Still waiting. Make sure the Rook extension is installed and you've opened
+            your ESPN Fantasy league page while logged in — then retry, or enter your
+            cookies manually below.
+          </p>
+          <button
+            onClick={handleRetry}
+            className="bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            Keep waiting
+          </button>
+        </div>
+      )}
 
       <button
         onClick={() => setShowManual(!showManual)}
@@ -494,6 +615,7 @@ function ConfirmStep({ result }) {
       <p className="text-gray-400 mb-6">Your league has been imported successfully.</p>
 
       <div className="bg-gray-800 rounded-xl p-6 space-y-3 max-w-md mb-8">
+        {result.league_name && <SummaryRow label="League" value={result.league_name} />}
         <SummaryRow label="Platform" value={result.platform} />
         <SummaryRow label="Draft picks imported" value={result.picks_imported} />
         <SummaryRow label="Seasons imported" value={result.seasons_imported} />
