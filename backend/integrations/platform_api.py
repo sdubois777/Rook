@@ -70,3 +70,10 @@ class LeaguePlatformAPI(ABC):
     @abstractmethod
     async def get_standings(self) -> list[TeamRoster]:
         """Current standings with wins/losses/points."""
+
+    async def get_roster_slots(self) -> dict | None:
+        """Per-league starting-lineup config as the canonical {slot_type: count}
+        (T3), or None to fall back to the default lineup. Default: None (platforms
+        that carry it override — Sleeper/ESPN). Yahoo populates it via
+        get_league_settings on the settings-sync path instead."""
+        return None

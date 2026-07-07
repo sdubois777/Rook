@@ -79,6 +79,19 @@ _YAHOO_MAP = {
 _PLATFORM_MAPS = {"sleeper": _SLEEPER_MAP, "espn": _ESPN_MAP, "yahoo": _YAHOO_MAP}
 
 
+def resolve_roster_slots(synced: dict | None, live: dict | None = None) -> dict | None:
+    """Precedence contract (encoded now, even though the draft-room transport is
+    deferred): a SYNCED config is AUTHORITATIVE — the live draft-room parse only
+    FILLS a null (never overrides a synced value). Absence of both → None → the
+    consumers fall back to the default lineup. A re-sync overwrites via the sync
+    path itself (idempotent); this only governs sync-vs-live at read/merge time.
+
+    The future draft-room transport MUST route through this (or its rule) before
+    persisting a live parse: `resolve_roster_slots(existing_synced, live_parse)`.
+    """
+    return synced if synced else (live or None)
+
+
 def normalize(raw_tokens: list[str], *, platform: str, league: str = "?") -> dict[str, int] | None:
     """Ordered raw slot tokens → canonical {slot_type: count}, or None on any
     unrecognized token (whole-league fallback). Known-but-unmodeled tokens (IDP)
@@ -164,5 +177,116 @@ def slots_from_yahoo(slot_tokens: list[str], *, league: str = "?", total_check: 
             "read, falling back to default lineup for the WHOLE league",
             league, sum(counts.values()), total_check,
         )
+        return None
+    return counts
+
+
+# ===========================================================================
+# LEAGUE-SETTINGS adapters (the SYNC path) — league already known, no draft-token
+# resolution. Reuse the same normalizer + guard; only the pre-normalization shape
+# differs from the #208 draft-room adapters above.
+# ===========================================================================
+
+def slots_from_sleeper_league(roster_positions, *, league: str = "?") -> dict[str, int] | None:
+    """Sleeper `/v1/league/{id}.roster_positions` — an ORDERED ARRAY of slot
+    strings (['QB','RB','RB','WR','WR','TE','FLEX','FLEX','K','BN',...]) that IS
+    already the token list. Bench is the EXPLICIT 'BN' count here (contrast the
+    #208 draft-frame adapter, which derives bench from rounds−Σstarters). VERIFIED
+    LIVE against a real league in recon."""
+    if not isinstance(roster_positions, (list, tuple)) or not roster_positions:
+        return None
+    return normalize(list(roster_positions), platform="sleeper", league=league)
+
+
+def slots_from_yahoo_roster_positions(roster_positions, *, league: str = "?") -> dict[str, int] | None:
+    """Yahoo `settings.roster_positions` from the league-SETTINGS response.
+
+    PRESUMED nesting `[{roster_position: {position, count}}, ...]` — UNCONFIRMED
+    (the repo mock omits it). Handles both the nested shape AND a flatter
+    `[{position, count}]` variant defensively; an unknown position STRING trips
+    the normalizer guard (loud-warn + whole-league fallback), so a wrong shape
+    FAILS SAFE. Expands position × count → the token list → normalize(yahoo).
+
+    >>> REAL-SAMPLE ASSERTION STUB: once a real get_league_settings response is
+        captured, add a fixture test asserting this parses it to the right counts.
+    """
+    if not isinstance(roster_positions, (list, tuple)) or not roster_positions:
+        return None
+    tokens: list[str] = []
+    for entry in roster_positions:
+        if not isinstance(entry, dict):
+            logger.warning("roster_slots: Yahoo league %s roster_positions entry not a dict %r "
+                           "— whole-league fallback", league, entry)
+            return None
+        rp = entry.get("roster_position", entry)  # nested or flat
+        if not isinstance(rp, dict):
+            logger.warning("roster_slots: Yahoo league %s roster_position not a dict %r "
+                           "— whole-league fallback", league, rp)
+            return None
+        pos = rp.get("position")
+        try:
+            count = int(rp.get("count", 0))
+        except (TypeError, ValueError):
+            count = 0
+        if not pos or count <= 0:
+            continue
+        tokens.extend([str(pos)] * count)
+    if not tokens:
+        return None
+    return normalize(tokens, platform="yahoo", league=league)
+
+
+# ESPN LINEUP-SLOT id enum (NOT _ESPN_POS, the player-position enum!). PRESUMED
+# from convention — UNCONFIRMED until a real mSettings response is captured. Maps
+# id → CANONICAL directly (ids are not self-describing, so we never route them
+# through the label map). ANY id not listed here is unknown → whole-league
+# fallback (never best-guessed), because a wrong numeric mapping would emit a
+# VALID-but-wrong token that would silently corrupt roster needs.
+_ESPN_LINEUP_SLOT_ID: dict[int, str] = {
+    0: "QB", 2: "RB", 4: "WR", 6: "TE",
+    23: "FLEX", 7: "SUPER_FLEX",   # 7 = OP (offensive player / superflex)
+    16: "DEF",                     # D/ST
+    17: "K",
+    20: "BENCH", 21: "IR",
+}
+
+
+def slots_from_espn_lineup_slots(lineup_slot_counts, *, expected_size: int | None = None, league: str = "?") -> dict[str, int] | None:
+    """ESPN `settings.rosterSettings.lineupSlotCounts` = {slot_id: count}.
+
+    DEFENSIVE + SAMPLE-GATED. Numeric ids are NOT self-describing, so a wrong
+    id→slot mapping would emit a valid-but-wrong token that does NOT trip the
+    string guard. Therefore:
+      (a) map ONLY the ids in _ESPN_LINEUP_SLOT_ID; ANY other id → loud-warn +
+          whole-league fallback (never a best guess);
+      (b) if `expected_size` is given, Σ(counts) must equal it → else fallback.
+    Until a real mSettings confirms the enum, ESPN leagues are EXPECTED to fall
+    back to defaults (safe) — this code lands now; the sample activates it.
+    """
+    if not isinstance(lineup_slot_counts, dict) or not lineup_slot_counts:
+        return None
+    counts: dict[str, int] = {}
+    for raw_id, raw_cnt in lineup_slot_counts.items():
+        try:
+            sid, cnt = int(raw_id), int(raw_cnt)
+        except (TypeError, ValueError):
+            logger.warning("roster_slots: ESPN league %s non-numeric lineupSlot entry %r=%r "
+                           "— whole-league fallback", league, raw_id, raw_cnt)
+            return None
+        if cnt <= 0:
+            continue
+        canon = _ESPN_LINEUP_SLOT_ID.get(sid)
+        if canon is None:
+            logger.warning("roster_slots: ESPN league %s UNKNOWN lineup slot id %d — "
+                           "enum unconfirmed, falling back to default lineup for the "
+                           "WHOLE league (id is not self-describing, never guessed)",
+                           league, sid)
+            return None
+        counts[canon] = counts.get(canon, 0) + cnt
+    if not counts:
+        return None
+    if expected_size is not None and sum(counts.values()) != expected_size:
+        logger.warning("roster_slots: ESPN league %s slot total %d != expected roster "
+                       "size %d — whole-league fallback", league, sum(counts.values()), expected_size)
         return None
     return counts
