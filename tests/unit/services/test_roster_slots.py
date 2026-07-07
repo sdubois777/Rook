@@ -180,3 +180,133 @@ def test_lineup_rules_from_real_slots_offense_only():
 def test_lineup_rules_superflex_admits_qb():
     r = lineup_rules_from_slots({"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "SUPER_FLEX": 1})
     assert r.flex_count == 2 and r.flex_positions == ("QB", "RB", "WR", "TE")
+
+
+# ===========================================================================
+# SYNC-PATH league-settings adapters (T3 transport)
+# ===========================================================================
+
+from backend.services.roster_slots import (  # noqa: E402
+    resolve_roster_slots,
+    slots_from_espn_lineup_slots,
+    slots_from_sleeper_league,
+    slots_from_yahoo_roster_positions,
+)
+
+
+# ---- Sleeper league adapter (VERIFIED LIVE in recon) ----------------------
+
+def test_sleeper_league_no_def_real_shape():
+    # Real captured league: K but no DEF, 5 bench, FLEX×2 (explicit BN count).
+    got = slots_from_sleeper_league(
+        ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "BN", "BN", "BN", "BN", "BN"]
+    )
+    assert got == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "BENCH": 5}
+    assert "DEF" not in got
+
+
+def test_sleeper_league_superflex_and_idp_real_tokens():
+    # Real captured tokens: SUPER_FLEX + IDP_FLEX (→ UNSUPPORTED bucket).
+    got = slots_from_sleeper_league(["QB", "SUPER_FLEX", "IDP_FLEX", "IDP_FLEX", "BN"])
+    assert got["SUPER_FLEX"] == 1 and got["UNSUPPORTED"] == 2
+
+
+def test_sleeper_league_empty_or_bad_none():
+    assert slots_from_sleeper_league([]) is None
+    assert slots_from_sleeper_league(None) is None
+
+
+# ---- Yahoo league-settings adapter (PRESUMED nesting; fails safe) ---------
+
+def test_yahoo_roster_positions_nested_presumed_shape():
+    nested = [
+        {"roster_position": {"position": "QB", "count": 1}},
+        {"roster_position": {"position": "WR", "count": 2}},
+        {"roster_position": {"position": "RB", "count": 2}},
+        {"roster_position": {"position": "TE", "count": 1}},
+        {"roster_position": {"position": "W/R/T", "count": 1}},
+        {"roster_position": {"position": "K", "count": 1}},
+        {"roster_position": {"position": "DEF", "count": 1}},
+        {"roster_position": {"position": "BN", "count": 6}},
+    ]
+    assert slots_from_yahoo_roster_positions(nested) == {
+        "QB": 1, "WR": 2, "RB": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 6,
+    }
+
+
+def test_yahoo_roster_positions_flat_variant():
+    flat = [{"position": "QB", "count": 1}, {"position": "W/R/T", "count": 1}, {"position": "RB", "count": 2}]
+    assert slots_from_yahoo_roster_positions(flat) == {"QB": 1, "FLEX": 1, "RB": 2}
+
+
+def test_yahoo_roster_positions_unknown_string_fails_safe():
+    # A wrong shape/position STRING trips the guard → whole-league fallback.
+    assert slots_from_yahoo_roster_positions([{"roster_position": {"position": "ZZZ", "count": 1}}]) is None
+
+
+@pytest.mark.skip(reason="STUB: fill once a real Yahoo get_league_settings response is captured")
+def test_yahoo_roster_positions_real_sample():
+    # When a real /settings response lands: parse settings_data['roster_positions']
+    # and assert the exact canonical counts against the known league lineup.
+    raise NotImplementedError
+
+
+# ---- ESPN league-settings adapter (PRESUMED enum; DEFENSIVE, sample-gated) -
+
+def test_espn_lineup_slots_standard_presumed_enum():
+    got = slots_from_espn_lineup_slots({0: 1, 2: 2, 4: 2, 6: 1, 23: 1, 16: 1, 17: 1, 20: 7})
+    assert got == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "DEF": 1, "K": 1, "BENCH": 7}
+
+
+def test_espn_lineup_slots_superflex_op_id_7():
+    assert slots_from_espn_lineup_slots({0: 1, 7: 1, 2: 2})["SUPER_FLEX"] == 1
+
+
+def test_espn_lineup_slots_unknown_id_falls_back_never_guesses():
+    # Numeric ids are not self-describing — an unmapped id → whole-league fallback
+    # (never a best guess that would silently corrupt roster needs).
+    assert slots_from_espn_lineup_slots({0: 1, 8: 2}) is None  # 8 = an IDP id, unmapped
+
+
+def test_espn_lineup_slots_checksum_mismatch_falls_back():
+    std = {0: 1, 2: 2, 4: 2, 6: 1, 23: 1, 16: 1, 17: 1, 20: 7}  # sums to 16
+    assert slots_from_espn_lineup_slots(std, expected_size=16) is not None
+    assert slots_from_espn_lineup_slots(std, expected_size=99) is None
+
+
+@pytest.mark.skip(reason="STUB: fill once a real ESPN mSettings response confirms the slot-id enum")
+def test_espn_lineup_slots_real_sample():
+    raise NotImplementedError
+
+
+# ---- precedence (sync authoritative; live fills null only) -----------------
+
+def test_precedence_synced_authoritative():
+    assert resolve_roster_slots({"QB": 1}, {"QB": 2}) == {"QB": 1}   # synced wins
+    assert resolve_roster_slots(None, {"QB": 2}) == {"QB": 2}        # live fills null
+    assert resolve_roster_slots(None, None) is None                 # → defaults
+    assert resolve_roster_slots({"QB": 1}, None) == {"QB": 1}
+
+
+# ---- platform-API integration (get_roster_slots) --------------------------
+
+@pytest.mark.asyncio
+async def test_sleeper_api_get_roster_slots():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from backend.integrations.sleeper_league_api import SleeperLeagueAPI
+    api = SleeperLeagueAPI(SimpleNamespace(league_id="123", season_year=2025))
+    api._get = AsyncMock(return_value={"roster_positions": ["QB", "RB", "WR", "FLEX", "K", "DEF", "BN"]})
+    assert await api.get_roster_slots() == {"QB": 1, "RB": 1, "WR": 1, "FLEX": 1, "K": 1, "DEF": 1, "BENCH": 1}
+
+
+@pytest.mark.asyncio
+async def test_espn_api_get_roster_slots_and_base_default():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from backend.integrations.espn_league_api import ESPNLeagueAPI
+    from backend.integrations.platform_api import LeaguePlatformAPI
+    assert LeaguePlatformAPI.get_roster_slots.__doc__  # base default exists
+    api = ESPNLeagueAPI(SimpleNamespace(league_id="9", season_year=2025), "s2", "swid")
+    api._get = AsyncMock(return_value={"settings": {"rosterSettings": {"lineupSlotCounts": {"0": 1, "23": 1, "20": 5}}}})
+    assert await api.get_roster_slots() == {"QB": 1, "FLEX": 1, "BENCH": 5}

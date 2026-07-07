@@ -113,6 +113,24 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
     ) -> list[FreeAgent]:
         return []
 
+    async def get_roster_slots(self) -> dict | None:
+        """ESPN `mSettings.settings.rosterSettings.lineupSlotCounts` = {slot_id:
+        count} → canonical {slot_type: count}. DEFENSIVE + SAMPLE-GATED: the
+        slot-id enum is PRESUMED (NOT _ESPN_POS, the player enum) and unconfirmed
+        until a real mSettings is captured, so an unknown id → whole-league
+        fallback. None on any failure → default lineup. Expected to run on defaults
+        for most leagues until a real sample confirms the full enum."""
+        from backend.services.roster_slots import slots_from_espn_lineup_slots
+        try:
+            data = await self._get("mSettings")
+        except Exception:
+            return None
+        roster = (data.get("settings", {}) or {}).get("rosterSettings", {}) or {}
+        counts = roster.get("lineupSlotCounts")
+        if not isinstance(counts, dict):
+            return None
+        return slots_from_espn_lineup_slots(counts, league=str(self._league.league_id))
+
     async def detect_draft_type(self) -> tuple[str, int | None]:
         """Detect auction vs snake from draft pick data.
 
