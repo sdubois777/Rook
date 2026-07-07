@@ -93,10 +93,16 @@ async def build_news_map(
 
     news: dict[str, NewsInfo] = {}
 
-    # 1. DIRECT — a fresh signal on a pool player himself (newest-first: first wins).
+    # 1. DIRECT — a POSITIVE signal on a pool player himself (newest-first: first wins).
+    #    Polarity gate: only DIRECT_POSITIVE_TYPES (breakout/role-up) attach to the
+    #    player's OWN add card. A self injury_flag / practice_limited is SUPPRESSIVE
+    #    on his own card — attaching it would contradict recommending the add, and
+    #    (because recommendations keys inclusion + the rank bonus off news presence)
+    #    would wrongly rescue + up-rank an injured add. The SAME signal_type on a
+    #    STARTER is still handled — as an opportunity for his backup — by path 2 below.
     for sig, _pname, _pteam, _ppos in rows:
         pid = str(sig.player_id) if sig.player_id else None
-        if pid and pid in pool_ids and pid not in news:
+        if pid and pid in pool_ids and pid not in news and sig.signal_type in DIRECT_POSITIVE_TYPES:
             news[pid] = NewsInfo(
                 kind="direct", headline=sig.raw_text or "", signal_type=sig.signal_type,
                 confidence=sig.confidence, source=sig.source,
