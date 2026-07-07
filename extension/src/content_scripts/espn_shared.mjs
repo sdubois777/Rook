@@ -103,6 +103,24 @@ export function resolveMyTeam(root) {
   return me ? me.team : null
 }
 
+/**
+ * Roster/lineup slot LABELS off the ESPN draft-room roster template (T3).
+ * Stable anchor: `div[title="Position"]` — every slot renders its label ALWAYS,
+ * including empties, even mid-draft (fixed template), verified in auction+snake
+ * fixtures. Returns the ordered raw token list (["QB","RB","RB","WR","WR","TE",
+ * "FLEX","D/ST","K","BE",...]); the backend normalizer maps D/ST→DEF, BE→BENCH.
+ * The board grid rows (gridArea.row = slot) are the cross-check, not read here.
+ */
+export function resolveRosterSlots(root) {
+  if (!root) return []
+  return Array.from(root.querySelectorAll('[title="Position"]'))
+    .map((el) => txt(el))
+    // The roster table's first title="Position" cell is the column HEADER "POS"
+    // — drop it; a real slot is never "POS", and leaving it would trip the
+    // backend's unknown-token guard into a whole-league fallback.
+    .filter((t) => /^[A-Za-z/]{1,5}$/.test(t) && t.toUpperCase() !== 'POS')
+}
+
 /** Parse "grid-area: {row} / {col}" off an element's inline style. */
 export function gridArea(el) {
   const m = (el && el.getAttribute('style') || '').match(/grid-area:\s*(\d+)\s*\/\s*(\d+)/)

@@ -71,6 +71,13 @@ class UserLeague(Base):
         JSONB, nullable=True
     )
 
+    # Normalized per-league starting-lineup config {slot_type: count} (T3).
+    # NULL = not fetched → the draft/lineup engines use the default lineup.
+    # Never raw platform data — always the canonical model (backend.services.roster_slots).
+    roster_slots: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )
+
     # Status
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True

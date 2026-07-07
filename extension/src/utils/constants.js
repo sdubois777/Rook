@@ -12,6 +12,7 @@ export const STORAGE_KEYS = {
   CAPTURED_FRAMES: 'captured_frames',
   ESPN_CONNECTED: 'espn_connected',
   ESPN_LEAGUE_ID: 'espn_league_id',
+  ESPN_ERROR: 'espn_error',
   YAHOO_SYNCED_AT: 'yahoo_synced_at',
   SLEEPER_SYNCED_AT: 'sleeper_synced_at',
   ACTIVE_DRAFT: 'active_draft',

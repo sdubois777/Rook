@@ -108,15 +108,35 @@ async function showMainView() {
 }
 
 /* ── Platform status ── */
+
+// ESPN connect error codes (from the service worker) → user-facing hint.
+const ESPN_ERROR_HINTS = {
+  no_draft_token: 'Paste your draft token above.',
+  invalid_draft_token: 'Re-paste your draft token from the Account page.',
+  no_espn_cookies: 'Log in to ESPN, then reload your league page.',
+  invalid_espn_cookies: 'Log in to ESPN, then reload your league page.',
+}
+
+function espnErrorHint(code) {
+  if (!code) return ''
+  return ESPN_ERROR_HINTS[code] || 'ESPN connect failed — reload your league page.'
+}
+
 async function getPlatformStatus() {
   const keys = await browser.storage.local.get([
     STORAGE_KEYS.ESPN_CONNECTED,
+    STORAGE_KEYS.ESPN_ERROR,
     STORAGE_KEYS.YAHOO_SYNCED_AT,
     STORAGE_KEYS.SLEEPER_SYNCED_AT,
   ])
+  const espnConnected = !!keys[STORAGE_KEYS.ESPN_CONNECTED]
   return [
     { name: 'Yahoo', connected: !!keys[STORAGE_KEYS.YAHOO_SYNCED_AT] },
-    { name: 'ESPN', connected: !!keys[STORAGE_KEYS.ESPN_CONNECTED] },
+    {
+      name: 'ESPN',
+      connected: espnConnected,
+      hint: espnConnected ? '' : espnErrorHint(keys[STORAGE_KEYS.ESPN_ERROR]),
+    },
     { name: 'Sleeper', connected: !!keys[STORAGE_KEYS.SLEEPER_SYNCED_AT] },
   ]
 }
@@ -131,6 +151,7 @@ function platformRows(platforms) {
         ${p.connected ? 'Synced' : 'Not connected'}
       </span>
     </div>
+    ${p.hint ? `<div class="hint">${p.hint}</div>` : ''}
   `
     )
     .join('')

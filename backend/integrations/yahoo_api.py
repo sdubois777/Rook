@@ -856,6 +856,15 @@ async def get_league_settings(
     waiver_rule = str(settings_data.get("waiver_type", "")).lower()
     uses_faab = "faab" in waiver_rule or waiver_rule == "2"
 
+    # Per-league lineup (T3): roster_positions is ALREADY in this /settings
+    # response — stop discarding it. Normalize to the canonical model; a wrong/
+    # unexpected shape trips the guard → None → default lineup (fails safe).
+    from backend.services.roster_slots import slots_from_yahoo_roster_positions
+
+    roster_slots = slots_from_yahoo_roster_positions(
+        settings_data.get("roster_positions"), league=str(league_key)
+    )
+
     return {
         "name": league_meta.get("name", ""),
         "num_teams": int(league_meta.get("num_teams", 12)),
@@ -868,6 +877,7 @@ async def get_league_settings(
             settings_data.get("playoff_start_week", 15)
         ),
         "uses_faab": uses_faab,
+        "roster_slots": roster_slots,  # canonical {slot: count} or None (→ defaults)
     }
 
 

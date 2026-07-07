@@ -2,7 +2,8 @@
 League connect router — connect and sync leagues from Yahoo, ESPN, Sleeper.
 
 POST   /leagues/connect/yahoo           — connect Yahoo league
-POST   /leagues/connect/espn            — connect ESPN league (manual cookies)
+POST   /leagues/connect/espn            — connect ESPN league (manual cookies, JWT)
+POST   /leagues/connect/espn/extension  — connect ESPN league from the extension (X-Draft-Token)
 POST   /leagues/connect/sleeper         — connect Sleeper league
 GET    /leagues/connect/espn/callback   — ESPN bookmarklet callback
 POST   /leagues/{id}/sync              — re-sync a connected league
@@ -14,7 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -236,6 +237,50 @@ async def connect_sleeper_league(
     return {"status": "connected", "league_id": str(league.id), **summary}
 
 
+async def _espn_persist_and_sync(user, *, league_id, espn_s2, swid, target_season, api, db):
+    """Shared ESPN connect tail (AFTER cookie validation): draft-type detect,
+    encrypted credential upsert, tier check, UserLeague create, sync. Used by BOTH
+    the manual (Clerk JWT) and the extension (X-Draft-Token) endpoints so the two
+    converge on the identical end state. Cookie values are never logged here."""
+    from backend.services.feature_service import FeatureService
+    from backend.services.league_service import LeagueService
+    from backend.services.league_sync import LeagueSyncService
+    from backend.utils.seasons import get_current_season
+
+    # Detect draft type from actual draft data
+    draft_type, budget = await api.detect_draft_type()
+
+    # Store cookies (Fernet-encrypted, unique per (user, platform))
+    repo = CredentialRepository(db)
+    await repo.upsert_espn(user_id=user.id, espn_s2=espn_s2, swid=swid)
+
+    # Check tier limits
+    league_repo = LeagueRepository(db)
+    current_count = await league_repo.count_active(user.id)
+    FeatureService.can_add_league(user, current_count)
+
+    # Create league record
+    is_active = target_season == get_current_season()
+    service = LeagueService(league_repo, LeagueAuctionHistoryRepository(db))
+    league = await service.add_league(
+        user_id=user.id,
+        platform="espn",
+        league_id=league_id,
+        season_year=target_season,
+        team_count=12,
+        draft_type=draft_type,
+        scoring="ppr",
+        budget=budget or 200,
+        is_active=is_active,
+    )
+
+    # Sync
+    sync_service = LeagueSyncService(db, user.id)
+    summary = await sync_service.sync_league(league.id)
+
+    return {"status": "connected", "league_id": str(league.id), **summary}
+
+
 @router.post("/connect/espn")
 async def connect_espn_league(
     body: ConnectEspnRequest,
@@ -244,9 +289,6 @@ async def connect_espn_league(
 ):
     """Connect ESPN league with manual cookie entry."""
     from backend.integrations.espn_league_api import ESPNLeagueAPI
-    from backend.services.feature_service import FeatureService
-    from backend.services.league_service import LeagueService
-    from backend.services.league_sync import LeagueSyncService
     from backend.utils.seasons import get_current_season
     from backend.models.user_league import UserLeague
 
@@ -262,47 +304,69 @@ async def connect_espn_league(
         draft_type="auction",
         scoring="ppr",
     )
-    api = ESPNLeagueAPI(
-        league=mock_league, espn_s2=body.espn_s2, swid=body.swid
-    )
+    api = ESPNLeagueAPI(league=mock_league, espn_s2=body.espn_s2, swid=body.swid)
     await api.validate_cookies()
 
-    # Detect draft type from actual draft data
-    draft_type, budget = await api.detect_draft_type()
-
-    # Store cookies
-    repo = CredentialRepository(db)
-    await repo.upsert_espn(
-        user_id=user.id, espn_s2=body.espn_s2, swid=body.swid
+    return await _espn_persist_and_sync(
+        user, league_id=body.league_id, espn_s2=body.espn_s2, swid=body.swid,
+        target_season=target_season, api=api, db=db,
     )
 
-    # Check tier limits
-    league_repo = LeagueRepository(db)
-    current_count = await league_repo.count_active(user.id)
-    FeatureService.can_add_league(user, current_count)
 
-    # Create league record
-    is_active = target_season == get_current_season()
-    service = LeagueService(
-        league_repo, LeagueAuctionHistoryRepository(db)
+@router.post("/connect/espn/extension")
+async def connect_espn_from_extension(
+    body: ConnectEspnRequest,
+    x_draft_token: str = Header(..., alias="X-Draft-Token"),
+    db=Depends(get_db),
+):
+    """Connect an ESPN league from the browser EXTENSION.
+
+    Authenticated via X-Draft-Token → UserRepository.get_by_draft_token (the SAME
+    channel passive sync uses), NOT Clerk JWT — the extension can't carry a JWT.
+    Same payload ({league_id, espn_s2, swid, season?}) and the SAME end state as
+    the manual (JWT) path, so extension and manual converge. Cookie VALUES are
+    never logged (presence/length only). Backward-compatible: a brand-new route;
+    the existing JWT bookmarklet/callback + manual paths are untouched.
+    """
+    from backend.integrations.espn_league_api import ESPNLeagueAPI
+    from backend.repositories.user_repo import UserRepository
+    from backend.utils.seasons import get_current_season
+    from backend.models.user_league import UserLeague
+
+    user = await UserRepository(db).get_by_draft_token(x_draft_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired draft token")
+
+    # Never log cookie values — presence/length only.
+    logger.info(
+        "ESPN extension connect: user=%s league_id=%s espn_s2_len=%d swid_present=%s",
+        user.id, body.league_id, len(body.espn_s2 or ""), bool(body.swid),
     )
-    league = await service.add_league(
-        user_id=user.id,
-        platform="espn",
+
+    target_season = body.season or get_current_season()
+    mock_league = UserLeague(
         league_id=body.league_id,
         season_year=target_season,
+        platform="espn",
+        user_id=user.id,
         team_count=12,
-        draft_type=draft_type,
+        draft_type="auction",
         scoring="ppr",
-        budget=budget or 200,
-        is_active=is_active,
     )
+    api = ESPNLeagueAPI(league=mock_league, espn_s2=body.espn_s2, swid=body.swid)
+    try:
+        await api.validate_cookies()
+    except Exception:
+        # Distinct 4xx the extension can surface — NEVER echo cookie values.
+        raise HTTPException(
+            status_code=422,
+            detail="ESPN cookies invalid or expired — reconnect on ESPN and retry",
+        )
 
-    # Sync
-    sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league.id)
-
-    return {"status": "connected", "league_id": str(league.id), **summary}
+    return await _espn_persist_and_sync(
+        user, league_id=body.league_id, espn_s2=body.espn_s2, swid=body.swid,
+        target_season=target_season, api=api, db=db,
+    )
 
 
 # ---------------------------------------------------------------------------

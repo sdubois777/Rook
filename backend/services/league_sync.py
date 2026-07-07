@@ -58,7 +58,7 @@ class LeagueSyncService:
 
         # 0. Fetch and store platform-specific league settings
         if user_league.platform == "yahoo":
-            await self._sync_yahoo_settings(user_league, league_key)
+            await self._sync_yahoo_settings(user_league, league_key)  # sets roster_slots
         elif user_league.platform == "espn":
             try:
                 draft_type, budget = await platform.detect_draft_type()
@@ -72,6 +72,17 @@ class LeagueSyncService:
                         user_league.budget = budget
             except Exception as exc:
                 logger.warning("ESPN draft type re-detection failed: %s", exc)
+            # T3 lineup config (defensive/sample-gated — unknown id → default).
+            try:
+                user_league.roster_slots = await platform.get_roster_slots()
+            except Exception as exc:
+                logger.warning("ESPN roster-slots sync failed: %s", exc)
+        elif user_league.platform == "sleeper":
+            # T3 lineup config from /v1/league roster_positions (verified live).
+            try:
+                user_league.roster_slots = await platform.get_roster_slots()
+            except Exception as exc:
+                logger.warning("Sleeper roster-slots sync failed: %s", exc)
 
         summary = {
             "platform": user_league.platform,
@@ -195,6 +206,9 @@ class LeagueSyncService:
             user_league.draft_type = settings["draft_type"]
             user_league.scoring = settings["scoring_type"]
             user_league.budget = settings.get("auction_budget")
+            # Per-league lineup (T3): authoritative when the settings parse; null →
+            # default lineup. A re-sync updates it (idempotent).
+            user_league.roster_slots = settings.get("roster_slots")
             await self._db.flush()
             logger.info(
                 "Yahoo settings synced: name=%s teams=%d draft=%s scoring=%s",
