@@ -608,3 +608,54 @@ export function detectAuctionEvents(prev, curr) {
 
   return { events, next }
 }
+
+/**
+ * Yahoo YOUR-TEAM roster-slot tokens (T3 per-league lineup config).
+ *
+ * Each slot is a badge div with the atomic-CSS signature
+ * `W(32px) H(32px) … Jc(c)`; its child <span> letters are CONCATENATED — a flex
+ * badge is <span>W</span><span>R</span><span>T</span> → "WRT". Reading ONE span
+ * misreads the flex as a phantom "W" and corrupts the WR count, so concatenation
+ * is mandatory. NOT anchored on `_ys_*` hash color classes (they churn per deploy
+ * AND the flex "W" shares WR's color class).
+ *
+ * Returns { tokens, total }: `tokens` is the ordered raw slot list (single
+ * QB/WR/RB/TE/K/DEF/BN, "WRT"→flex, presumed "QWRT"→superflex); `total` is the
+ * "n/15" header denominator — a checksum the backend asserts Σ(slots) matches,
+ * else it falls back to defaults for the whole league. Best read PRE-DRAFT
+ * (empty roster): mid-draft, FILLED slots show headshots (no letters) and only
+ * empty slots' labels are recoverable.
+ */
+export function resolveRosterSlots(root) {
+  if (!root) return { tokens: [], total: null }
+  const isBadge = (d) => {
+    const c = (d.getAttribute && d.getAttribute('class')) || ''
+    return c.includes('W(32px)') && c.includes('H(32px)') && c.includes('Jc(c)')
+  }
+  const badgeToken = (d) =>
+    Array.from(d.querySelectorAll('span'))
+      .map((s) => (s.textContent || '').trim())
+      .join('')
+  // First <ul> whose items carry letter badges = one team's roster grid.
+  let tokens = []
+  for (const ul of Array.from(root.querySelectorAll('ul'))) {
+    const toks = Array.from(ul.querySelectorAll('div'))
+      .filter(isBadge)
+      .map(badgeToken)
+      .filter((t) => /^[A-Z/]{1,6}$/.test(t))
+    if (toks.length >= 8) {
+      tokens = toks
+      break
+    }
+  }
+  // "n/15" total-slot checksum (denominator).
+  let total = null
+  for (const s of Array.from(root.querySelectorAll('span'))) {
+    const m = ((s.textContent || '').trim()).match(/^\d+\/(\d+)$/)
+    if (m) {
+      total = parseInt(m[1], 10)
+      break
+    }
+  }
+  return { tokens, total }
+}

@@ -6,11 +6,15 @@ from unittest.mock import MagicMock
 from backend.engines.draft_state_manager import DraftStateManager, LeagueConfig
 
 
-def _make_user_league(*, budget=250, team_count=10, draft_type="auction"):
+def _make_user_league(*, budget=250, team_count=10, draft_type="auction", roster_slots=None):
     league = MagicMock()
     league.budget = budget
     league.team_count = team_count
     league.draft_type = draft_type
+    league.scoring = "ppr"
+    # A real UserLeague leaves roster_slots NULL until fetched (T3); mirror that
+    # so config_from_user_league falls back to the default lineup.
+    league.roster_slots = roster_slots
     return league
 
 
