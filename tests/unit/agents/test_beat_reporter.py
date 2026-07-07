@@ -17,6 +17,7 @@ from backend.agents.beat_reporter import (
     _get_agent,
     _load_player_map,
     _load_seen_articles,
+    _map_key,
     _resolve_player,
     _update_injury_recovery,
     _update_player_notes,
@@ -301,6 +302,87 @@ def test_resolve_player_falls_back_to_first_when_team_mismatch():
     # team not provided — falls back to first candidate
     result = _resolve_player("Mike Evans", None, player_map)
     assert result == "uuid-tb"
+
+
+# ---------------------------------------------------------------------------
+# Attribution regression fixtures (Threads 2+4) — the two real mis-attributions,
+# each exercising a different half of the bug, verified against real DB records.
+# ---------------------------------------------------------------------------
+
+def _mk(name, team, pid, sleeper_id, tier=None, rbc=None):
+    """Mock player with the fields the ranking reads (all comparable)."""
+    p = MagicMock()
+    p.id = pid
+    p.name = name
+    p.team_abbr = team
+    p.sleeper_id = sleeper_id
+    p.tier = tier
+    p.recommended_bid_ceiling = rbc
+    p.ai_bid_ceiling = None
+    return p
+
+
+def test_map_key_strips_suffix():
+    # The Godwin half: "Chris Godwin Jr." must key under "godwin", not "jr.".
+    assert _map_key("Chris Godwin Jr.") == "godwin"
+    assert _map_key("Chris Godwin") == "godwin"
+    assert _map_key("Marvin Harrison Jr.") == "harrison"
+    assert _map_key("Odell Beckham Jr.") == "beckham"
+    assert _map_key("Michael Pittman II") == "pittman"
+    assert _map_key("") is None
+
+
+def test_resolve_evans_prefers_synced_prominent_over_stale_null_row():
+    # Thread 4 half — the real Mike Evans case. A stale non-synced duplicate
+    # ("Omari Evans", sleeper_id=None) whose STALE team happens to match the
+    # article must NOT win over the correct anchored Mike Evans (sleeper_id 2216),
+    # whose own canonical team is stale ("SF"). First-name mismatch alone already
+    # rejects Omari; prominence/anchoring is the belt-and-suspenders.
+    stale_omari = _mk("Omari Evans", "TB", "uuid-omari", None, tier=None)
+    mike = _mk("Mike Evans", "SF", "uuid-mike", "2216", tier=4, rbc=9)
+    player_map = {"evans": [stale_omari, mike]}
+    assert _resolve_player("Mike Evans", "TB", player_map) == "uuid-mike"
+
+
+def test_resolve_godwin_reachable_after_suffix_strip():
+    # Thread 2 half — the real Chris Godwin case. With suffix-stripped keying,
+    # "Chris Godwin Jr." lands under "godwin" and resolves from the suffix-less
+    # article name; the same-surname nobody "Terry Godwin" is rejected on the
+    # first-name mismatch, not attributed.
+    chris = _mk("Chris Godwin Jr.", "TB", "uuid-chris", "4037", tier=4, rbc=6)
+    terry = _mk("Terry Godwin", None, "uuid-terry", "5977", tier=None)
+    player_map = {"godwin": [chris, terry]}
+    assert _resolve_player("Chris Godwin", "TB", player_map) == "uuid-chris"
+
+
+def test_resolve_collision_less_prominent_resolves_to_itself():
+    # First name disambiguates: the article's LESS-prominent same-surname player
+    # must resolve to itself, never to the more prominent one (the A.J. Brown ->
+    # Chase Brown class of bug).
+    chase = _mk("Chase Brown", "CIN", "uuid-chase", "10222", tier=1, rbc=30)
+    aj = _mk("A.J. Brown", "PHI", "uuid-aj", "6794", tier=2, rbc=45)
+    player_map = {"brown": [chase, aj]}
+    assert _resolve_player("A.J. Brown", "PHI", player_map) == "uuid-aj"
+    assert _resolve_player("Chase Brown", "CIN", player_map) == "uuid-chase"
+
+
+def test_resolve_prominence_breaks_first_initial_tie():
+    # When only a first-INITIAL match is available (abbreviated article name),
+    # prominence (tier) breaks the tie — more prominent wins.
+    mike = _mk("Mike Evans", "SF", "uuid-mike", "2216", tier=4, rbc=9)
+    mitchell = _mk("Mitchell Evans", "CAR", "uuid-mitch", "12473", tier=5, rbc=2)
+    player_map = {"evans": [mitchell, mike]}
+    assert _resolve_player("M. Evans", "TB", player_map) == "uuid-mike"
+
+
+def test_resolve_last_name_only_collision_refused():
+    # Forward-caveat guard: an article name whose FIRST name matches no candidate
+    # must NOT be attributed to a startable same-surname player — signal loss is
+    # safer than mis-attribution. (This is the injury_flag/depth_chart_change
+    # value-relevant path.)
+    justin = _mk("Justin Jefferson", "MIN", "uuid-jj", "6794", tier=1, rbc=55)
+    player_map = {"jefferson": [justin]}
+    assert _resolve_player("Zorpo Jefferson", "MIN", player_map) is None
 
 
 # ---------------------------------------------------------------------------

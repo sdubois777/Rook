@@ -91,6 +91,56 @@ def _article_entity_id(article: dict) -> str:
     return hashlib.sha256(raw).hexdigest()[:32]
 
 
+def _map_key(name: str) -> str | None:
+    """Last-name key for the resolution map, SUFFIX-STRIPPED via the canonical
+    _norm_name (so "Chris Godwin Jr." keys under "godwin", not "jr."). Returns the
+    lowercased last token, or None if the name has no usable token."""
+    from backend.agents.roster_changes import _norm_name
+    tokens = _norm_name(name or "").split()
+    return tokens[-1] if tokens else None
+
+
+def _name_match_tier(article_name: str, cand_name: str) -> int:
+    """How well a candidate's name matches the article name (lower = stronger).
+    The last-name KEY is shared by every candidate, so the FIRST name is what
+    actually disambiguates — without it, "A.J. Brown" resolves to the most
+    prominent Brown (Chase Brown), which is exactly the class of bug this fix
+    exists to prevent.
+      0 = suffix-normalized full name equal  ("Chris Godwin" == "Chris Godwin Jr.")
+      1 = same last name + same first initial ("M. Evans" vs "Mike Evans")
+      2 = last name only, first names DISAGREE — a different person
+    """
+    from backend.agents.roster_changes import _norm_name
+    a, c = _norm_name(article_name or ""), _norm_name(cand_name or "")
+    if a and a == c:
+        return 0
+    at, ct = a.split(), c.split()
+    if at and ct and at[-1] == ct[-1] and at[0][:1] == ct[0][:1]:
+        return 1
+    return 2
+
+
+def _prominence_key(p, team: str | None):
+    """Tiebreak (ascending = better) among candidates of the SAME name-match
+    tier. Prominence FIRST, team only as the LOWEST tiebreak (never an override):
+    canonical rows can carry STALE team values (e.g. Mike Evans is stored as SF),
+    so trusting the article's team too highly would push away from the correct
+    anchored row.
+      1. sleeper_id present  (anchored/active over unanchored stale)
+      2. tier                (lower number = more prominent; None sorts last)
+      3. bid ceiling         (prominence/depth proxy; higher = better)
+      4. team match          (lowest-priority tiebreak, article team vs row team)
+    """
+    has_sleeper = 0 if getattr(p, "sleeper_id", None) else 1
+    tier = p.tier if getattr(p, "tier", None) is not None else 99
+    ceiling = -(getattr(p, "recommended_bid_ceiling", None)
+                or getattr(p, "ai_bid_ceiling", None) or 0)
+    team_miss = 0 if (
+        team and p.team_abbr and p.team_abbr.upper() == team.upper()
+    ) else 1
+    return (has_sleeper, tier, ceiling, team_miss)
+
+
 def _resolve_player(
     name: str | None,
     team: str | None,
@@ -98,25 +148,50 @@ def _resolve_player(
 ) -> str | None:
     """
     Match a player name from model output to a DB player_id.
-    Looks up by last name; uses team_abbr to disambiguate common names.
-    Returns player_id as string, or None if no match found.
+
+    Keys by the SUFFIX-STRIPPED last name (canonical _norm_name) against a pool
+    that already excludes non-synced / non-draftable rows (see _load_player_map),
+    then requires a FIRST-NAME agreement (full or first-initial) and ranks the
+    survivors by PROMINENCE (sleeper_id → tier → bid ceiling), team only as a
+    last-resort tiebreak. A last-name-only collision (first names disagree) is
+    REFUSED — signal loss is safer than attributing news to the wrong startable
+    same-surname player. Every non-match is logged loudly, never silent.
     """
     if not name:
         return None
-    last = name.split()[-1].lower()
-    candidates = player_map.get(last, [])
-    if not candidates:
+    key = _map_key(name)
+    if not key:
         return None
-    if len(candidates) == 1:
-        return str(candidates[0].id)
-    if team:
-        team_match = [
-            p for p in candidates
-            if p.team_abbr and p.team_abbr.upper() == team.upper()
-        ]
-        if team_match:
-            return str(team_match[0].id)
-    return str(candidates[0].id)
+    candidates = player_map.get(key, [])
+    if not candidates:
+        logger.warning(
+            "beat_reporter: no eligible candidate for name=%r team=%r (key=%r) — "
+            "signal NOT attributed (pool excludes non-synced/non-draftable rows)",
+            name, team, key,
+        )
+        return None
+
+    eligible = [(_name_match_tier(name, p.name), p) for p in candidates]
+    eligible = [(mt, p) for mt, p in eligible if mt <= 1]
+    if not eligible:
+        logger.warning(
+            "beat_reporter: last-name-only collision for name=%r team=%r — no "
+            "first-name match among %r; NOT attributed (avoids startable "
+            "same-surname mis-attribution)",
+            name, team, [p.name for p in candidates][:6],
+        )
+        return None
+
+    eligible.sort(key=lambda mp: (mp[0], *_prominence_key(mp[1], team)))
+    best = eligible[0][1]
+    if len(eligible) > 1:
+        logger.info(
+            "beat_reporter: %r/%r -> %r (sleeper_id=%s tier=%s); rejected %s",
+            name, team, best.name, best.sleeper_id, getattr(best, "tier", None),
+            [(p.name, p.sleeper_id, getattr(p, "tier", None))
+             for _, p in eligible[1:5]],
+        )
+    return str(best.id)
 
 
 # ---------------------------------------------------------------------------
@@ -163,16 +238,46 @@ async def _load_seen_articles() -> set[tuple[str, str]]:
 
 async def _load_player_map() -> dict[str, list]:
     """
-    Load all players into an in-memory last-name map.
-    One bulk query — used for player name resolution across all articles.
+    Load the resolution pool into an in-memory last-name map.
+
+    The pool is FILTERED (Threads 2+4): only SYNCED players (sleeper_id present)
+    that pass the same draftable_filter every other consumer uses. This keeps the
+    stale, non-synced duplicate rows (e.g. "Omari Evans (TB)", sleeper_id=None)
+    out of attribution entirely — they were the rows that poisoned resolution
+    while being hidden everywhere else. Keys are SUFFIX-STRIPPED (canonical
+    _norm_name) so "Chris Godwin Jr." keys under "godwin", not "jr.".
+
+    Excluded rows are counted and logged loudly — never silently dropped.
     """
+    from sqlalchemy import and_, func, not_
+
+    from backend.repositories.player_repo import draftable_filter
+
+    eligible = and_(Player.sleeper_id.isnot(None), draftable_filter())
     async with AsyncSessionLocal() as session:
-        players = (await session.execute(select(Player))).scalars().all()
+        players = (await session.execute(
+            select(Player).where(eligible)
+        )).scalars().all()
+        excluded = (await session.execute(
+            select(func.count()).select_from(Player).where(not_(eligible))
+        )).scalar() or 0
+
     player_map: dict[str, list] = {}
+    dropped_no_key = 0
     for p in players:
-        if p.name:
-            last = p.name.split()[-1].lower()
-            player_map.setdefault(last, []).append(p)
+        key = _map_key(p.name) if p.name else None
+        if not key:
+            dropped_no_key += 1
+            continue
+        player_map.setdefault(key, []).append(p)
+
+    logger.warning(
+        "beat_reporter resolution pool: %d eligible players (synced + draftable) "
+        "across %d last-name keys; %d rows EXCLUDED (non-synced or non-draftable) "
+        "and %d skipped (no usable name) — excluded rows are NOT eligible for news "
+        "attribution",
+        len(players), len(player_map), excluded, dropped_no_key,
+    )
     return player_map
 
 
