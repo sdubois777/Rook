@@ -47,7 +47,10 @@ from backend.services.waiver.faab import FAAB_BUDGET_DEFAULT
 
 logger = logging.getLogger(__name__)
 
-_SKILL = ("QB", "RB", "WR", "TE")
+# K/DEF streaming arc (slice 3): K/DST now value + seat, so they enter the pool too.
+# (The pool comes from players with in-season weekly rows; the seed unions the
+# scored K/DST weekly frame, so a free-agent K/DST appears here on flat season value.)
+_SKILL = ("QB", "RB", "WR", "TE", "K", "DEF")
 # A pool player needs at least this many in-season games to be a real waiver
 # candidate (trims one-week blips + bounds the valuation loop).
 MIN_POOL_GAMES = 3

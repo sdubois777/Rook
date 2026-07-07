@@ -170,9 +170,10 @@ def test_lineup_rules_null_slots_uses_demo_default():
     assert lineup_rules_from_slots(None) is DEFAULT_LINEUP_RULES
 
 
-def test_lineup_rules_from_real_slots_offense_only():
+def test_lineup_rules_from_real_slots_includes_kdst():
     r = lineup_rules_from_slots({"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DEF": 1, "BENCH": 5})
-    assert r.slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1}  # no K/DEF (trade ignores them)
+    # K/DEF now seat in their own slots (slice 3); they are NOT flex-eligible.
+    assert r.slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
     assert r.flex_count == 2
     assert r.flex_positions == ("RB", "WR", "TE")
 

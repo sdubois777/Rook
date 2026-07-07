@@ -15,6 +15,7 @@ position-need / fresh-news ordering nudge (the displayed gain stays honest).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -39,6 +40,8 @@ from backend.services.waiver.news_tiein import DIRECT_POSITIVE_TYPES, NewsInfo
 NEED_RANK_BONUS = 0.5      # ppw-equivalent, ranking only
 NEWS_RANK_BONUS = 0.5      # ppw-equivalent, ranking only
 MAX_RESULTS = 25
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,16 @@ def recommend(
         ) if drop_lp else None
 
         news = news_map.get(rp.canonical_player_id)
+        # Depth-chart "next up" opportunity picks are an OFFENSE handcuff concept; a
+        # K/DST has no next-man-up (the depth-chart map is skill-only), so this can't
+        # normally fire — but loud-warn + drop it if it ever does, rather than
+        # surfacing a nonsensical "DST opportunity" (K/DEF streaming arc, slice 3).
+        if news is not None and news.kind == "opportunity" and rp.position in ("K", "DEF"):
+            logger.warning(
+                "waiver: dropped a K/DST depth-chart opportunity pick for %s (%s) — "
+                "K/DST have no handcuff next-up", rp.name, rp.position,
+            )
+            news = None
         # Include an add if it improves the lineup OR carries a fresh signal worth a stash.
         if gain < 0.01 and news is None:
             continue
