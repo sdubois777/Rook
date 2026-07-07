@@ -236,12 +236,15 @@ def slots_from_yahoo_roster_positions(roster_positions, *, league: str = "?") ->
     return normalize(tokens, platform="yahoo", league=league)
 
 
-# ESPN LINEUP-SLOT id enum (NOT _ESPN_POS, the player-position enum!). PRESUMED
-# from convention — UNCONFIRMED until a real mSettings response is captured. Maps
-# id → CANONICAL directly (ids are not self-describing, so we never route them
-# through the label map). ANY id not listed here is unknown → whole-league
-# fallback (never best-guessed), because a wrong numeric mapping would emit a
-# VALID-but-wrong token that would silently corrupt roster needs.
+# ESPN LINEUP-SLOT id enum (NOT _ESPN_POS, the player-position enum!). CONFIRMED
+# by full-map count-alignment of a real mSettings sample against that league's
+# known lineup (see test_espn_lineup_slots_real_sample). Maps id → CANONICAL
+# directly (ids are not self-describing, so we never route them through the label
+# map). ANY id not listed here is unknown → whole-league fallback (never
+# best-guessed), because a wrong numeric mapping would emit a VALID-but-wrong
+# token that would silently corrupt roster needs.
+# NOTE: id 7 (OP/SUPER_FLEX) is confirmed by full-enum alignment, but the sample
+# league ran OP=0 — a real superflex league would exercise it with a nonzero count.
 _ESPN_LINEUP_SLOT_ID: dict[int, str] = {
     0: "QB", 2: "RB", 4: "WR", 6: "TE",
     23: "FLEX", 7: "SUPER_FLEX",   # 7 = OP (offensive player / superflex)
@@ -254,14 +257,16 @@ _ESPN_LINEUP_SLOT_ID: dict[int, str] = {
 def slots_from_espn_lineup_slots(lineup_slot_counts, *, expected_size: int | None = None, league: str = "?") -> dict[str, int] | None:
     """ESPN `settings.rosterSettings.lineupSlotCounts` = {slot_id: count}.
 
-    DEFENSIVE + SAMPLE-GATED. Numeric ids are NOT self-describing, so a wrong
+    The enum is CONFIRMED (real mSettings sample), so this parse is AUTHORITATIVE
+    for synced ESPN leagues — like Sleeper, no longer inert-until-sample. The
+    DEFENSIVE guards stay, because numeric ids are NOT self-describing and a wrong
     id→slot mapping would emit a valid-but-wrong token that does NOT trip the
-    string guard. Therefore:
-      (a) map ONLY the ids in _ESPN_LINEUP_SLOT_ID; ANY other id → loud-warn +
-          whole-league fallback (never a best guess);
+    string guard:
+      (a) map ONLY the ids in _ESPN_LINEUP_SLOT_ID; ANY other id with a NONZERO
+          count → loud-warn + whole-league fallback (never a best guess). A ZERO
+          count is skipped first, so the exotic/IDP slots ESPN always emits at 0
+          never trip the guard;
       (b) if `expected_size` is given, Σ(counts) must equal it → else fallback.
-    Until a real mSettings confirms the enum, ESPN leagues are EXPECTED to fall
-    back to defaults (safe) — this code lands now; the sample activates it.
     """
     if not isinstance(lineup_slot_counts, dict) or not lineup_slot_counts:
         return None

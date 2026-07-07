@@ -251,7 +251,7 @@ def test_yahoo_roster_positions_real_sample():
     raise NotImplementedError
 
 
-# ---- ESPN league-settings adapter (PRESUMED enum; DEFENSIVE, sample-gated) -
+# ---- ESPN league-settings adapter (CONFIRMED enum; DEFENSIVE) -------------
 
 def test_espn_lineup_slots_standard_presumed_enum():
     got = slots_from_espn_lineup_slots({0: 1, 2: 2, 4: 2, 6: 1, 23: 1, 16: 1, 17: 1, 20: 7})
@@ -274,9 +274,62 @@ def test_espn_lineup_slots_checksum_mismatch_falls_back():
     assert slots_from_espn_lineup_slots(std, expected_size=99) is None
 
 
-@pytest.mark.skip(reason="STUB: fill once a real ESPN mSettings response confirms the slot-id enum")
 def test_espn_lineup_slots_real_sample():
-    raise NotImplementedError
+    """Real ESPN mSettings.rosterSettings.lineupSlotCounts. The 9 nonzero ids map
+    to a known 1QB/2RB/2WR/1TE/1FLEX/1K/1DEF lineup, 7 bench, 1 IR — which is what
+    CONFIRMED the presumed enum by full-map count-alignment.
+
+    The payload also carries every exotic/IDP slot ESPN always emits AT ZERO (TQB,
+    RB/WR, WR/TE, the DT-DP IDP block, P, HC). Those ids are NOT in the enum, so a
+    NONZERO count would trip the whole-league fallback — proving they are ignored
+    because the zero-count skip runs first (zero count != unmapped-id trigger).
+
+    CAVEAT: id 7 (OP/SUPER_FLEX) is confirmed by full-enum alignment, but this
+    league runs OP=0 — so the superflex id is NOT exercised by a nonzero count
+    here. A real superflex ESPN league would be the final nonzero confirmation.
+    """
+    real = {
+        # ---- the 9 nonzero slots (the actual lineup) ----
+        "0": 1,   # QB
+        "2": 2,   # RB
+        "4": 2,   # WR
+        "6": 1,   # TE
+        "23": 1,  # FLEX
+        "16": 1,  # D/ST
+        "17": 1,  # K
+        "20": 7,  # BENCH
+        "21": 1,  # IR
+        # ---- exotic/IDP slots ESPN emits at ZERO (must be ignored, not fallback) ----
+        "1": 0,   # TQB (team QB)
+        "3": 0,   # RB/WR
+        "5": 0,   # WR/TE
+        "7": 0,   # OP / SUPER_FLEX — CONFIRMED id, but zero here (see caveat)
+        "8": 0, "9": 0, "10": 0, "11": 0,   # DT, DE, LB, DL
+        "12": 0, "13": 0, "14": 0, "15": 0,  # CB, S, DB, DP  (DT-DP IDP block)
+        "18": 0,  # P (punter)
+        "19": 0,  # HC (head coach)
+    }
+    got = slots_from_espn_lineup_slots(real, league="real-sample")
+    assert got == {
+        "QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1,
+        "K": 1, "DEF": 1, "BENCH": 7, "IR": 1,
+    }
+    # No SUPER_FLEX key — OP=0 in this league (the caveat, asserted).
+    assert "SUPER_FLEX" not in got
+
+    # Consumed by format_roster_needs: an empty roster wants exactly this lineup.
+    needs = DraftStateManager(LeagueConfig(roster_slots=got)).format_roster_needs([])
+    for tok in ("QB: need 1", "RB: need 2", "WR: need 2", "TE: need 1",
+                "K: need 1", "DEF: need 1", "FLEX: 1 more (RB/WR/TE)"):
+        assert tok in needs
+
+    # DEFENSIVE paths still fire on the real payload:
+    # (a) an injected NONZERO unmapped id (flip an IDP slot on) → whole-league fallback.
+    injected = {**real, "8": 1}  # DT now has a count — enum has no id 8
+    assert slots_from_espn_lineup_slots(injected, league="real-sample") is None
+    # (b) roster-size checksum mismatch → fallback (real total is 17: 9 starters+flex+7+IR).
+    assert slots_from_espn_lineup_slots(real, expected_size=17, league="real-sample") is not None
+    assert slots_from_espn_lineup_slots(real, expected_size=99, league="real-sample") is None
 
 
 # ---- precedence (sync authoritative; live fills null only) -----------------

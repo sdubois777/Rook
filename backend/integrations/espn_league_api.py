@@ -115,11 +115,11 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
 
     async def get_roster_slots(self) -> dict | None:
         """ESPN `mSettings.settings.rosterSettings.lineupSlotCounts` = {slot_id:
-        count} → canonical {slot_type: count}. DEFENSIVE + SAMPLE-GATED: the
-        slot-id enum is PRESUMED (NOT _ESPN_POS, the player enum) and unconfirmed
-        until a real mSettings is captured, so an unknown id → whole-league
-        fallback. None on any failure → default lineup. Expected to run on defaults
-        for most leagues until a real sample confirms the full enum."""
+        count} → canonical {slot_type: count}. The slot-id enum is CONFIRMED (real
+        mSettings sample), so this is AUTHORITATIVE for synced ESPN leagues. The
+        DEFENSIVE guard stays: a nonzero unknown id (enum is NOT _ESPN_POS, the
+        player enum) → whole-league fallback; None on any failure → default
+        lineup."""
         from backend.services.roster_slots import slots_from_espn_lineup_slots
         try:
             data = await self._get("mSettings")
