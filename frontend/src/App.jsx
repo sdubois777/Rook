@@ -19,6 +19,7 @@ import SignUpPage from './pages/SignUp'
 import AccountPage from './pages/Account'
 import LeagueSetup from './pages/LeagueSetup'
 import Trade from './pages/Trade'
+import Waiver from './pages/Waiver'
 
 // Routes that render full-screen without the sidebar layout
 const FULL_SCREEN_ROUTES = ['/draft-room']
@@ -74,6 +75,7 @@ function App() {
       <Route path="/admin" element={<ProtectedRoute><PipelineAdmin /></ProtectedRoute>} />
       <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/trade" element={<ProtectedRoute><Trade /></ProtectedRoute>} />
+      <Route path="/waiver" element={<ProtectedRoute><Waiver /></ProtectedRoute>} />
       <Route path="/league-setup" element={<ProtectedRoute><LeagueSetup /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Swords,
   ArrowLeftRight,
+  Waves,
   UserCircle,
   Coins,
   X,
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/news', label: 'News', icon: Newspaper },
   { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
   { to: '/trade', label: 'Trade', icon: ArrowLeftRight },
+  { to: '/waiver', label: 'Waiver Wire', icon: Waves },
   { to: '/account', label: 'Account', icon: UserCircle },
 ]
 
