@@ -15,7 +15,7 @@ import {
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
-import InjuryBadge from '../components/shared/InjuryBadge'
+import { PlayerBadges } from '../components/shared/PlayerName'
 import VerdictPanel from '../components/trade/VerdictPanel'
 import SilenceExplainer from '../components/trade/SilenceExplainer'
 
@@ -37,20 +37,7 @@ const TREND = {
   falling: { Icon: TrendingDown, cls: 'text-red-400' },
   stable: { Icon: Minus, cls: 'text-slate-500' },
 }
-const POS_CLS = {
-  QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
-  WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
-  K: 'bg-violet-500/15 text-violet-300', DEF: 'bg-cyan-500/15 text-cyan-300',
-}
 const CONF_CLS = { full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
-
-function PosBadge({ pos }) {
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${POS_CLS[pos] || 'bg-slate-500/15 text-slate-300'}`}>
-      {pos}
-    </span>
-  )
-}
 
 function PlayerRow({ p, selected, onToggle, accent }) {
   const t = TREND[p.value_trend] || TREND.stable
@@ -63,10 +50,9 @@ function PlayerRow({ p, selected, onToggle, accent }) {
       onClick={() => onToggle(p.id)}
       className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors min-h-11 ${ring}`}
     >
-      <PosBadge pos={p.position} />
+      <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="compact" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <InjuryBadge status={p.injury_status} />
           <span className="truncate text-sm font-medium text-white">{p.name}</span>
           {p.buy_low && <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold text-emerald-400">BUY</span>}
           {p.sell_high && <span className="rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-400">SELL</span>}

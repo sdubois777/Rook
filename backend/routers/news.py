@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.core.dependencies import get_db
 from backend.repositories.news_repo import NewsRepository
+from backend.schemas.player_badges import PlayerBadgeFields
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/news", tags=["news"])
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/news", tags=["news"])
 # Response models
 # ---------------------------------------------------------------------------
 
-class SignalFeedItem(BaseModel):
+class SignalFeedItem(PlayerBadgeFields):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -81,6 +82,7 @@ async def get_news(
         player_name = row[1]
         player_team = row[2]
         player_position = row[3]
+        player_injury_status = row[4]
 
         signals.append(SignalFeedItem(
             id=str(sig.id),
@@ -93,6 +95,7 @@ async def get_news(
             player_name=player_name,
             player_team=player_team,
             player_position=player_position,
+            injury_status=player_injury_status,
         ))
 
     pages = (total + per_page - 1) // per_page if total > 0 else 1

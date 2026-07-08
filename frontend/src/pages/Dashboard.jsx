@@ -9,7 +9,7 @@ import { fetchPlayerSummary } from '../api/players'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
-import PositionBadge from '../components/shared/PositionBadge'
+import { PlayerBadges } from '../components/shared/PlayerName'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
 import {
   getBidCeiling,
@@ -174,7 +174,7 @@ export default function Dashboard() {
                       onClick={() => openPlayerDetail(p.id)}
                       className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                     >
-                      <PositionBadge position={p.position} />
+                      <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" />
                       <span className="text-slate-300 truncate flex-1">{p.name}</span>
                       <span className="text-slate-500 font-mono text-[10px]">
                         #{formatAdp(p)} · FP {formatFpAdp(p)}
@@ -206,7 +206,7 @@ export default function Dashboard() {
                     onClick={() => openPlayerDetail(p.id)}
                     className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                   >
-                    <PositionBadge position={p.position} />
+                    <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" />
                     <span className="text-slate-300 truncate flex-1">{p.name}</span>
                     <span className="text-emerald-400 font-mono text-xs">
                       +${p._aiGap.toFixed(0)}
@@ -278,7 +278,7 @@ export default function Dashboard() {
                   onClick={() => openPlayerDetail(p.id)}
                   className="flex items-center gap-2 text-sm hover:bg-surface-3 px-2 py-1 rounded cursor-pointer"
                 >
-                  <PositionBadge position={p.position} />
+                  <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" />
                   <span className="text-slate-300 truncate flex-1">{p.name}</span>
                   <span className="text-blue-400 font-mono text-xs">
                     ${p.recommended_bid_ceiling?.toFixed(0) || '--'}

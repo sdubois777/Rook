@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
 from backend.utils.seasons import get_current_season
@@ -45,7 +46,7 @@ class FlagSummary(BaseModel):
     reasoning: Optional[str] = None
 
 
-class PlayerSummary(BaseModel):
+class PlayerSummary(PlayerBadgeFields):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -253,6 +254,7 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         is_rookie=player.is_rookie or False,
         notes=player.notes,
         flags=flags,
+        injury_status=player.injury_status,  # live badge code (distinct from injury_risk_level season risk)
         injury_risk_level=player.injury_profile.overall_risk_level if player.injury_profile else None,
         schedule_score=float(player.schedule.schedule_score) if player.schedule and player.schedule.schedule_score else None,
         ai_bid_ceiling=player.ai_bid_ceiling,

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.core.dependencies import get_credit_service, get_current_user, get_db
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.services.trade.trade_analysis import DEFAULT_ROSTER_LIMIT
 from backend.services.waiver.news_tiein import build_news_map
 from backend.services.waiver.recommendations import Recommendation, best_add, recommend
@@ -39,7 +40,7 @@ class WaiverRecommendationsRequest(BaseModel):
     my_team_id: Optional[str] = Field(None, description="acting team; defaults to your team")
 
 
-class LeaguePlayerOut(BaseModel):
+class LeaguePlayerOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -48,7 +49,6 @@ class LeaguePlayerOut(BaseModel):
     forward_value: float
     value_trend: str
     confidence: str
-    injury_status: Optional[str] = None   # badge code "Q"|"D"|"O"|"IR"; None = healthy
 
 
 class LeagueTeamOut(BaseModel):
@@ -75,7 +75,7 @@ class WaiverLeagueResponse(BaseModel):
     enforced: bool
 
 
-class AddOut(BaseModel):
+class AddOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -86,15 +86,13 @@ class AddOut(BaseModel):
     confidence: str
     buy_low: bool
     sell_high: bool
-    injury_status: Optional[str] = None   # badge code "Q"|"D"|"O"|"IR"; None = healthy
 
 
-class DropOut(BaseModel):
+class DropOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
     forward_value: float
-    injury_status: Optional[str] = None   # badge code "Q"|"D"|"O"|"IR"; None = healthy
 
 
 class FaabOut(BaseModel):

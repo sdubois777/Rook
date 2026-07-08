@@ -6,7 +6,7 @@ import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
-import PositionBadge from '../components/shared/PositionBadge'
+import { PlayerBadges } from '../components/shared/PlayerName'
 import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
@@ -324,7 +324,7 @@ export default function DraftBoard() {
           className="flex items-center gap-3 flex-1 min-w-0"
           onClick={() => openPlayerDetail(p.id)}
         >
-          <span className="w-9 shrink-0"><PositionBadge position={p.position} /></span>
+          <span className="w-9 shrink-0"><PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" /></span>
           {/* Player name flexes on mobile, fixed width at lg (desktop layout). */}
           <span className="text-sm font-medium text-slate-200 flex-1 min-w-0 lg:flex-none lg:w-[220px] truncate">
             {p.name}
