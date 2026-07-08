@@ -115,6 +115,11 @@ async def test_returns_pairing_ladder_and_scout(monkeypatch):
     assert round(sum(g["mine"] for g in sc["grid"]), 2) == sc["my_ppw"]
     assert round(sum(g["theirs"] for g in sc["grid"]), 2) == sc["opp_ppw"]
     assert round(sc["my_ppw"] - sc["opp_ppw"], 2) == sc["margin"]
+    # Leverage: value-gated + reciprocal. A position never appears in both a team's
+    # needs and its (value-gated) surplus, and the mirror flag is a real bool.
+    assert isinstance(sc["is_reciprocal_fit"], bool)
+    assert not (set(sc["my_needs"]) & set(sc["my_surplus_positions"]))
+    assert not (set(sc["opp_needs"]) & set(sc["opp_surplus_positions"]))
 
 
 async def test_acting_as_switch_scouts_that_team(monkeypatch):

@@ -21,6 +21,7 @@ Three concerns:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from backend.integrations.platform_models import WeeklyMatchup
@@ -37,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 # Position order for the battle grid (offense first, then K/DST).
 GRID_POSITIONS: tuple[str, ...] = ("QB", "RB", "WR", "TE", "K", "DEF")
+
+# A bench body is genuine tradeable DEPTH (surplus) only if his forward_ppg clears
+# the position's replacement floor by at least this margin. Modest by design — it
+# drops at/below-replacement dead weight (a 0-ppg IR body isn't "spare") while
+# keeping a real streamable-plus reserve. Tunable in one place.
+SURPLUS_MARGIN_PPW: float = 1.0
 
 # Margin bands (projected ppw difference, acting-team perspective). Deliberately
 # WIDE — a ~1.5 ppw edge is a toss-up, not a coin-flip dressed as a percentage.
@@ -173,6 +180,84 @@ def confidence_summary(starters_confidences: list[Confidence]) -> tuple[str, boo
     if share < _THIN_SHARE:
         return ("mostly_full", False)
     return ("thin", True)
+
+
+# ---------------------------------------------------------------------------
+# Trade-leverage readout — VALUE-GATED surplus + RECONCILED need + RECIPROCAL fit
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Leverage:
+    """The Matchup trade-leverage readout — value-aware, so the flag MEANS something.
+
+    A position is SURPLUS only when a bench body clears replacement by
+    ``SURPLUS_MARGIN_PPW`` AND the position isn't itself a need (need wins → a
+    position never renders in BOTH lists). The mirror flag requires a genuine
+    RECIPROCAL value-fit in BOTH directions; otherwise there is no clear fit and
+    the surface says so plainly (don't fabricate leverage that isn't there)."""
+    my_needs: tuple[str, ...]
+    opp_needs: tuple[str, ...]
+    my_surplus_positions: tuple[str, ...]          # value-gated tradeable depth
+    opp_surplus_positions: tuple[str, ...]
+    their_surplus_my_needs: tuple[str, ...]         # their real depth ∩ my need
+    my_surplus_their_needs: tuple[str, ...]         # my real depth ∩ their need
+    is_reciprocal_fit: bool                          # both directions non-empty → mirror
+
+
+def value_gated_surplus_positions(
+    surplus_ids,
+    needs,
+    values: dict,
+    replacement: dict[str, float],
+    margin: float = SURPLUS_MARGIN_PPW,
+) -> list[str]:
+    """Positions where the team has GENUINE tradeable depth: a bench body whose
+    forward_ppg exceeds the position's replacement floor by ``margin``, at a
+    position that is NOT a need (a weak/thin position's bench bodies aren't spare —
+    need wins the reconciliation, so no position lands in both lists)."""
+    need_set = set(needs)
+    out: set[str] = set()
+    for pid in surplus_ids:
+        v = values.get(pid)
+        if v is None:
+            continue
+        pos = v.position
+        if pos in need_set:
+            continue  # need wins — its depth isn't "spare"
+        if v.forward_ppg > replacement.get(pos, 0.0) + margin:
+            out.add(pos)
+    return [p for p in GRID_POSITIONS if p in out]
+
+
+def leverage_readout(
+    my_needs,
+    my_surplus_ids,
+    opp_needs,
+    opp_surplus_ids,
+    values: dict,
+    replacement: dict[str, float],
+    margin: float = SURPLUS_MARGIN_PPW,
+) -> Leverage:
+    """Build the value-gated, reconciled, reciprocal leverage readout for one
+    matchup. ``*_needs`` / ``*_surplus_ids`` come from the SHARED analyze_roster
+    (unchanged); the value-awareness lives HERE, on the Matchup surface only."""
+    my_surp = value_gated_surplus_positions(my_surplus_ids, my_needs, values, replacement, margin)
+    opp_surp = value_gated_surplus_positions(opp_surplus_ids, opp_needs, values, replacement, margin)
+
+    their_surplus_my_needs = [p for p in GRID_POSITIONS if p in set(opp_surp) & set(my_needs)]
+    my_surplus_their_needs = [p for p in GRID_POSITIONS if p in set(my_surp) & set(opp_needs)]
+    # A genuine mirror requires a two-sided value-fit — each side's REAL depth
+    # covers the other's need. A single-direction overlap is not a mirror.
+    is_reciprocal = bool(their_surplus_my_needs) and bool(my_surplus_their_needs)
+
+    return Leverage(
+        my_needs=tuple(sorted(my_needs)),
+        opp_needs=tuple(sorted(opp_needs)),
+        my_surplus_positions=tuple(my_surp),
+        opp_surplus_positions=tuple(opp_surp),
+        their_surplus_my_needs=tuple(their_surplus_my_needs),
+        my_surplus_their_needs=tuple(my_surplus_their_needs),
+        is_reciprocal_fit=is_reciprocal,
+    )
 
 
 def win_prob_band(margin: float, low_confidence: bool = False) -> str:
