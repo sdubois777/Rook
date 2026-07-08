@@ -49,4 +49,16 @@ describe('shared player badge primitive', () => {
     expect(compact.querySelector('span').className).toContain('text-[10px]')
     expect(compact.querySelector('span').className).toContain('text-amber-300')
   })
+
+  it('dense badges reserve their own space in-flow — never absolute/overlapping', () => {
+    // The dense-variant overlap bug was a badge that didn't reserve flex space and
+    // landed on the player name. Both badges must be shrink-0 and NOT absolutely
+    // positioned so they sit in-flow beside (not on top of) the name.
+    const inj = render(<InjuryBadge status="IR" variant="dense" />).container.querySelector('span')
+    expect(inj.className).toContain('shrink-0')
+    expect(inj.className).not.toContain('absolute')
+    const pos = render(<PositionBadge position="QB" variant="dense" />).container.querySelector('span')
+    expect(pos.className).toContain('shrink-0')
+    expect(pos.className).not.toContain('absolute')
+  })
 })

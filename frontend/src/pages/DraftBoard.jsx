@@ -6,7 +6,8 @@ import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
-import { PlayerBadges } from '../components/shared/PlayerName'
+import PositionBadge from '../components/shared/PositionBadge'
+import InjuryBadge from '../components/shared/InjuryBadge'
 import SortableHeader from '../components/shared/SortableHeader'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
@@ -324,10 +325,12 @@ export default function DraftBoard() {
           className="flex items-center gap-3 flex-1 min-w-0"
           onClick={() => openPlayerDetail(p.id)}
         >
-          <span className="w-9 shrink-0"><PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" /></span>
-          {/* Player name flexes on mobile, fixed width at lg (desktop layout). */}
-          <span className="text-sm font-medium text-slate-200 flex-1 min-w-0 lg:flex-none lg:w-[220px] truncate">
-            {p.name}
+          <span className="w-9 shrink-0"><PositionBadge position={p.position} variant="dense" /></span>
+          {/* Player name flexes on mobile, fixed width at lg (desktop layout). Injury
+              badge sits in-flow before the name so it never overlaps the position badge slot. */}
+          <span className="flex items-center gap-1.5 min-w-0 flex-1 lg:flex-none lg:w-[220px]">
+            <InjuryBadge status={p.injury_status} variant="dense" />
+            <span className="text-sm font-medium text-slate-200 truncate">{p.name}</span>
           </span>
           {/* Team hidden on phones (revealed at sm). */}
           <span className="hidden sm:block text-xs text-slate-500 w-12 shrink-0">{p.team_abbr}</span>
