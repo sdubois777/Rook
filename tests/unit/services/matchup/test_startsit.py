@@ -77,6 +77,19 @@ def test_lineup_is_slot_legal_all_slots_shown():
     assert counts["RB"] + counts["WR"] + counts.get("TE", 0) == 7
 
 
+def test_two_wr_rules_seat_two_dedicated_wr_plus_flex():
+    # With the league's real 2-WR config (via lineup_rules_from_slots), the lineup has
+    # WR1/WR2 + FLEX — NOT WR1/WR2/WR3 (the 3-WR DEFAULT bug).
+    from backend.services.trade.lineup import lineup_rules_from_slots
+
+    team, values = _team(_BASE)
+    rules = lineup_rules_from_slots({"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1})
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP, rules)
+    slots = [s.slot for s in ss.starters]
+    assert slots == ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "K", "DEF", "FLEX"]
+    assert [s for s in slots if s.startswith("WR")] == ["WR1", "WR2"]   # 2 dedicated WR, no WR3
+
+
 def test_covered_starters_graded_uncovered_positions_not():
     team, values = _team(_BASE)
     grades = _def_grades([("KC", "WR", "tough", 30), ("BAL", "WR", "favorable", 2)])

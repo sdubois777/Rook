@@ -48,8 +48,13 @@ N_TEAMS = 12
 # K/DEF streaming arc (slice 3): K/DST now VALUE (slice 2) + SEAT (lineup slots),
 # so they're un-stripped — first-class roster + pool + lineup positions.
 _SKILL = ("QB", "RB", "WR", "TE", "K", "DEF")
-# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE), 1 K, 1 DST.
-STARTER_NEED = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
+# The demo league is 2-WR BY DESIGN: 1 QB / 2 RB / 2 WR / 1 TE / 1 FLEX / 1 K / 1 DST.
+# roster_slots is the canonical (services/roster_slots) shape carried on the demo
+# LeagueState and fed to lineup_rules_from_slots — so the matchup optimal lineup uses
+# the REAL bridge, not the hardcoded 3-WR DEFAULT_LINEUP_RULES (which stays shared with
+# trade). STARTER_NEED (the roster-BUILD slot assignment) must agree at 2-WR.
+DEMO_ROSTER_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}
+STARTER_NEED = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
 N_STARTERS = sum(STARTER_NEED.values()) + 1   # + FLEX
 _FLEX_POS = ("RB", "WR", "TE")
 N_FLEX = 1
@@ -277,7 +282,8 @@ def build_league_state(teams_data: list[dict]) -> LeagueState:
         )
         for t in teams_data
     )
-    return LeagueState(season=DEMO_SEASON, week=DEMO_CURRENT_WEEK, teams=teams)
+    return LeagueState(season=DEMO_SEASON, week=DEMO_CURRENT_WEEK, teams=teams,
+                       roster_slots=dict(DEMO_ROSTER_SLOTS))
 
 
 def build_priors(prior_by_id: dict[str, Optional[float]]) -> dict[str, float]:
