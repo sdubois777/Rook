@@ -116,6 +116,14 @@ class NewsOut(BaseModel):
     contingent_reasoning: Optional[str] = None
 
 
+class MatchupOut(BaseModel):
+    """DST matchup context for the demo week (slice 4 tilt, slice 5a display). Additive;
+    present only on DST recs that were tilted. tilt_ppw is the honest small delta the
+    projection applied (~±2.5 cap) — the frontend renders restrained copy from it."""
+    opponent: Optional[str] = None
+    tilt_ppw: float
+
+
 class RecommendationOut(BaseModel):
     add: AddOut
     drop: Optional[DropOut]
@@ -124,6 +132,7 @@ class RecommendationOut(BaseModel):
     need_positions: list[str]
     faab: FaabOut
     news: Optional[NewsOut]
+    matchup: Optional[MatchupOut] = None
     why: str
 
 
@@ -161,8 +170,9 @@ async def load_waiver_source(db, demo: bool):
     )
 
 
-def _rec_out(r: Recommendation) -> RecommendationOut:
+def _rec_out(r: Recommendation, dst_matchup: dict[str, dict] | None = None) -> RecommendationOut:
     v = r.add
+    mc = (dst_matchup or {}).get(v.canonical_player_id) if v.position == "DEF" else None
     return RecommendationOut(
         add=AddOut(
             id=v.canonical_player_id, name=v.name, position=v.position,
@@ -186,6 +196,7 @@ def _rec_out(r: Recommendation) -> RecommendationOut:
             starter_name=r.news.starter_name, contingent_impact_pct=r.news.contingent_impact_pct,
             contingent_reasoning=r.news.contingent_reasoning,
         ) if r.news else None,
+        matchup=MatchupOut(opponent=mc.get("opponent"), tilt_ppw=mc.get("tilt", 0.0)) if mc else None,
         why=r.why,
     )
 
@@ -288,6 +299,8 @@ async def recommendations(
         season=src.state.season, week=src.state.week,
         my_team_id=acting.team_id, my_team_name=acting.team_name,
         waiver=WaiverSettingsOut(type=src.waiver_type, budget=src.faab_budget, remaining=faab_remaining),
-        needs=needs, recommendations=[_rec_out(r) for r in recs], silence=silence,
+        needs=needs,
+        recommendations=[_rec_out(r, getattr(src, "dst_matchup", {})) for r in recs],
+        silence=silence,
         demo_mode=demo, enforced=waiver_demo_enforce_gates(),
     )

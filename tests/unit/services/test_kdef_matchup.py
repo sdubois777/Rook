@@ -111,19 +111,23 @@ def test_apply_tilt_dst_only_kicker_and_offense_untouched():
     values = {"d": _iv("d", "DEF", 7.0), "k": _iv("k", "K", 9.0), "w": _iv("w", "WR", 15.0)}
     signal = {"DAL": {"sacks_allowed_pg": 4.0, "giveaways_pg": 2.0, "points_pg": 18.0},
               "PHI": {"sacks_allowed_pg": 1.0, "giveaways_pg": 0.5, "points_pg": 26.0}}
-    out = apply_dst_tilt(values, {"d": "NYG"}, signal, {"NYG": "DAL"}, week=14)
+    out, ctx = apply_dst_tilt(values, {"d": "NYG"}, signal, {"NYG": "DAL"}, week=14)
     assert out["d"].forward_ppg != 7.0                  # DST tilted (faces sack-prone DAL)
     assert out["d"].forward_ppg > 7.0
     assert out["k"].forward_ppg == 9.0                  # kicker untouched (no matchup for K)
     assert out["w"].forward_ppg == 15.0                 # offense untouched
     # season forward_value preserved for ALL (the anchor slices 2-3 built)
     assert all(out[p].forward_value == values[p].forward_value for p in values)
+    # context exposes opponent + tilt for the DST (display-only), DST-keyed
+    assert ctx["d"]["opponent"] == "DAL" and ctx["d"]["tilt"] > 0
+    assert "k" not in ctx and "w" not in ctx
 
 
 def test_dst_with_no_opponent_kept_flat_and_warned(caplog):
     values = {"d": _iv("d", "DEF", 7.0)}
     signal = {"DAL": {"sacks_allowed_pg": 4.0, "giveaways_pg": 2.0, "points_pg": 18.0}}
     with caplog.at_level(logging.WARNING):
-        out = apply_dst_tilt(values, {"d": "NYG"}, signal, {}, week=14)   # NYG on bye (no opponent)
+        out, ctx = apply_dst_tilt(values, {"d": "NYG"}, signal, {}, week=14)   # NYG on bye (no opponent)
     assert out["d"].forward_ppg == 7.0                  # flat baseline, never dropped
+    assert "d" not in ctx                               # no matchup context for a bye DST
     assert "kept at season baseline" in caplog.text     # loud-warned

@@ -214,7 +214,7 @@ async def load_league_for_analysis(db, user, demo: bool):
         # pinned week. Offense + kicker untouched.
         from backend.services.kdef_matchup import apply_dst_matchup
         from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
-        values = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
+        values, _dst_matchup = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
         return state, values, DEFAULT_ROSTER_LIMIT
 
     raise HTTPException(

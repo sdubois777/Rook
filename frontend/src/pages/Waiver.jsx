@@ -11,7 +11,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Waves, TrendingUp, TrendingDown, Minus, Lock, ArrowRight, Newspaper, Target,
+  Waves, TrendingUp, TrendingDown, Minus, Lock, ArrowRight, Newspaper, Target, Shield,
 } from 'lucide-react'
 import { fetchWaiverLeague, fetchWaiverRecommendations } from '../api/waiver'
 import { useMe } from '../hooks/useMe'
@@ -25,6 +25,8 @@ const TREND = {
 const POS_CLS = {
   QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
   WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
+  // K/DEF (streaming arc) — matches the trade page's position palette.
+  K: 'bg-violet-500/15 text-violet-300', DEF: 'bg-cyan-500/15 text-cyan-300',
 }
 const CONF_CLS = { high: 'text-emerald-400', medium: 'text-amber-400', low: 'text-slate-500',
   full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
@@ -69,6 +71,25 @@ function NewsBadge({ news }) {
           +{news.contingent_impact_pct}% projected value{news.contingent_reasoning ? ` — ${news.contingent_reasoning}` : ''}
         </div>
       )}
+    </div>
+  )
+}
+
+// DST matchup context (slice 4 tilt, display-only). HONEST framing: the tilt is a
+// gentle ~±2.5 ppw dart on a ~6-7 pt base (a ~0.20-correlation signal) — restrained
+// wording only. Favorable/tough at |tilt| >= 0.5; near-zero reads neutral, never hyped.
+function MatchupTag({ matchup }) {
+  const tilt = matchup.tilt_ppw
+  const vs = matchup.opponent ? ` vs ${matchup.opponent}` : ''
+  let label, cls
+  if (tilt >= 0.5) { label = `Favorable matchup${vs}`; cls = 'border-emerald-500/25 bg-emerald-500/5 text-emerald-300' }
+  else if (tilt <= -0.5) { label = `Tough matchup${vs}`; cls = 'border-amber-500/25 bg-amber-500/5 text-amber-300' }
+  else { label = `Even matchup${vs}`; cls = 'border-border bg-surface-2 text-slate-400' }
+  return (
+    <div className={`mt-2 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs ${cls}`}>
+      <Shield size={12} />
+      <span className="font-medium">{label}</span>
+      <span className="tabular-nums text-[11px] opacity-80">{tilt > 0 ? '+' : ''}{tilt} ppw</span>
     </div>
   )
 }
@@ -125,6 +146,8 @@ function RecCard({ rec }) {
         </span>
       </div>
 
+      {/* DST-only matchup context (backend sets `matchup` only for tilted DSTs; K + offense have none). */}
+      {rec.matchup && <MatchupTag matchup={rec.matchup} />}
       {rec.news && <NewsBadge news={rec.news} />}
     </div>
   )
