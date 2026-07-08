@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { fetchTeam } from '../api/teams'
 import { useUIStore } from '../stores/ui'
 import SystemGradeBadge from '../components/shared/SystemGradeBadge'
-import PositionBadge from '../components/shared/PositionBadge'
+import { PlayerBadges } from '../components/shared/PlayerName'
 import FlagBadge from '../components/shared/FlagBadge'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
 
@@ -157,7 +157,7 @@ export default function TeamDetail() {
             onClick={() => openPlayerDetail(p.id)}
             className="grid grid-cols-[36px_1fr_64px_72px] sm:grid-cols-[40px_1fr_56px_72px_72px_88px] lg:grid-cols-[40px_1fr_60px_80px_80px_80px_100px] gap-2 px-4 py-2.5 items-center hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50"
           >
-            <PositionBadge position={p.position} />
+            <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" />
             <span className="text-sm text-slate-200 font-medium truncate">{p.name}</span>
             <span className="hidden sm:block text-xs text-slate-400">T{p.tier || '?'}</span>
             <span className="hidden sm:block text-sm text-blue-400 font-mono text-right">

@@ -15,20 +15,8 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Swords, ArrowLeftRight, Trophy, Scale } from 'lucide-react'
 import { fetchMatchupLeague } from '../api/matchup'
+import PositionBadge from '../components/shared/PositionBadge'
 
-const POS_CLS = {
-  QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
-  WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
-  K: 'bg-violet-500/15 text-violet-300', DEF: 'bg-cyan-500/15 text-cyan-300',
-}
-
-function PosBadge({ pos }) {
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${POS_CLS[pos] || 'bg-slate-500/15 text-slate-300'}`}>
-      {pos}
-    </span>
-  )
-}
 
 // Approximate qualitative edge — margin is the headline; the band is deliberately
 // NOT a calibrated %, because no per-player variance exists (honesty rule).
@@ -110,7 +98,7 @@ function BattleGrid({ me, scout }) {
                   <div className="ml-auto h-full rounded-full bg-emerald-500/40" style={{ width: `${(g.mine / max) * 100}%` }} />
                 </div>
               </div>
-              <div className="w-10 text-center"><PosBadge pos={g.position} /></div>
+              <div className="flex w-10 justify-center"><PositionBadge position={g.position} variant="compact" /></div>
               <div className="flex items-center gap-2">
                 <div className="h-2 w-full max-w-[7rem] overflow-hidden rounded-full bg-surface-2">
                   <div className="h-full rounded-full bg-sky-500/40" style={{ width: `${(g.theirs / max) * 100}%` }} />

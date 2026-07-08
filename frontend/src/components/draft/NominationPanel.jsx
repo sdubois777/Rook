@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useDraftStore } from '../../stores/draft'
-import PositionBadge from '../shared/PositionBadge'
+import { PlayerBadges } from '../shared/PlayerName'
 
 /** "0:15" from a seconds count. */
 function fmtClock(secs) {
@@ -88,7 +88,7 @@ export default function NominationPanel() {
 
       {/* Nominee */}
       <div className="flex items-center gap-2 mb-2">
-        <PositionBadge position={rec?.position} />
+        <PlayerBadges position={rec?.position} injuryStatus={rec?.injury_status} variant="dense" />
         <span className="text-lg font-bold text-slate-100 truncate">{playerName}</span>
         {nom?.posTeam && <span className="text-xs text-slate-500">{nom.posTeam}</span>}
       </div>

@@ -1,6 +1,6 @@
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
-import PositionBadge from '../shared/PositionBadge'
+import { PlayerBadges } from '../shared/PlayerName'
 import FlagBadge from '../shared/FlagBadge'
 import { getRecAdp, getRecFpAdp, getRecAdpDiff } from '../../utils/playerUtils'
 
@@ -78,7 +78,7 @@ export default function RecommendationPanel() {
           </span>
         </div>
         <div className="flex items-center gap-2 mb-1.5">
-          <PositionBadge position={rec.position} />
+          <PlayerBadges position={rec.position} injuryStatus={rec.injury_status} variant="dense" />
           <span className="text-base font-medium text-slate-200 truncate">
             {rec.player_name}
           </span>

@@ -20,12 +20,14 @@ const INJURY_TITLE = {
   IR: 'Injured Reserve',
 }
 
-export default function InjuryBadge({ status }) {
+export default function InjuryBadge({ status, variant = 'dense' }) {
   if (!status || !INJURY_CLS[status]) return null
+  // Sizing tracks the position badge's density so the two sit together cleanly.
+  const size = variant === 'compact' ? 'px-1 py-0.5 text-[10px]' : 'px-1.5 py-0.5 text-xs'
   return (
     <span
       title={INJURY_TITLE[status]}
-      className={`rounded px-1 py-0.5 text-[10px] font-bold leading-none ${INJURY_CLS[status]}`}
+      className={`rounded font-bold leading-none shrink-0 ${size} ${INJURY_CLS[status]}`}
     >
       {status}
     </span>

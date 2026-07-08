@@ -3,12 +3,12 @@ import {
   Activity,
   AlertTriangle,
   TrendingUp,
-  TrendingDown,
   UserPlus,
   UserMinus,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react'
+import { PlayerBadges } from './PlayerName'
 
 const signalIcons = {
   injury_update: AlertTriangle,
@@ -65,6 +65,14 @@ export default function NewsFeedItem({ signal, onPlayerClick }) {
             )}
           </div>
           <div className="text-sm text-slate-300 mt-0.5">
+            {signal.player_position && (
+              <PlayerBadges
+                position={signal.player_position}
+                injuryStatus={signal.injury_status}
+                variant="compact"
+                className="mr-1 align-middle"
+              />
+            )}
             {signal.player_name && (
               signal.player_id && onPlayerClick ? (
                 <button

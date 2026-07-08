@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from backend.core.dependencies import get_db
 from backend.models.team_system import TeamSystem
 from backend.repositories.player_repo import PlayerRepository
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.repositories.team_system_repo import TeamSystemRepository
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class TeamListResponse(BaseModel):
     teams: list[TeamSummary]
 
 
-class TeamPlayerSummary(BaseModel):
+class TeamPlayerSummary(PlayerBadgeFields):
     id: str
     name: str
     position: Optional[str] = None
@@ -197,6 +198,7 @@ async def get_team(abbr: str, db=Depends(get_db)) -> TeamDetail:
             value_gap=float(p.value_gap) if p.value_gap else None,
             breakout_flag=p.breakout_flag or False,
             top_flag=top_flag,
+            injury_status=p.injury_status,
         ))
 
     return TeamDetail(

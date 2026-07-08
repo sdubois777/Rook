@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
-import PositionBadge from '../shared/PositionBadge'
+import { PlayerBadges } from '../shared/PlayerName'
 import {
   getBidCeiling,
   formatAdp,
@@ -54,7 +54,7 @@ function TargetRow({ player, isSnake, totalTeams }) {
   const urgency = isSnake ? snakeUrgencyLabel(player, totalTeams) : null
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-3 transition-colors">
-      <PositionBadge position={player.position} />
+      <PlayerBadges position={player.position} injuryStatus={player.injury_status} variant="dense" />
       <span className="text-sm text-slate-300 flex-1 truncate">{player.name}</span>
       {isSnake ? (
         <>
