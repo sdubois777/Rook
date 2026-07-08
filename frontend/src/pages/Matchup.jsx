@@ -13,9 +13,10 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Swords, ArrowLeftRight, Trophy, Scale } from 'lucide-react'
+import { Swords, ArrowLeftRight, Trophy, Scale, ClipboardList, ArrowRightLeft, Stethoscope } from 'lucide-react'
 import { fetchMatchupLeague } from '../api/matchup'
 import PositionBadge from '../components/shared/PositionBadge'
+import PlayerName from '../components/shared/PlayerName'
 
 
 // Approximate qualitative edge — margin is the headline; the band is deliberately
@@ -193,6 +194,89 @@ function StrengthLadder({ teams, myId }) {
   )
 }
 
+// --- Tier-1 start/sit: per-starter matchup grade + injury reaction + swaps -----
+const GRADE_CLS = {
+  favorable: 'bg-emerald-500/15 text-emerald-300',
+  neutral: 'bg-slate-500/15 text-slate-300',
+  tough: 'bg-amber-500/15 text-amber-300',
+}
+const GRADE_LABEL = { favorable: 'favorable', neutral: 'neutral', tough: 'tough draw' }
+
+function GradeTag({ grade, opponent }) {
+  if (!opponent) return <span className="text-[11px] text-slate-600">bye / no game</span>
+  if (!grade) return <span className="text-[11px] text-slate-500">vs {opponent}</span>
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${GRADE_CLS[grade] || GRADE_CLS.neutral}`}>
+      {GRADE_LABEL[grade] || grade} vs {opponent}
+    </span>
+  )
+}
+
+function StartSit({ ss }) {
+  if (!ss) return null
+  return (
+    <section className="rounded-lg border border-border bg-surface-1 p-4">
+      <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-white">
+        <ClipboardList size={16} className="text-brand-accent" /> Start/sit — your best lineup + the matchup
+      </div>
+      <p className="mb-3 text-[11px] text-slate-500">
+        Your optimal available lineup with each starter’s opponent matchup (WR/RB/TE). Reasoning,
+        not a directive — Out/IR players are dropped; Questionable is flagged, not benched.
+      </p>
+
+      {/* Injury reactions */}
+      {ss.replacements.length > 0 && (
+        <div className="mb-3 space-y-1">
+          {ss.replacements.map((r, i) => (
+            <div key={i} className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs text-slate-300">
+              <Stethoscope size={13} className="shrink-0 text-red-300" />
+              <span><span className="font-medium text-red-200">{r.out_name}</span> is {r.out_status === 'IR' ? 'on IR' : 'Out'}
+                {r.in_name ? <> — <span className="font-medium text-white">{r.in_name}</span> starts in his place</> : ' — slot unfilled'}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Per-starter matchups */}
+      <div className="space-y-1">
+        {ss.starters.map((s, i) => (
+          <div key={i} className="flex items-center gap-2 rounded px-1 py-1">
+            <span className="w-9 shrink-0 text-[10px] font-mono text-slate-500">{s.slot}</span>
+            <PlayerName
+              name={s.name}
+              position={s.position}
+              injuryStatus={s.injury_flag}
+              variant="dense"
+              className="min-w-0 flex-1"
+              nameClassName="text-sm text-slate-200 truncate"
+            />
+            <GradeTag grade={s.grade} opponent={s.opponent} />
+            <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">{s.forward_ppg.toFixed(1)}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Founded bench swaps */}
+      {ss.swaps.length > 0 && (
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <ArrowRightLeft size={12} /> Worth a look
+          </div>
+          <div className="space-y-1.5">
+            {ss.swaps.map((w, i) => (
+              <div key={i} className="text-xs text-slate-300">
+                <span className="font-medium text-emerald-300">{w.bench_name}</span> ({w.bench_grade} vs {w.bench_opponent})
+                {' '}draws a softer {w.position} matchup than{' '}
+                <span className="text-slate-200">{w.starter_name}</span> ({w.starter_grade || '—'}) — consider it.
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function Matchup() {
   const navigate = useNavigate()
   const [myTeamId, setMyTeamId] = useState(null)
@@ -261,6 +345,7 @@ export default function Matchup() {
           <div className="space-y-4 lg:col-span-2">
             <H2HPreview me={meName} scout={scout} />
             <BattleGrid me={meName} scout={scout} />
+            <StartSit ss={scout.start_sit} />
             <Leverage
               scout={scout}
               onExplore={() => navigate(`/trade?opponent=${encodeURIComponent(scout.opponent_team_id)}`)}

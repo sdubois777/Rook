@@ -30,6 +30,7 @@ from backend.services.matchup.scouting import (
     synthesize_week_matchups,
     win_prob_band,
 )
+from backend.services.matchup.startsit import available_lineup_roster, build_start_sit
 from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_strength_ppg, roster_strength
 from backend.services.trade.trade_demo_source import trade_demo_enabled, trade_demo_enforce_gates
 from backend.services.trade.trade_proposals import _lineup_roster, analyze_roster
@@ -62,6 +63,49 @@ class GridRowOut(BaseModel):
     theirs: float            # opponent's startable ppw at this position
 
 
+class StarterMatchupOut(BaseModel):
+    """One covered starter (WR/RB/TE/FLEX) with its as-of-week opponent matchup grade
+    and an optional injury monitor flag. grade None = bye / no scheduled game."""
+    name: str
+    position: str
+    slot: str
+    nfl_team: Optional[str] = None
+    opponent: Optional[str] = None       # None → BYE/na (no fabricated grade)
+    grade: Optional[str] = None          # favorable | neutral | tough
+    injury_flag: Optional[str] = None    # "Q" | "D" — monitor, not a downgrade
+    forward_ppg: float
+
+
+class BenchSwapOut(BaseModel):
+    """A FOUNDED bench-swap suggestion: competitive on value AND a materially softer
+    draw. A suggestion, not a directive."""
+    position: str
+    starter_name: str
+    starter_grade: Optional[str] = None
+    bench_name: str
+    bench_opponent: Optional[str] = None
+    bench_grade: Optional[str] = None
+    reason: str
+
+
+class ReplacementOut(BaseModel):
+    """An Out/IR starter excluded from the optimal lineup + who deterministically
+    fills the slot. Honest reaction, not a value claim."""
+    out_name: str
+    out_status: str                      # "O" | "IR"
+    position: str
+    in_name: Optional[str] = None
+
+
+class StartSitOut(BaseModel):
+    """Tier-1 matchup reasoning: per-starter matchup grades, Out/IR replacements, and
+    founded bench swaps. Reasoning, not 'start X / bench Y'. Zero-metered."""
+    starters: list[StarterMatchupOut]
+    swaps: list[BenchSwapOut]
+    replacements: list[ReplacementOut]
+    covered_positions: list[str]
+
+
 class ScoutOut(BaseModel):
     """The acting team's H2H scouting vs its week opponent. All non-metered."""
     opponent_team_id: str
@@ -83,6 +127,7 @@ class ScoutOut(BaseModel):
     their_surplus_my_needs: list[str]    # their real depth ∩ your needs
     my_surplus_their_needs: list[str]    # your real depth ∩ their needs
     is_reciprocal_fit: bool = False      # BOTH directions non-empty → a real mirror
+    start_sit: Optional[StartSitOut] = None   # Tier-1 matchup reasoning (acting team)
 
 
 class MatchupLeagueResponse(BaseModel):
@@ -157,13 +202,26 @@ async def league(
         away_team_name=name_by_id.get(m.away_team_id, m.away_team_id),
     ) for m in matchups]
 
+    # --- Tier-1 start/sit inputs: NFL opponent per team + as-of-week def grades ---
+    # Both pure/cached; run off-thread so the (first-call) PBP build doesn't block the
+    # event loop. Point-in-time (weeks 1..W-1) — no look-ahead.
+    import asyncio
+
+    from backend.integrations.nfl_data import fetch_schedules
+    from backend.services.kdef_matchup import opponent_by_team
+    from backend.services.matchup.def_grades import as_of_week_def_grades
+
+    sched = await asyncio.to_thread(fetch_schedules, state.season)
+    nfl_opp = {str(k).upper(): v for k, v in opponent_by_team(sched, state.week).items()}
+    def_grades = await asyncio.to_thread(as_of_week_def_grades, state.season, state.week)
+
     # --- scout the acting team's opponent ---
     scout = None
     opp_id = opponent_of(matchups, acting.team_id)
     if opp_id is not None:
         opp = next((t for t in state.teams if t.team_id == opp_id), None)
         if opp is not None:
-            scout = _scout(acting, opp, values, rules, replacement)
+            scout = _scout(acting, opp, values, rules, replacement, def_grades, nfl_opp)
 
     return MatchupLeagueResponse(
         season=state.season, week=state.week,
@@ -173,9 +231,11 @@ async def league(
     )
 
 
-def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
-    my_roster = _lineup_roster(acting, values)
-    opp_roster = _lineup_roster(opp, values)
+def _scout(acting, opp, values, rules, replacement, def_grades=None, nfl_opp=None) -> ScoutOut:
+    # Injury-aware: an Out/IR player can't be in your best lineup this week, so both
+    # teams' optimal lineups (margin/grid/start-sit) exclude them consistently.
+    my_roster = available_lineup_roster(acting, values, rules)
+    opp_roster = available_lineup_roster(opp, values, rules)
 
     my_ppw = lineup_strength_ppg(my_roster, rules, replacement)
     opp_ppw = lineup_strength_ppg(opp_roster, rules, replacement)
@@ -208,6 +268,9 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
         values, replacement,
     )
 
+    # Tier-1 start/sit — per-starter matchup grade, Out/IR replacements, founded swaps.
+    start_sit_out = _build_start_sit_out(acting, values, def_grades, nfl_opp or {}, rules)
+
     return ScoutOut(
         opponent_team_id=opp.team_id, opponent_team_name=opp.team_name,
         my_ppw=my_ppw, opp_ppw=opp_ppw, margin=margin,
@@ -218,4 +281,25 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
         their_surplus_my_needs=list(lev.their_surplus_my_needs),
         my_surplus_their_needs=list(lev.my_surplus_their_needs),
         is_reciprocal_fit=lev.is_reciprocal_fit,
+        start_sit=start_sit_out,
+    )
+
+
+def _build_start_sit_out(acting, values, def_grades, nfl_opp, rules) -> StartSitOut:
+    ss = build_start_sit(acting, values, def_grades, nfl_opp, rules)
+    return StartSitOut(
+        starters=[StarterMatchupOut(
+            name=s.name, position=s.position, slot=s.slot, nfl_team=s.nfl_team,
+            opponent=s.opponent, grade=s.grade, injury_flag=s.injury_flag,
+            forward_ppg=s.forward_ppg,
+        ) for s in ss.starters],
+        swaps=[BenchSwapOut(
+            position=w.position, starter_name=w.starter_name, starter_grade=w.starter_grade,
+            bench_name=w.bench_name, bench_opponent=w.bench_opponent, bench_grade=w.bench_grade,
+            reason=w.reason,
+        ) for w in ss.swaps],
+        replacements=[ReplacementOut(
+            out_name=r.out_name, out_status=r.out_status, position=r.position, in_name=r.in_name,
+        ) for r in ss.replacements],
+        covered_positions=list(ss.covered_positions),
     )
