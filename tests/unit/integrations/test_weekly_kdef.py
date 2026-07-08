@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from backend.integrations.nfl_weekly import (
+    _kicker_name_key,
     build_weekly_kdef,
     compute_weekly_kdef,
 )
@@ -168,6 +169,79 @@ def test_unmapped_team_and_kicker_are_loud_warned_and_dropped(caplog):
     assert "kicker-week" in caplog.text                            # kicker loud-warn
     assert (built["position"] == "K").sum() == 0                   # no kicker resolved (empty bridge)
     assert not ((built["position"] == "DEF") & (built["nfl_team"] == "DAL")).any()  # DAL dropped
+
+
+# ---------------------------------------------------------------------------
+# Kicker gsis-join gap (slice 5b): name+team fallback for null-gsis kickers.
+# A kicker whose gsis is null in the DB AND absent from the nflverse bridge
+# (Sleeper-native UDFA/rookie — e.g. C.Smyth, B.Sauls) still has a valid Player
+# row and must resolve by (first-initial, last, team), loudly; a churned kicker
+# with no row at all must loud-warn WITH IDENTITY, never silently drop.
+# ---------------------------------------------------------------------------
+_K_EMPTY_BRIDGE = pd.DataFrame(columns=["gsis_id", "sleeper_id", "sportradar_id"])
+_K_NO_MAPS = {"sleeper": {}, "sportradar": {}, "gsis": {}}
+
+
+def _k_raw_row(player_id, player_name, nfl_team, week=5):
+    """A minimal one-row K raw frame (the shape compute_weekly_kdef emits)."""
+    row = {
+        "position": "K", "player_id": player_id, "player_name": player_name,
+        "nfl_team": nfl_team, "week": week, "fg_made_distances": [40],
+        "fg_att": 1, "fg_made": 1, "fg_missed": 0, "fg_blocked": 0,
+        "xp_att": 0, "xp_made": 0, "xp_missed": 0, "xp_blocked": 0,
+    }
+    return pd.DataFrame([row])
+
+
+def test_kicker_name_key_collapses_abbrev_and_full():
+    # PBP abbreviates ("C.Smyth"); Player.name is full ("Charlie Smyth") — both
+    # must produce the same key so the fallback can join them.
+    assert _kicker_name_key("C.Smyth") == _kicker_name_key("Charlie Smyth") == ("c", "smyth")
+    assert _kicker_name_key("B.Sauls") == _kicker_name_key("Ben Sauls") == ("b", "sauls")
+    assert _kicker_name_key("Wil Lutz Jr.") == ("w", "lutz")   # suffix stripped
+    assert _kicker_name_key("") is None and _kicker_name_key(None) is None
+
+
+def test_null_gsis_kicker_resolved_by_name_team_fallback_loudly(caplog):
+    raw = _k_raw_row("00-0039229", "C.Smyth", "NO")            # gsis not in the bridge
+    kmap = {("c", "smyth", "NO"): ("smyth-uuid", "Charlie Smyth")}
+    with caplog.at_level(logging.WARNING):
+        built = build_weekly_kdef(2025, _K_NO_MAPS, {}, bridge=_K_EMPTY_BRIDGE,
+                                  kdef_raw=raw, kicker_name_map=kmap)
+    k = built[built["position"] == "K"]
+    assert len(k) == 1 and k.iloc[0]["canonical_player_id"] == "smyth-uuid"   # resolved
+    assert "NAME+TEAM FALLBACK" in caplog.text                 # loud
+    assert "C.Smyth (NO)" in caplog.text                       # identity of the recovered kicker
+    assert "backfill_kicker_gsis" in caplog.text               # points at the data fix
+
+
+def test_fallback_is_team_scoped_no_cross_team_mismatch(caplog):
+    # Same initial+last on a DIFFERENT team must NOT resolve (guards mis-attribution).
+    raw = _k_raw_row("00-0039229", "C.Smyth", "NO")
+    kmap = {("c", "smyth", "GB"): ("wrong-team-uuid", "Charlie Smyth")}   # GB, not NO
+    with caplog.at_level(logging.WARNING):
+        built = build_weekly_kdef(2025, _K_NO_MAPS, {}, bridge=_K_EMPTY_BRIDGE,
+                                  kdef_raw=raw, kicker_name_map=kmap)
+    assert (built["position"] == "K").sum() == 0               # dropped, not mis-joined
+    assert "UNRESOLVED" in caplog.text and "C.Smyth (NO)" in caplog.text
+
+
+def test_unresolvable_kicker_warns_with_identity_not_silent(caplog):
+    raw = _k_raw_row("00-0034161", "D.Carlson", "LV")         # churned: no gsis, no row
+    with caplog.at_level(logging.WARNING):
+        built = build_weekly_kdef(2025, _K_NO_MAPS, {}, bridge=_K_EMPTY_BRIDGE,
+                                  kdef_raw=raw, kicker_name_map={})
+    assert (built["position"] == "K").sum() == 0               # dropped
+    assert "UNRESOLVED" in caplog.text                         # loud
+    assert "D.Carlson (LV)" in caplog.text                     # identity, never a silent drop
+
+
+def test_gsis_resolution_wins_over_fallback():
+    # When the gsis crosswalk resolves, the fallback map is not consulted.
+    built = build_weekly_kdef(2025, _MAPS, _DST_MAP, bridge=_BRIDGE, kdef_raw=_raw(),
+                              kicker_name_map={("e", "mcpherson", "CLE"): ("fallback-uuid", "x")})
+    mc = _line(built, "K", canonical_player_id="mcp-uuid", week=12)   # gsis path, not fallback
+    assert int(mc["fg_made"]) == 6
 
 
 # ---------------------------------------------------------------------------

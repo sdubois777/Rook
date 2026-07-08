@@ -728,6 +728,40 @@ async def load_dst_team_map(db) -> dict[str, str]:
     return {str(team).upper(): (str(pid), name) for pid, team, name in rows if team}
 
 
+def _kicker_name_key(name) -> Optional[tuple[str, str]]:
+    """(first-initial, last-name) for matching abbreviated PBP kicker names
+    ('C.Smyth') against full Player.name ('Charlie Smyth'). Suffix-stripped and
+    lowercased (reusing roster_changes._norm_name), with dots treated as
+    separators so both name formats collapse to the same key."""
+    from backend.agents.roster_changes import _norm_name
+
+    n = _norm_name(str(name or "")).replace(".", " ")
+    toks = n.split()
+    if not toks:
+        return None
+    return (toks[0][0], toks[-1])
+
+
+async def load_kicker_name_map(db) -> dict[tuple[str, str, str], tuple[str, str]]:
+    """{(first-initial, last-name, team_abbr) -> (canonical uuid, name)} for K
+    Player rows — the name+team fallback for a kicker whose gsis is null in the DB
+    AND absent from the nflverse bridge (Sleeper-native UDFA/rookie). Keyed
+    within-team so an initial+last collision across teams can't mis-resolve."""
+    from sqlalchemy import select
+
+    from backend.models.player import Player
+
+    rows = (await db.execute(
+        select(Player.id, Player.name, Player.team_abbr).where(Player.position == "K")
+    )).all()
+    out: dict[tuple[str, str, str], tuple[str, str]] = {}
+    for pid, name, team in rows:
+        key = _kicker_name_key(name)
+        if key and team:
+            out.setdefault((key[0], key[1], str(team).upper()), (str(pid), name))
+    return out
+
+
 def build_weekly_kdef(
     season: int,
     player_maps: dict[str, dict[str, str]],
@@ -735,12 +769,15 @@ def build_weekly_kdef(
     *,
     bridge: Optional[pd.DataFrame] = None,
     kdef_raw: Optional[pd.DataFrame] = None,
+    kicker_name_map: Optional[dict[tuple[str, str, str], tuple[str, str]]] = None,
     weeks: Optional[Iterable[int]] = None,
 ) -> pd.DataFrame:
     """Attach canonical ids to the raw K/DST lines: DST via the team map
-    (defteam → DEF player), kickers via the existing gsis crosswalk. Loud-warns
-    every defteam / kicker-week that fails to resolve; unresolved rows are dropped
-    (after warning), never silently kept. One row per (canonical_player_id, week)."""
+    (defteam → DEF player), kickers via the gsis crosswalk with a name+team
+    fallback. Loud-warns every defteam / kicker-week that fails to resolve, and
+    loud-warns every kicker recovered by the fallback (a null-gsis data-quality
+    signal); unresolved rows are dropped (after warning), never silently kept.
+    One row per (canonical_player_id, week)."""
     if kdef_raw is None:
         kdef_raw = compute_weekly_kdef(season)
     if kdef_raw.empty:
@@ -765,15 +802,50 @@ def build_weekly_kdef(
                 len(unmapped), unmapped,
             )
 
-    # Kicker — existing gsis crosswalk.
+    # Kicker — gsis crosswalk, then a name+team fallback for null-gsis rows.
     if not k.empty:
         k = attach_canonical_ids(k, "player_id", "gsis", bridge=bridge, player_maps=player_maps)
+
+        # Fallback: a kicker whose gsis is null in the DB AND absent from the
+        # nflverse bridge (Sleeper-native UDFA/rookie) still has a valid Player
+        # row — resolve it by normalized first-initial+last name within the same
+        # NFL team, mirroring the DST team-join. A gsis miss is NEVER a silent
+        # drop: recoveries are loud (data-quality signal → backfill those rows).
+        if kicker_name_map:
+            miss = k["canonical_player_id"].isna()
+            if miss.any():
+                def _fallback(row):
+                    key = _kicker_name_key(row["player_name"])
+                    if not key:
+                        return None
+                    hit = kicker_name_map.get((key[0], key[1], str(row.get("nfl_team") or "").upper()))
+                    return hit[0] if hit else None
+
+                recovered_ids = k.loc[miss].apply(_fallback, axis=1)
+                k.loc[miss, "canonical_player_id"] = recovered_ids
+                recovered = k.loc[miss & k["canonical_player_id"].notna()]
+                if len(recovered):
+                    rec_ident = sorted({
+                        f"{n} ({t})" for n, t in
+                        recovered[["player_name", "nfl_team"]].itertuples(index=False)
+                    })
+                    logger.warning(
+                        "build_weekly_kdef: %d kicker-week row(s) had a NULL/absent gsis and were "
+                        "resolved by NAME+TEAM FALLBACK -- backfill gsis on these Player rows "
+                        "(scripts/backfill_kicker_gsis.py): %s",
+                        len(recovered), rec_ident[:12],
+                    )
+
         k_unmapped = k[k["canonical_player_id"].isna()]
         if len(k_unmapped):
-            names = sorted(k_unmapped["player_name"].dropna().unique())
+            ident = sorted({
+                f"{n} ({t})" for n, t in
+                k_unmapped[["player_name", "nfl_team"]].dropna(subset=["player_name"]).itertuples(index=False)
+            })
             logger.warning(
-                "build_weekly_kdef: %d kicker-week row(s) unresolved via crosswalk (dropped): %s",
-                len(k_unmapped), names[:8],
+                "build_weekly_kdef: %d kicker-week row(s) UNRESOLVED (no gsis match and no name+team "
+                "fallback -- likely a season-only kicker with no current Player row; dropped): %s",
+                len(k_unmapped), ident[:12],
             )
 
     out = pd.concat([f for f in (dst, k) if not f.empty], ignore_index=True)
@@ -802,8 +874,11 @@ async def weekly_kdef_usage(
     try:
         player_maps = await load_player_maps(db)
         dst_team_map = await load_dst_team_map(db)
+        kicker_name_map = await load_kicker_name_map(db)
     finally:
         if own_db:
             await db.close()
 
-    return build_weekly_kdef(season, player_maps, dst_team_map, weeks=weeks)
+    return build_weekly_kdef(
+        season, player_maps, dst_team_map, kicker_name_map=kicker_name_map, weeks=weeks
+    )
