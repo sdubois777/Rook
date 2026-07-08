@@ -52,6 +52,7 @@ def _make_player(**overrides):
     p.notes = overrides.get("notes", None)
     p.dependencies = overrides.get("dependencies", [])
     p.injury_profile = overrides.get("injury_profile", None)
+    p.injury_status = overrides.get("injury_status", None)
     p.profile = overrides.get("profile", None)
     p.schedule = overrides.get("schedule", None)
     p.beat_signals = overrides.get("beat_signals", [])

@@ -100,7 +100,7 @@ async def build_news_map(
     #    (because recommendations keys inclusion + the rank bonus off news presence)
     #    would wrongly rescue + up-rank an injured add. The SAME signal_type on a
     #    STARTER is still handled — as an opportunity for his backup — by path 2 below.
-    for sig, _pname, _pteam, _ppos in rows:
+    for sig, _pname, _pteam, _ppos, _pinj in rows:
         pid = str(sig.player_id) if sig.player_id else None
         if pid and pid in pool_ids and pid not in news and sig.signal_type in DIRECT_POSITIVE_TYPES:
             news[pid] = NewsInfo(
@@ -112,7 +112,7 @@ async def build_news_map(
     # 2. OPPORTUNITY — a starter's opportunity signal → surface the next man up.
     opp = [
         (str(sig.player_id), sig, pteam, ppos)
-        for sig, _pn, pteam, ppos in rows
+        for sig, _pn, pteam, ppos, _pinj in rows
         if sig.signal_type in OPPORTUNITY_TYPES and sig.player_id and pteam and ppos
     ]
     if opp:

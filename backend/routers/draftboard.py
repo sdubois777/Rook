@@ -18,6 +18,7 @@ from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.repositories.player_repo import draftable_filter
 from backend.utils.seasons import get_current_season
 
@@ -35,7 +36,7 @@ class DraftBoardFlag(BaseModel):
     confidence: Optional[str] = None
 
 
-class DraftBoardPlayer(BaseModel):
+class DraftBoardPlayer(PlayerBadgeFields):
     id: str
     name: str
     team_abbr: Optional[str] = None
@@ -213,6 +214,7 @@ async def get_draftboard(
             ),
             breakout_flag=p.breakout_flag or False,
             is_rookie=p.is_rookie or False,
+            injury_status=p.injury_status,
             injury_risk_level=p.injury_profile.overall_risk_level if p.injury_profile else None,
             ai_bid_ceiling=p.ai_bid_ceiling,
             pay_up_flag=p.pay_up_flag or False,

@@ -1,5 +1,5 @@
 import { useDraftStore } from '../../stores/draft'
-import PositionBadge from '../shared/PositionBadge'
+import { PlayerBadges } from '../shared/PlayerName'
 
 export const POSITION_SLOTS = {
   QB: 1,
@@ -128,7 +128,7 @@ export default function MyRoster() {
                 <span className="text-[10px] text-slate-600 w-6 font-mono">{pos}</span>
                 {pick ? (
                   <>
-                    <PositionBadge position={pick.position} />
+                    <PlayerBadges position={pick.position} injuryStatus={pick.injury_status} variant="dense" />
                     <span className="text-sm text-slate-300 flex-1">{pick.player_name}</span>
                     <span className="text-xs font-mono text-slate-500">${pick.price}</span>
                   </>

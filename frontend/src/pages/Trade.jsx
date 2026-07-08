@@ -7,7 +7,7 @@
  * removes it; the opponent selector and the rest of the page are permanent.
  */
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, Lock, X,
@@ -15,6 +15,7 @@ import {
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
+import { PlayerBadges } from '../components/shared/PlayerName'
 import VerdictPanel from '../components/trade/VerdictPanel'
 import SilenceExplainer from '../components/trade/SilenceExplainer'
 
@@ -36,20 +37,7 @@ const TREND = {
   falling: { Icon: TrendingDown, cls: 'text-red-400' },
   stable: { Icon: Minus, cls: 'text-slate-500' },
 }
-const POS_CLS = {
-  QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
-  WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
-  K: 'bg-violet-500/15 text-violet-300', DEF: 'bg-cyan-500/15 text-cyan-300',
-}
 const CONF_CLS = { full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
-
-function PosBadge({ pos }) {
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${POS_CLS[pos] || 'bg-slate-500/15 text-slate-300'}`}>
-      {pos}
-    </span>
-  )
-}
 
 function PlayerRow({ p, selected, onToggle, accent }) {
   const t = TREND[p.value_trend] || TREND.stable
@@ -62,7 +50,7 @@ function PlayerRow({ p, selected, onToggle, accent }) {
       onClick={() => onToggle(p.id)}
       className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left transition-colors min-h-11 ${ring}`}
     >
-      <PosBadge pos={p.position} />
+      <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="compact" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium text-white">{p.name}</span>
@@ -127,10 +115,17 @@ export default function Trade() {
   const [give, setGive] = useState([])
   const [getIds, setGetIds] = useState([])
 
+  // Handoff from the Matchup page: ?opponent=<team_id> pre-seeds the Build-tab
+  // opponent (the default tab is already 'build'). Derived — never setState in an
+  // effect — and it NEVER auto-runs a metered call (analyze/ideas fire only on click).
+  const [searchParams] = useSearchParams()
+  const preOpponent = searchParams.get('opponent')
+
   const effMyId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
   const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
   const otherTeams = useMemo(() => league?.teams?.filter((t) => t.team_id !== effMyId) || [], [league, effMyId])
-  const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : otherTeams[0]?.team_id
+  const preValidOpp = preOpponent && otherTeams.some((t) => t.team_id === preOpponent) ? preOpponent : null
+  const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : (preValidOpp || otherTeams[0]?.team_id)
   const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
   const qc = useQueryClient()

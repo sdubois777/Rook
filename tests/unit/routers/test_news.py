@@ -52,7 +52,7 @@ async def test_get_news_feed(mock_signal):
     count_result.scalar.return_value = 1
 
     # Data query — returns Row-like tuples
-    row = (mock_signal, "Patrick Mahomes", "KC", "QB")
+    row = (mock_signal, "Patrick Mahomes", "KC", "QB", "Q")
     data_result = MagicMock()
     data_result.all.return_value = [row]
 
@@ -76,7 +76,7 @@ async def test_get_news_with_filters(mock_signal):
     count_result = MagicMock()
     count_result.scalar.return_value = 1
 
-    row = (mock_signal, "Patrick Mahomes", "KC", "QB")
+    row = (mock_signal, "Patrick Mahomes", "KC", "QB", "Q")
     data_result = MagicMock()
     data_result.all.return_value = [row]
 

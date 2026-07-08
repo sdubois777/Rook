@@ -67,6 +67,7 @@ def build_bias_analysis(
             "id": str(p.id),
             "name": p.name,
             "position": p.position,
+            "injury_status": p.injury_status,
             "market_value_league": float(mctx["market_value_league"]) if mctx["market_value_league"] is not None else None,
             "market_value_fantasypros": float(mctx["market_value_fantasypros"]) if mctx["market_value_fantasypros"] is not None else None,
             "bias": float(mctx["league_bias"]),

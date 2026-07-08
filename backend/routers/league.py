@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.dependencies import get_current_user, get_db
 from backend.models.user import User
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.services.league_analysis import build_bias_analysis
 from backend.repositories.league_auction_repo import (
     LeagueAuctionHistoryRepository,
@@ -42,7 +43,7 @@ class PositionBias(BaseModel):
     player_count: int
 
 
-class BiasPlayer(BaseModel):
+class BiasPlayer(PlayerBadgeFields):
     id: str
     name: str
     position: Optional[str] = None

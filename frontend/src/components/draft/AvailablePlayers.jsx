@@ -2,6 +2,7 @@ import { useMemo, useCallback } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
 import PositionBadge from '../shared/PositionBadge'
+import InjuryBadge from '../shared/InjuryBadge'
 import SearchInput from '../shared/SearchInput'
 import { FilterSelect } from '../shared/FilterBar'
 import { buildPositionOptions } from '../../lib/constants'
@@ -112,10 +113,11 @@ export default function AvailablePlayers() {
               className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/30"
             >
               <div className="w-8">
-                <PositionBadge position={p.position} />
+                <PositionBadge position={p.position} variant="dense" />
               </div>
-              <span className="text-sm text-slate-300 flex-1 truncate">
-                {p.name}
+              <span className="flex flex-1 items-center gap-1.5 min-w-0">
+                <InjuryBadge status={p.injury_status} variant="dense" />
+                <span className="text-sm text-slate-300 truncate">{p.name}</span>
               </span>
               <span className="text-xs text-slate-600 w-10">{p.team_abbr}</span>
               {isSnake ? (

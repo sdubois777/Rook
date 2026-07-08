@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.core.dependencies import get_credit_service, get_current_user, get_db
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.services.trade.trade_analysis import DEFAULT_ROSTER_LIMIT
 from backend.services.waiver.news_tiein import build_news_map
 from backend.services.waiver.recommendations import Recommendation, best_add, recommend
@@ -39,7 +40,7 @@ class WaiverRecommendationsRequest(BaseModel):
     my_team_id: Optional[str] = Field(None, description="acting team; defaults to your team")
 
 
-class LeaguePlayerOut(BaseModel):
+class LeaguePlayerOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -74,7 +75,7 @@ class WaiverLeagueResponse(BaseModel):
     enforced: bool
 
 
-class AddOut(BaseModel):
+class AddOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -87,7 +88,7 @@ class AddOut(BaseModel):
     sell_high: bool
 
 
-class DropOut(BaseModel):
+class DropOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -170,18 +171,25 @@ async def load_waiver_source(db, demo: bool):
     )
 
 
-def _rec_out(r: Recommendation, dst_matchup: dict[str, dict] | None = None) -> RecommendationOut:
+def _rec_out(
+    r: Recommendation,
+    dst_matchup: dict[str, dict] | None = None,
+    injury_by_id: dict[str, str] | None = None,
+) -> RecommendationOut:
     v = r.add
     mc = (dst_matchup or {}).get(v.canonical_player_id) if v.position == "DEF" else None
+    inj = injury_by_id or {}
     return RecommendationOut(
         add=AddOut(
             id=v.canonical_player_id, name=v.name, position=v.position,
             nfl_team=r.add_nfl_team, forward_value=v.forward_value, forward_ppg=v.forward_ppg,
             value_trend=v.value_trend.value, confidence=v.confidence.value,
             buy_low=v.buy_low, sell_high=v.sell_high,
+            injury_status=inj.get(v.canonical_player_id),
         ),
         drop=DropOut(id=r.drop.id, name=r.drop.name, position=r.drop.position,
-                     forward_value=r.drop.forward_value) if r.drop else None,
+                     forward_value=r.drop.forward_value,
+                     injury_status=inj.get(r.drop.id)) if r.drop else None,
         lineup_delta_ppw=r.lineup_delta_ppw, fills_need=r.fills_need,
         need_positions=list(r.need_positions),
         faab=FaabOut(
@@ -227,6 +235,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
                 forward_value=v.forward_value if v else 0.0,
                 value_trend=v.value_trend.value if v else "stable",
                 confidence=v.confidence.value if v else "insufficient",
+                injury_status=rp.injury_status,
             ))
         teams.append(LeagueTeamOut(
             team_id=team.team_id, team_name=team.team_name, is_me=team.is_me,
@@ -295,12 +304,20 @@ async def recommendations(
             near_miss_gain=round(nm[1], 2) if nm else None,
         )
 
+    # Injury badge — id → canonical status across the pool + every rostered player
+    # (the add comes from the pool, the drop from the acting roster).
+    injury_by_id = {
+        rp.canonical_player_id: rp.injury_status
+        for rp in [*src.pool, *(p for t in src.state.teams for p in t.roster)]
+        if rp.injury_status
+    }
+
     return WaiverRecommendationsResponse(
         season=src.state.season, week=src.state.week,
         my_team_id=acting.team_id, my_team_name=acting.team_name,
         waiver=WaiverSettingsOut(type=src.waiver_type, budget=src.faab_budget, remaining=faab_remaining),
         needs=needs,
-        recommendations=[_rec_out(r, getattr(src, "dst_matchup", {})) for r in recs],
+        recommendations=[_rec_out(r, getattr(src, "dst_matchup", {}), injury_by_id) for r in recs],
         silence=silence,
         demo_mode=demo, enforced=waiver_demo_enforce_gates(),
     )

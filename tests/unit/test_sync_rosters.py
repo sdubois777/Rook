@@ -95,6 +95,46 @@ def _mock_session(existing_players: list):
 
 
 @pytest.mark.asyncio
+async def test_injury_status_persisted_as_canonical_from_sleeper():
+    """Sleeper injury_status persists on the matched Player row as a canonical code
+    (Questionable -> 'Q'), timestamped. Display-only — no cache invalidation."""
+    player = _make_player(name="Bucky Irving", position="RB", team_abbr="TB",
+                          sportradar_id="sr-11584")
+    player.injury_status = None
+    player.injury_status_updated_at = None
+    sleeper_df = _make_sleeper_df([{
+        "player_id": "11584", "full_name": "Bucky Irving", "position": "RB",
+        "team": "TB", "sportradar_id": "sr-11584", "injury_status": "Questionable",
+    }])
+    session = _mock_session([player])
+    with patch("backend.integrations.sleeper.fetch_sleeper_players", return_value=sleeper_df):
+        from scripts.sync_rosters import sync_players_from_sleeper
+        await sync_players_from_sleeper(db=session)
+
+    assert player.injury_status == "Q"                     # canonical, not the raw string
+    assert player.injury_status_updated_at is not None      # timestamped on change
+
+
+@pytest.mark.asyncio
+async def test_healthy_player_injury_status_stays_none():
+    """A player with no Sleeper injury_status keeps injury_status None (no badge)."""
+    player = _make_player(name="Healthy Guy", position="WR", team_abbr="ATL",
+                          sportradar_id="sr-hg")
+    player.injury_status = None
+    player.injury_status_updated_at = None
+    sleeper_df = _make_sleeper_df([{
+        "player_id": "200", "full_name": "Healthy Guy", "position": "WR",
+        "team": "ATL", "sportradar_id": "sr-hg",  # no injury_status key
+    }])
+    session = _mock_session([player])
+    with patch("backend.integrations.sleeper.fetch_sleeper_players", return_value=sleeper_df):
+        from scripts.sync_rosters import sync_players_from_sleeper
+        await sync_players_from_sleeper(db=session)
+
+    assert player.injury_status is None
+
+
+@pytest.mark.asyncio
 async def test_team_change_invalidates_old_team_cache():
     """Player moving from ATL to BUF invalidates ATL cache."""
     player = _make_player(

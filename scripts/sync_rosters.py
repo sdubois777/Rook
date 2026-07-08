@@ -34,6 +34,8 @@ import pandas as pd
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend.utils.injury_status import to_canonical
+
 # Strip suffixes for fuzzy name matching (III, Jr, Sr, II, IV, V)
 _SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 
@@ -178,6 +180,10 @@ async def sync_players_from_sleeper(
                 if pd.notna(row.get("depth_chart_order"))
                 else None
             )
+            # Live injury designation for the status badge — canonical code from the
+            # Sleeper injury_status already in this feed (loud-warns unknown strings).
+            # Display-only: NOT a valuation input, so it never invalidates any cache.
+            new_injury = to_canonical(row.get("injury_status"))
 
             if not full_name or not position:
                 skipped += 1
@@ -236,6 +242,11 @@ async def sync_players_from_sleeper(
                         existing.age = age
                     if years_exp is not None:
                         existing.nfl_seasons_played = years_exp
+                    # Injury badge — bump the timestamp only when the code changes
+                    # (display data; no cache invalidation).
+                    if existing.injury_status != new_injury:
+                        existing.injury_status = new_injury
+                        existing.injury_status_updated_at = datetime.now(timezone.utc)
 
                 updated += 1
             else:
@@ -264,6 +275,10 @@ async def sync_players_from_sleeper(
                         gsis_id=gsis,
                         age=age,
                         depth_chart_order=new_depth,
+                        injury_status=new_injury,
+                        injury_status_updated_at=(
+                            datetime.now(timezone.utc) if new_injury else None
+                        ),
                     )
                     session.add(new_player)
                 else:

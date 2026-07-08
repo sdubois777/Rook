@@ -1,6 +1,6 @@
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'
-import PositionBadge from '../shared/PositionBadge'
+import { PlayerBadges } from '../shared/PlayerName'
 import { POSITION_SLOTS, assignToSlot } from './MyRoster'
 
 // A team is dangerous when the total ai_bid_ceiling of its roster crosses this
@@ -35,7 +35,7 @@ function RosterSlotGrid({ roster, showPrices = true }) {
               <span className="text-[10px] text-slate-600 w-6 font-mono">{pos}</span>
               {pick ? (
                 <>
-                  <PositionBadge position={pick.position} />
+                  <PlayerBadges position={pick.position} injuryStatus={pick.injury_status} variant="dense" />
                   <span className="text-sm text-slate-300 flex-1 truncate">
                     {pick.player_name}
                   </span>
