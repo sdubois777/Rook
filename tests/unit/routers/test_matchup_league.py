@@ -157,6 +157,8 @@ def test_matchup_path_is_non_metered():
         Path("backend/routers/matchup.py"),
         Path("backend/services/matchup/scouting.py"),
         Path("backend/services/matchup/__init__.py"),
+        Path("backend/services/matchup/startsit.py"),
+        Path("backend/services/matchup/def_grades.py"),
     ):
         src = path.read_text(encoding="utf-8")
         hits = [b for b in banned if b in src]
