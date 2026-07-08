@@ -209,6 +209,12 @@ async def load_league_for_analysis(db, user, demo: bool):
         source = await seed_demo_league(db)
         state = source.get_league_state()
         values = evaluate_league(state, source.weekly_usage, priors=source.priors)
+        # K/DEF streaming arc (slice 4): DST-only matchup-weekly tilt — replace flat
+        # season DST forward_ppg with a gentle opponent-adjusted number for the demo's
+        # pinned week. Offense + kicker untouched.
+        from backend.services.kdef_matchup import apply_dst_matchup
+        from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
+        values = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
         return state, values, DEFAULT_ROSTER_LIMIT
 
     raise HTTPException(
