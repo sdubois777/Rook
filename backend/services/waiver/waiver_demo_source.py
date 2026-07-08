@@ -82,6 +82,8 @@ class WaiverDemoSource:
     waiver_type: str = "faab"
     faab_budget: int = FAAB_BUDGET_DEFAULT
     faab_remaining_by_team: dict[str, int] = field(default_factory=dict)
+    # {dst_canonical_id: {"opponent", "tilt"}} for the demo week (slice 5a display).
+    dst_matchup: dict[str, dict] = field(default_factory=dict)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -116,7 +118,7 @@ async def seed_demo_waiver(db, *, weekly_usage: Optional[pd.DataFrame] = None) -
     # untouched). Pool + rostered DST re-rank by the demo week's opponent matchup.
     from backend.services.kdef_matchup import apply_dst_matchup
     from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
-    values = apply_dst_matchup(values, aug, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
+    values, dst_matchup = apply_dst_matchup(values, aug, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
 
     faab_remaining = {
         t.team_id: _demo_faab_remaining(t.team_id, i) for i, t in enumerate(state.teams)
@@ -127,7 +129,7 @@ async def seed_demo_waiver(db, *, weekly_usage: Optional[pd.DataFrame] = None) -
     )
     return WaiverDemoSource(
         state=state, pool=pool, values=values, weekly_usage=weekly, priors=priors,
-        faab_remaining_by_team=faab_remaining,
+        faab_remaining_by_team=faab_remaining, dst_matchup=dst_matchup,
     )
 
 

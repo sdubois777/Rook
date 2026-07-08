@@ -115,14 +115,17 @@ def dst_tilt(opp_sig: dict, means: dict[str, float]) -> float:
     return round(max(-DST_TILT_CAP, min(DST_TILT_CAP, raw)), 2)
 
 
-def apply_dst_tilt(values, dst_team_by_id, offense_signal, opp_map, week) -> dict:
-    """Return a new values dict with each DST's forward_ppg = season baseline + gentle
-    matchup tilt. DST ONLY — offense and kicker values are copied through untouched.
-    Loud-warns any DST with no opponent (bye) or no opponent signal — kept at flat
-    baseline, never dropped."""
+def apply_dst_tilt(values, dst_team_by_id, offense_signal, opp_map, week) -> tuple[dict, dict]:
+    """Return (new values, matchup context) where each DST's forward_ppg = season
+    baseline + gentle matchup tilt. DST ONLY — offense and kicker values are copied
+    through untouched. The context is {pid: {"opponent", "tilt"}} for tilted DSTs, so
+    the waiver card can render honest matchup framing (display-only). Loud-warns any
+    DST with no opponent (bye) or no opponent signal — kept at flat baseline, never
+    dropped (and absent from the context)."""
+    context: dict[str, dict] = {}
     if not offense_signal:
         logger.warning("dst matchup: no opponent-offense signal — all DST kept flat (season baseline)")
-        return values
+        return values, context
     means = league_means(offense_signal)
     out = dict(values)
     applied = flat = 0
@@ -136,13 +139,15 @@ def apply_dst_tilt(values, dst_team_by_id, offense_signal, opp_map, week) -> dic
             flat += 1
             logger.warning("dst matchup wk%s: no opponent/signal for %s DST — kept at season baseline", week, team)
             continue
-        out[pid] = dataclasses.replace(v, forward_ppg=round(v.forward_ppg + dst_tilt(sig, means), 2))
+        tilt = dst_tilt(sig, means)
+        out[pid] = dataclasses.replace(v, forward_ppg=round(v.forward_ppg + tilt, 2))
+        context[pid] = {"opponent": opp, "tilt": tilt}
         applied += 1
     logger.info("dst matchup wk%s: tilted %d DST, %d kept flat (bye/no-signal)", week, applied, flat)
-    return out
+    return out, context
 
 
-def apply_dst_matchup(values, state, *, season: int, week: int) -> dict:
+def apply_dst_matchup(values, state, *, season: int, week: int) -> tuple[dict, dict]:
     """Post-evaluate DST-only matchup override for the demo seeds (the injection
     seam). Loads the cached raw weekly K/DST frame + schedule, builds the as-of-
     (week-1) opponent-offense signal, and tilts each DST's forward_ppg. Offense +
@@ -154,7 +159,7 @@ def apply_dst_matchup(values, state, *, season: int, week: int) -> dict:
     raw = compute_weekly_kdef(season)
     if raw is None or getattr(raw, "empty", True):
         logger.warning("dst matchup: weekly K/DST frame unavailable for %s — DST kept flat", season)
-        return values
+        return values, {}
     sch = nfl.import_schedules([season])
     sch = sch[sch["game_type"] == "REG"]
     signal = build_offense_signal(raw, sch, upto_week=week - 1)
