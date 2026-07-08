@@ -53,6 +53,12 @@ class LeagueState:
     season: int
     week: int
     teams: tuple[TeamState, ...] = ()
+    # The league's canonical starting-slot config (services/roster_slots shape:
+    # {QB, RB, WR, TE, FLEX, K, DEF, ...}). None → consumers fall back to the default
+    # lineup. Fed to lineup_rules_from_slots so a league's real shape drives the
+    # optimal lineup. The demo seeds it; a real provider fills it from
+    # UserLeague.roster_slots (a flagged follow-up).
+    roster_slots: Optional[dict] = None
 
     @property
     def my_team(self) -> Optional[TeamState]:

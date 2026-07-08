@@ -19,6 +19,7 @@ import pytest
 from backend.services.trade.trade_demo_source import (
     DEMO_CURRENT_WEEK,
     DEMO_ROSTERS,
+    DEMO_ROSTER_SLOTS,
     DEMO_SEASON,
     N_STARTERS,
     N_TEAMS,
@@ -121,6 +122,22 @@ def test_demo_injuries_flow_to_roster_player_for_the_badge():
     assert healthy.injury_status is None
 
 
+def test_demo_league_state_carries_2wr_roster_slots_through_the_bridge():
+    # The demo is 2-WR BY DESIGN: the LeagueState now carries an explicit roster_slots
+    # config, and lineup_rules_from_slots (the previously-dead bridge) turns it into
+    # 2-WR LineupRules — NOT the hardcoded 3-WR DEFAULT.
+    from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_rules_from_slots
+
+    assert DEMO_ROSTER_SLOTS["WR"] == 2 and DEMO_ROSTER_SLOTS["FLEX"] == 1
+    teams, _ = assemble_teams(DEMO_ROSTERS, lambda n, pos: (f"id-{n}", "AAA"))
+    state = build_league_state(teams)
+    assert state.roster_slots == DEMO_ROSTER_SLOTS          # seeded on the LeagueState
+    rules = lineup_rules_from_slots(state.roster_slots)
+    assert rules.slots["WR"] == 2 and rules.flex_count == 1  # bridge produces 2-WR
+    # the shared DEFAULT constant is NOT touched (still 3-WR, trade depends on it).
+    assert DEFAULT_LINEUP_RULES.slots["WR"] == 3
+
+
 def test_starter_slots_derived_from_forward_value_not_draft_order():
     # One team: lowest draft slot has the HIGHEST value → it must start.
     players = [
@@ -140,14 +157,15 @@ def test_starter_slots_derived_from_forward_value_not_draft_order():
     assign_starter_slots(players, value_by_id)
     slots = {p["id"]: p["starter_slot"] for p in players}
     starters = {pid for pid, s in slots.items() if s != "BENCH"}
-    # This roster is offense-only, so only the 8 offense starters (1QB/2RB/3WR/1TE/
-    # 1FLEX) seat — the K/DST slots (now in STARTER_NEED) have no players to fill.
-    assert len(starters) == 8
+    # Demo is 2-WR: this offense-only roster seats the 7 offense starters
+    # (1QB/2RB/2WR/1TE/1FLEX) — the K/DST slots have no players to fill.
+    assert len(starters) == 7
     assert slots["qb1"] == "QB" and slots["qb2"] == "BENCH"   # value, not draft order
-    assert slots["wr1"] == "WR1"                              # top WR starts
-    # FLEX goes to the best remaining flex-eligible (RB3 8 > WR4 6); WR4 benched.
-    assert slots["rb3"] == "FLEX"
-    assert slots["wr4"] == "BENCH"
+    assert slots["wr1"] == "WR1" and slots["wr2"] == "WR2"    # top 2 WR start (2-WR league)
+    # FLEX goes to the best remaining flex-eligible: wr3 (16) — no longer a dedicated
+    # WR slot — beats rb3 (8) and wr4 (6), so wr3 seats FLEX and both bench.
+    assert slots["wr3"] == "FLEX"
+    assert slots["rb3"] == "BENCH" and slots["wr4"] == "BENCH"
 
 
 def test_assign_starter_slots_seats_kdst():

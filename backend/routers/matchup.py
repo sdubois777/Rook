@@ -15,6 +15,7 @@ Demo-only: reuses the existing TRADE_DEMO_MODE seam (404 when off) — no new fl
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,10 +32,12 @@ from backend.services.matchup.scouting import (
     win_prob_band,
 )
 from backend.services.matchup.startsit import available_lineup_roster, build_start_sit
-from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_strength_ppg, roster_strength
+from backend.services.trade.lineup import lineup_rules_from_slots, lineup_strength_ppg, roster_strength
 from backend.services.trade.trade_demo_source import trade_demo_enabled, trade_demo_enforce_gates
 from backend.services.trade.trade_proposals import _lineup_roster, analyze_roster
 from backend.services.trade.value_engine import replacement_ppg_by_position
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/matchup", tags=["matchup"])
 
@@ -167,7 +170,15 @@ async def league(
     from backend.routers.trade import load_league_for_analysis
     state, values, _ = await load_league_for_analysis(db, user, demo)
 
-    rules = DEFAULT_LINEUP_RULES
+    # The league's real starting-slot shape drives the optimal lineup — read the
+    # league's roster_slots through the canonical bridge (the demo seeds a 2-WR config;
+    # a real per-league read from UserLeague.roster_slots is a flagged follow-up). No
+    # slots (real league, not yet wired) → lineup_rules_from_slots(None) = DEFAULT
+    # (unchanged behavior); loud-warn so the fallback is visible, never silent.
+    if not state.roster_slots:
+        logger.warning("matchup: league %s has no roster_slots — falling back to DEFAULT lineup rules "
+                       "(real per-league slot reading is a follow-up)", getattr(state, "season", "?"))
+    rules = lineup_rules_from_slots(state.roster_slots)
     replacement = replacement_ppg_by_position(values)
 
     # Resolve the acting team.
