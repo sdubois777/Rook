@@ -77,6 +77,8 @@ class StarterMatchupOut(BaseModel):
     grade: Optional[str] = None          # favorable | neutral | tough
     injury_flag: Optional[str] = None    # "Q" | "D" — monitor, not a downgrade
     forward_ppg: float
+    unfillable: bool = False             # no available player for this slot (bye/Out/IR)
+    unfillable_reason: Optional[str] = None   # e.g. "Kareem Hunt is on bye — no available RB"
 
 
 class BenchSwapOut(BaseModel):
@@ -243,13 +245,16 @@ async def league(
 
 
 def _scout(acting, opp, values, rules, replacement, def_grades=None, nfl_opp=None) -> ScoutOut:
-    # Injury-aware: an Out/IR player can't be in your best lineup this week, so both
-    # teams' optimal lineups (margin/grid/start-sit) exclude them consistently.
-    my_roster = available_lineup_roster(acting, values, rules)
-    opp_roster = available_lineup_roster(opp, values, rules)
+    # Unavailable-aware: an Out/IR OR bye player can't be in your best lineup this week,
+    # so both teams' optimal lineups (margin/grid/start-sit) exclude them consistently.
+    my_roster = available_lineup_roster(acting, values, rules, nfl_opp or {})
+    opp_roster = available_lineup_roster(opp, values, rules, nfl_opp or {})
 
-    my_ppw = lineup_strength_ppg(my_roster, rules, replacement)
-    opp_ppw = lineup_strength_ppg(opp_roster, rules, replacement)
+    # An unfillable required slot (no available player) contributes 0 — the honest
+    # "you have nobody" number (with a waiver pointer on the panel), not a phantom
+    # replacement floor — so my_ppw reconciles with the panel's seated-starter sum.
+    my_ppw = lineup_strength_ppg(my_roster, rules, None)
+    opp_ppw = lineup_strength_ppg(opp_roster, rules, None)
     margin = round(my_ppw - opp_ppw, 2)
 
     # Coarse confidence across BOTH optimal lineups → widens the toss-up band only.
@@ -263,8 +268,8 @@ def _scout(acting, opp, values, rules, replacement, def_grades=None, nfl_opp=Non
     conf_note, low_conf = confidence_summary(conf_vals)
     band = win_prob_band(margin, low_confidence=low_conf)
 
-    my_grid = positional_slot_ppg(my_roster, rules, replacement)
-    opp_grid = positional_slot_ppg(opp_roster, rules, replacement)
+    my_grid = positional_slot_ppg(my_roster, rules, None)
+    opp_grid = positional_slot_ppg(opp_roster, rules, None)
     grid = [GridRowOut(position=pos, mine=my_grid.get(pos, 0.0), theirs=opp_grid.get(pos, 0.0))
             for pos in GRID_POSITIONS]
 
@@ -302,7 +307,7 @@ def _build_start_sit_out(acting, values, def_grades, nfl_opp, rules) -> StartSit
         starters=[StarterMatchupOut(
             name=s.name, position=s.position, slot=s.slot, nfl_team=s.nfl_team,
             opponent=s.opponent, grade=s.grade, injury_flag=s.injury_flag,
-            forward_ppg=s.forward_ppg,
+            forward_ppg=s.forward_ppg, unfillable=s.unfillable, unfillable_reason=s.unfillable_reason,
         ) for s in ss.starters],
         swaps=[BenchSwapOut(
             position=w.position, starter_name=w.starter_name, starter_grade=w.starter_grade,
