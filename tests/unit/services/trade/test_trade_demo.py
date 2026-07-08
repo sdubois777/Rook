@@ -103,6 +103,24 @@ def test_assemble_resolves_players_and_reports_unresolved_without_dropping_silen
     assert not (missing & rostered)
 
 
+def test_demo_injuries_flow_to_roster_player_for_the_badge():
+    # The seeded DEMO_INJURIES map attaches a canonical code to the matching demo
+    # RosterPlayer (for the badge); everyone else stays None (healthy).
+    from backend.services.trade.trade_demo_source import DEMO_INJURIES
+
+    teams, _ = assemble_teams(DEMO_ROSTERS, lambda n, pos: (f"id-{n}", "AAA"))
+    state = build_league_state(teams)
+    by_name = {p.name: p for t in state.teams for p in t.roster}
+
+    assert DEMO_INJURIES, "expected a non-empty demo injury map"
+    for name, code in DEMO_INJURIES.items():
+        assert name in by_name, f"{name} must be a real demo player"
+        assert by_name[name].injury_status == code
+    # a player NOT in the map carries no status (no badge).
+    healthy = next(p for n, p in by_name.items() if n not in DEMO_INJURIES)
+    assert healthy.injury_status is None
+
+
 def test_starter_slots_derived_from_forward_value_not_draft_order():
     # One team: lowest draft slot has the HIGHEST value → it must start.
     players = [

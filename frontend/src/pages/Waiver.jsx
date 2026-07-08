@@ -16,6 +16,7 @@ import {
 import { fetchWaiverLeague, fetchWaiverRecommendations } from '../api/waiver'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
+import InjuryBadge from '../components/shared/InjuryBadge'
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400' },
@@ -104,6 +105,7 @@ function RecCard({ rec }) {
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <PosBadge pos={rec.add.position} />
+            <InjuryBadge status={rec.add.injury_status} />
             <span className="truncate text-sm font-semibold text-white">{rec.add.name}</span>
             <t.Icon size={14} className={t.cls} />
             {rec.add.buy_low && <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold text-emerald-400">BUY</span>}
@@ -141,7 +143,7 @@ function RecCard({ rec }) {
         <span className="flex items-center gap-1 text-slate-400">
           <ArrowRight size={12} className="text-slate-600" />
           {rec.drop
-            ? <>drop <span className="text-slate-300">{rec.drop.name}</span> <PosBadge pos={rec.drop.position} /></>
+            ? <>drop <span className="text-slate-300">{rec.drop.name}</span> <PosBadge pos={rec.drop.position} /> <InjuryBadge status={rec.drop.injury_status} /></>
             : <span className="text-slate-500">open roster slot — no drop needed</span>}
         </span>
       </div>

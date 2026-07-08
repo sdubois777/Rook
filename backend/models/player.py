@@ -32,6 +32,13 @@ class Player(Base):
     depth_chart_order: Mapped[Optional[int]] = mapped_column(Integer)
     contract_year: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Live injury designation for the status badge (canonical code from
+    # backend/utils/injury_status.py: "Q" | "D" | "O" | "IR"; None = healthy).
+    # Sourced from Sleeper injury_status during sync_rosters (sleeper_id join,
+    # 100% attribution), refreshed daily. Display-only — NOT a valuation input.
+    injury_status: Mapped[Optional[str]] = mapped_column(String(4))
+    injury_status_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     # Top-level valuation (computed from pipeline agents)
     tier: Mapped[Optional[int]] = mapped_column(Integer)
     baseline_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
