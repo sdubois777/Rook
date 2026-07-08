@@ -156,16 +156,19 @@ def test_validate_rejects_unknown_team_and_misplaced_players():
 # streamable replacement, so the trade is fine — the user just must be told).
 # ---------------------------------------------------------------------------
 def _full_roster_state():
-    """Acquirer with a full 1QB/2RB/3WR/1TE lineup (8 players) + an opponent with
-    a WR/TE/QB to acquire, so a trade can empty a required slot."""
+    """Acquirer with a full 1QB/2RB/3WR/1TE/1K/1DST lineup + an opponent with a
+    WR/TE/QB to acquire, so a trade can empty a required slot. K/DST fill their own
+    slots (slice 3), so the baseline is genuinely full."""
     my = [RosterPlayer(p, p, pos) for p, pos in [
         ("qb", "QB"), ("rb1", "RB"), ("rb2", "RB"), ("rb3", "RB"),
-        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE")]]
+        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE"),
+        ("k", "K"), ("dst", "DEF")]]
     opp = [RosterPlayer(p, p, pos) for p, pos in [
         ("owr", "WR"), ("owr2", "WR"), ("ote", "TE"), ("oqb", "QB")]]
     state = _two_team_state(my, opp)
     specs = [("qb", "QB", 30), ("rb1", "RB", 40), ("rb2", "RB", 35), ("rb3", "RB", 20),
              ("wr1", "WR", 38), ("wr2", "WR", 34), ("wr3", "WR", 30), ("te", "TE", 25),
+             ("k", "K", 20), ("dst", "DEF", 20),
              ("owr", "WR", 45), ("owr2", "WR", 44), ("ote", "TE", 22), ("oqb", "QB", 28)]
     values = {p: _iv(p, p, fv, pos=pos) for p, pos, fv in specs}
     return state, values
@@ -200,11 +203,13 @@ def test_unfilled_flex_is_not_flagged():
     # (FLEX is flexible; only fixed required slots count).
     my = [RosterPlayer(p, p, pos) for p, pos in [
         ("qb", "QB"), ("rb1", "RB"), ("rb2", "RB"),
-        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE")]]
+        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE"),
+        ("k", "K"), ("dst", "DEF")]]
     opp = [RosterPlayer("owr", "owr", "WR")]
     state = _two_team_state(my, opp)
     specs = [("qb", "QB", 30), ("rb1", "RB", 40), ("rb2", "RB", 35),
              ("wr1", "WR", 38), ("wr2", "WR", 34), ("wr3", "WR", 30), ("te", "TE", 25),
+             ("k", "K", 20), ("dst", "DEF", 20),
              ("owr", "WR", 45)]
     values = {p: _iv(p, p, fv, pos=pos) for p, pos, fv in specs}
     a = analyze_trade(state, values, "me", ["wr3"], ["owr"], roster_limit=16)  # FLEX stays empty

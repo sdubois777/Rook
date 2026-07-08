@@ -63,15 +63,17 @@ async def test_gate_off_never_selects_demo_provider(monkeypatch):
 # ---------------------------------------------------------------------------
 # REAL-DRAFT SEED — the auction roster constant + pure assembly (CI, no DB)
 # ---------------------------------------------------------------------------
-def test_demo_rosters_are_twelve_teams_skill_only():
+def test_demo_rosters_are_twelve_teams_with_kdst():
     assert len(DEMO_ROSTERS) == N_TEAMS == 12
-    # K/DST stripped — every drafted player is a value-engine skill position.
+    # K/DST un-stripped (slice 3): K/DEF now value + seat, so every team carries one.
     positions = {pos for _, picks in DEMO_ROSTERS for _, pos in picks}
-    assert positions <= set(_SKILL)
-    assert not positions & {"K", "DST", "DEF"}
-    # the real auction had 159 skill players across 13/14-man rosters.
-    assert sum(len(picks) for _, picks in DEMO_ROSTERS) == 159
-    assert {len(picks) for _, picks in DEMO_ROSTERS} == {13, 14}
+    assert positions == set(_SKILL) == {"QB", "RB", "WR", "TE", "K", "DEF"}
+    for _mgr, picks in DEMO_ROSTERS:
+        pc = [pos for _, pos in picks]
+        assert pc.count("K") == 1 and pc.count("DEF") == 1
+    # 159 skill + 12 K + 12 DST = 183 across 15/16-man rosters.
+    assert sum(len(picks) for _, picks in DEMO_ROSTERS) == 159 + 24
+    assert {len(picks) for _, picks in DEMO_ROSTERS} == {15, 16}
 
 
 def test_user_team_present_and_is_the_default_acting_team():
@@ -120,13 +122,27 @@ def test_starter_slots_derived_from_forward_value_not_draft_order():
     assign_starter_slots(players, value_by_id)
     slots = {p["id"]: p["starter_slot"] for p in players}
     starters = {pid for pid, s in slots.items() if s != "BENCH"}
-    # 1QB/2RB/3WR/1TE/1FLEX = 8 starters; the value-best fill them.
-    assert len(starters) == N_STARTERS == 8
+    # This roster is offense-only, so only the 8 offense starters (1QB/2RB/3WR/1TE/
+    # 1FLEX) seat — the K/DST slots (now in STARTER_NEED) have no players to fill.
+    assert len(starters) == 8
     assert slots["qb1"] == "QB" and slots["qb2"] == "BENCH"   # value, not draft order
     assert slots["wr1"] == "WR1"                              # top WR starts
     # FLEX goes to the best remaining flex-eligible (RB3 8 > WR4 6); WR4 benched.
     assert slots["rb3"] == "FLEX"
     assert slots["wr4"] == "BENCH"
+
+
+def test_assign_starter_slots_seats_kdst():
+    # K/DST un-stripped (slice 3): a roster with a K + DST seats them in their own
+    # starter slots (STARTER_NEED now carries K/DEF).
+    players = [
+        {"id": "qb", "name": "QB", "position": "QB", "starter_slot": "BENCH"},
+        {"id": "k", "name": "K", "position": "K", "starter_slot": "BENCH"},
+        {"id": "dst", "name": "DST", "position": "DEF", "starter_slot": "BENCH"},
+    ]
+    assign_starter_slots(players, {"qb": 20, "k": 10, "dst": 10})
+    slots = {p["id"]: p["starter_slot"] for p in players}
+    assert slots["qb"] == "QB" and slots["k"] == "K" and slots["dst"] == "DEF"
 
 
 # ---------------------------------------------------------------------------
@@ -297,17 +313,18 @@ async def test_real_demo_seed_produces_sane_tiers():
         pytest.skip(f"demo DB unavailable: {exc}")
 
     state = source.get_league_state()
-    # The real 12-team auction league; rosters are the drafted sizes (13/14), not
-    # a fixed quota — K/DST were stripped.
+    # The real 12-team auction league; drafted skill sizes (13/14) + a K + DST each
+    # (slice 3 un-strip) => 15/16.
     assert len(state.teams) == N_TEAMS
     sizes = {t.team_name: len(t.roster) for t in state.teams}
-    assert set(sizes.values()) <= {13, 14}
+    assert set(sizes.values()) <= {15, 16}
     assert sum(t.is_me for t in state.teams) == 1
     assert state.my_team.team_name == USER_TEAM_NAME      # default acting team
     # starter_slot derived from forward value; nfl_team preserved where the DB row
     # has one (a few veterans carry a null team_abbr — that's real DB variance).
     me = state.my_team
-    assert sum(rp.starter_slot != "BENCH" for rp in me.roster) == N_STARTERS  # 1QB/2RB/3WR/1TE/1FLEX
+    # 1QB/2RB/3WR/1TE/1FLEX/1K/1DST — the K/DST now seat too.
+    assert sum(rp.starter_slot != "BENCH" for rp in me.roster) == N_STARTERS
     assert sum(bool(rp.nfl_team) for rp in me.roster) >= len(me.roster) - 4
 
     values, by_name = _values_by_name(source)

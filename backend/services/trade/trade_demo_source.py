@@ -45,9 +45,11 @@ DEMO_CURRENT_WEEK = 14   # late-season trade-window read; gives studs a full tre
 
 # --- league shape ------------------------------------------------------------
 N_TEAMS = 12
-_SKILL = ("QB", "RB", "WR", "TE")   # K/DST excluded — no usage/snap data, no anchors
-# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE) = 8 starters.
-STARTER_NEED = {"QB": 1, "RB": 2, "WR": 3, "TE": 1}
+# K/DEF streaming arc (slice 3): K/DST now VALUE (slice 2) + SEAT (lineup slots),
+# so they're un-stripped — first-class roster + pool + lineup positions.
+_SKILL = ("QB", "RB", "WR", "TE", "K", "DEF")
+# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE), 1 K, 1 DST.
+STARTER_NEED = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
 N_STARTERS = sum(STARTER_NEED.values()) + 1   # + FLEX
 _FLEX_POS = ("RB", "WR", "TE")
 N_FLEX = 1
@@ -66,13 +68,14 @@ DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("Jacory Croskey-Merritt", "RB"), ("Javonte Williams", "RB"),
         ("Kaleb Johnson", "RB"), ("Kyler Murray", "QB"), ("Tyler Warren", "TE"),
         ("Joe Mixon", "RB"), ("Brian Robinson", "RB"), ("Isaac TeSlaa", "WR"),
+        ("Harrison Butker", "K"), ("Kansas City Chiefs", "DEF"),
     )),
     ("GOAT C.", (
         ("Amon-Ra St. Brown", "WR"), ("Saquon Barkley", "RB"), ("Tee Higgins", "WR"),
         ("James Cook III", "RB"), ("Patrick Mahomes", "QB"), ("Jordan Mason", "RB"),
         ("Dallas Goedert", "TE"), ("Rashod Bateman", "WR"), ("Darnell Mooney", "WR"),
         ("Bryce Young", "QB"), ("Trey Benson", "RB"), ("Chig Okonkwo", "TE"),
-        ("Brandon Aiyuk", "WR"),
+        ("Brandon Aiyuk", "WR"), ("Jake Elliott", "K"), ("Philadelphia Eagles", "DEF"),
     )),
     ("Fat Bastard", (
         ("A.J. Brown", "WR"), ("Tetairoa McMillan", "WR"), ("Mike Evans", "WR"),
@@ -80,6 +83,7 @@ DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("Kenneth Walker III", "RB"), ("Mark Andrews", "TE"),
         ("Chris Godwin Jr.", "WR"), ("Jayden Reed", "WR"), ("Dylan Sampson", "RB"),
         ("Hunter Henry", "TE"), ("Cam Ward", "QB"),
+        ("Chris Boswell", "K"), ("Pittsburgh Steelers", "DEF"),
     )),
     ("Break your leg CMC", (
         ("Ja'Marr Chase", "WR"), ("Malik Nabers", "WR"), ("Jaxon Smith-Njigba", "WR"),
@@ -87,20 +91,21 @@ DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("Keon Coleman", "WR"), ("Jared Goff", "QB"), ("Isaiah Likely", "TE"),
         ("Will Shipley", "RB"), ("Darren Waller", "TE"), ("Kenny Gainwell", "RB"),
         ("Ray Davis", "RB"), ("Sam Darnold", "QB"),
+        ("Jason Myers", "K"), ("Seattle Seahawks", "DEF"),
     )),
     (USER_TEAM_NAME, (
         ("Lamar Jackson", "QB"), ("Brock Bowers", "TE"), ("Ladd McConkey", "WR"),
         ("Courtland Sutton", "WR"), ("Davante Adams", "WR"), ("James Conner", "RB"),
         ("David Montgomery", "RB"), ("DJ Moore", "WR"), ("Jordan Addison", "WR"),
         ("Tyler Allgeier", "RB"), ("Kareem Hunt", "RB"), ("Najee Harris", "RB"),
-        ("Raheem Mostert", "RB"),
+        ("Raheem Mostert", "RB"), ("Wil Lutz", "K"), ("Denver Broncos", "DEF"),
     )),
     ("Joe Shiesty", (
         ("De'Von Achane", "RB"), ("Bijan Robinson", "RB"), ("Terry McLaurin", "WR"),
         ("George Pickens", "WR"), ("Brock Purdy", "QB"), ("Zay Flowers", "WR"),
         ("T.J. Hockenson", "TE"), ("Travis Hunter", "WR"), ("Jaylen Warren", "RB"),
         ("Bhayshul Tuten", "RB"), ("Wan'Dale Robinson", "WR"), ("C.J. Stroud", "QB"),
-        ("Jaylen Waddle", "WR"),
+        ("Jaylen Waddle", "WR"), ("Jason Sanders", "K"), ("Miami Dolphins", "DEF"),
     )),
     ("PAIN", (
         ("Ashton Jeanty", "RB"), ("Trey McBride", "TE"), ("Jalen Hurts", "QB"),
@@ -108,6 +113,7 @@ DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("Khalil Shakir", "WR"), ("J.K. Dobbins", "RB"), ("Matthew Golden", "WR"),
         ("Nick Chubb", "RB"), ("Josh Downs", "WR"), ("Jerome Ford", "RB"),
         ("Rhamondre Stevenson", "RB"), ("Christian Kirk", "WR"),
+        ("Matt Gay", "K"), ("Washington Commanders", "DEF"),
     )),
     ("Big Black Cop", (
         ("Bucky Irving", "RB"), ("Chase Brown", "RB"), ("Brian Thomas Jr.", "WR"),
@@ -115,34 +121,35 @@ DEMO_ROSTERS: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("Tucker Kraft", "TE"), ("Jakobi Meyers", "WR"), ("Braelon Allen", "RB"),
         ("Keenan Allen", "WR"), ("Colston Loveland", "TE"), ("Rashid Shaheed", "WR"),
         ("Drake Maye", "QB"), ("Rachaad White", "RB"),
+        ("Nick Folk", "K"), ("New York Jets", "DEF"),
     )),
     ("Watson's Rub and...", (
         ("Christian McCaffrey", "RB"), ("Puka Nacua", "WR"), ("Jonathan Taylor", "RB"),
         ("Tony Pollard", "RB"), ("Bo Nix", "QB"), ("Emeka Egbuka", "WR"),
         ("Rashee Rice", "WR"), ("Jerry Jeudy", "WR"), ("Zach Charbonnet", "RB"),
         ("Cam Skattebo", "RB"), ("Dak Prescott", "QB"), ("Evan Engram", "TE"),
-        ("Kyle Pitts Sr.", "TE"),
+        ("Kyle Pitts Sr.", "TE"), ("Ka'imi Fairbairn", "K"), ("Houston Texans", "DEF"),
     )),
     ("Koo Klux Klan", (
         ("Jameson Williams", "WR"), ("Nico Collins", "WR"), ("Kyren Williams", "RB"),
         ("Xavier Worthy", "WR"), ("Chuba Hubbard", "RB"), ("Marvin Harrison Jr.", "WR"),
         ("Baker Mayfield", "QB"), ("Sam LaPorta", "TE"), ("Stefon Diggs", "WR"),
         ("J.J. McCarthy", "QB"), ("Travis Etienne Jr.", "RB"), ("Dalton Kincaid", "TE"),
-        ("Tyjae Spears", "RB"),
+        ("Tyjae Spears", "RB"), ("Cairo Santos", "K"), ("Detroit Lions", "DEF"),
     )),
     ("Agent Orange", (
         ("Justin Jefferson", "WR"), ("Derrick Henry", "RB"), ("Jayden Daniels", "QB"),
         ("RJ Harvey", "RB"), ("Isiah Pacheco", "RB"), ("Austin Ekeler", "RB"),
         ("Michael Pittman Jr.", "WR"), ("David Njoku", "TE"), ("Jordan Love", "QB"),
         ("Jauan Jennings", "WR"), ("Tank Bigsby", "RB"), ("Jake Ferguson", "TE"),
-        ("Justin Herbert", "QB"),
+        ("Justin Herbert", "QB"), ("Chase McLaughlin", "K"), ("Minnesota Vikings", "DEF"),
     )),
     ("Ben Dover", (
         ("Josh Allen", "QB"), ("Alvin Kamara", "RB"), ("George Kittle", "TE"),
         ("Omarion Hampton", "RB"), ("Garrett Wilson", "WR"), ("Chris Olave", "WR"),
         ("Deebo Samuel", "WR"), ("Travis Kelce", "TE"), ("Aaron Jones Sr.", "RB"),
         ("Cooper Kupp", "WR"), ("Justin Fields", "QB"), ("Jaxson Dart", "QB"),
-        ("Trevor Lawrence", "QB"),
+        ("Trevor Lawrence", "QB"), ("Eddy Pineiro", "K"), ("Buffalo Bills", "DEF"),
     )),
 ]
 
@@ -334,9 +341,18 @@ async def seed_demo_league(db, *, weekly_usage: Optional[pd.DataFrame] = None) -
     priors = build_priors(prior_by_id)
     if weekly_usage is None:
         from backend.integrations.nfl_weekly import weekly_player_usage
+        from backend.services.kdef_scoring import weekly_kdef_value_frame
         weekly_usage = await weekly_player_usage(
             DEMO_SEASON, weeks=range(1, DEMO_CURRENT_WEEK + 1), db=db,
         )
+        # Un-strip (slice 3): union the scored K/DST weekly rows so the K/DST now on
+        # the demo rosters value the SAME way offense does. Additive — the offense
+        # rows are untouched, so offense values don't move.
+        kdef = await weekly_kdef_value_frame(
+            DEMO_SEASON, weeks=range(1, DEMO_CURRENT_WEEK + 1), db=db,
+        )
+        if kdef is not None and not kdef.empty:
+            weekly_usage = pd.concat([weekly_usage, kdef], ignore_index=True)
 
     # Forward value first (slot-agnostic), then slot the lineup by that value.
     provisional = build_league_state(teams_data)

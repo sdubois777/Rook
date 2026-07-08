@@ -37,8 +37,17 @@ _PPG_ANCHORS: dict[str, tuple[float, float]] = {
     "WR": (8.0, 23.0),
     "TE": (5.0, 17.0),
     "QB": (14.0, 28.0),
+    # K/DEF fallback anchors (K/DEF streaming arc, slice 2) — used only when the
+    # position pool is too sparse to derive real anchors. Tunable.
+    "K": (6.0, 11.0),
+    "DEF": (5.0, 12.0),
 }
 _DEFAULT_ANCHOR = (6.0, 20.0)
+
+# The positions the value engine anchors + prices. Offense is unchanged; K/DEF are
+# ADDITIVE (slice 2). Every per-position filter/loop/return keys off this ONE tuple
+# so a position is handled everywhere or nowhere — offense output stays byte-identical.
+_VALUE_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 
 # Soft floor (0-100 scale): replacement maps HERE, not to 0, so producing
 # below-replacement players keep a small, rank-preserving value instead of
@@ -54,7 +63,7 @@ _REPLACEMENT_FLOOR = 10.0
 # NOTE: this replacement-level / positional-demand computation IS the positional-
 # scarcity primitive the acceptability model will later consume — keep it shared.
 LEAGUE_TEAMS = 12
-STARTERS_PER_POS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1}
+STARTERS_PER_POS: dict[str, int] = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
 FLEX_COUNT = 1
 # v1 FLEX assumption: the flex spot is filled by RB/WR (split evenly); TE is
 # rarely flexed. Tunable here so real leagues / the acceptability model reuse it.
@@ -487,7 +496,7 @@ def season_ppg_by_position(weekly_usage, roster_positions: dict[str, str]) -> di
         return out
     for pid, grp in weekly_usage.groupby("canonical_player_id"):
         pos = roster_positions.get(pid)
-        if pos not in ("QB", "RB", "WR", "TE"):
+        if pos not in _VALUE_POSITIONS:
             continue
         out.setdefault(pos, []).append(float(grp["fantasy_points_ppr"].mean()))
     return out
@@ -508,7 +517,7 @@ def inseason_level_by_position(
         return out
     for pid, grp in weekly_usage.groupby("canonical_player_id"):
         pos = roster_positions.get(pid)
-        if pos not in ("QB", "RB", "WR", "TE"):
+        if pos not in _VALUE_POSITIONS:
             continue
         out.setdefault(pos, []).append(inseason_level(_played_weeks(grp, current_week)))
     return out
@@ -527,7 +536,7 @@ def derive_anchors(
     import numpy as np
 
     out: dict[str, tuple[float, float]] = {}
-    for pos in ("QB", "RB", "WR", "TE"):
+    for pos in _VALUE_POSITIONS:
         vals = sorted((v for v in season_ppg_by_pos.get(pos, []) if v is not None),
                       reverse=True)
         cutoff = int(round(_starter_demand(pos, teams)))
@@ -554,10 +563,10 @@ def replacement_ppg_by_position(values: dict[str, "InSeasonValue"]) -> dict[str,
     replacement when a position is too sparse to derive)."""
     ppg_by_pos: dict[str, list[float]] = {}
     for v in values.values():
-        if v.position in ("QB", "RB", "WR", "TE"):
+        if v.position in _VALUE_POSITIONS:
             ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
     anchors = derive_anchors(ppg_by_pos)
-    return {pos: anchors[pos][0] for pos in ("QB", "RB", "WR", "TE")}
+    return {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
 
 
 # ---------------------------------------------------------------------------
