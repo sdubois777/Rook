@@ -24,6 +24,7 @@ from backend.core.dependencies import get_current_user, get_db
 from backend.services.matchup.scouting import (
     GRID_POSITIONS,
     confidence_summary,
+    leverage_readout,
     opponent_of,
     positional_slot_ppg,
     synthesize_week_matchups,
@@ -73,12 +74,15 @@ class ScoutOut(BaseModel):
     confidence_note: str                 # coarsest confidence across both lineups
     grid: list[GridRowOut]
     # Leverage readout (the free scouting fact that motivates the paid trade-find).
+    # Surplus positions are VALUE-GATED (real tradeable depth, not bench headcount)
+    # and RECONCILED (a position never appears in both needs and surplus).
     my_needs: list[str]
     my_surplus_positions: list[str]
     opp_needs: list[str]
     opp_surplus_positions: list[str]
-    their_surplus_my_needs: list[str]    # "their surplus ↔ your needs" overlap
-    my_surplus_their_needs: list[str]    # "your surplus ↔ their needs" overlap
+    their_surplus_my_needs: list[str]    # their real depth ∩ your needs
+    my_surplus_their_needs: list[str]    # your real depth ∩ their needs
+    is_reciprocal_fit: bool = False      # BOTH directions non-empty → a real mirror
 
 
 class MatchupLeagueResponse(BaseModel):
@@ -169,12 +173,6 @@ async def league(
     )
 
 
-def _positions_of(surplus_ids, values) -> list[str]:
-    """Distinct positions of a team's surplus players, in GRID order."""
-    present = {values[i].position for i in surplus_ids if i in values}
-    return [p for p in GRID_POSITIONS if p in present]
-
-
 def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
     my_roster = _lineup_roster(acting, values)
     opp_roster = _lineup_roster(opp, values)
@@ -199,20 +197,25 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
     grid = [GridRowOut(position=pos, mine=my_grid.get(pos, 0.0), theirs=opp_grid.get(pos, 0.0))
             for pos in GRID_POSITIONS]
 
+    # Leverage — VALUE-GATED surplus (real tradeable depth, not bench headcount),
+    # RECONCILED so a position never lands in both need and surplus, and a
+    # RECIPROCAL mirror flag. analyze_roster (shared) is unchanged; the
+    # value-awareness lives on the Matchup surface only.
     my_an = analyze_roster(acting, values, rules)
     opp_an = analyze_roster(opp, values, rules)
-    my_needs = sorted(my_an.needs)
-    opp_needs = sorted(opp_an.needs)
-    my_surplus_pos = _positions_of(my_an.surplus_ids, values)
-    opp_surplus_pos = _positions_of(opp_an.surplus_ids, values)
+    lev = leverage_readout(
+        my_an.needs, my_an.surplus_ids, opp_an.needs, opp_an.surplus_ids,
+        values, replacement,
+    )
 
     return ScoutOut(
         opponent_team_id=opp.team_id, opponent_team_name=opp.team_name,
         my_ppw=my_ppw, opp_ppw=opp_ppw, margin=margin,
         win_prob_band=band, confidence_note=conf_note,
         grid=grid,
-        my_needs=my_needs, my_surplus_positions=my_surplus_pos,
-        opp_needs=opp_needs, opp_surplus_positions=opp_surplus_pos,
-        their_surplus_my_needs=sorted(set(opp_surplus_pos) & set(my_needs)),
-        my_surplus_their_needs=sorted(set(my_surplus_pos) & set(opp_needs)),
+        my_needs=list(lev.my_needs), my_surplus_positions=list(lev.my_surplus_positions),
+        opp_needs=list(lev.opp_needs), opp_surplus_positions=list(lev.opp_surplus_positions),
+        their_surplus_my_needs=list(lev.their_surplus_my_needs),
+        my_surplus_their_needs=list(lev.my_surplus_their_needs),
+        is_reciprocal_fit=lev.is_reciprocal_fit,
     )

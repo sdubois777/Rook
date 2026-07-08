@@ -126,8 +126,11 @@ function BattleGrid({ me, scout }) {
 }
 
 // --- Leverage readout + trade handoff (funnel top, non-metered) ------------
+// Surplus is VALUE-GATED (real tradeable depth, not bench headcount) and the mirror
+// fires only on a genuine RECIPROCAL fit — so "you can spare X" names positions worth
+// moving, and "mirror images" MEANS something (it fires rarely). No fit → say so.
 function Leverage({ scout, onExplore }) {
-  const mirror = scout.their_surplus_my_needs.length > 0 || scout.my_surplus_their_needs.length > 0
+  const fit = scout.is_reciprocal_fit
   return (
     <section className="rounded-lg border border-border bg-surface-1 p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
@@ -135,7 +138,7 @@ function Leverage({ scout, onExplore }) {
       </div>
       <div className="grid gap-2 text-sm sm:grid-cols-2">
         <div className="space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">They’re thin at (your surplus)</div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">They’re thin at (your depth)</div>
           <div className="flex items-center gap-2">
             <span className="text-slate-400">their needs</span>
             <Chips positions={scout.opp_needs} accent="bg-sky-500/15 text-sky-300" />
@@ -146,7 +149,7 @@ function Leverage({ scout, onExplore }) {
           </div>
         </div>
         <div className="space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">You’re thin at (their surplus)</div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">You’re thin at (their depth)</div>
           <div className="flex items-center gap-2">
             <span className="text-slate-400">your needs</span>
             <Chips positions={scout.my_needs} accent="bg-emerald-500/15 text-emerald-300" />
@@ -157,10 +160,10 @@ function Leverage({ scout, onExplore }) {
           </div>
         </div>
       </div>
-      <p className="mt-3 text-xs text-slate-400">
-        {mirror
-          ? 'You’re mirror images — the overlap above is where a fair swap helps both teams.'
-          : 'No clean positional overlap this week — a deal here would be tougher to balance.'}
+      <p className={`mt-3 text-xs ${fit ? 'text-emerald-300' : 'text-slate-500'}`}>
+        {fit
+          ? 'You’re mirror images — each side has real depth the other needs, so a fair swap helps both.'
+          : 'No clean two-way fit this week — no reciprocal depth-for-need match, so a balanced swap is unlikely.'}
       </p>
       <button
         type="button"

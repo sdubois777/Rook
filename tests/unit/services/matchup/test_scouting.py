@@ -9,14 +9,17 @@ import logging
 
 from backend.services.matchup.scouting import (
     GRID_POSITIONS,
+    SURPLUS_MARGIN_PPW,
     confidence_summary,
+    leverage_readout,
     opponent_of,
     positional_slot_ppg,
     synthesize_week_matchups,
+    value_gated_surplus_positions,
     win_prob_band,
 )
 from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, LineupPlayer, lineup_strength_ppg
-from backend.services.trade.value_engine import Confidence
+from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +129,80 @@ def test_low_confidence_widens_slight_to_tossup():
     # A slight edge on thin data honestly reads as a toss-up (don't over-claim).
     assert win_prob_band(5.0, low_confidence=True) == "Toss-up"
     assert win_prob_band(15.0, low_confidence=True) == "Favored"   # a clear edge survives
+
+
+# ---------------------------------------------------------------------------
+# value-gated surplus + need/surplus reconciliation + reciprocal mirror
+# ---------------------------------------------------------------------------
+def _iv(pid, pos, ppg):
+    return InSeasonValue(
+        canonical_player_id=pid, name=pid.upper(), position=pos, forward_value=ppg * 5,
+        value_trend=ValueTrend.STABLE, buy_low=False, sell_high=False, why="", games_played=10,
+        usage_recent=0.0, usage_prior=0.0, usage_delta=0.0, recency_ppg=ppg, expected_ppg=ppg,
+        opportunity_gap=0.0, sustainable=True, forward_ppg=ppg, schedule_modifier=0.0,
+        prior_projection=None, prior_weight=0.0, name_bias_guard_applied=False,
+        confidence=Confidence.FULL, confidence_reason="",
+    )
+
+
+_REPL = {"QB": 13.0, "RB": 7.7, "WR": 6.8, "TE": 6.6, "K": 6.0, "DEF": 5.0}
+
+
+def test_value_gated_surplus_drops_below_replacement_bodies():
+    # The McConkeys case: bench RBs below the 7.7 replacement are NOT surplus.
+    values = {
+        "conner": _iv("conner", "RB", 0.0),      # below repl → not spare
+        "harris": _iv("harris", "RB", 0.0),      # below repl → not spare
+        "mostert": _iv("mostert", "RB", 2.2),    # below repl → not spare
+        "allgeier": _iv("allgeier", "RB", 8.8),  # above repl + margin → real depth
+        "spareqb": _iv("spareqb", "QB", 16.0),   # above repl → real depth
+    }
+    surplus_ids = tuple(values)
+    # No needs → RB and QB depth both count.
+    out = value_gated_surplus_positions(surplus_ids, needs=frozenset(), values=values, replacement=_REPL)
+    assert out == ["QB", "RB"]                    # ordered; dead RBs excluded, Allgeier keeps RB
+
+
+def test_surplus_excludes_need_positions_no_position_in_both():
+    # RB is a need → its above-replacement bench body is NOT "spare" (need wins).
+    values = {"allgeier": _iv("allgeier", "RB", 8.8), "spareqb": _iv("spareqb", "QB", 16.0)}
+    out = value_gated_surplus_positions(("allgeier", "spareqb"), needs=frozenset({"RB"}),
+                                        values=values, replacement=_REPL)
+    assert "RB" not in out and out == ["QB"]      # reconciliation: RB can't be both
+
+
+def test_surplus_margin_excludes_barely_above_replacement():
+    # A body only fractionally above replacement isn't tradeable depth.
+    values = {"barely": _iv("barely", "WR", _REPL["WR"] + SURPLUS_MARGIN_PPW - 0.1)}
+    assert value_gated_surplus_positions(("barely",), frozenset(), values, _REPL) == []
+
+
+def test_leverage_mirror_requires_reciprocal_value_fit():
+    # A: QB depth, needs WR.  B: WR depth, needs QB.  → reciprocal fit.
+    values = {
+        "a_qb": _iv("a_qb", "QB", 18.0), "b_wr": _iv("b_wr", "WR", 12.0),
+    }
+    lev = leverage_readout(
+        my_needs=frozenset({"WR"}), my_surplus_ids=("a_qb",),
+        opp_needs=frozenset({"QB"}), opp_surplus_ids=("b_wr",),
+        values=values, replacement=_REPL,
+    )
+    assert lev.my_surplus_positions == ("QB",) and lev.opp_surplus_positions == ("WR",)
+    assert lev.my_surplus_their_needs == ("QB",) and lev.their_surplus_my_needs == ("WR",)
+    assert lev.is_reciprocal_fit is True
+
+
+def test_leverage_one_directional_is_not_a_mirror():
+    # B can help A's QB need, but A has nothing B needs → NOT reciprocal.
+    values = {"b_qb": _iv("b_qb", "QB", 18.0)}
+    lev = leverage_readout(
+        my_needs=frozenset({"QB"}), my_surplus_ids=(),          # A has no depth
+        opp_needs=frozenset({"RB"}), opp_surplus_ids=("b_qb",),  # B has QB depth
+        values=values, replacement=_REPL,
+    )
+    assert lev.their_surplus_my_needs == ("QB",)   # one direction fits
+    assert lev.my_surplus_their_needs == ()        # the other doesn't
+    assert lev.is_reciprocal_fit is False          # → honest "no clear fit"
 
 
 def test_confidence_summary_share_based_not_min():
