@@ -379,12 +379,14 @@ def _iv_pos(pid, pos, fv):
 def _full_league():
     my = tuple(RosterPlayer(p, p, pos) for p, pos in [
         ("qb", "QB"), ("rb1", "RB"), ("rb2", "RB"), ("rb3", "RB"),
-        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE")])
+        ("wr1", "WR"), ("wr2", "WR"), ("wr3", "WR"), ("te", "TE"),
+        ("k", "K"), ("dst", "DEF")])
     opp = tuple(RosterPlayer(p, p, pos) for p, pos in [("owr", "WR"), ("owr2", "WR")])
     state = LeagueState(2025, 14, (TeamState("me", "Me", True, my),
                                    TeamState("opp", "Opp", False, opp)))
     specs = [("qb", "QB", 30), ("rb1", "RB", 40), ("rb2", "RB", 35), ("rb3", "RB", 20),
              ("wr1", "WR", 38), ("wr2", "WR", 34), ("wr3", "WR", 30), ("te", "TE", 25),
+             ("k", "K", 20), ("dst", "DEF", 20),
              ("owr", "WR", 45), ("owr2", "WR", 44)]
     return state, {p: _iv_pos(p, pos, fv) for p, pos, fv in specs}, 16
 

@@ -59,14 +59,19 @@ class LineupRules:
     flex_positions: tuple[str, ...]
 
 
-# The demo league shape: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE).
+# The demo league shape: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE), 1 K, 1 DST.
 # NOTE (T3 reconciliation): this DEMO default is intentionally 3WR (demo roster
 # shape), distinct from the DRAFT canonical _DEFAULT_ROSTER_SLOTS (2WR + 1 FLEX,
 # which matches every real capture). The single source of truth for a REAL league
 # is the canonical roster_slots → lineup_rules_from_slots() below; this 3WR
 # constant is only the demo fallback and is left as-is (teardown-slated).
+# K/DST slots (K/DEF streaming arc, slice 3): K and DST now VALUE (slice 2) and are
+# SEATABLE — they fill their OWN dedicated slots and are NOT flex-eligible
+# (flex_positions stays RB/WR/TE). Additive: an offense-only roster leaves the
+# K/DST slots empty (credited at the streamable K/DST replacement floor, exactly
+# like any other unfilled starter slot), so offense lineups don't regress.
 DEFAULT_LINEUP_RULES = LineupRules(
-    slots={"QB": 1, "RB": 2, "WR": 3, "TE": 1},
+    slots={"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1},
     flex_count=1,
     flex_positions=("RB", "WR", "TE"),
 )
@@ -75,13 +80,13 @@ DEFAULT_LINEUP_RULES = LineupRules(
 def lineup_rules_from_slots(roster_slots: dict | None) -> LineupRules:
     """Build trade-optimizer LineupRules from a league's canonical roster_slots (T3).
 
-    Offense-only — the trade value engine ignores K/DEF (they value to 0). None →
-    the demo default. A superflex league's flex slots admit QB, so FLEX+SUPER_FLEX
-    are combined into one QB-eligible flex band (an approximation: the trade lineup
-    doesn't value the FLEX/SUPER_FLEX split separately)."""
+    K and DST seat in their OWN dedicated slots (not flex — flex stays RB/WR/TE).
+    None → the demo default. A superflex league's flex slots admit QB, so
+    FLEX+SUPER_FLEX are combined into one QB-eligible flex band (an approximation:
+    the trade lineup doesn't value the FLEX/SUPER_FLEX split separately)."""
     if not roster_slots:
         return DEFAULT_LINEUP_RULES
-    slots = {p: int(roster_slots.get(p, 0) or 0) for p in ("QB", "RB", "WR", "TE")}
+    slots = {p: int(roster_slots.get(p, 0) or 0) for p in ("QB", "RB", "WR", "TE", "K", "DEF")}
     flex = int(roster_slots.get("FLEX", 0) or 0)
     sflex = int(roster_slots.get("SUPER_FLEX", 0) or 0)
     positions = ("QB", "RB", "WR", "TE") if sflex else ("RB", "WR", "TE")
