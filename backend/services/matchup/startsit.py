@@ -143,18 +143,28 @@ def build_start_sit(
             in_name=name_of.get(fill.player_id) if fill else None,
         ))
 
-    # --- Per-starter matchup (covered positions only) ---
+    # --- The REAL slot-legal lineup: EVERY slot optimal_lineup seats, in slot order
+    #     (QB, RBs, WRs, TE, K, DEF, FLEX — whatever the LineupRules config is). The
+    #     matchup grade attaches only to covered positions (WR/RB/TE incl. a FLEX
+    #     filled by one); QB/K/DEF show the seated player with no grade. This is the
+    #     SAME optimal_lineup lineup_strength_ppg sums for the H2H proj-pts/wk, so the
+    #     panel reconciles with that number. ---
     by_pid = {lp.player_id: lp for lp in available}
     starters: list[StarterMatchup] = []
     for label, pid in avail_ol.slots:
+        slot_pos = _slot_pos(label)          # QB/RB/WR/TE/K/DEF/FLEX
         if pid is None or pid not in values:
+            # An unfilled required slot (thin roster) — shown so the lineup is complete.
+            starters.append(StarterMatchup(
+                player_id="", name="(open)", position=slot_pos, slot=label, nfl_team=None,
+                opponent=None, grade=None, def_rank=None, injury_flag=None, forward_ppg=0.0,
+            ))
             continue
         pos = values[pid].position
-        if pos not in COVERED_POSITIONS:
-            continue                          # QB/K/DEF → no matchup tag
+        covered = pos in COVERED_POSITIONS
         team_abbr = nfl_team.get(pid)
-        opp = nfl_opponent_by_team.get((team_abbr or "").upper()) if team_abbr else None
-        grade, rank = _grade_for(def_grades, opp, pos)
+        opp = nfl_opponent_by_team.get((team_abbr or "").upper()) if (covered and team_abbr) else None
+        grade, rank = _grade_for(def_grades, opp, pos) if covered else (None, None)
         flag = inj.get(pid) if inj.get(pid) in FLAG_STATUS else None
         starters.append(StarterMatchup(
             player_id=pid, name=name_of.get(pid, pid), position=pos, slot=label,
@@ -165,7 +175,8 @@ def build_start_sit(
     # --- Founded bench swaps: per covered position, at most one, both conditions ---
     swaps: list[BenchSwap] = []
     for pos in COVERED_POSITIONS:
-        pos_starters = [s for s in starters if s.position == pos]
+        # real (filled) slotted starters at this position — skip "(open)" placeholders.
+        pos_starters = [s for s in starters if s.position == pos and s.player_id]
         if not pos_starters:
             continue
         weakest = min(pos_starters, key=lambda s: s.forward_ppg)

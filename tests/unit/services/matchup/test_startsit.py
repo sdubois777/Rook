@@ -60,16 +60,56 @@ _NFL_OPP = {"BUF": "NE", "SF": "SEA", "DET": "GB", "MIA": "NYJ", "CIN": "BAL",
             "LAC": "KC", "LV": "DEN", "DEN": "LV", "PIT": "CLE", "GB": "CHI", "NYJ": "MIA"}
 
 
-def test_covered_starters_get_grade_uncovered_positions_do_not():
+def test_lineup_is_slot_legal_all_slots_shown():
+    # The panel shows the REAL slot-legal lineup (1QB/2RB/3WR/1TE/1FLEX/1K/1DEF), one
+    # player per slot including QB/K/DEF — not a top-N-by-value WR/RB/TE list.
+    team, values = _team(_BASE)
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    slots = [s.slot for s in ss.starters]
+    assert slots == ["QB", "RB1", "RB2", "WR1", "WR2", "WR3", "TE", "K", "DEF", "FLEX"]
+    assert len(ss.starters) == 10                     # exactly the slots — no extra players
+    counts = {}
+    for s in ss.starters:
+        counts[s.position] = counts.get(s.position, 0) + 1
+    assert counts["QB"] == 1 and counts["K"] == 1 and counts["DEF"] == 1   # NOT missing QB/K/DEF
+    assert counts["TE"] == 1
+    # 2 dedicated RB + 3 dedicated WR + 1 FLEX (flex-eligible) = the covered starters.
+    assert counts["RB"] + counts["WR"] + counts.get("TE", 0) == 7
+
+
+def test_covered_starters_graded_uncovered_positions_not():
     team, values = _team(_BASE)
     grades = _def_grades([("KC", "WR", "tough", 30), ("BAL", "WR", "favorable", 2)])
     ss = build_start_sit(team, values, grades, _NFL_OPP)
-    positions = {s.position for s in ss.starters}
-    assert positions <= {"WR", "RB", "TE"}          # QB/K/DEF never tagged
-    # wr3 faces LAC->KC (tough), wr2 faces CIN->BAL (favorable)
     by = {s.name: s for s in ss.starters}
+    # wr3 faces LAC->KC (tough), wr2 faces CIN->BAL (favorable) — covered → graded.
     assert by["wr3"].grade == "tough" and by["wr3"].opponent == "KC"
     assert by["wr2"].grade == "favorable" and by["wr2"].opponent == "BAL"
+    # QB/K/DEF are seated but carry NO grade/opponent (uncovered).
+    for name in ("qb", "k", "def"):
+        assert by[name].grade is None and by[name].opponent is None
+
+
+def test_flex_holds_a_flex_eligible_player_the_optimizer_seated():
+    team, values = _team(_BASE)
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    flex = [s for s in ss.starters if s.slot == "FLEX"]
+    assert len(flex) == 1
+    assert flex[0].position in ("RB", "WR", "TE")     # flex-eligible, real seated player
+    assert flex[0].player_id                          # not an empty placeholder
+
+
+def test_panel_reconciles_with_h2h_ppw():
+    # The panel's summed forward_ppg must equal lineup_strength_ppg (the H2H proj-pts/wk),
+    # because both read the SAME optimal_lineup.
+    from backend.services.matchup.startsit import available_lineup_roster
+    from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_strength_ppg
+
+    team, values = _team(_BASE)
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    panel_total = round(sum(s.forward_ppg for s in ss.starters), 2)
+    my_ppw = lineup_strength_ppg(available_lineup_roster(team, values), DEFAULT_LINEUP_RULES)
+    assert panel_total == round(my_ppw, 2)
 
 
 def test_out_and_ir_excluded_from_optimal_and_replacement_shown():

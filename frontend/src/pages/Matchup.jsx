@@ -202,7 +202,8 @@ const GRADE_CLS = {
 }
 const GRADE_LABEL = { favorable: 'favorable', neutral: 'neutral', tough: 'tough draw' }
 
-function GradeTag({ grade, opponent }) {
+function GradeTag({ grade, opponent, covered }) {
+  if (!covered) return <span className="text-[11px] text-slate-600">—</span>   // QB/K/DEF: no matchup grade
   if (!opponent) return <span className="text-[11px] text-slate-600">bye / no game</span>
   if (!grade) return <span className="text-[11px] text-slate-500">vs {opponent}</span>
   return (
@@ -250,7 +251,7 @@ function StartSit({ ss }) {
               className="min-w-0 flex-1"
               nameClassName="text-sm text-slate-200 truncate"
             />
-            <GradeTag grade={s.grade} opponent={s.opponent} />
+            <GradeTag grade={s.grade} opponent={s.opponent} covered={ss.covered_positions.includes(s.position)} />
             <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">{s.forward_ppg.toFixed(1)}</span>
           </div>
         ))}
