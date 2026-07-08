@@ -157,8 +157,10 @@ async def _build_pool(db, weekly: pd.DataFrame, rostered: set[str]) -> list[Rost
         select(Player.id, Player.name, Player.position, Player.team_abbr)
         .where(Player.id.in_(uids), Player.position.in_(_SKILL))
     )).all()
+    from backend.services.trade.trade_demo_source import DEMO_INJURIES
     return [
-        RosterPlayer(canonical_player_id=str(pid), name=name, position=pos, nfl_team=team)
+        RosterPlayer(canonical_player_id=str(pid), name=name, position=pos, nfl_team=team,
+                     injury_status=DEMO_INJURIES.get(name))  # demo badge on free agents too
         for pid, name, pos, team in rows
     ]
 

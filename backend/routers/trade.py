@@ -175,6 +175,7 @@ class LeaguePlayerOut(BaseModel):
     confidence: str
     buy_low: bool
     sell_high: bool
+    injury_status: Optional[str] = None   # badge code "Q"|"D"|"O"|"IR"; None = healthy
 
 
 class LeagueTeamOut(BaseModel):
@@ -438,6 +439,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
                 confidence=v.confidence.value if v else "insufficient",
                 buy_low=v.buy_low if v else False,
                 sell_high=v.sell_high if v else False,
+                injury_status=rp.injury_status,
             ))
         teams.append(LeagueTeamOut(
             team_id=team.team_id, team_name=team.team_name,

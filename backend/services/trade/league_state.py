@@ -34,6 +34,7 @@ class RosterPlayer:
     nfl_team: Optional[str] = None
     bye_week: Optional[int] = None
     starter_slot: Optional[str] = None  # e.g. "RB1", "FLEX", "BENCH" — optional
+    injury_status: Optional[str] = None  # canonical code "Q"|"D"|"O"|"IR" for the badge; None = healthy
 
 
 @dataclass(frozen=True)

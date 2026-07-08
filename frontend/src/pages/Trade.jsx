@@ -15,6 +15,7 @@ import {
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
+import InjuryBadge from '../components/shared/InjuryBadge'
 import VerdictPanel from '../components/trade/VerdictPanel'
 import SilenceExplainer from '../components/trade/SilenceExplainer'
 
@@ -65,6 +66,7 @@ function PlayerRow({ p, selected, onToggle, accent }) {
       <PosBadge pos={p.position} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
+          <InjuryBadge status={p.injury_status} />
           <span className="truncate text-sm font-medium text-white">{p.name}</span>
           {p.buy_low && <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold text-emerald-400">BUY</span>}
           {p.sell_high && <span className="rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-400">SELL</span>}
