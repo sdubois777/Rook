@@ -11,9 +11,9 @@
  * the rest of the page is permanent.
  */
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Swords, ArrowLeftRight, Trophy, Scale, ClipboardList, ArrowRightLeft, Stethoscope } from 'lucide-react'
+import { Swords, ArrowLeftRight, Trophy, Scale, ClipboardList, ArrowRightLeft, Stethoscope, AlertTriangle, Waves } from 'lucide-react'
 import { fetchMatchupLeague } from '../api/matchup'
 import PositionBadge from '../components/shared/PositionBadge'
 import PlayerName from '../components/shared/PlayerName'
@@ -222,38 +222,54 @@ function StartSit({ ss }) {
       </div>
       <p className="mb-3 text-[11px] text-slate-500">
         Your optimal available lineup with each starter’s opponent matchup (WR/RB/TE). Reasoning,
-        not a directive — Out/IR players are dropped; Questionable is flagged, not benched.
+        not a directive — Out/IR and bye players are dropped; Questionable is flagged, not benched.
       </p>
 
-      {/* Injury reactions */}
+      {/* Injury / bye reactions */}
       {ss.replacements.length > 0 && (
         <div className="mb-3 space-y-1">
-          {ss.replacements.map((r, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs text-slate-300">
-              <Stethoscope size={13} className="shrink-0 text-red-300" />
-              <span><span className="font-medium text-red-200">{r.out_name}</span> is {r.out_status === 'IR' ? 'on IR' : 'Out'}
-                {r.in_name ? <> — <span className="font-medium text-white">{r.in_name}</span> starts in his place</> : ' — slot unfilled'}</span>
-            </div>
-          ))}
+          {ss.replacements.map((r, i) => {
+            const reason = r.out_status === 'IR' ? 'on IR' : r.out_status === 'bye' ? 'on bye' : 'Out'
+            return (
+              <div key={i} className="flex items-center gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs text-slate-300">
+                <Stethoscope size={13} className="shrink-0 text-red-300" />
+                <span><span className="font-medium text-red-200">{r.out_name}</span> is {reason}
+                  {r.in_name ? <> — <span className="font-medium text-white">{r.in_name}</span> starts in his place</> : ' — no replacement available'}</span>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      {/* Per-starter matchups */}
+      {/* Per-starter matchups (an unfillable slot renders RED with a waiver pointer) */}
       <div className="space-y-1">
         {ss.starters.map((s, i) => (
-          <div key={i} className="flex items-center gap-2 rounded px-1 py-1">
-            <span className="w-9 shrink-0 text-[10px] font-mono text-slate-500">{s.slot}</span>
-            <PlayerName
-              name={s.name}
-              position={s.position}
-              injuryStatus={s.injury_flag}
-              variant="dense"
-              className="min-w-0 flex-1"
-              nameClassName="text-sm text-slate-200 truncate"
-            />
-            <GradeTag grade={s.grade} opponent={s.opponent} covered={ss.covered_positions.includes(s.position)} />
-            <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">{s.forward_ppg.toFixed(1)}</span>
-          </div>
+          s.unfillable ? (
+            <div key={i} className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/5 px-1.5 py-1.5">
+              <span className="w-9 shrink-0 text-[10px] font-mono text-red-300">{s.slot}</span>
+              <AlertTriangle size={13} className="shrink-0 text-red-300" />
+              <span className="min-w-0 flex-1 text-xs text-red-200">
+                {s.unfillable_reason || `No available ${s.position} this week`}
+              </span>
+              <Link to="/waiver" className="shrink-0 inline-flex items-center gap-1 rounded border border-brand-accent/40 bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand-accent hover:bg-brand/20">
+                <Waves size={11} /> waiver
+              </Link>
+            </div>
+          ) : (
+            <div key={i} className="flex items-center gap-2 rounded px-1 py-1">
+              <span className="w-9 shrink-0 text-[10px] font-mono text-slate-500">{s.slot}</span>
+              <PlayerName
+                name={s.name}
+                position={s.position}
+                injuryStatus={s.injury_flag}
+                variant="dense"
+                className="min-w-0 flex-1"
+                nameClassName="text-sm text-slate-200 truncate"
+              />
+              <GradeTag grade={s.grade} opponent={s.opponent} covered={ss.covered_positions.includes(s.position)} />
+              <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">{s.forward_ppg.toFixed(1)}</span>
+            </div>
+          )
         ))}
       </div>
 

@@ -44,6 +44,8 @@ class StarterMatchup:
     def_rank: Optional[int]
     injury_flag: Optional[str]     # "Q" | "D" or None — a monitor flag, not a downgrade
     forward_ppg: float
+    unfillable: bool = False       # no available (playing, healthy) player for this slot
+    unfillable_reason: Optional[str] = None   # e.g. "Kareem Hunt is on bye — no replacement"
 
 
 @dataclass(frozen=True)
@@ -63,7 +65,7 @@ class BenchSwap:
 @dataclass(frozen=True)
 class Replacement:
     out_name: str
-    out_status: str                # "O" | "IR"
+    out_status: str                # "O" | "IR" | "bye" — why the player is unavailable
     position: str
     slot: str
     in_name: Optional[str]         # who fills the slot in the available optimal (None if unfilled)
@@ -99,6 +101,21 @@ def _softer(bench_grade: Optional[str], starter_grade: Optional[str]) -> bool:
     return _GRADE_TIER[bench_grade] <= _GRADE_TIER[starter_grade] - 1
 
 
+def _availability(injury_status, nfl_team, nfl_opponent_by_team) -> Optional[str]:
+    """Why a player is UNAVAILABLE this week, or None if he can start. Out/IR and BYE
+    are the SAME category — a bye player has no game and scores 0, exactly like Out/IR,
+    so neither is seatable. Bye is only assessable when the week's schedule is provided
+    (a real nfl_opponent_by_team map); with no map, only injury applies (back-compat).
+    A player with no resolvable NFL team/opponent this week counts as 'bye'."""
+    if injury_status in UNAVAILABLE_STATUS:
+        return injury_status                      # "O" | "IR"
+    if nfl_opponent_by_team:
+        team = (nfl_team or "").upper()
+        if not team or team not in nfl_opponent_by_team:
+            return "bye"                          # no game this week
+    return None
+
+
 def build_start_sit(
     team,                                    # TeamState (roster carries injury_status)
     values: dict,                            # {pid: InSeasonValue}
@@ -115,33 +132,50 @@ def build_start_sit(
     nfl_team = {rp.canonical_player_id: rp.nfl_team for rp in team.roster}
     name_of = {rp.canonical_player_id: rp.name for rp in team.roster}
 
+    def avail(pid):
+        return _availability(inj.get(pid), nfl_team.get(pid), nfl_opponent_by_team)
+
     full_lps = _lineup_roster(team, values)
-    # Out/IR can't be in your best AVAILABLE lineup this week.
-    available = [lp for lp in full_lps if inj.get(lp.player_id) not in UNAVAILABLE_STATUS]
+    # Out/IR AND bye are unavailable — none can be in your best AVAILABLE lineup.
+    available = [lp for lp in full_lps if avail(lp.player_id) is None]
 
     full_ol = optimal_lineup(full_lps, rules)
     avail_ol = optimal_lineup(available, rules)
     full_starter_ids = {p.player_id for p in full_ol.starters}
     avail_starter_ids = {p.player_id for p in avail_ol.starters}
 
-    # --- Replacements: an Out/IR player who WOULD start (full optimal) is excluded;
-    #     name who NEWLY starts in his place (a player in the available optimal but not
-    #     the full one — the honest "fills in", not a starter who merely shifted slots).
+    def _reason_phrase(status):
+        return "on bye" if status == "bye" else ("on IR" if status == "IR" else "Out")
+
+    # --- Replacements: an unavailable player (Out/IR/bye) who WOULD start (full
+    #     optimal) is excluded; name who NEWLY starts in his place (a player in the
+    #     available optimal but not the full one — the honest "fills in"). in_name None
+    #     means the slot couldn't be filled (case A) — surfaced on the slot row too.
     promoted = [p for p in avail_ol.starters if p.player_id not in full_starter_ids]
     replacements: list[Replacement] = []
     for label, pid in full_ol.slots:
-        if pid is None or inj.get(pid) not in UNAVAILABLE_STATUS:
+        status = avail(pid) if pid else None
+        if status is None:
             continue
         pos = values[pid].position if pid in values else _slot_pos(label)
-        # prefer a same-position promotion, else any newly-starting player.
         fill = next((p for p in promoted if p.player_id in values and values[p.player_id].position == pos), None)
         fill = fill or (promoted[0] if promoted else None)
         if fill is not None:
             promoted.remove(fill)
         replacements.append(Replacement(
-            out_name=name_of.get(pid, pid), out_status=inj[pid], position=pos, slot=label,
+            out_name=name_of.get(pid, pid), out_status=status, position=pos, slot=label,
             in_name=name_of.get(fill.player_id) if fill else None,
         ))
+
+    def _empty_slot_reason(slot_pos):
+        """Why a required slot has no available player: the best UNAVAILABLE roster
+        player at that position (e.g. 'Kareem Hunt is on bye — no replacement')."""
+        cands = [(values[lp.player_id].forward_value, lp.player_id) for lp in full_lps
+                 if lp.player_id in values and values[lp.player_id].position == slot_pos and avail(lp.player_id)]
+        if not cands:
+            return None
+        _, pid = max(cands)
+        return f"{name_of.get(pid, pid)} is {_reason_phrase(avail(pid))} — no available {slot_pos}"
 
     # --- The REAL slot-legal lineup: EVERY slot optimal_lineup seats, in slot order
     #     (QB, RBs, WRs, TE, K, DEF, FLEX — whatever the LineupRules config is). The
@@ -154,10 +188,13 @@ def build_start_sit(
     for label, pid in avail_ol.slots:
         slot_pos = _slot_pos(label)          # QB/RB/WR/TE/K/DEF/FLEX
         if pid is None or pid not in values:
-            # An unfilled required slot (thin roster) — shown so the lineup is complete.
+            # No available (playing, healthy) player for this required slot — case A.
+            # Shown RED with the honest reason + a waiver pointer; NEVER seat a zero.
+            reason = _empty_slot_reason(slot_pos)
             starters.append(StarterMatchup(
-                player_id="", name="(open)", position=slot_pos, slot=label, nfl_team=None,
-                opponent=None, grade=None, def_rank=None, injury_flag=None, forward_ppg=0.0,
+                player_id="", name=f"No available {slot_pos}", position=slot_pos, slot=label,
+                nfl_team=None, opponent=None, grade=None, def_rank=None, injury_flag=None,
+                forward_ppg=0.0, unfillable=True, unfillable_reason=reason,
             ))
             continue
         pos = values[pid].position
@@ -212,11 +249,16 @@ def build_start_sit(
     )
 
 
-def available_lineup_roster(team, values, rules: Optional[LineupRules] = None):
-    """The team's roster as LineupPlayers with Out/IR EXCLUDED — the injury-aware
-    input to optimal_lineup / lineup_strength_ppg so an unavailable player is never in
-    the 'best lineup'. Shared by _scout so the H2H margin/grid match the panel."""
+def available_lineup_roster(team, values, rules: Optional[LineupRules] = None,
+                            nfl_opponent_by_team: Optional[dict] = None):
+    """The team's roster as LineupPlayers with UNAVAILABLE players EXCLUDED — Out/IR
+    AND bye (no game this week), when the week's schedule (nfl_opponent_by_team) is
+    provided. The injury-and-bye-aware input to optimal_lineup / lineup_strength_ppg so
+    an unavailable player is never in the 'best lineup'. Shared by _scout so the H2H
+    margin/grid match the panel. No schedule map → injury-only (back-compat)."""
     from backend.services.trade.trade_proposals import _lineup_roster
     inj = {rp.canonical_player_id: rp.injury_status for rp in team.roster}
+    nfl_team = {rp.canonical_player_id: rp.nfl_team for rp in team.roster}
     return [lp for lp in _lineup_roster(team, values)
-            if inj.get(lp.player_id) not in UNAVAILABLE_STATUS]
+            if _availability(inj.get(lp.player_id), nfl_team.get(lp.player_id),
+                             nfl_opponent_by_team or {}) is None]

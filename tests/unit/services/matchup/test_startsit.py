@@ -155,14 +155,59 @@ def test_questionable_is_flagged_not_excluded():
     assert by["wr1"].injury_flag == "Q"              # but flagged
 
 
-def test_missing_team_is_bye_no_fabricated_grade():
+def test_bye_player_excluded_case_b_playing_replacement_seated():
+    # rb1 (highest-value RB) is on BYE — his NFL team has no game this week. A lower-
+    # value PLAYING RB (rb_bench) seats the slot; the bye RB is NOT seated.
     players = list(_BASE)
-    players[3] = ("wr1", "WR", 16, None, None)      # no NFL team
+    players[1] = ("rb1", "RB", 15, "BYE_TEAM", None)   # BYE_TEAM not in _NFL_OPP → bye
     team, values = _team(players)
-    grades = _def_grades([("KC", "WR", "tough", 30)])
-    ss = build_start_sit(team, values, grades, _NFL_OPP)
-    wr1 = next(s for s in ss.starters if s.name == "wr1")
-    assert wr1.opponent is None and wr1.grade is None   # BYE/na — no guess
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    starter_names = {s.name for s in ss.starters if s.player_id}
+    assert "rb1" not in starter_names                  # bye player NOT seated
+    assert "rb_bench" in starter_names                 # a playing RB now seats an RB slot
+    rep = [r for r in ss.replacements if r.out_name == "rb1"]
+    assert rep and rep[0].out_status == "bye"          # flagged as bye (not silently dropped)
+    assert rep[0].in_name in starter_names             # the named filler is actually seated + playing
+
+
+def test_bye_is_unavailable_like_out_ir_in_available_roster():
+    players = list(_BASE)
+    players[1] = ("rb1", "RB", 15, "BYE_TEAM", None)
+    team, values = _team(players)
+    avail = available_lineup_roster(team, values, None, _NFL_OPP)
+    assert "rb1" not in {lp.player_id for lp in avail}   # bye excluded, same as Out/IR
+    # no schedule map → bye is not assessed (injury-only back-compat)
+    avail_nobye = available_lineup_roster(team, values)
+    assert "rb1" in {lp.player_id for lp in avail_nobye}
+
+
+def test_case_a_no_available_te_renders_unfillable_slot_not_a_zero_start():
+    # Only ONE TE and he's on bye → the TE slot cannot be legally filled. It must
+    # render as UNFILLABLE (red, with reason), NOT seat the bye TE as a phantom start.
+    players = list(_BASE)
+    players[6] = ("te", "TE", 10, "BYE_TEAM", None)     # the only TE, on bye
+    team, values = _team(players)
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    te_row = next(s for s in ss.starters if s.slot == "TE")
+    assert te_row.unfillable is True and te_row.player_id == ""
+    assert te_row.forward_ppg == 0.0                    # contributes 0, not the bye TE's points
+    assert "te" in (te_row.unfillable_reason or "") and "bye" in (te_row.unfillable_reason or "")
+    assert not any(s.name == "te" and s.player_id for s in ss.starters)   # bye TE never seated
+
+
+def test_h2h_reconciles_with_a_bye_replacement():
+    # After bye handling, sum(seated forward_ppg) == lineup_strength_ppg of the
+    # available roster (empty slots = 0 with replacement=None).
+    from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_strength_ppg
+
+    players = list(_BASE)
+    players[1] = ("rb1", "RB", 15, "BYE_TEAM", None)
+    team, values = _team(players)
+    ss = build_start_sit(team, values, _def_grades([]), _NFL_OPP)
+    panel_total = round(sum(s.forward_ppg for s in ss.starters), 2)
+    avail = available_lineup_roster(team, values, DEFAULT_LINEUP_RULES, _NFL_OPP)
+    my_ppw = lineup_strength_ppg(avail, DEFAULT_LINEUP_RULES, None)   # empty slots = 0
+    assert panel_total == round(my_ppw, 2)
 
 
 def test_bench_swap_fires_only_when_founded():
