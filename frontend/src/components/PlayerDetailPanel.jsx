@@ -4,7 +4,7 @@ import { fetchPlayer } from '../api/players'
 import { useUIStore } from '../stores/ui'
 import { usePreferencesStore } from '../stores/preferences'
 import { useAssistantStore } from '../stores/assistant'
-import PositionBadge from './shared/PositionBadge'
+import { PlayerBadges } from './shared/PlayerName'
 import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
 import ValueComparisonBar from './shared/ValueComparisonBar'
@@ -54,7 +54,7 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
         {/* Header */}
         <div className="sticky top-0 bg-surface-1 border-b border-border px-5 py-4 flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
-            {player && <PositionBadge position={player.position} />}
+            {player && <PlayerBadges position={player.position} injuryStatus={player.injury_status} variant="dense" />}
             <h2 className="text-lg font-semibold text-slate-100">
               {player?.name || 'Loading...'}
             </h2>

@@ -16,28 +16,15 @@ import {
 import { fetchWaiverLeague, fetchWaiverRecommendations } from '../api/waiver'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
+import { PlayerBadges } from '../components/shared/PlayerName'
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400' },
   falling: { Icon: TrendingDown, cls: 'text-red-400' },
   stable: { Icon: Minus, cls: 'text-slate-500' },
 }
-const POS_CLS = {
-  QB: 'bg-rose-500/15 text-rose-300', RB: 'bg-emerald-500/15 text-emerald-300',
-  WR: 'bg-sky-500/15 text-sky-300', TE: 'bg-amber-500/15 text-amber-300',
-  // K/DEF (streaming arc) — matches the trade page's position palette.
-  K: 'bg-violet-500/15 text-violet-300', DEF: 'bg-cyan-500/15 text-cyan-300',
-}
 const CONF_CLS = { high: 'text-emerald-400', medium: 'text-amber-400', low: 'text-slate-500',
   full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
-
-function PosBadge({ pos }) {
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${POS_CLS[pos] || 'bg-slate-500/15 text-slate-300'}`}>
-      {pos}
-    </span>
-  )
-}
 
 function UpgradeInline({ label, tier }) {
   return (
@@ -103,7 +90,7 @@ function RecCard({ rec }) {
         {/* Add player */}
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <PosBadge pos={rec.add.position} />
+            <PlayerBadges position={rec.add.position} injuryStatus={rec.add.injury_status} variant="compact" />
             <span className="truncate text-sm font-semibold text-white">{rec.add.name}</span>
             <t.Icon size={14} className={t.cls} />
             {rec.add.buy_low && <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold text-emerald-400">BUY</span>}
@@ -141,7 +128,7 @@ function RecCard({ rec }) {
         <span className="flex items-center gap-1 text-slate-400">
           <ArrowRight size={12} className="text-slate-600" />
           {rec.drop
-            ? <>drop <span className="text-slate-300">{rec.drop.name}</span> <PosBadge pos={rec.drop.position} /></>
+            ? <>drop <span className="text-slate-300">{rec.drop.name}</span> <PlayerBadges position={rec.drop.position} injuryStatus={rec.drop.injury_status} variant="compact" /></>
             : <span className="text-slate-500">open roster slot — no drop needed</span>}
         </span>
       </div>

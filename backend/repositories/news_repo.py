@@ -37,7 +37,7 @@ class NewsRepository(BaseRepository[BeatReporterSignal]):
 
         Returns (rows for the requested page, total matching count).
         Each row is (BeatReporterSignal, player_name, player_team,
-        player_position).
+        player_position, player_injury_status).
         """
         query = (
             select(
@@ -45,6 +45,7 @@ class NewsRepository(BaseRepository[BeatReporterSignal]):
                 Player.name,
                 Player.team_abbr,
                 Player.position,
+                Player.injury_status,
             )
             .outerjoin(Player, BeatReporterSignal.player_id == Player.id)
             .where(BeatReporterSignal.flagged_at >= cutoff)

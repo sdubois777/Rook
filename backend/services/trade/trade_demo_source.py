@@ -57,6 +57,18 @@ N_FLEX = 1
 # The user's own team (the default acting-as team). is_me is keyed off this name.
 USER_TEAM_NAME = "Have you seen McConkeys"
 
+# TEARDOWN (demo-only): a small injury map so the status BADGE is visibly working
+# pre-launch. The demo is pinned to 2025 wk14, so live Sleeper status (2026) can't be
+# overlaid coherently — these are seeded DEMO values (canonical codes), keyed by the
+# player name in DEMO_ROSTERS, all on the user's own team for guaranteed visibility.
+# Grep DEMO_INJURIES to remove with the rest of the demo scaffolding.
+DEMO_INJURIES: dict[str, str] = {
+    "Ladd McConkey": "Q",
+    "Davante Adams": "D",
+    "Courtland Sutton": "O",
+    "James Conner": "IR",
+}
+
 # --- the REAL auction draft (K/DST stripped) ---------------------------------
 # (manager_name, ((player_name, position), ...)). Roster membership only — auction
 # prices aren't modeled (they merely decided who drafted whom). Team order is the
@@ -216,6 +228,7 @@ def assemble_teams(
             players.append({
                 "id": pid, "name": name, "position": pos,
                 "nfl_team": nfl_team, "starter_slot": "BENCH",
+                "injury_status": DEMO_INJURIES.get(name),  # demo badge (None = healthy)
             })
         teams_data.append({
             "team_id": f"demo-team-{idx}", "team_name": manager,
@@ -257,6 +270,7 @@ def build_league_state(teams_data: list[dict]) -> LeagueState:
                 RosterPlayer(
                     canonical_player_id=p["id"], name=p["name"], position=p["position"],
                     nfl_team=p.get("nfl_team"), starter_slot=p.get("starter_slot"),
+                    injury_status=p.get("injury_status"),
                 )
                 for p in t["players"]
             ),

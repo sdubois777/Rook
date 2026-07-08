@@ -40,7 +40,9 @@ def _iv(pid, fv, *, conf=Confidence.FULL, trend=ValueTrend.STABLE, buy=False, se
 
 
 def _fixture():
-    me = TeamState("me", "You", True, (RosterPlayer("g", "Give", "WR", nfl_team="SF", starter_slot="WR1"),))
+    me = TeamState("me", "You", True, (
+        RosterPlayer("g", "Give", "WR", nfl_team="SF", starter_slot="WR1", injury_status="Q"),
+    ))
     opp = TeamState("opp", "Rivals", False, (RosterPlayer("x", "Get", "WR", nfl_team="CIN"),))
     state = LeagueState(2025, 14, (me, opp))
     values = {
@@ -92,3 +94,6 @@ async def test_league_returns_teams_rosters_and_values(monkeypatch):
     opp = next(t for t in data["teams"] if not t["is_me"])
     x = opp["roster"][0]
     assert x["confidence"] == "limited" and x["buy_low"] is True
+    # injury badge — additive, carried on the player payload; None for healthy.
+    assert g["injury_status"] == "Q"
+    assert x["injury_status"] is None

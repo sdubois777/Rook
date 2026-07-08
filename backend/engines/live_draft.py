@@ -378,6 +378,7 @@ class LiveDraftEngine:
             "name": player.name,
             "position": player.position or "",
             "team_abbr": player.team_abbr or "",
+            "injury_status": player.injury_status,
             "tier": player.tier,
             "system_value": float(player.baseline_value or 0),
             "market_value": float(player.market_value or 0),
@@ -488,6 +489,7 @@ class LiveDraftEngine:
             **ai_output,
             "player_name": record["name"],
             "position": record.get("position", ""),
+            "injury_status": record.get("injury_status"),
             "system_value": record.get("system_value", 0),
             "market_value": record.get("market_value", 0),
             "pre_computed_ceiling": context["pre_computed_ceiling"],
@@ -648,6 +650,7 @@ class LiveDraftEngine:
             "reasoning": data.get("reasoning", ""),
             "player_name": context["player_name"],
             "position": context["position"],
+            "injury_status": player.get("injury_status"),
             "adp_ai": adp_ai,
             "adp_fp": adp_fp,
             "adp_diff": adp_diff,
@@ -781,6 +784,7 @@ class LiveDraftEngine:
                 "name": p.name,
                 "position": p.position,
                 "team": p.team_abbr,
+                "injury_status": p.injury_status,
                 "adp_rank": p.adp_rank,
                 "adp_fp": (
                     float(p.adp_fantasypros)

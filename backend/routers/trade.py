@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.core.dependencies import get_credit_service, get_current_user, get_db
+from backend.schemas.player_badges import PlayerBadgeFields
 from backend.services.trade.trade_analysis import (
     DEFAULT_ROSTER_LIMIT,
     TradeAnalysis,
@@ -50,7 +51,7 @@ class TradeAnalyzeRequest(BaseModel):
     get: list[str] = Field(default_factory=list, description="canonical player ids you receive")
 
 
-class PlayerGroundingOut(BaseModel):
+class PlayerGroundingOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -131,7 +132,7 @@ class TradeIdea(BaseModel):
     edge: EdgeBandOut               # why it cleared the edge band (slice 4)
 
 
-class PlayerRefOut(BaseModel):
+class PlayerRefOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -164,7 +165,7 @@ class TradeIdeasResponse(BaseModel):
 
 # --- GET /trade/league (read-only roster + value exposer for the picker) -----
 # TEST-ONLY demo surface (slice-6 teardown). Demo-aware via TRADE_DEMO_MODE.
-class LeaguePlayerOut(BaseModel):
+class LeaguePlayerOut(PlayerBadgeFields):
     id: str
     name: str
     position: str
@@ -236,14 +237,31 @@ def get_trade_proposals_agent():
     return TradeProposalsAgent()
 
 
+def _build_injury_map(state) -> dict[str, Optional[str]]:
+    """Map canonical_player_id -> live injury_status across ALL teams' rosters.
+
+    InSeasonValue objects don't carry injury_status, but the LeagueState's
+    RosterPlayer entries do — so this is the one place the badge code is
+    available for the trade player-out schemas. Display-only."""
+    return {
+        rp.canonical_player_id: rp.injury_status
+        for team in state.teams
+        for rp in team.roster
+    }
+
+
 def _to_response(
     a: TradeAnalysis, demo: bool, acceptability: Optional[AcceptabilityOut] = None,
+    injury_by_id: Optional[dict] = None,
 ) -> TradeAnalyzeResponse:
+    injury_by_id = injury_by_id or {}
+
     def out(p):
         return PlayerGroundingOut(
             id=p.canonical_player_id, name=p.name, position=p.position, side=p.side,
             forward_value=p.forward_value, value_trend=p.value_trend,
             confidence=p.confidence, buy_low=p.buy_low, sell_high=p.sell_high, why=p.why,
+            injury_status=injury_by_id.get(p.canonical_player_id),
         )
     return TradeAnalyzeResponse(
         my_team_id=a.my_team_id, winner=a.winner, fairness=a.fairness,
@@ -318,7 +336,7 @@ async def analyze(
         overtake_flag=acc.overtake_flag, hedged=acc.hedged, why=acc.why,
     )
 
-    return _to_response(analysis, demo, acceptability)
+    return _to_response(analysis, demo, acceptability, injury_by_id=_build_injury_map(state))
 
 
 @router.post("/ideas", response_model=TradeIdeasResponse)
@@ -346,6 +364,8 @@ async def ideas(
     my_team_id = body.my_team_id or (state.my_team.team_id if state.my_team else None)
     if my_team_id is None:
         raise HTTPException(status_code=400, detail="no team specified and no is_me team")
+
+    injury_by_id = _build_injury_map(state)
 
     # 3. CREDIT DEDUCT (402, 20cr) — only now, generation is about to run.
     if enforce:
@@ -375,7 +395,7 @@ async def ideas(
             counterparty_team_id=cand.counterparty_team_id,
             counterparty_team_name=team_name,
             why=analysis.rationale,
-            verdict=_to_response(analysis, demo),
+            verdict=_to_response(analysis, demo, injury_by_id=injury_by_id),
             edge=EdgeBandOut(
                 your_lineup_gain=edge.your_lineup_gain, their_lineup_gain=edge.their_lineup_gain,
                 my_strength=edge.my_strength, their_strength=edge.their_strength,
@@ -391,7 +411,10 @@ async def ideas(
         if sc is not None:
             def _ref(pid: str) -> PlayerRefOut:
                 v = values[pid]
-                return PlayerRefOut(id=pid, name=v.name, position=v.position)
+                return PlayerRefOut(
+                    id=pid, name=v.name, position=v.position,
+                    injury_status=injury_by_id.get(pid),
+                )
             near = None
             if sc.near_miss is not None:
                 near = NearMissOut(
@@ -438,6 +461,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
                 confidence=v.confidence.value if v else "insufficient",
                 buy_low=v.buy_low if v else False,
                 sell_high=v.sell_high if v else False,
+                injury_status=rp.injury_status,
             ))
         teams.append(LeagueTeamOut(
             team_id=team.team_id, team_name=team.team_name,

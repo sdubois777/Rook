@@ -46,6 +46,7 @@ def mock_player_rb_tier1():
     p.snake_flag = None
     p.dependencies = []
     p.injury_profile = None
+    p.injury_status = None
     return p
 
 
@@ -73,6 +74,7 @@ def mock_player_wr_tier2():
     p.snake_flag = None
     p.dependencies = []
     p.injury_profile = None
+    p.injury_status = None
     return p
 
 
@@ -219,6 +221,7 @@ def _snake_player(name, position, adp_rank, adp_ai, adp_fp, adp_diff, snake_flag
     p.snake_flag = snake_flag
     p.dependencies = []
     p.injury_profile = None
+    p.injury_status = None
     p.profile = None
     p.historic_prices = []
     return p
