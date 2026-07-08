@@ -112,6 +112,11 @@ async def seed_demo_waiver(db, *, weekly_usage: Optional[pd.DataFrame] = None) -
     priors = {**trade_src.priors, **{k: v for k, v in pool_priors_raw.items() if v is not None}}
 
     values = evaluate_league(aug, weekly, priors=priors)
+    # K/DEF streaming arc (slice 4): DST-only matchup-weekly tilt (offense + kicker
+    # untouched). Pool + rostered DST re-rank by the demo week's opponent matchup.
+    from backend.services.kdef_matchup import apply_dst_matchup
+    from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
+    values = apply_dst_matchup(values, aug, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
 
     faab_remaining = {
         t.team_id: _demo_faab_remaining(t.team_id, i) for i, t in enumerate(state.teams)
