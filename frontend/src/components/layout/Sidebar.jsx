@@ -26,6 +26,7 @@ const navItems = [
   { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
   { to: '/trade', label: 'Trade', icon: ArrowLeftRight },
   { to: '/waiver', label: 'Waiver Wire', icon: Waves },
+  { to: '/matchup', label: 'Matchup', icon: Swords },
   { to: '/account', label: 'Account', icon: UserCircle },
 ]
 

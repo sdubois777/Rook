@@ -7,7 +7,7 @@
  * removes it; the opponent selector and the rest of the page are permanent.
  */
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, Lock, X,
@@ -127,10 +127,17 @@ export default function Trade() {
   const [give, setGive] = useState([])
   const [getIds, setGetIds] = useState([])
 
+  // Handoff from the Matchup page: ?opponent=<team_id> pre-seeds the Build-tab
+  // opponent (the default tab is already 'build'). Derived — never setState in an
+  // effect — and it NEVER auto-runs a metered call (analyze/ideas fire only on click).
+  const [searchParams] = useSearchParams()
+  const preOpponent = searchParams.get('opponent')
+
   const effMyId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
   const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
   const otherTeams = useMemo(() => league?.teams?.filter((t) => t.team_id !== effMyId) || [], [league, effMyId])
-  const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : otherTeams[0]?.team_id
+  const preValidOpp = preOpponent && otherTeams.some((t) => t.team_id === preOpponent) ? preOpponent : null
+  const effOppId = (opponentId && opponentId !== effMyId) ? opponentId : (preValidOpp || otherTeams[0]?.team_id)
   const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
   const qc = useQueryClient()
