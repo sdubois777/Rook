@@ -49,6 +49,14 @@ def _sig(pid, signal_type):
     )
 
 
+def _row(sig, name, team, pos, injury_status=None):
+    """Mirror NewsRepository.list_feed's REAL row shape so build_news_map's unpacking
+    is guarded against shape drift (a 5th column, injury_status, was added in #230 and
+    broke the 4-value unpack — this keeps the test's rows shaped like production):
+    (BeatReporterSignal, player_name, player_team, player_position, player_injury_status)."""
+    return (sig, name, team, pos, injury_status)
+
+
 async def _build(rows, pool_ids):
     """Run build_news_map over mocked signal rows with the DB helpers stubbed out
     (no depth chart / contingents needed to exercise the DIRECT gate)."""
@@ -64,21 +72,21 @@ async def _build(rows, pool_ids):
 async def test_self_injury_flag_attaches_no_direct_news():
     # An add candidate's OWN injury_flag must not decorate his card (and therefore
     # must not rescue/up-rank him downstream — recommendations key off news presence).
-    rows = [(_sig("p_inj", "injury_flag"), "Inj Guy", "SF", "WR")]
+    rows = [_row(_sig("p_inj", "injury_flag"), "Inj Guy", "SF", "WR")]
     news = await _build(rows, {"p_inj"})
     assert "p_inj" not in news
 
 
 async def test_self_practice_limited_attaches_no_direct_news():
-    rows = [(_sig("p_lim", "practice_limited"), "Lim Guy", "KC", "RB")]
+    rows = [_row(_sig("p_lim", "practice_limited"), "Lim Guy", "KC", "RB")]
     news = await _build(rows, {"p_lim"})
     assert "p_lim" not in news
 
 
 async def test_positive_direct_signals_still_attach():
     rows = [
-        (_sig("p_camp", "camp_standout"), "Camp Guy", "MIN", "WR"),
-        (_sig("p_txn", "transaction"), "Txn Guy", "NYJ", "RB"),
+        _row(_sig("p_camp", "camp_standout"), "Camp Guy", "MIN", "WR"),
+        _row(_sig("p_txn", "transaction"), "Txn Guy", "NYJ", "RB"),
     ]
     news = await _build(rows, {"p_camp", "p_txn"})
     assert news["p_camp"].kind == "direct" and news["p_camp"].signal_type == "camp_standout"
@@ -88,8 +96,8 @@ async def test_positive_direct_signals_still_attach():
 async def test_gate_falls_through_to_a_positive_signal():
     # A player with BOTH a negative and a positive signal surfaces on the positive.
     rows = [
-        (_sig("p_both", "injury_flag"), "Both Guy", "DET", "TE"),      # newest, negative → skipped
-        (_sig("p_both", "camp_standout"), "Both Guy", "DET", "TE"),    # positive → attaches
+        _row(_sig("p_both", "injury_flag"), "Both Guy", "DET", "TE"),      # newest, negative → skipped
+        _row(_sig("p_both", "camp_standout"), "Both Guy", "DET", "TE"),    # positive → attaches
     ]
     news = await _build(rows, {"p_both"})
     assert news["p_both"].kind == "direct" and news["p_both"].signal_type == "camp_standout"
