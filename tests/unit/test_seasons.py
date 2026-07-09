@@ -257,3 +257,76 @@ def test_player_seasons_in_ascending_order():
     with freeze_time("2026-05-14"):
         seasons = get_player_seasons_for_baseline(9)
         assert seasons == sorted(seasons)
+
+
+# ---------------------------------------------------------------------------
+# latest_season_with_data() — the single "which season has data" resolver
+# ---------------------------------------------------------------------------
+from backend.utils.seasons import latest_season_with_data  # noqa: E402
+
+
+def test_latest_season_returns_newest_season_with_data():
+    """July 2026: calendar season is 2026 (no data yet); the resolver must return
+    2025 — the newest season the probe says HAS data — not the calendar year."""
+    with freeze_time("2026-07-09"):
+        has = {2025: True, 2024: True}          # 2026 absent → no data
+        s = latest_season_with_data(has_data=lambda y: has.get(y, False))
+        assert s == 2025
+
+
+def test_latest_season_skips_empty_newest_and_takes_older():
+    """If the two newest seasons have no data, it walks back to the first that does."""
+    with freeze_time("2026-07-09"):
+        has = {2024: True}                       # 2026, 2025 empty
+        assert latest_season_with_data(has_data=lambda y: has.get(y, False)) == 2024
+
+
+def test_latest_season_data_driven_across_the_jan_feb_window():
+    """The bug this fixes: in Jan/Feb get_current_season() is the PRIOR year, so a
+    naive get_current_season()-1 would read 2024. The resolver, being data-driven,
+    returns 2025 in BOTH the Jan window and mid-summer — provably the same season."""
+    probe = lambda y: y in (2024, 2025)          # 2025 is the newest WITH data
+    with freeze_time("2026-01-20"):              # get_current_season() == 2025
+        assert get_current_season() == 2025
+        assert latest_season_with_data(has_data=probe) == 2025
+    with freeze_time("2026-07-09"):              # get_current_season() == 2026
+        assert latest_season_with_data(has_data=probe) == 2025
+
+
+def test_latest_season_auto_advances_when_new_season_lands():
+    """No hardcode: once the calendar season's data lands, the probe flips and the
+    resolver returns it automatically."""
+    with freeze_time("2026-10-01"):              # get_current_season() == 2026
+        assert latest_season_with_data(has_data=lambda y: y in (2026, 2025)) == 2026
+
+
+def test_latest_season_loud_warns_and_defaults_when_nothing_resolves(caplog):
+    """No silent failure: if the probe finds NO season with data, it loud-warns and
+    returns the calendar season as a last resort (caller degrades on empty)."""
+    with freeze_time("2026-07-09"):
+        with caplog.at_level("WARNING"):
+            s = latest_season_with_data(has_data=lambda y: False)
+        assert s == get_current_season()         # 2026 last-resort
+        assert any("no ingested data" in m for m in caplog.messages)
+
+
+def test_latest_season_probe_failure_is_skipped_not_fatal():
+    """A probe that raises for one season must not sink the resolve — it skips to the
+    next candidate."""
+    def flaky(y):
+        if y == 2026:
+            raise RuntimeError("source down for 2026")
+        return y == 2025
+    with freeze_time("2026-07-09"):
+        assert latest_season_with_data(has_data=flaky) == 2025
+
+
+def test_default_probe_is_schedule_based_and_avoids_empty_cache_staleness(monkeypatch):
+    """The DEFAULT probe derives 'has data' from the schedule (get_current_nfl_week>0),
+    NOT a stat-table read — so a not-yet-started season (week 0) correctly reads as
+    no-data and the resolver never stale-pins on an empty stat cache."""
+    from backend.utils import seasons as _s
+    weeks = {2026: 0, 2025: 18, 2024: 18}        # 2026 not started, 2025/24 complete
+    monkeypatch.setattr(_s, "get_current_nfl_week", lambda season, now=None: weeks.get(season, 0))
+    with freeze_time("2026-07-09"):
+        assert latest_season_with_data() == 2025  # uses _default_season_has_data

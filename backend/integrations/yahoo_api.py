@@ -865,12 +865,23 @@ async def get_league_settings(
         settings_data.get("roster_positions"), league=str(league_key)
     )
 
+    # Draft date/time — Yahoo `draft_time` is epoch SECONDS (0/absent → no draft set).
+    draft_date = None
+    _dt = settings_data.get("draft_time") or league_meta.get("draft_time")
+    if _dt:
+        from datetime import datetime as _datetime, timezone as _tz
+        try:
+            draft_date = _datetime.fromtimestamp(int(_dt), tz=_tz.utc)
+        except (TypeError, ValueError, OSError):
+            draft_date = None
+
     return {
         "name": league_meta.get("name", ""),
         "num_teams": int(league_meta.get("num_teams", 12)),
         "draft_type": draft_type,
         "scoring_type": scoring_type,
         "auction_budget": auction_budget,
+        "draft_date": draft_date,
         "trade_deadline": settings_data.get("trade_end_date", ""),
         "waiver_type": "faab" if uses_faab else waiver_rule,
         "playoff_start_week": int(

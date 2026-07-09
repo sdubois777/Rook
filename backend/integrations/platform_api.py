@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from backend.integrations.platform_models import (
-    DraftPick, FreeAgent, TeamRoster,
+    DraftPick, FreeAgent, LeagueMetadata, TeamRoster,
     Transaction, WeeklyMatchup,
 )
 
@@ -77,3 +77,9 @@ class LeaguePlatformAPI(ABC):
         that carry it override — Sleeper/ESPN). Yahoo populates it via
         get_league_settings on the settings-sync path instead."""
         return None
+
+    async def get_league_metadata(self) -> LeagueMetadata:
+        """Pre-draft league metadata (name / scoring / team_count / draft_type /
+        draft_date), read from a response the platform already fetches. Default:
+        empty (Yahoo uses its own get_league_settings path). Sleeper/ESPN override."""
+        return LeagueMetadata()
