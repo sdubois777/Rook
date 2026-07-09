@@ -54,9 +54,17 @@ _BELL_GRADE_CUTS: tuple[tuple[float, str], ...] = (
 _BELL_TIER_CUTS: tuple[tuple[float, str], ...] = (
     (0.90, "elite"), (0.70, "solid"), (0.30, "average"), (-1.0, "weak"),
 )
+# QB-VALUE sub-composite (the accuracy fix): a WEIGHTED blend of the QB-value stats'
+# percentile ranks → the number the widened bell tiers on. EPA-heavy; fantasy PPG
+# carries RUSHING production (what cpoe misses for mobile QBs); success = consistency.
+# cpoe is intentionally NOT here — it's a narrow accuracy stat, kept for display only.
+_QB_VALUE_WEIGHTS = {"epa": 0.45, "fppg": 0.35, "success": 0.20}
+
 # SYSTEM/OVERALL composite weights on the component percentiles (all higher=better after
-# direction-correction). QB is the dominant driver of an offensive system.
-_SYSTEM_WEIGHTS = {"qb": 0.45, "pass_pro": 0.30, "run_block": 0.25}
+# direction-correction). Football is QB-DRIVEN — QB dominates (the reweight fix: flat
+# averaging graded KC below CHI). Scheme/personnel are situational, not quality axes, so
+# they're excluded from the quality composite.
+_SYSTEM_WEIGHTS = {"qb": 0.55, "pass_pro": 0.25, "run_block": 0.20}
 
 # RED-ZONE philosophy thresholds (from real RZ play distribution).
 _RZ_RUN_HEAVY = 0.55       # RZ run share >= this → "rb" (pound it)
@@ -113,6 +121,20 @@ def tier_from_pct(pct: Optional[float], *, is_rookie: bool = False) -> Optional[
         if pct >= cut:
             return tier
     return _BELL_TIER_CUTS[-1][1]
+
+
+def qb_value_pct(epa_pct, fppg_pct, success_pct) -> Optional[float]:
+    """Weighted blend of the QB-value stats' percentile ranks → the number the widened
+    bell tiers on. EPA-heavy; fppg carries rushing; success = consistency. A missing
+    component is dropped and the remaining weights renormalise (never fabricated)."""
+    parts = [(_QB_VALUE_WEIGHTS["epa"], epa_pct),
+             (_QB_VALUE_WEIGHTS["fppg"], fppg_pct),
+             (_QB_VALUE_WEIGHTS["success"], success_pct)]
+    parts = [(w, p) for w, p in parts if p is not None]
+    if not parts:
+        return None
+    wsum = sum(w for w, _ in parts)
+    return sum(w * p for w, p in parts) / (wsum or 1.0)
 
 
 def system_composite_pct(pass_pct, run_pct, qb_pct) -> Optional[float]:
@@ -265,6 +287,58 @@ def compute_qb_metrics(ngs_passing: pd.DataFrame) -> dict[str, tuple[float, floa
     return out
 
 
+def compute_qb_value(pbp: pd.DataFrame) -> dict[str, tuple[float, float, float]]:
+    """{team: (epa_per_dropback, success_rate, fantasy_ppg)} for each team's PRIMARY
+    passer, from PBP. The ACCURACY fix (recon): cpoe alone graded Mahomes/Jackson F.
+    fantasy_ppg = passing + RUSHING production (rush yds/TDs), so mobile QBs
+    (Jackson/Hurts/Allen) grade correctly — the piece cpoe misses. Pure — inject."""
+    if pbp is None or getattr(pbp, "empty", True):
+        return {}
+    df = pbp
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    if "passer_player_name" not in df.columns or "posteam" not in df.columns:
+        return {}
+    df = df.copy()
+    for c in ("passing_yards", "pass_touchdown", "interception", "rushing_yards",
+              "rush_touchdown", "fumble_lost", "qb_epa", "success"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    dbk = df[df["qb_dropback"] == 1] if "qb_dropback" in df.columns else df[df["play_type"].isin(["pass", "run"])]
+    dbk = dbk[dbk["passer_player_name"].notna()]
+    if dbk.empty:
+        return {}
+    by_qb = dbk.groupby("passer_player_name").agg(
+        epa=("qb_epa", "mean"), succ=("success", "mean"),
+        team=("posteam", "first"), dropbacks=("game_id", "count"), g=("game_id", "nunique"),
+    )
+    # fantasy production (passing by passer + rushing by that same name).
+    pas = df.groupby("passer_player_name").agg(
+        py=("passing_yards", "sum"), ptd=("pass_touchdown", "sum"), inte=("interception", "sum"),
+    )
+    rus = df.groupby("rusher_player_name").agg(
+        ry=("rushing_yards", "sum"), rtd=("rush_touchdown", "sum"),
+    )
+    fum = df.groupby("passer_player_name")["fumble_lost"].sum() if "fumble_lost" in df.columns else None
+    q = by_qb.join(pas, how="left").join(rus, how="left").fillna(0.0)
+    if fum is not None:
+        q = q.join(fum.rename("fl"), how="left").fillna({"fl": 0.0})
+    else:
+        q["fl"] = 0.0
+    q = q[q["g"] >= 6]                                   # need a real sample
+    if q.empty:
+        return {}
+    q["fppg"] = (q["py"] * 0.04 + q["ptd"] * 4 - q["inte"] * 2
+                 + q["ry"] * 0.1 + q["rtd"] * 6 - q["fl"] * 2) / q["g"]
+    q = q.sort_values("dropbacks", ascending=False).reset_index()
+    q = q.drop_duplicates("team")                        # the primary passer per team
+    out: dict[str, tuple[float, float, float]] = {}
+    for _, r in q.iterrows():
+        out[_canon_team(r["team"])] = (round(float(r["epa"]), 4), round(float(r["succ"]), 4), round(float(r["fppg"]), 2))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # the async pass (fetches PBP/NGS; overwrites the 3 LLM fields on TeamSystem)
 # ---------------------------------------------------------------------------
@@ -291,7 +365,8 @@ async def apply_team_deterministic_fields(
         ngs_passing = fetch_ngs_data("passing", stats_season)
 
     pass_rates = compute_pass_rates(pbp)
-    qb_metrics = compute_qb_metrics(ngs_passing)
+    qb_metrics = compute_qb_metrics(ngs_passing)            # cpoe/air (display only)
+    qb_value = compute_qb_value(pbp)                        # EPA/success/fantasy-PPG (drives the tier)
     stuff_rates = compute_run_block_stuff_rate(pbp)          # slice 2
     personnel = compute_base_personnel(pbp)                  # slice 2
     red_zone = compute_red_zone_philosophy(pbp)              # slice 2
@@ -300,14 +375,16 @@ async def apply_team_deterministic_fields(
     latest = max((r.season_year for r in rows), default=None)
     rows = [r for r in rows if r.season_year == latest]
 
-    # Gather the league's 32 values for the RELATIVE widened-bell rank per metric.
+    # Gather the league's values for the RELATIVE widened-bell rank per metric. The QB
+    # sub-composite bells over NON-rookie QBs only (rookies are a separate "rookie" tier).
     all_sack = [float(r.sack_rate) for r in rows if r.sack_rate is not None]
     all_stuff = [stuff_rates[_canon_team(r.team_abbr)] for r in rows
                  if _canon_team(r.team_abbr) in stuff_rates]
-    # qb_tier bells over NON-rookie QBs only (rookies are a separate "rookie" tier, not
-    # ranked on cpoe — thin/no prior data).
-    all_cpoe = [qb_metrics[_canon_team(r.team_abbr)][0] for r in rows
-                if _canon_team(r.team_abbr) in qb_metrics and not r.rookie_qb_flag]
+    _nonrook_qb = [_canon_team(r.team_abbr) for r in rows
+                   if _canon_team(r.team_abbr) in qb_value and not r.rookie_qb_flag]
+    all_epa = [qb_value[t][0] for t in _nonrook_qb]
+    all_succ = [qb_value[t][1] for t in _nonrook_qb]
+    all_fppg = [qb_value[t][2] for t in _nonrook_qb]
 
     scheme_n = passpro_n = qbtier_n = runblock_n = personnel_n = rz_n = 0
     missing_pr: list[str] = []
@@ -335,18 +412,27 @@ async def apply_team_deterministic_fields(
             r.pass_protection_grade = grade_from_pct(pass_pct)
             passpro_n += 1
 
-        # 3. QB TIER — widened-bell on real cpoe (higher = better); store real cpoe/air
+        # 3. QB TIER — a real EPA-weighted sub-composite (EPA + success + fantasy PPG
+        #    incl. RUSHING), NOT cpoe-only (the accuracy fix: cpoe graded Mahomes/Jackson
+        #    weak). cpoe/air are still stored for DISPLAY. The blended value feeds the bell.
         m = qb_metrics.get(team)
+        if m is not None:
+            cpoe, air = m
+            r.qb_cpoe = Decimal(str(cpoe))
+            r.qb_air_yards_per_attempt = Decimal(str(air))
+        v = qb_value.get(team)
         qb_pct = None
-        if m is None:
+        if v is None:
             missing_cpoe.append(r.team_abbr)
             if r.rookie_qb_flag:
                 r.qb_tier = "rookie"
         else:
-            cpoe, air = m
-            r.qb_cpoe = Decimal(str(cpoe))
-            r.qb_air_yards_per_attempt = Decimal(str(air))
-            qb_pct = bell_rank(cpoe, all_cpoe, lower_is_better=False)
+            epa, succ, fppg = v
+            qb_pct = qb_value_pct(
+                bell_rank(epa, all_epa, lower_is_better=False),
+                bell_rank(fppg, all_fppg, lower_is_better=False),
+                bell_rank(succ, all_succ, lower_is_better=False),
+            )
             r.qb_tier = tier_from_pct(qb_pct, is_rookie=bool(r.rookie_qb_flag))
             qbtier_n += 1
 
@@ -390,7 +476,7 @@ async def apply_team_deterministic_fields(
     if missing_pr:
         logger.warning("team_metrics: %d team(s) missing real pass_rate — scheme left as-is: %s", len(missing_pr), missing_pr)
     if missing_cpoe:
-        logger.warning("team_metrics: %d team(s) missing real cpoe — qb_tier left as-is (rookies excepted): %s", len(missing_cpoe), missing_cpoe)
+        logger.warning("team_metrics: %d team(s) missing QB-value stats — qb_tier left as-is (rookies excepted): %s", len(missing_cpoe), missing_cpoe)
     if missing_runblock:
         logger.warning("team_metrics: %d team(s) missing real stuff_rate — run_blocking_grade left as-is: %s", len(missing_runblock), missing_runblock)
     logger.info(
