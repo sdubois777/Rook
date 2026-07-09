@@ -60,11 +60,25 @@ _BELL_TIER_CUTS: tuple[tuple[float, str], ...] = (
 # cpoe is intentionally NOT here — it's a narrow accuracy stat, kept for display only.
 _QB_VALUE_WEIGHTS = {"epa": 0.45, "fppg": 0.35, "success": 0.20}
 
+# QB-RUSHING de-confound. The blend above is passing-CENTRIC: EPA/dropback and success
+# rate (0.65 combined) give a QB ZERO credit for his LEGS — designed-run value is not a
+# dropback, so a rushing QB's production is systematically undervalued (Allen was #1 in
+# fantasy PPG yet graded only "solid"). This is an ADDITIVE bonus on the QB's rushing-
+# production percentile (rush fantasy PPG): a pocket passer has ~0 rushing → ~0 bonus and
+# does NOT move; a genuine rusher is lifted by exactly the rushing he's now credited for.
+# Additive (not a reweight) so it never penalises non-rushers, and tier cuts are fixed
+# (not a re-bell) so one QB's rise never pushes another down. NOT tuned to any team target.
+_QB_RUSH_BONUS_WEIGHT = 0.15
+
 # SYSTEM/OVERALL composite weights on the component percentiles (all higher=better after
 # direction-correction). Football is QB-DRIVEN — QB dominates (the reweight fix: flat
 # averaging graded KC below CHI). Scheme/personnel are situational, not quality axes, so
 # they're excluded from the quality composite.
 _SYSTEM_WEIGHTS = {"qb": 0.55, "pass_pro": 0.25, "run_block": 0.20}
+
+# "pass protection C or below" — the weak-line half of the compound-risk rule (rookie QB
+# behind a bad line). Deterministic pass_protection_grade is a plain A–F (no +/-).
+_WEAK_PASS_PRO = frozenset({"C", "D", "F"})
 
 # RED-ZONE philosophy thresholds (from real RZ play distribution).
 _RZ_RUN_HEAVY = 0.55       # RZ run share >= this → "rb" (pound it)
@@ -123,10 +137,15 @@ def tier_from_pct(pct: Optional[float], *, is_rookie: bool = False) -> Optional[
     return _BELL_TIER_CUTS[-1][1]
 
 
-def qb_value_pct(epa_pct, fppg_pct, success_pct) -> Optional[float]:
+def qb_value_pct(epa_pct, fppg_pct, success_pct, rush_pct=None) -> Optional[float]:
     """Weighted blend of the QB-value stats' percentile ranks → the number the widened
     bell tiers on. EPA-heavy; fppg carries rushing; success = consistency. A missing
-    component is dropped and the remaining weights renormalise (never fabricated)."""
+    component is dropped and the remaining weights renormalise (never fabricated).
+
+    ``rush_pct`` (the QB's rushing-production percentile) applies the ADDITIVE rushing
+    de-confound: the passing-centric blend is lifted by ``_QB_RUSH_BONUS_WEIGHT * rush_pct``
+    and clamped to 1.0. A pocket passer (rush_pct ≈ 0) is left unchanged; a rusher is
+    credited for his legs. None ⇒ no bonus (backward-compatible)."""
     parts = [(_QB_VALUE_WEIGHTS["epa"], epa_pct),
              (_QB_VALUE_WEIGHTS["fppg"], fppg_pct),
              (_QB_VALUE_WEIGHTS["success"], success_pct)]
@@ -134,7 +153,10 @@ def qb_value_pct(epa_pct, fppg_pct, success_pct) -> Optional[float]:
     if not parts:
         return None
     wsum = sum(w for w, _ in parts)
-    return sum(w * p for w, p in parts) / (wsum or 1.0)
+    base = sum(w * p for w, p in parts) / (wsum or 1.0)
+    if rush_pct is not None:
+        base = min(1.0, base + _QB_RUSH_BONUS_WEIGHT * rush_pct)
+    return base
 
 
 def system_composite_pct(pass_pct, run_pct, qb_pct) -> Optional[float]:
@@ -287,11 +309,13 @@ def compute_qb_metrics(ngs_passing: pd.DataFrame) -> dict[str, tuple[float, floa
     return out
 
 
-def compute_qb_value(pbp: pd.DataFrame) -> dict[str, tuple[float, float, float]]:
-    """{team: (epa_per_dropback, success_rate, fantasy_ppg)} for each team's PRIMARY
-    passer, from PBP. The ACCURACY fix (recon): cpoe alone graded Mahomes/Jackson F.
-    fantasy_ppg = passing + RUSHING production (rush yds/TDs), so mobile QBs
-    (Jackson/Hurts/Allen) grade correctly — the piece cpoe misses. Pure — inject."""
+def compute_qb_value(pbp: pd.DataFrame) -> dict[str, tuple[float, float, float, float]]:
+    """{team: (epa_per_dropback, success_rate, fantasy_ppg, rush_fppg)} for each team's
+    PRIMARY passer, from PBP. The ACCURACY fix (recon): cpoe alone graded Mahomes/Jackson F.
+    fantasy_ppg = passing + RUSHING production; ``rush_fppg`` is the RUSHING slice alone
+    (rush yds*0.1 + rush TD*6, per game) — the input for the additive rushing de-confound
+    (:func:`qb_value_pct`), which credits mobile QBs (Jackson/Hurts/Allen) for their legs
+    without touching pocket passers. Pure — inject."""
     if pbp is None or getattr(pbp, "empty", True):
         return {}
     df = pbp
@@ -331,11 +355,13 @@ def compute_qb_value(pbp: pd.DataFrame) -> dict[str, tuple[float, float, float]]
         return {}
     q["fppg"] = (q["py"] * 0.04 + q["ptd"] * 4 - q["inte"] * 2
                  + q["ry"] * 0.1 + q["rtd"] * 6 - q["fl"] * 2) / q["g"]
+    q["rush_fppg"] = (q["ry"] * 0.1 + q["rtd"] * 6) / q["g"]   # rushing slice for the de-confound
     q = q.sort_values("dropbacks", ascending=False).reset_index()
     q = q.drop_duplicates("team")                        # the primary passer per team
-    out: dict[str, tuple[float, float, float]] = {}
+    out: dict[str, tuple[float, float, float, float]] = {}
     for _, r in q.iterrows():
-        out[_canon_team(r["team"])] = (round(float(r["epa"]), 4), round(float(r["succ"]), 4), round(float(r["fppg"]), 2))
+        out[_canon_team(r["team"])] = (round(float(r["epa"]), 4), round(float(r["succ"]), 4),
+                                       round(float(r["fppg"]), 2), round(float(r["rush_fppg"]), 2))
     return out
 
 
@@ -389,6 +415,7 @@ async def apply_team_deterministic_fields(
     all_epa = [qb_value[t][0] for t in _nonrook_qb]
     all_succ = [qb_value[t][1] for t in _nonrook_qb]
     all_fppg = [qb_value[t][2] for t in _nonrook_qb]
+    all_rush = [qb_value[t][3] for t in _nonrook_qb]        # rushing-production pool (de-confound)
 
     scheme_n = passpro_n = qbtier_n = runblock_n = personnel_n = rz_n = 0
     missing_pr: list[str] = []
@@ -431,11 +458,12 @@ async def apply_team_deterministic_fields(
             if r.rookie_qb_flag:
                 r.qb_tier = "rookie"
         else:
-            epa, succ, fppg = v
+            epa, succ, fppg, rush_fppg = v
             qb_pct = qb_value_pct(
                 bell_rank(epa, all_epa, lower_is_better=False),
                 bell_rank(fppg, all_fppg, lower_is_better=False),
                 bell_rank(succ, all_succ, lower_is_better=False),
+                rush_pct=bell_rank(rush_fppg, all_rush, lower_is_better=False),
             )
             r.qb_tier = tier_from_pct(qb_pct, is_rookie=bool(r.rookie_qb_flag))
             qbtier_n += 1
@@ -462,6 +490,11 @@ async def apply_team_deterministic_fields(
         if rz is not None:
             r.red_zone_philosophy = rz
             rz_n += 1
+
+        # COMPOUND RISK — deterministic (was the LLM agent's): rookie QB behind a weak
+        # line. Now owned here since the pass_protection_grade it keys on is deterministic.
+        if r.pass_protection_grade is not None:
+            r.compound_risk_flag = bool(r.rookie_qb_flag) and r.pass_protection_grade in _WEAK_PASS_PRO
 
         # SYSTEM composite (real component percentiles — not an LLM letter).
         composite[r.team_abbr] = system_composite_pct(pass_pct, run_pct, qb_pct)

@@ -50,6 +50,9 @@ def test_compute_qb_value_includes_rushing_production():
     assert "MOB" in v and "POC" in v
     # fantasy PPG (index 2): mobile QB is much higher purely from rushing.
     assert v["MOB"][2] > v["POC"][2] + 5.0
+    # rush_fppg (index 3, the de-confound input): mobile QB ~10/g (40yd*.1 + 6 TD), pocket 0.
+    assert v["MOB"][3] > 5.0
+    assert v["POC"][3] == pytest.approx(0.0)
 
 
 def test_qb_value_pct_blend_weights_and_missing():
@@ -58,6 +61,21 @@ def test_qb_value_pct_blend_weights_and_missing():
     assert full == pytest.approx(0.45)
     assert qb_value_pct(epa_pct=0.8, fppg_pct=None, success_pct=None) == pytest.approx(0.8)  # renormalise
     assert qb_value_pct(None, None, None) is None
+
+
+def test_qb_value_pct_rushing_bonus_is_additive_and_spares_pockets():
+    """The rushing de-confound: additive on rush_pct, never penalises non-rushers, clamped."""
+    base = qb_value_pct(0.5, 0.5, 0.5)                       # 0.50
+    # a pocket passer (rush_pct 0) does NOT move
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=0.0) == pytest.approx(base)
+    # a top rusher gets the full +0.15 bonus (0.15 * 1.0)
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=1.0) == pytest.approx(base + 0.15)
+    # bonus scales with rushing production percentile
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=0.5) == pytest.approx(base + 0.075)
+    # clamped at 1.0 (an elite dual-threat can't exceed the ceiling)
+    assert qb_value_pct(1.0, 1.0, 1.0, rush_pct=1.0) == pytest.approx(1.0)
+    # None ⇒ backward-compatible (no bonus)
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=None) == pytest.approx(base)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +245,21 @@ def _run_play(team):
             "passer_player_name": None, "rusher_player_name": None, "qb_epa": 0.0, "success": 0.0,
             "passing_yards": 0.0, "pass_touchdown": 0.0, "interception": 0.0,
             "rushing_yards": 0.0, "rush_touchdown": 0.0, "fumble_lost": 0.0}
+
+
+async def test_compound_risk_flag_is_deterministic():
+    """compound_risk (rookie QB behind a weak line) is now owned by team_metrics, keyed
+    on the DETERMINISTIC pass_protection_grade — not the LLM agent."""
+    rk_bad = _TS("CHI", 0.095, rookie=True)     # rookie + worst sack_rate → weak pass-pro
+    rk_good = _TS("DEN", 0.020, rookie=True)     # rookie + best sack_rate → strong pass-pro
+    vet_bad = _TS("BAL", 0.095, rookie=False)    # weak line but NOT a rookie
+    db = _FakeDB([rk_bad, rk_good, vet_bad])
+    empty = pd.DataFrame(columns=["season_type", "posteam", "play_type"])
+    await apply_team_deterministic_fields(db, stats_season=2025, pbp=empty,
+                                          ngs_passing=pd.DataFrame(columns=["week", "team_abbr", "attempts"]))
+    assert rk_bad.pass_protection_grade == "F" and rk_bad.compound_risk_flag is True
+    assert rk_good.pass_protection_grade == "A" and rk_good.compound_risk_flag is False   # good line
+    assert vet_bad.compound_risk_flag is False                                            # not a rookie
 
 
 async def test_pass_overwrites_qb_tier_and_scheme_from_real_stats():
