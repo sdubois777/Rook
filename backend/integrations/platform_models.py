@@ -7,7 +7,20 @@ Agents and services work with these models exclusively —
 never with raw platform API responses.
 """
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
+
+
+@dataclass
+class LeagueMetadata:
+    """Pre-draft league metadata, mapped from whatever call a platform already makes.
+    Every field Optional — a platform fills what its response exposes; None means
+    "not available, don't overwrite". draft_date is tz-aware UTC."""
+    name: Optional[str] = None
+    scoring: Optional[str] = None          # ppr | half_ppr | standard
+    team_count: Optional[int] = None
+    draft_type: Optional[str] = None       # auction | snake
+    draft_date: Optional[datetime] = None
 
 
 @dataclass
