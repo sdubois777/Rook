@@ -47,6 +47,10 @@ class TeamSystem(Base):
 
     # Numeric O-line metrics (Python-computed, stored for querying)
     sack_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4))      # sacks / dropbacks
+    # Real run-blocking numeric (slice 2): stuff rate = runs stopped at/behind LOS /
+    # total runs (nflverse tackled_for_loss). LOWER = better OL. run_blocking_grade
+    # ranks on this (slice 3 applies the widened-bell curve).
+    run_block_stuff_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4))
     avg_time_to_throw: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))  # seconds
     qb_mobility: Mapped[Optional[str]] = mapped_column(String(20))           # elite/average/pocket_only
 

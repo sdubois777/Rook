@@ -13,10 +13,14 @@ import pytest
 
 from backend.engines.team_metrics import (
     apply_team_deterministic_fields,
+    compute_base_personnel,
     compute_pass_rates,
     compute_qb_metrics,
+    compute_red_zone_philosophy,
+    compute_run_block_stuff_rate,
     pass_pro_grade_from_sack_rate,
     qb_tier_from_cpoe,
+    run_block_grade_from_stuff_rate,
     scheme_from_pass_rate,
 )
 
@@ -164,6 +168,80 @@ async def test_pass_overwrites_three_fields_and_real_cpoe():
     assert bal.qb_tier == "weak"
     # rookie keeps rookie tier despite a high cpoe
     assert rk.qb_tier == "rookie"
+
+
+# ---------------------------------------------------------------------------
+# SLICE 2 — run-block (stuff rate), personnel, red-zone
+# ---------------------------------------------------------------------------
+def test_run_block_grade_monotonic_by_stuff_rate():
+    order = {"B+": 3, "B": 4, "B-": 5, "C+": 6, "C": 7, "C-": 8, "D+": 9}
+    grades = [order[run_block_grade_from_stuff_rate(r)] for r in (0.049, 0.07, 0.09, 0.13)]
+    assert grades == sorted(grades)                 # lower stuff (better OL) → better grade
+    # DAL's best stuff_rate must grade better than LV's worst.
+    assert order[run_block_grade_from_stuff_rate(0.049)] < order[run_block_grade_from_stuff_rate(0.151)]
+    assert run_block_grade_from_stuff_rate(None) is None
+
+
+def test_compute_run_block_stuff_rate():
+    pbp = pd.DataFrame([
+        {"season_type": "REG", "posteam": "LV", "play_type": "run", "tackled_for_loss": 1.0},
+        {"season_type": "REG", "posteam": "LV", "play_type": "run", "tackled_for_loss": 0.0},
+        {"season_type": "REG", "posteam": "DAL", "play_type": "run", "tackled_for_loss": 0.0},
+        {"season_type": "REG", "posteam": "DAL", "play_type": "run", "tackled_for_loss": 0.0},
+        {"season_type": "REG", "posteam": "DAL", "play_type": "run", "tackled_for_loss": 1.0},
+        {"season_type": "REG", "posteam": "DAL", "play_type": "pass", "tackled_for_loss": 0.0},  # non-run ignored
+    ])
+    sr = compute_run_block_stuff_rate(pbp)
+    assert sr["LV"] == pytest.approx(0.5)
+    assert sr["DAL"] == pytest.approx(0.3333, abs=0.001)
+
+
+def test_compute_base_personnel_shorthand():
+    pbp = pd.DataFrame([
+        {"season_type": "REG", "posteam": "KC", "offense_personnel": "1 RB, 1 TE, 3 WR"},
+        {"season_type": "REG", "posteam": "KC", "offense_personnel": "1 RB, 1 TE, 3 WR"},
+        {"season_type": "REG", "posteam": "KC", "offense_personnel": "1 RB, 2 TE, 2 WR"},
+        {"season_type": "REG", "posteam": "BAL", "offense_personnel": "1 RB, 2 TE, 2 WR"},
+    ])
+    p = compute_base_personnel(pbp)
+    assert p["KC"] == "11"      # RB=1, TE=1
+    assert p["BAL"] == "12"     # RB=1, TE=2
+
+
+def test_compute_red_zone_philosophy_rb_vs_spread():
+    pbp = pd.DataFrame(
+        # BAL: run-heavy in the RZ → "rb"
+        [{"season_type": "REG", "posteam": "BAL", "yardline_100": 8, "play_type": "run", "receiver_position": None}] * 7
+        + [{"season_type": "REG", "posteam": "BAL", "yardline_100": 8, "play_type": "pass", "receiver_position": "WR"}] * 3
+        # CIN: pass-leaning, no dominant receiver group (WR share < 0.55, TE < WR) → "spread"
+        + [{"season_type": "REG", "posteam": "CIN", "yardline_100": 8, "play_type": "run", "receiver_position": None}] * 3
+        + [{"season_type": "REG", "posteam": "CIN", "yardline_100": 8, "play_type": "pass", "receiver_position": "WR"}] * 4
+        + [{"season_type": "REG", "posteam": "CIN", "yardline_100": 8, "play_type": "pass", "receiver_position": "RB"}] * 5
+    )
+    rz = compute_red_zone_philosophy(pbp)
+    assert rz["BAL"] == "rb"        # 70% RZ runs
+    assert rz["CIN"] == "spread"    # pass-leaning, no dominant receiver group
+
+
+async def test_pass_writes_slice2_fields(monkeypatch):
+    lv = _TS("LV", 0.09)
+    lv.run_block_stuff_rate = None
+    lv.personnel_tendency = "11"
+    lv.red_zone_philosophy = "wr1"
+    db = _FakeDB([lv])
+    pbp = pd.DataFrame(
+        [{"season_type": "REG", "posteam": "LV", "play_type": "run", "tackled_for_loss": 1.0,
+          "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": None}] * 6
+        + [{"season_type": "REG", "posteam": "LV", "play_type": "pass", "tackled_for_loss": 0.0,
+            "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": "WR"}] * 4
+    )
+    res = await apply_team_deterministic_fields(db, stats_season=2025, pbp=pbp,
+                                                ngs_passing=pd.DataFrame(columns=["week", "team_abbr", "attempts"]))
+    assert res["run_block"] == 1 and res["personnel"] == 1 and res["red_zone"] == 1
+    assert lv.run_block_stuff_rate is not None                       # real numeric stored
+    assert lv.run_blocking_grade == run_block_grade_from_stuff_rate(0.6)  # 6/10 runs stuffed
+    assert lv.personnel_tendency == "12"                            # real base (was "11")
+    assert lv.red_zone_philosophy == "rb"                          # 60% RZ runs (was "wr1")
 
 
 async def test_pass_loud_warns_missing_numeric(caplog):

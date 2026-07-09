@@ -326,8 +326,10 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             result = await apply_team_deterministic_fields(_db)
         print(
             f"[{name}] {result['teams']} teams: scheme={result['scheme']} "
-            f"pass_pro={result['pass_pro']} qb_tier={result['qb_tier']} written "
-            f"(missing pass_rate={result['missing_pass_rate']}, cpoe={result['missing_cpoe']})."
+            f"pass_pro={result['pass_pro']} qb_tier={result['qb_tier']} "
+            f"run_block={result['run_block']} personnel={result['personnel']} "
+            f"red_zone={result['red_zone']} written (missing pass_rate={result['missing_pass_rate']}, "
+            f"cpoe={result['missing_cpoe']}, stuff_rate={result['missing_runblock']})."
         )
 
     elif name == "availability":
