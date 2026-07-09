@@ -333,8 +333,22 @@ async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
 
 
 async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]]:
-    """Preseason prior ppg per rostered player (clean_season_baseline ppr / 17).
-    Players with no profile/baseline get None (null prior → prior_weight 0)."""
+    """Preseason prior ppg per rostered player.
+
+    FIELD SELECTION (founder decision, signed off): ALWAYS prefer the Sonnet
+    FORWARD projection ``projected_ppr_season`` over the backward historical
+    ``ppr_points``, falling back to the historical number only when the projection
+    is absent. The forward projection incorporates role/team/age change (a stronger
+    prior than raw history, which shifts too much year-to-year); this also means a
+    rookie prefers its Sonnet rookie projection over the raw comp average where both
+    exist. Both fields are SEASON TOTALS on the SAME ``clean_season_baseline`` dict,
+    so the ÷17 → PPG conversion is unchanged.
+
+    Players with no profile row are absent from ``rows`` and keep their ``None``
+    (null prior → prior_weight 0) — e.g. K/DEF, which have no profile at all
+    (handled by separate arc pieces, NOT here). A player that HAS a profile but
+    neither usable field (e.g. a depth profile with an empty baseline) is loud-
+    warned — never silently dropped."""
     from sqlalchemy import select
 
     from backend.models.player import PlayerProfile
@@ -346,9 +360,22 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
         select(PlayerProfile.player_id, PlayerProfile.clean_season_baseline)
         .where(PlayerProfile.player_id.in_(rostered_ids))
     )).all()
+    no_prior: list[str] = []
     for pid, baseline in rows:
-        if isinstance(baseline, dict) and baseline.get("ppr_points"):
-            prior_by_id[str(pid)] = float(baseline["ppr_points"]) / 17.0
+        # Prefer the forward projection; fall back to the historical total.
+        prior_total = None
+        if isinstance(baseline, dict):
+            prior_total = baseline.get("projected_ppr_season") or baseline.get("ppr_points")
+        if prior_total:
+            prior_by_id[str(pid)] = float(prior_total) / 17.0
+        else:
+            no_prior.append(str(pid))
+    if no_prior:
+        logger.warning(
+            "prior: %d profiled player(s) have neither projected_ppr_season nor "
+            "ppr_points — no preseason prior (prior_weight=0): %s",
+            len(no_prior), no_prior[:15],
+        )
     return prior_by_id
 
 
