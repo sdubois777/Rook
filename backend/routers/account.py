@@ -76,6 +76,8 @@ class LeagueResponse(BaseModel):
     suspended: bool          # parked over the tier cap — readable, not usable
     last_synced: Optional[str]
     created_at: str
+    draft_date: Optional[str] = None       # real synced draft date/time (ISO), None if unscheduled
+    team_names: list[str] = []             # opponent/team names from the synced manager_map
 
 
 class LeagueLimitStateResponse(BaseModel):
@@ -295,4 +297,9 @@ def _league_response(league) -> LeagueResponse:
             if league.last_synced else None
         ),
         created_at=league.created_at.isoformat(),
+        draft_date=(
+            league.draft_date.isoformat()
+            if getattr(league, "draft_date", None) else None
+        ),
+        team_names=[n for n in (league.manager_map or {}).values() if n],
     )

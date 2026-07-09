@@ -8,9 +8,11 @@ import logging
 
 import httpx
 
+from datetime import datetime, timezone
+
 from backend.integrations.platform_api import LeaguePlatformAPI
 from backend.integrations.platform_models import (
-    DraftPick, FreeAgent, RosteredPlayer, TeamRoster,
+    DraftPick, FreeAgent, LeagueMetadata, RosteredPlayer, TeamRoster,
     Transaction, WeeklyMatchup,
 )
 from backend.models.user_league import UserLeague
@@ -18,6 +20,19 @@ from backend.models.user_league import UserLeague
 logger = logging.getLogger(__name__)
 
 SLEEPER_BASE = "https://api.sleeper.app/v1"
+
+
+def _scoring_from_rec(rec) -> str | None:
+    """Points-per-reception → canonical scoring. None when not derivable."""
+    try:
+        r = float(rec)
+    except (TypeError, ValueError):
+        return None
+    if r >= 1.0:
+        return "ppr"
+    if r >= 0.5:
+        return "half_ppr"
+    return "standard"
 
 
 class SleeperLeagueAPI(LeaguePlatformAPI):
@@ -46,6 +61,33 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
         return slots_from_sleeper_league(
             lg.get("roster_positions"), league=str(self._league.league_id)
         )
+
+    async def get_league_metadata(self) -> LeagueMetadata:
+        """Sleeper `/league/{id}` (name, scoring_settings.rec, total_rosters) +
+        `/league/{id}/drafts` (draft type + start_time) — the same objects sync
+        already touches, previously mined only for roster_positions. Fails soft:
+        any missing field stays None (won't overwrite)."""
+        meta = LeagueMetadata()
+        try:
+            lg = await self._get(f"/league/{self._league.league_id}")
+            if isinstance(lg, dict):
+                meta.name = lg.get("name") or None
+                meta.team_count = lg.get("total_rosters") or None
+                meta.scoring = _scoring_from_rec((lg.get("scoring_settings") or {}).get("rec"))
+        except Exception as exc:
+            logger.warning("Sleeper league metadata fetch failed: %s", exc)
+        try:
+            drafts = await self._get(f"/league/{self._league.league_id}/drafts")
+            if isinstance(drafts, list) and drafts:
+                draft = drafts[0]
+                dtype = str(draft.get("type", "")).lower()
+                meta.draft_type = "auction" if dtype == "auction" else "snake"
+                start_ms = draft.get("start_time")
+                if start_ms:
+                    meta.draft_date = datetime.fromtimestamp(int(start_ms) / 1000, tz=timezone.utc)
+        except Exception as exc:
+            logger.warning("Sleeper draft metadata fetch failed: %s", exc)
+        return meta
 
     async def get_rosters(self) -> list[TeamRoster]:
         rosters = await self._get(

@@ -71,6 +71,17 @@ class UserLeague(Base):
         JSONB, nullable=True
     )
 
+    # Draft schedule — the real synced draft date/time (NOT hardcoded). Pulled per
+    # platform (Sleeper draft.start_time / ESPN draftSettings.date / Yahoo draft_time).
+    draft_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Extra Yahoo settings that get_league_settings already pulls (previously dropped).
+    trade_deadline: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    waiver_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    playoff_start_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Normalized per-league starting-lineup config {slot_type: count} (T3).
     # NULL = not fetched → the draft/lineup engines use the default lineup.
     # Never raw platform data — always the canonical model (backend.services.roster_slots).
