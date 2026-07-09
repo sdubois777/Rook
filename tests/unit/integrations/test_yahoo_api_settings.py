@@ -22,14 +22,27 @@ def _mock_yahoo_response(
     stat_mods=None,
     playoff_start_week=15,
     waiver_type="",
+    is_auction_draft=None,
 ):
-    """Build a mock Yahoo /league/settings response."""
+    """Build a mock Yahoo /league/settings response. ``is_auction_draft`` (0/1) is the
+    real authoritative flag; None omits it (the flag-absent fallback case)."""
     if stat_mods is None:
         # Default: PPR (stat_id 11 = 1.0)
         stat_mods = [
             {"stat": {"stat_id": "11", "value": "1.00"}},
             {"stat": {"stat_id": "4", "value": "0.04"}},
         ]
+
+    settings = {
+        "stat_modifiers": {
+            "stats": stat_mods,
+        },
+        "playoff_start_week": str(playoff_start_week),
+        "waiver_type": waiver_type,
+        "trade_end_date": "2026-11-15",
+    }
+    if is_auction_draft is not None:
+        settings["is_auction_draft"] = is_auction_draft
 
     return {
         "fantasy_content": {
@@ -45,16 +58,7 @@ def _mock_yahoo_response(
                     "is_finished": is_finished,
                 },
                 {
-                    "settings": [
-                        {
-                            "stat_modifiers": {
-                                "stats": stat_mods,
-                            },
-                            "playoff_start_week": str(playoff_start_week),
-                            "waiver_type": waiver_type,
-                            "trade_end_date": "2026-11-15",
-                        }
-                    ]
+                    "settings": [settings]
                 },
             ]
         }
@@ -335,6 +339,73 @@ async def test_get_league_settings_snake_from_detection():
 
     assert result["draft_type"] == "snake"
     assert result["auction_budget"] is None
+
+
+# ---------------------------------------------------------------------------
+# is_auction_draft flag is AUTHORITATIVE (the undrafted-auction fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_auction_flag_wins_over_empty_draftresults():
+    """The fix: is_auction_draft=1 → auction + $200 EVEN when the cost detector would
+    say snake (undrafted → empty draftresults). The flag is authoritative; the cost
+    check must NOT override it."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="live", is_auction_draft=1),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("snake", None),   # would mis-fire on an undrafted auction league
+    ) as detect:
+        result = await get_league_settings("tok", "470.l.12345")
+
+    assert result["draft_type"] == "auction"
+    assert result["auction_budget"] == 200      # Yahoo's fixed auction cap
+    detect.assert_not_called()                    # flag present → cost detector demoted
+
+
+@pytest.mark.asyncio
+async def test_is_auction_flag_zero_is_snake_no_false_auction():
+    """is_auction_draft=0 → snake + no budget, even if the cost detector would say
+    auction — the fix must not flip everything to auction."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="live", is_auction_draft=0),
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("auction", 200),
+    ) as detect:
+        result = await get_league_settings("tok", "470.l.12345")
+
+    assert result["draft_type"] == "snake"
+    assert result["auction_budget"] is None
+    detect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flag_absent_falls_back_to_detector_and_warns(caplog):
+    """No is_auction_draft flag → fall back to the draftresults cost detector, and
+    loud-warn (don't silently trust an empty draft)."""
+    with patch(
+        "backend.integrations.yahoo_api._api_get_with_token",
+        new_callable=AsyncMock,
+        return_value=_mock_yahoo_response(draft_type="live"),   # no flag
+    ), patch(
+        "backend.integrations.yahoo_api._detect_draft_type",
+        new_callable=AsyncMock,
+        return_value=("auction", 200),
+    ) as detect:
+        with caplog.at_level("WARNING"):
+            result = await get_league_settings("tok", "470.l.12345")
+
+    assert result["draft_type"] == "auction"     # from the fallback detector
+    detect.assert_called_once()
+    assert any("is_auction_draft flag absent" in m for m in caplog.messages)
 
 
 # ---------------------------------------------------------------------------
