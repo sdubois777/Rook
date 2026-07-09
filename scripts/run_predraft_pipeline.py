@@ -111,6 +111,7 @@ PIPELINE_ORDER = [
     "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
+    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier)
     "availability",      # LAST: deterministic games-missed availability discount
 ]
 
@@ -315,6 +316,20 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"{result['skipped']} skipped."
         )
 
+    elif name == "team_metrics":
+        # Deterministic Teams-page fields (Teams rework slice 1): scheme from real
+        # pass_rate (PBP), pass-protection grade from real sack_rate, qb_tier from real
+        # cpoe (NGS) — replaces the LLM-overridden/compressed values. No Sonnet.
+        from backend.database import AsyncSessionLocal
+        from backend.engines.team_metrics import apply_team_deterministic_fields
+        async with AsyncSessionLocal() as _db:
+            result = await apply_team_deterministic_fields(_db)
+        print(
+            f"[{name}] {result['teams']} teams: scheme={result['scheme']} "
+            f"pass_pro={result['pass_pro']} qb_tier={result['qb_tier']} written "
+            f"(missing pass_rate={result['missing_pass_rate']}, cpoe={result['missing_cpoe']})."
+        )
+
     elif name == "availability":
         # Deterministic pre-draft availability discount (games-missed proration for a
         # known multi-week absence). No Sonnet. Own DB session. Runs LAST.
@@ -432,6 +447,7 @@ async def main() -> None:
         ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
+        ["team_metrics"],                              # Phase 6b: deterministic Teams fields
         ["availability"],                              # Phase 7: LAST — availability discount
     ]
 
