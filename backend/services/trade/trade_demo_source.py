@@ -40,6 +40,12 @@ from backend.services.trade.value_engine import evaluate_league
 logger = logging.getLogger(__name__)
 
 # --- demo anchor (test-only; pinned here, NOT in the engine/data layer) ------
+# EXPLICIT demo-week OVERRIDE — NOT the canonical week source. A real league's week
+# derives from backend.utils.seasons.get_current_nfl_week (over the cached schedule);
+# the demo deliberately PINS an arbitrary week so we can seed any point in the season
+# (currently a late-season read that gives studs a full trend, and lets us later seed
+# an early week to exercise the low-sample blend). Keep this pin — it is how the demo
+# sets its own week — but it is no longer the SOLE week source.
 DEMO_SEASON = 2025
 DEMO_CURRENT_WEEK = 14   # late-season trade-window read; gives studs a full trend
 
@@ -48,8 +54,13 @@ N_TEAMS = 12
 # K/DEF streaming arc (slice 3): K/DST now VALUE (slice 2) + SEAT (lineup slots),
 # so they're un-stripped — first-class roster + pool + lineup positions.
 _SKILL = ("QB", "RB", "WR", "TE", "K", "DEF")
-# Starting lineup: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX (RB/WR/TE), 1 K, 1 DST.
-STARTER_NEED = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "K": 1, "DEF": 1}
+# The demo league is 2-WR BY DESIGN: 1 QB / 2 RB / 2 WR / 1 TE / 1 FLEX / 1 K / 1 DST.
+# roster_slots is the canonical (services/roster_slots) shape carried on the demo
+# LeagueState and fed to lineup_rules_from_slots — so the matchup optimal lineup uses
+# the REAL bridge, not the hardcoded 3-WR DEFAULT_LINEUP_RULES (which stays shared with
+# trade). STARTER_NEED (the roster-BUILD slot assignment) must agree at 2-WR.
+DEMO_ROSTER_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1}
+STARTER_NEED = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
 N_STARTERS = sum(STARTER_NEED.values()) + 1   # + FLEX
 _FLEX_POS = ("RB", "WR", "TE")
 N_FLEX = 1
@@ -277,7 +288,8 @@ def build_league_state(teams_data: list[dict]) -> LeagueState:
         )
         for t in teams_data
     )
-    return LeagueState(season=DEMO_SEASON, week=DEMO_CURRENT_WEEK, teams=teams)
+    return LeagueState(season=DEMO_SEASON, week=DEMO_CURRENT_WEEK, teams=teams,
+                       roster_slots=dict(DEMO_ROSTER_SLOTS))
 
 
 def build_priors(prior_by_id: dict[str, Optional[float]]) -> dict[str, float]:
@@ -299,13 +311,16 @@ async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
     from backend.repositories.player_repo import PlayerRepository
 
     repo = PlayerRepository(db)
-    # Resolve each distinct drafted name once.
+    # Resolve each distinct drafted (name, position) once via the SAME canonical
+    # resolve_player the real provider uses (one resolution path everywhere, #243) —
+    # the demo has no platform ids, so this is the guarded-name path WITH the position
+    # filter (DEF routes to the team map). Replaces the old bare find_by_name_fuzzy.
     resolved: dict[str, Optional[tuple[str, Optional[str]]]] = {}
     for _, picks in DEMO_ROSTERS:
-        for name, _pos in picks:
+        for name, pos in picks:
             if name in resolved:
                 continue
-            player = await repo.find_by_name_fuzzy(name)
+            player = await repo.resolve_player(name=name, position=pos, team=None)
             resolved[name] = (str(player.id), player.team_abbr) if player else None
 
     teams_data, unresolved = assemble_teams(DEMO_ROSTERS, lambda n, pos: resolved.get(n))
@@ -327,8 +342,22 @@ async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
 
 
 async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]]:
-    """Preseason prior ppg per rostered player (clean_season_baseline ppr / 17).
-    Players with no profile/baseline get None (null prior → prior_weight 0)."""
+    """Preseason prior ppg per rostered player.
+
+    FIELD SELECTION (founder decision, signed off): ALWAYS prefer the Sonnet
+    FORWARD projection ``projected_ppr_season`` over the backward historical
+    ``ppr_points``, falling back to the historical number only when the projection
+    is absent. The forward projection incorporates role/team/age change (a stronger
+    prior than raw history, which shifts too much year-to-year); this also means a
+    rookie prefers its Sonnet rookie projection over the raw comp average where both
+    exist. Both fields are SEASON TOTALS on the SAME ``clean_season_baseline`` dict,
+    so the ÷17 → PPG conversion is unchanged.
+
+    Players with no profile row are absent from ``rows`` and keep their ``None``
+    (null prior → prior_weight 0) — e.g. K/DEF, which have no profile at all
+    (handled by separate arc pieces, NOT here). A player that HAS a profile but
+    neither usable field (e.g. a depth profile with an empty baseline) is loud-
+    warned — never silently dropped."""
     from sqlalchemy import select
 
     from backend.models.player import PlayerProfile
@@ -340,9 +369,22 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
         select(PlayerProfile.player_id, PlayerProfile.clean_season_baseline)
         .where(PlayerProfile.player_id.in_(rostered_ids))
     )).all()
+    no_prior: list[str] = []
     for pid, baseline in rows:
-        if isinstance(baseline, dict) and baseline.get("ppr_points"):
-            prior_by_id[str(pid)] = float(baseline["ppr_points"]) / 17.0
+        # Prefer the forward projection; fall back to the historical total.
+        prior_total = None
+        if isinstance(baseline, dict):
+            prior_total = baseline.get("projected_ppr_season") or baseline.get("ppr_points")
+        if prior_total:
+            prior_by_id[str(pid)] = float(prior_total) / 17.0
+        else:
+            no_prior.append(str(pid))
+    if no_prior:
+        logger.warning(
+            "prior: %d profiled player(s) have neither projected_ppr_season nor "
+            "ppr_points — no preseason prior (prior_weight=0): %s",
+            len(no_prior), no_prior[:15],
+        )
     return prior_by_id
 
 

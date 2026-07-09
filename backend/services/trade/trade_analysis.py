@@ -21,6 +21,7 @@ from backend.services.trade.league_state import LeagueState
 from backend.services.trade.lineup import (
     DEFAULT_LINEUP_RULES,
     LineupPlayer,
+    LineupRules,
     _slot_pos,
     fit_to_limit,
     lineup_strength_ppg,
@@ -193,9 +194,16 @@ def analyze_trade(
     get_ids: list[str],
     *,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
+    rules: LineupRules | None = None,
 ) -> TradeAnalysis:
     """Compute the deterministic, engine-grounded verdict. Assumes the trade has
-    already passed ``validate_trade``."""
+    already passed ``validate_trade``.
+
+    ``rules`` is the league's real starting-lineup shape (from
+    lineup_rules_from_slots(roster_slots)); None → DEFAULT_LINEUP_RULES. Threading it
+    is the ledgered prod-config fix — a real 2-QB/superflex/non-3-WR league now
+    evaluates the lineup gain on its OWN shape, not the 3-WR default."""
+    rules = rules or DEFAULT_LINEUP_RULES
     validate_trade(state, values, my_team_id, give_ids, get_ids)
 
     give = [_grounding(values[pid], "give") for pid in give_ids]
@@ -223,8 +231,8 @@ def analyze_trade(
     # position-punt is priced honestly — SAME floor the edge-band gate uses.
     replacement_ppg = replacement_ppg_by_position(values)
     lineup_gain = round(
-        lineup_strength_ppg(my_post, DEFAULT_LINEUP_RULES, replacement_ppg)
-        - lineup_strength_ppg(my_pre, DEFAULT_LINEUP_RULES, replacement_ppg), 2,
+        lineup_strength_ppg(my_post, rules, replacement_ppg)
+        - lineup_strength_ppg(my_pre, rules, replacement_ppg), 2,
     )
 
     # Empty-slot WARNING (#179 follow-up): the resulting roster is priced with the
@@ -233,7 +241,7 @@ def analyze_trade(
     # Reuse the SAME optimal_lineup my_post the lineup calc runs: any dedicated
     # (non-FLEX) required slot left None = an emptied position. FLEX is flexible, so
     # an unfilled FLEX is not a hole to warn about.
-    warnings = _empty_slot_warnings(my_post)
+    warnings = _empty_slot_warnings(my_post, rules)
 
     abs_g = abs(lineup_gain)
     if abs_g <= _MAINTAINS_TOLERANCE:
@@ -269,19 +277,23 @@ def analyze_trade(
     )
 
 
-def _empty_slot_warnings(my_post: list[LineupPlayer]) -> tuple[TradeWarning, ...]:
+def _empty_slot_warnings(
+    my_post: list[LineupPlayer], rules: LineupRules | None = None,
+) -> tuple[TradeWarning, ...]:
     """Warn for each REQUIRED (dedicated, non-FLEX) starter slot the acquirer's
     post-trade roster can't fill — the position they've given away their last
     startable player at. Deduped per position, in slot order. Reuses the same
-    optimal_lineup slot assignment the lineup value is computed from."""
-    lineup = optimal_lineup(my_post, DEFAULT_LINEUP_RULES)
+    optimal_lineup slot assignment the lineup value is computed from (on the
+    league's real ``rules`` shape)."""
+    rules = rules or DEFAULT_LINEUP_RULES
+    lineup = optimal_lineup(my_post, rules)
     seen: set[str] = set()
     out: list[TradeWarning] = []
     for label, pid in lineup.slots:
         if pid is not None:
             continue
         pos = _slot_pos(label)
-        if pos in DEFAULT_LINEUP_RULES.slots and pos not in seen:  # required, not FLEX
+        if pos in rules.slots and pos not in seen:  # required, not FLEX
             seen.add(pos)
             out.append(TradeWarning(
                 type="empty_required_slot", position=pos,

@@ -15,6 +15,7 @@ Demo-only: reuses the existing TRADE_DEMO_MODE seam (404 when off) — no new fl
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,10 +31,13 @@ from backend.services.matchup.scouting import (
     synthesize_week_matchups,
     win_prob_band,
 )
-from backend.services.trade.lineup import DEFAULT_LINEUP_RULES, lineup_strength_ppg, roster_strength
+from backend.services.matchup.startsit import available_lineup_roster, build_start_sit
+from backend.services.trade.lineup import lineup_rules_from_slots, lineup_strength_ppg, roster_strength
 from backend.services.trade.trade_demo_source import trade_demo_enabled, trade_demo_enforce_gates
 from backend.services.trade.trade_proposals import _lineup_roster, analyze_roster
 from backend.services.trade.value_engine import replacement_ppg_by_position
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/matchup", tags=["matchup"])
 
@@ -62,6 +66,51 @@ class GridRowOut(BaseModel):
     theirs: float            # opponent's startable ppw at this position
 
 
+class StarterMatchupOut(BaseModel):
+    """One covered starter (WR/RB/TE/FLEX) with its as-of-week opponent matchup grade
+    and an optional injury monitor flag. grade None = bye / no scheduled game."""
+    name: str
+    position: str
+    slot: str
+    nfl_team: Optional[str] = None
+    opponent: Optional[str] = None       # None → BYE/na (no fabricated grade)
+    grade: Optional[str] = None          # favorable | neutral | tough
+    injury_flag: Optional[str] = None    # "Q" | "D" — monitor, not a downgrade
+    forward_ppg: float
+    unfillable: bool = False             # no available player for this slot (bye/Out/IR)
+    unfillable_reason: Optional[str] = None   # e.g. "Kareem Hunt is on bye — no available RB"
+
+
+class BenchSwapOut(BaseModel):
+    """A FOUNDED bench-swap suggestion: competitive on value AND a materially softer
+    draw. A suggestion, not a directive."""
+    position: str
+    starter_name: str
+    starter_grade: Optional[str] = None
+    bench_name: str
+    bench_opponent: Optional[str] = None
+    bench_grade: Optional[str] = None
+    reason: str
+
+
+class ReplacementOut(BaseModel):
+    """An Out/IR starter excluded from the optimal lineup + who deterministically
+    fills the slot. Honest reaction, not a value claim."""
+    out_name: str
+    out_status: str                      # "O" | "IR"
+    position: str
+    in_name: Optional[str] = None
+
+
+class StartSitOut(BaseModel):
+    """Tier-1 matchup reasoning: per-starter matchup grades, Out/IR replacements, and
+    founded bench swaps. Reasoning, not 'start X / bench Y'. Zero-metered."""
+    starters: list[StarterMatchupOut]
+    swaps: list[BenchSwapOut]
+    replacements: list[ReplacementOut]
+    covered_positions: list[str]
+
+
 class ScoutOut(BaseModel):
     """The acting team's H2H scouting vs its week opponent. All non-metered."""
     opponent_team_id: str
@@ -83,6 +132,7 @@ class ScoutOut(BaseModel):
     their_surplus_my_needs: list[str]    # their real depth ∩ your needs
     my_surplus_their_needs: list[str]    # your real depth ∩ their needs
     is_reciprocal_fit: bool = False      # BOTH directions non-empty → a real mirror
+    start_sit: Optional[StartSitOut] = None   # Tier-1 matchup reasoning (acting team)
 
 
 class MatchupLeagueResponse(BaseModel):
@@ -122,7 +172,15 @@ async def league(
     from backend.routers.trade import load_league_for_analysis
     state, values, _ = await load_league_for_analysis(db, user, demo)
 
-    rules = DEFAULT_LINEUP_RULES
+    # The league's real starting-slot shape drives the optimal lineup — read the
+    # league's roster_slots through the canonical bridge (the demo seeds a 2-WR config;
+    # a real per-league read from UserLeague.roster_slots is a flagged follow-up). No
+    # slots (real league, not yet wired) → lineup_rules_from_slots(None) = DEFAULT
+    # (unchanged behavior); loud-warn so the fallback is visible, never silent.
+    if not state.roster_slots:
+        logger.warning("matchup: league %s has no roster_slots — falling back to DEFAULT lineup rules "
+                       "(real per-league slot reading is a follow-up)", getattr(state, "season", "?"))
+    rules = lineup_rules_from_slots(state.roster_slots)
     replacement = replacement_ppg_by_position(values)
 
     # Resolve the acting team.
@@ -157,13 +215,26 @@ async def league(
         away_team_name=name_by_id.get(m.away_team_id, m.away_team_id),
     ) for m in matchups]
 
+    # --- Tier-1 start/sit inputs: NFL opponent per team + as-of-week def grades ---
+    # Both pure/cached; run off-thread so the (first-call) PBP build doesn't block the
+    # event loop. Point-in-time (weeks 1..W-1) — no look-ahead.
+    import asyncio
+
+    from backend.integrations.nfl_data import fetch_schedules
+    from backend.services.kdef_matchup import opponent_by_team
+    from backend.services.matchup.def_grades import as_of_week_def_grades
+
+    sched = await asyncio.to_thread(fetch_schedules, state.season)
+    nfl_opp = {str(k).upper(): v for k, v in opponent_by_team(sched, state.week).items()}
+    def_grades = await asyncio.to_thread(as_of_week_def_grades, state.season, state.week)
+
     # --- scout the acting team's opponent ---
     scout = None
     opp_id = opponent_of(matchups, acting.team_id)
     if opp_id is not None:
         opp = next((t for t in state.teams if t.team_id == opp_id), None)
         if opp is not None:
-            scout = _scout(acting, opp, values, rules, replacement)
+            scout = _scout(acting, opp, values, rules, replacement, def_grades, nfl_opp)
 
     return MatchupLeagueResponse(
         season=state.season, week=state.week,
@@ -173,12 +244,17 @@ async def league(
     )
 
 
-def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
-    my_roster = _lineup_roster(acting, values)
-    opp_roster = _lineup_roster(opp, values)
+def _scout(acting, opp, values, rules, replacement, def_grades=None, nfl_opp=None) -> ScoutOut:
+    # Unavailable-aware: an Out/IR OR bye player can't be in your best lineup this week,
+    # so both teams' optimal lineups (margin/grid/start-sit) exclude them consistently.
+    my_roster = available_lineup_roster(acting, values, rules, nfl_opp or {})
+    opp_roster = available_lineup_roster(opp, values, rules, nfl_opp or {})
 
-    my_ppw = lineup_strength_ppg(my_roster, rules, replacement)
-    opp_ppw = lineup_strength_ppg(opp_roster, rules, replacement)
+    # An unfillable required slot (no available player) contributes 0 — the honest
+    # "you have nobody" number (with a waiver pointer on the panel), not a phantom
+    # replacement floor — so my_ppw reconciles with the panel's seated-starter sum.
+    my_ppw = lineup_strength_ppg(my_roster, rules, None)
+    opp_ppw = lineup_strength_ppg(opp_roster, rules, None)
     margin = round(my_ppw - opp_ppw, 2)
 
     # Coarse confidence across BOTH optimal lineups → widens the toss-up band only.
@@ -192,8 +268,8 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
     conf_note, low_conf = confidence_summary(conf_vals)
     band = win_prob_band(margin, low_confidence=low_conf)
 
-    my_grid = positional_slot_ppg(my_roster, rules, replacement)
-    opp_grid = positional_slot_ppg(opp_roster, rules, replacement)
+    my_grid = positional_slot_ppg(my_roster, rules, None)
+    opp_grid = positional_slot_ppg(opp_roster, rules, None)
     grid = [GridRowOut(position=pos, mine=my_grid.get(pos, 0.0), theirs=opp_grid.get(pos, 0.0))
             for pos in GRID_POSITIONS]
 
@@ -208,6 +284,9 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
         values, replacement,
     )
 
+    # Tier-1 start/sit — per-starter matchup grade, Out/IR replacements, founded swaps.
+    start_sit_out = _build_start_sit_out(acting, values, def_grades, nfl_opp or {}, rules)
+
     return ScoutOut(
         opponent_team_id=opp.team_id, opponent_team_name=opp.team_name,
         my_ppw=my_ppw, opp_ppw=opp_ppw, margin=margin,
@@ -218,4 +297,25 @@ def _scout(acting, opp, values, rules, replacement) -> ScoutOut:
         their_surplus_my_needs=list(lev.their_surplus_my_needs),
         my_surplus_their_needs=list(lev.my_surplus_their_needs),
         is_reciprocal_fit=lev.is_reciprocal_fit,
+        start_sit=start_sit_out,
+    )
+
+
+def _build_start_sit_out(acting, values, def_grades, nfl_opp, rules) -> StartSitOut:
+    ss = build_start_sit(acting, values, def_grades, nfl_opp, rules)
+    return StartSitOut(
+        starters=[StarterMatchupOut(
+            name=s.name, position=s.position, slot=s.slot, nfl_team=s.nfl_team,
+            opponent=s.opponent, grade=s.grade, injury_flag=s.injury_flag,
+            forward_ppg=s.forward_ppg, unfillable=s.unfillable, unfillable_reason=s.unfillable_reason,
+        ) for s in ss.starters],
+        swaps=[BenchSwapOut(
+            position=w.position, starter_name=w.starter_name, starter_grade=w.starter_grade,
+            bench_name=w.bench_name, bench_opponent=w.bench_opponent, bench_grade=w.bench_grade,
+            reason=w.reason,
+        ) for w in ss.swaps],
+        replacements=[ReplacementOut(
+            out_name=r.out_name, out_status=r.out_status, position=r.position, in_name=r.in_name,
+        ) for r in ss.replacements],
+        covered_positions=list(ss.covered_positions),
     )
