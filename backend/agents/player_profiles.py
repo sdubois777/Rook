@@ -2518,7 +2518,13 @@ _ROOKIE_CONFIDENCE_DISCOUNT: dict[str, float] = {
 }
 
 _ROOKIE_DEFAULT_PPG: dict[str, float] = {
-    "QB": 16.0, "RB": 9.0, "WR": 9.5, "TE": 7.0
+    "QB": 16.0, "RB": 9.0, "WR": 9.5, "TE": 7.0,
+    # Kickers are drafted late and Year-1 output ≈ league average — a flat
+    # position default (NOT a draft-capital comp table, which is overkill for K)
+    # closes the rookie-kicker double-gap. Consumed by the dedicated kicker-
+    # baseline step (backend/services/kicker_baseline.py) for rookie / no-history
+    # kickers. ~7.5 ppg sits between K replacement (~6-7) and a good K (~8-10).
+    "K": 7.5,
 }
 
 _DEVELOPMENT_TIMELINE: dict[str, str] = {
