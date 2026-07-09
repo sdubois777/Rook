@@ -215,6 +215,64 @@ def get_current_nfl_week(season: int | None = None, now: datetime | None = None)
     return current_week_from_schedule(schedule, now=now)
 
 
+def _default_season_has_data(season: int) -> bool:
+    """Real data probe for :func:`latest_season_with_data`: does ``season`` actually
+    have game data yet?
+
+    Derived from the nflverse SCHEDULE (``get_current_nfl_week`` > 0 ⇔ at least one
+    REG game has kicked off), NOT from a stat-table read. Deliberate: the stat caches
+    (NGS/weekly) cache EMPTY results for a not-yet-started season, which would
+    stale-pin the probe to False and defeat the auto-advance-to-next-season
+    requirement. The schedule is static (only "now" moves against fixed kickoffs), so
+    this flips to True on its own the moment a new season's games begin — no cache
+    bust, no hardcode. Loud-warn/degrade is handled inside ``get_current_nfl_week``.
+    """
+    return get_current_nfl_week(season) > 0
+
+
+def latest_season_with_data(has_data=None, *, lookback: int = 4) -> int:
+    """The most-recent NFL season that ACTUALLY has ingested data — the single
+    source of truth for "which season do the completed-data metrics read".
+
+    Every Teams-page metric (QB value/EPA, scheme, run-block, pass-protection)
+    resolves its season HERE, so they provably agree instead of each improvising.
+
+    Why this exists (the bug it fixes): ``get_current_season() - 1`` is a *calendar*
+    guess. In Jan/Feb ``get_current_season()`` is already the prior year (playoffs in
+    progress), so ``- 1`` skips a whole year of available data — that is the
+    QB-reads-2024-while-the-line-reads-2025 divergence. This probes the real data
+    instead, returning the same correct season year-round.
+
+    ``has_data(season) -> bool`` is the data probe. DEFAULT: the schedule-based
+    :func:`_default_season_has_data`. INJECTABLE so a caller can probe its own source
+    (e.g. ``team_systems`` passes a warehouse probe) and so tests never touch the
+    network.
+
+    Probes from ``get_current_season()`` down ``lookback`` seasons and returns the
+    newest that has data. If NONE resolves (data source unavailable), loud-warns and
+    returns ``get_current_season()`` as a last resort — the caller then reads an empty
+    source and degrades gracefully rather than crashing.
+    """
+    ceiling = get_current_season()
+    if has_data is None:
+        has_data = _default_season_has_data
+    for season in range(ceiling, ceiling - lookback - 1, -1):
+        try:
+            if has_data(season):
+                return season
+        except Exception as exc:  # a probe failure must not sink the whole resolve
+            logger.warning(
+                "latest_season_with_data: data probe failed for %s (%s) — skipping",
+                season, exc,
+            )
+    logger.warning(
+        "latest_season_with_data: no ingested data found in seasons %d..%d — falling "
+        "back to calendar season %d (data source may be unavailable)",
+        ceiling - lookback, ceiling, ceiling,
+    )
+    return ceiling
+
+
 def get_fantasypros_auction_year() -> tuple[int, bool]:
     """
     Determine which year's FantasyPros auction data to pull.

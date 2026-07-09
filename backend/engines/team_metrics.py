@@ -28,7 +28,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from backend.models.team_system import TeamSystem
-from backend.utils.seasons import get_current_season
+from backend.utils.seasons import latest_season_with_data
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +355,11 @@ async def apply_team_deterministic_fields(
     (tests); fetched from the most-recent completed season otherwise. Loud-warns any
     team missing an expected numeric — never a silent discard."""
     if stats_season is None:
-        stats_season = get_current_season() - 1   # the completed season the grades reflect
+        # Data-driven single source of truth (NOT get_current_season()-1, a calendar
+        # guess that reads 2024 in the Jan/Feb window while the line reads 2025). Every
+        # Teams metric below — QB value, scheme, run-block, and the sack_rate the
+        # pass-pro grade bells on — shares this one season.
+        stats_season = latest_season_with_data()
 
     if pbp is None:
         import nfl_data_py as nfl

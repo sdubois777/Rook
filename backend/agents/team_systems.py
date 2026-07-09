@@ -29,7 +29,7 @@ from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.database import AsyncSessionLocal
 from backend.integrations.nfl_data import normalize_player_name
 from backend.models.team_system import TeamSystem
-from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
+from backend.utils.seasons import get_current_season, get_analysis_year, latest_season_with_data
 
 logger = logging.getLogger(__name__)
 
@@ -177,15 +177,15 @@ class TeamSystemsAgent(BaseAgent):
         No API calls here — reads from warehouse only.
         """
         current_season = get_current_season()
-        analysis_seasons = get_analysis_seasons(3)
 
-        # Use most recent season with available data for stats.
-        stats_season = current_season
-        if self._warehouse.get_seasonal_stats(current_season).empty:
-            for s in sorted(analysis_seasons, reverse=True):
-                if not self._warehouse.get_seasonal_stats(s).empty:
-                    stats_season = s
-                    break
+        # Most-recent season with real data — the SAME resolver every Teams-page
+        # metric uses (backend.engines.team_metrics), so sack_rate here provably
+        # targets the same season as QB value / scheme / run-block instead of an
+        # ad-hoc calendar-season + empty-fallback. Probe THIS agent's own source
+        # (the warehouse) so it stays offline in tests.
+        stats_season = latest_season_with_data(
+            has_data=lambda s: not self._warehouse.get_oline_stats(s).empty,
+        )
 
         oline = await self._get_oline_data(team, stats_season)
         qb    = await self._get_qb_data(team, stats_season)
