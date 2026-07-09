@@ -111,6 +111,7 @@ PIPELINE_ORDER = [
     "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
+    "availability",      # LAST: deterministic games-missed availability discount
 ]
 
 # Cost per million tokens
@@ -314,6 +315,18 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"{result['skipped']} skipped."
         )
 
+    elif name == "availability":
+        # Deterministic pre-draft availability discount (games-missed proration for a
+        # known multi-week absence). No Sonnet. Own DB session. Runs LAST.
+        from backend.database import AsyncSessionLocal
+        from backend.engines.availability_pass import apply_availability_discounts
+        async with AsyncSessionLocal() as _db:
+            result = await apply_availability_discounts(_db)
+        print(
+            f"[{name}] {result['discounted']} player(s) discounted for a known absence "
+            f"(of {result['total']}), {result['updated']} rows updated."
+        )
+
     elapsed = time.monotonic() - t0
     print(f"[{name}] Done in {elapsed:.1f}s.\n")
 
@@ -419,6 +432,7 @@ async def main() -> None:
         ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
+        ["availability"],                              # Phase 7: LAST — availability discount
     ]
 
     for phase in _PHASES:
