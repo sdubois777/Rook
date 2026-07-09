@@ -21,10 +21,18 @@ class Player(Base):
     __tablename__ = "players"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # ⚠️ TRAP: yahoo_player_id holds "nfl_"+gsis_id (e.g. Malik Nabers "nfl_00-0039337"),
+    # NOT the Yahoo fantasy player key ("449.p.12345"). It CANNOT resolve a Yahoo roster
+    # entry. Do NOT use it for platform resolution — use ``yahoo_id`` (the real key) below.
     yahoo_player_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True)
     gsis_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     sportradar_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     sleeper_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    # Real platform fantasy ids for DETERMINISTIC ESPN/Yahoo roster resolution
+    # (crosswalked from import_ids primary + Sleeper dump fill). yahoo_id is the BARE
+    # numeric Yahoo key (the tail of "449.p.<id>"); espn_id is the ESPN player id.
+    espn_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    yahoo_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     team_abbr: Mapped[Optional[str]] = mapped_column(String(5))
     position: Mapped[Optional[str]] = mapped_column(String(5))  # QB, RB, WR, TE, K, DEF
