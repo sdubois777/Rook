@@ -10,9 +10,11 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.exceptions import AppError
+from datetime import datetime, timezone
+
 from backend.integrations.platform_api import LeaguePlatformAPI
 from backend.integrations.platform_models import (
-    DraftPick, FreeAgent, RosteredPlayer, TeamRoster,
+    DraftPick, FreeAgent, LeagueMetadata, RosteredPlayer, TeamRoster,
     Transaction, WeeklyMatchup,
 )
 from backend.models.user_league import UserLeague
@@ -95,9 +97,31 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         await self._get("mSettings")
         return True
 
+    async def _team_names(self) -> dict[str, str]:
+        """{team_id: display name} from the mTeam view. The mRoster view carries only
+        {id, roster} — team names (name / location+nickname / abbrev) live in mTeam, so
+        this is the ONLY source of ESPN team names (fixes the all-blank names bug)."""
+        try:
+            data = await self._get("mTeam")
+        except Exception as exc:
+            logger.warning("ESPN team-names (mTeam) fetch failed: %s", exc)
+            return {}
+        out: dict[str, str] = {}
+        for t in data.get("teams", []):
+            tid = str(t.get("id", ""))
+            name = (
+                t.get("name")
+                or " ".join(x for x in (t.get("location"), t.get("nickname")) if x).strip()
+                or t.get("abbrev", "")
+            )
+            if tid and name:
+                out[tid] = name
+        return out
+
     async def get_rosters(self) -> list[TeamRoster]:
         data = await self._get("mRoster")
         teams = data.get("teams", [])
+        names = await self._team_names()      # mTeam — the only source of ESPN team names
         result: list[TeamRoster] = []
         for team in teams:
             players: list[RosteredPlayer] = []
@@ -111,10 +135,11 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                     # NFL team from proTeamId (deterministic DST resolution needs it).
                     team_abbr=_ESPN_PROTEAM.get(p.get("proTeamId"), ""),
                 ))
+            tid = str(team.get("id", ""))
             result.append(TeamRoster(
-                platform_team_id=str(team.get("id", "")),
+                platform_team_id=tid,
                 manager_name="",
-                team_name=team.get("name", team.get("abbrev", "")),
+                team_name=names.get(tid) or team.get("name") or team.get("abbrev", "") or f"Team {tid}",
                 players=players,
             ))
         return result
@@ -141,6 +166,40 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         if not isinstance(counts, dict):
             return None
         return slots_from_espn_lineup_slots(counts, league=str(self._league.league_id))
+
+    async def get_league_metadata(self) -> LeagueMetadata:
+        """ESPN `mSettings` (settings.name, .size, .scoringSettings, .draftSettings.date)
+        — the SAME view already fetched for roster_slots, previously mined only for
+        lineupSlotCounts. draft_type comes from detect_draft_type (mDraftDetail), not
+        here. Fails soft: any missing field stays None."""
+        meta = LeagueMetadata()
+        try:
+            data = await self._get("mSettings")
+        except Exception as exc:
+            logger.warning("ESPN league metadata fetch failed: %s", exc)
+            return meta
+        s = data.get("settings", {}) or {}
+        meta.name = s.get("name") or None
+        meta.team_count = s.get("size") or None
+        # scoring: reception points (statId 53) → ppr/half/standard
+        items = (s.get("scoringSettings", {}) or {}).get("scoringItems", []) or []
+        for it in items:
+            if it.get("statId") == 53:
+                pts = it.get("points", it.get("pointsOverrides", {}))
+                try:
+                    p = float(pts) if not isinstance(pts, dict) else None
+                except (TypeError, ValueError):
+                    p = None
+                if p is not None:
+                    meta.scoring = "ppr" if p >= 1.0 else ("half_ppr" if p >= 0.5 else "standard")
+                break
+        date_ms = (s.get("draftSettings", {}) or {}).get("date")
+        if date_ms:
+            try:
+                meta.draft_date = datetime.fromtimestamp(int(date_ms) / 1000, tz=timezone.utc)
+            except (TypeError, ValueError, OSError):
+                pass
+        return meta
 
     async def detect_draft_type(self) -> tuple[str, int | None]:
         """Detect auction vs snake from draft pick data.

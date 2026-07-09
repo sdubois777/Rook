@@ -111,6 +111,8 @@ PIPELINE_ORDER = [
     "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
+    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier + bell)
+    "team_notes",        # regenerate system-notes prose from the real stored stats
     "availability",      # LAST: deterministic games-missed availability discount
 ]
 
@@ -315,6 +317,31 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"{result['skipped']} skipped."
         )
 
+    elif name == "team_metrics":
+        # Deterministic Teams-page fields (Teams rework slice 1): scheme from real
+        # pass_rate (PBP), pass-protection grade from real sack_rate, qb_tier from real
+        # cpoe (NGS) — replaces the LLM-overridden/compressed values. No Sonnet.
+        from backend.database import AsyncSessionLocal
+        from backend.engines.team_metrics import apply_team_deterministic_fields
+        async with AsyncSessionLocal() as _db:
+            result = await apply_team_deterministic_fields(_db)
+        print(
+            f"[{name}] {result['teams']} teams: scheme={result['scheme']} "
+            f"pass_pro={result['pass_pro']} qb_tier={result['qb_tier']} "
+            f"run_block={result['run_block']} personnel={result['personnel']} "
+            f"red_zone={result['red_zone']} written (missing pass_rate={result['missing_pass_rate']}, "
+            f"cpoe={result['missing_cpoe']}, stuff_rate={result['missing_runblock']})."
+        )
+
+    elif name == "team_notes":
+        # Regenerate the Teams-page system-notes prose from the REAL stored stats +
+        # widened-bell grades (narrate from real numbers, never invent). Haiku.
+        from backend.database import AsyncSessionLocal
+        from backend.agents.team_notes import regenerate_team_notes
+        async with AsyncSessionLocal() as _db:
+            result = await regenerate_team_notes(_db)
+        print(f"[{name}] {result['written']} team note(s) regenerated from real stats, {result['failed']} failed.")
+
     elif name == "availability":
         # Deterministic pre-draft availability discount (games-missed proration for a
         # known multi-week absence). No Sonnet. Own DB session. Runs LAST.
@@ -424,14 +451,16 @@ async def main() -> None:
 
     # Pipeline dependency phases — independent agents run in parallel
     _PHASES = [
-        ["team_systems"],                              # Phase 1: no deps
-        ["roster_changes"],                            # Phase 2: needs team_systems
+        ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
+        ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
+        ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
         ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
         ["player_profiles"],                           # Phase 4: needs all above
         ["kicker_baseline"],                           # Phase 4b: dedicated K prior
         ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
+        ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
         ["availability"],                              # Phase 7: LAST — availability discount
     ]
 

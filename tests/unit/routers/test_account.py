@@ -48,6 +48,8 @@ def _make_league(user_id=None):
     league.suspended_at = None
     league.last_synced = None
     league.created_at = datetime.now(timezone.utc)
+    league.draft_date = None
+    league.manager_map = {"1": "Team One", "2": "Team Two"}
     return league
 
 

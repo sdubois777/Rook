@@ -14,7 +14,62 @@ import pytest
 
 import pandas as pd
 
-from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS
+from backend.agents.team_systems import TeamSystemsAgent, NFL_TEAMS, _upsert_team_system, SYSTEM_PROMPT
+
+
+class _FakeUpsertSession:
+    """Minimal async session for exercising the REAL _upsert (no DB)."""
+    def __init__(self):
+        self.added = []
+        self.committed = False
+
+    async def execute(self, *a, **k):
+        return type("R", (), {"scalar_one_or_none": lambda _s: None})()
+
+    def add(self, rec):
+        self.added.append(rec)
+
+    async def commit(self):
+        self.committed = True
+
+
+@pytest.mark.asyncio
+async def test_upsert_persists_no_grades_only_narrative_and_identity():
+    """The ownership boundary: the agent is a NARRATOR. Even if the model emits grade
+    fields, _upsert must persist NONE of them — every grade is owned by team_metrics."""
+    session = _FakeUpsertSession()
+    # a full (old-style) payload including grades the agent must NOT persist
+    data = {
+        "team_abbr": "DET", "qb_name": "Jared Goff", "qb_experience_years": 10,
+        "qb_pressure_performance": "above_avg", "qb_downfield_aggressiveness": "aggressive",
+        "rookie_qb_flag": False, "oc_name": "John Morton", "system_ceiling": "high",
+        "system_notes": "Grounded note from real numbers.",
+        # grades that must be IGNORED:
+        "pass_protection_grade": "A", "run_blocking_grade": "A", "qb_tier": "elite",
+        "system_grade": "A", "compound_risk_flag": True, "oc_scheme": "pass_heavy",
+        "oc_run_pass_split_tendency": 0.62, "personnel_tendency": "11",
+        "red_zone_philosophy": "wr1", "qb_cpoe": 4.2,
+        "_sack_rate": 0.031,
+    }
+    await _upsert_team_system(session, data)
+    rec = session.added[0]
+    # identity + narrative + inputs persisted
+    assert rec.qb_name == "Jared Goff" and rec.system_ceiling == "high"
+    assert rec.notes == "Grounded note from real numbers." and float(rec.sack_rate) == 0.031
+    # NO grade persisted from the agent — team_metrics owns them all
+    assert rec.pass_protection_grade is None and rec.run_blocking_grade is None
+    assert rec.qb_tier is None and rec.system_grade is None
+    assert rec.oc_scheme is None and rec.personnel_tendency is None and rec.red_zone_philosophy is None
+    assert rec.qb_cpoe is None
+
+
+def test_system_prompt_is_narrative_only_no_grade_schema():
+    """The prompt must not ask the agent for any grade (structural constraint)."""
+    for banned in ('"pass_protection_grade"', '"run_blocking_grade"', '"qb_tier"',
+                   '"system_grade"', '"oc_scheme"', '"personnel_tendency"'):
+        assert banned not in SYSTEM_PROMPT
+    assert "HALLUCINATION GUARD" in SYSTEM_PROMPT
+    assert '"system_notes"' in SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------

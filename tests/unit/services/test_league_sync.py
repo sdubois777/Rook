@@ -10,6 +10,7 @@ import pytest
 from backend.integrations.platform_models import (
     DraftPick,
     FreeAgent,
+    LeagueMetadata,
     TeamRoster,
 )
 
@@ -366,6 +367,8 @@ async def test_sync_espn_redetects_draft_type():
     mock_platform.get_rosters.return_value = []
     mock_platform.get_free_agents.return_value = []
     mock_platform.detect_draft_type.return_value = ("auction", 200)
+    mock_platform.get_roster_slots.return_value = None
+    mock_platform.get_league_metadata.return_value = LeagueMetadata()  # empty → no override
 
     with patch(
         "backend.services.league_sync.get_platform_api",
@@ -493,3 +496,114 @@ async def test_sync_continues_after_history_failure():
     # One warning per attempted history season
     assert len(summary["warnings"]) == 4
     assert all("No draft history" in w for w in summary["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# League-metadata capture (stop discarding already-fetched data) — per platform
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sleeper_metadata_parses_name_scoring_type_and_draft_date():
+    """Sleeper get_league_metadata mines /league (name, scoring rec, total_rosters)
+    + /drafts (type, start_time) — the objects sync already touches."""
+    from backend.integrations.sleeper_league_api import SleeperLeagueAPI
+
+    league = MagicMock()
+    league.league_id = "999"
+    api = SleeperLeagueAPI(league)
+
+    async def fake_get(path):
+        if path.endswith("/drafts"):
+            return [{"type": "snake", "start_time": 1725112800000}]  # 2024-08-31 ~
+        return {"name": "The League of Misfits", "total_rosters": 10,
+                "scoring_settings": {"rec": 0.5}}
+    api._get = fake_get
+
+    meta = await api.get_league_metadata()
+    assert meta.name == "The League of Misfits"
+    assert meta.scoring == "half_ppr"      # rec 0.5
+    assert meta.team_count == 10
+    assert meta.draft_type == "snake"       # not the hardcoded auction default
+    assert meta.draft_date is not None and meta.draft_date.year == 2024
+
+
+@pytest.mark.asyncio
+async def test_espn_metadata_parses_name_scoring_and_draft_date():
+    from backend.integrations.espn_league_api import ESPNLeagueAPI
+
+    league = MagicMock()
+    league.league_id = "42"
+    league.season_year = 2026
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="swid")
+
+    async def fake_get(view, season=None):
+        return {"settings": {
+            "name": "espntest", "size": 12,
+            "scoringSettings": {"scoringItems": [{"statId": 53, "points": 1.0}]},
+            "draftSettings": {"date": 1756612800000},
+        }}
+    api._get = fake_get
+
+    meta = await api.get_league_metadata()
+    assert meta.name == "espntest"
+    assert meta.scoring == "ppr"            # reception 1.0
+    assert meta.team_count == 12
+    assert meta.draft_date is not None
+
+
+@pytest.mark.asyncio
+async def test_espn_rosters_use_mteam_names_not_blank():
+    """The all-blank ESPN names bug: mRoster carries only {id, roster}; names live in
+    mTeam. get_rosters must merge them so manager_map isn't blank."""
+    from backend.integrations.espn_league_api import ESPNLeagueAPI
+
+    league = MagicMock()
+    league.league_id = "42"
+    league.season_year = 2026
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="swid")
+
+    async def fake_get(view, season=None):
+        if view == "mRoster":
+            return {"teams": [{"id": 1, "roster": {"entries": []}},
+                              {"id": 2, "roster": {"entries": []}}]}
+        if view == "mTeam":
+            return {"teams": [{"id": 1, "name": "Stephen's Smart Team", "abbrev": "SST"},
+                              {"id": 2, "location": "Big", "nickname": "Cats", "abbrev": "BC"}]}
+        return {}
+    api._get = fake_get
+
+    rosters = await api.get_rosters()
+    names = {r.platform_team_id: r.team_name for r in rosters}
+    assert names["1"] == "Stephen's Smart Team"
+    assert names["2"] == "Big Cats"           # location + nickname
+
+
+@pytest.mark.asyncio
+async def test_sync_self_heals_is_active_on_resync():
+    """is_active recomputes from season on EVERY sync — a stale False on a
+    current-season league flips back to True (re-sync repairs it)."""
+    league = _make_league(platform="sleeper")
+    league.is_active = False                  # deliberately stale/wrong
+    league.season_year = 2026                 # == current
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = _make_rosters(12)
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.get_roster_slots.return_value = None
+    from backend.integrations.platform_models import LeagueMetadata
+    mock_platform.get_league_metadata.return_value = LeagueMetadata(name="Misfits")
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), _patch_league_repo(league):
+        from backend.services.league_sync import LeagueSyncService
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+
+    assert league.is_active is True           # self-healed
+    assert league.league_name == "Misfits"    # metadata captured
+    assert league.team_count == 12            # real count from rosters
