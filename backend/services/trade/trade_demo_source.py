@@ -311,13 +311,16 @@ async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
     from backend.repositories.player_repo import PlayerRepository
 
     repo = PlayerRepository(db)
-    # Resolve each distinct drafted name once.
+    # Resolve each distinct drafted (name, position) once via the SAME canonical
+    # resolve_player the real provider uses (one resolution path everywhere, #243) —
+    # the demo has no platform ids, so this is the guarded-name path WITH the position
+    # filter (DEF routes to the team map). Replaces the old bare find_by_name_fuzzy.
     resolved: dict[str, Optional[tuple[str, Optional[str]]]] = {}
     for _, picks in DEMO_ROSTERS:
-        for name, _pos in picks:
+        for name, pos in picks:
             if name in resolved:
                 continue
-            player = await repo.find_by_name_fuzzy(name)
+            player = await repo.resolve_player(name=name, position=pos, team=None)
             resolved[name] = (str(player.id), player.team_abbr) if player else None
 
     teams_data, unresolved = assemble_teams(DEMO_ROSTERS, lambda n, pos: resolved.get(n))

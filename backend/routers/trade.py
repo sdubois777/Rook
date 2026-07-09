@@ -218,15 +218,24 @@ async def load_league_for_analysis(db, user, demo: bool):
         values, _dst_matchup = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
         return state, values, DEFAULT_ROSTER_LIMIT
 
-    # Real (non-demo) path — arrives with the slice-6 league-state provider. When
-    # built, its LeagueState.week MUST derive from the canonical week source
-    # (backend.utils.seasons.get_current_nfl_week over the cached schedule), NOT
-    # from any pinned constant, so the blend/staleness are time-correct in-season.
-    raise HTTPException(
-        status_code=501,
-        detail="real-league trade analysis is not available yet (arrives with "
-               "the real league-state provider); set TRADE_DEMO_MODE to try it.",
-    )
+    # Real (non-demo) path — the RealLeagueSource: synced platform rosters resolved
+    # deterministically via the canonical resolve_player (#243), the live week from
+    # get_current_nfl_week (#240), the league's REAL roster_slots, and the SAME
+    # value path (evaluate_league + DST tilt) the demo uses. No value-engine change.
+    from backend.services.kdef_matchup import apply_dst_matchup
+    from backend.services.trade.real_league_source import build_real_league_source
+    from backend.services.trade.value_engine import evaluate_league
+
+    source = await build_real_league_source(db, user)
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no synced league found — connect a league on the League page first",
+        )
+    state = source.get_league_state()
+    values = evaluate_league(state, source.weekly_usage, priors=source.priors)
+    values, _dst = apply_dst_matchup(values, state, season=source.season, week=source.week)
+    return state, values, source.roster_limit
 
 
 def get_trade_analyzer():
@@ -322,9 +331,14 @@ async def analyze(
     if enforce:
         await credit_service.deduct(user, "trade_analysis", agent_name="trade_analyzer")
 
-    # 5. Deterministic verdict + Sonnet rationale.
+    # 5. Deterministic verdict + Sonnet rationale. Thread the league's REAL lineup
+    #    shape (from synced roster_slots) so a non-3-WR/superflex league evaluates on
+    #    its own shape — the ledgered prod-config fix. Demo keeps DEFAULT (unchanged).
+    from backend.services.trade.lineup import lineup_rules_from_slots
+    rules = None if demo else lineup_rules_from_slots(state.roster_slots)
     analysis = analyze_trade(
-        state, values, body.my_team_id, body.give, body.get, roster_limit=roster_limit,
+        state, values, body.my_team_id, body.give, body.get,
+        roster_limit=roster_limit, rules=rules,
     )
     analysis.rationale = await agent.explain_trade(analysis)
 
