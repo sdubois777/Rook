@@ -384,6 +384,9 @@ class LiveDraftEngine:
             "market_value": float(player.market_value or 0),
             "ai_bid_ceiling": player.ai_bid_ceiling,
             "recommended_bid_ceiling": float(player.recommended_bid_ceiling or 0),
+            # Pre-draft availability discount (engines/availability.py): the live bid
+            # ceiling is prorated by this for a known multi-week absence (base × factor).
+            "availability_factor": float(player.availability_factor) if player.availability_factor is not None else 1.0,
             # ADP (snake path) — null until a pipeline run populates them.
             "adp_ai": float(player.adp_ai) if player.adp_ai is not None else None,
             "adp_fantasypros": (
@@ -429,13 +432,15 @@ class LiveDraftEngine:
         Starts from the pre-computed ceiling (ai_bid_ceiling or recommended_bid_ceiling),
         applies the dependency flag modifier, and constrains by budget and position cap.
         """
-        # Start from best available pre-computed ceiling
+        # Start from best available pre-computed ceiling, prorated by pre-draft
+        # AVAILABILITY (a known multi-week absence discounts the live bid ceiling — a
+        # stud on PUP/long-IR is worth less at auction; deterministic, base × factor).
         base_ceiling = float(
             record.get("ai_bid_ceiling")
             or record.get("recommended_bid_ceiling")
             or record.get("system_value")
             or 1
-        )
+        ) * float(record.get("availability_factor", 1.0) or 1.0)
 
         # Apply dependency flag modifier
         if flag_modifier != 0:

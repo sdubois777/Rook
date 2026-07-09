@@ -47,6 +47,16 @@ class Player(Base):
     injury_status: Mapped[Optional[str]] = mapped_column(String(4))
     injury_status_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    # Pre-draft AVAILABILITY discount (engines/availability.py) — a DETERMINISTIC
+    # games-missed proration for a KNOWN CURRENT multi-week absence (PUP / long-term
+    # IR / suspension). Distinct from injury_status (day-to-day badge) and from the
+    # injury-PRONENESS risk term (durability history). availability_factor in (0,1];
+    # 1.000 = fully available. The draft-ranked value reads base × availability_factor.
+    # Recomputed deterministically each pipeline run — base value fields untouched.
+    availability_factor: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=Decimal("1.000"), server_default="1.000")
+    availability_games_missed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    availability_reason: Mapped[Optional[str]] = mapped_column(String(120))
+
     # Top-level valuation (computed from pipeline agents)
     tier: Mapped[Optional[int]] = mapped_column(Integer)
     baseline_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
