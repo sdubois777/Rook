@@ -40,6 +40,12 @@ from backend.services.trade.value_engine import evaluate_league
 logger = logging.getLogger(__name__)
 
 # --- demo anchor (test-only; pinned here, NOT in the engine/data layer) ------
+# EXPLICIT demo-week OVERRIDE — NOT the canonical week source. A real league's week
+# derives from backend.utils.seasons.get_current_nfl_week (over the cached schedule);
+# the demo deliberately PINS an arbitrary week so we can seed any point in the season
+# (currently a late-season read that gives studs a full trend, and lets us later seed
+# an early week to exercise the low-sample blend). Keep this pin — it is how the demo
+# sets its own week — but it is no longer the SOLE week source.
 DEMO_SEASON = 2025
 DEMO_CURRENT_WEEK = 14   # late-season trade-window read; gives studs a full trend
 
