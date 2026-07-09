@@ -111,7 +111,8 @@ PIPELINE_ORDER = [
     "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
-    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier)
+    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier + bell)
+    "team_notes",        # regenerate system-notes prose from the real stored stats
     "availability",      # LAST: deterministic games-missed availability discount
 ]
 
@@ -332,6 +333,15 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"cpoe={result['missing_cpoe']}, stuff_rate={result['missing_runblock']})."
         )
 
+    elif name == "team_notes":
+        # Regenerate the Teams-page system-notes prose from the REAL stored stats +
+        # widened-bell grades (narrate from real numbers, never invent). Haiku.
+        from backend.database import AsyncSessionLocal
+        from backend.agents.team_notes import regenerate_team_notes
+        async with AsyncSessionLocal() as _db:
+            result = await regenerate_team_notes(_db)
+        print(f"[{name}] {result['written']} team note(s) regenerated from real stats, {result['failed']} failed.")
+
     elif name == "availability":
         # Deterministic pre-draft availability discount (games-missed proration for a
         # known multi-week absence). No Sonnet. Own DB session. Runs LAST.
@@ -450,6 +460,7 @@ async def main() -> None:
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
         ["team_metrics"],                              # Phase 6b: deterministic Teams fields
+        ["team_notes"],                                # Phase 6c: regenerate notes from real stats
         ["availability"],                              # Phase 7: LAST — availability discount
     ]
 
