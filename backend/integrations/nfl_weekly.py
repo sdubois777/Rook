@@ -101,10 +101,14 @@ def load_id_bridge(use_cache: bool = True) -> pd.DataFrame:
         return pd.read_parquet(path)
 
     ids = nfl.import_ids()
+    # espn_id / yahoo_id are kept for DETERMINISTIC platform roster resolution
+    # (they were previously dropped). import_ids rows carry both when the row exists,
+    # so the join rate is the only bound (~67% of relevant players; Sleeper fills the rest).
     keep = [c for c in ("gsis_id", "pfr_id", "sleeper_id", "sportradar_id",
-                        "position", "name", "merge_name") if c in ids.columns]
+                        "espn_id", "yahoo_id", "position", "name", "merge_name")
+            if c in ids.columns]
     bridge = ids[keep].copy()
-    for col in ("gsis_id", "pfr_id", "sleeper_id", "sportradar_id"):
+    for col in ("gsis_id", "pfr_id", "sleeper_id", "sportradar_id", "espn_id", "yahoo_id"):
         if col in bridge.columns:
             bridge[col] = bridge[col].map(_norm_id)
     try:

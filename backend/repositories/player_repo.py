@@ -100,82 +100,109 @@ class PlayerRepository(BaseRepository[Player]):
         )
         return list(result.scalars().all())
 
-    async def find_by_sleeper_id(self, sleeper_id: str) -> Player | None:
-        """Exact match on the indexed Sleeper id — the canonical id for Sleeper
-        drafts (whose pick/nomination frames are id-only). Returns None if unset."""
-        sid = (sleeper_id or "").strip()
-        if not sid:
+    async def _find_by_id_col(self, column, value: str | None) -> Player | None:
+        """Exact match on one indexed platform-id column. Returns None if unset."""
+        v = (value or "").strip()
+        if v.endswith(".0") and v[:-2].isdigit():
+            v = v[:-2]
+        if not v:
             return None
         result = await self._session.execute(
-            select(Player).where(Player.sleeper_id == sid).limit(1)
+            select(Player).where(column == v).limit(1)
         )
         return result.scalar_one_or_none()
 
-    async def find_by_name_fuzzy(self, name: str) -> Player | None:
-        """Resolve a (possibly inexact) display name to a single Player.
+    async def find_by_sleeper_id(self, sleeper_id: str) -> Player | None:
+        """Exact match on the indexed Sleeper id — the canonical id for Sleeper
+        drafts (whose pick/nomination frames are id-only)."""
+        return await self._find_by_id_col(Player.sleeper_id, sleeper_id)
 
-        Draft-room DOM names aren't always canonical ("Sam LaPorta" vs
-        "Samuel LaPorta", "Brian Thomas" vs "Brian Thomas Jr."), so we try
-        progressively looser matches and stop at the first hit:
-          1. exact, case-insensitive
-          2. suffix-normalized equality (reuses roster_changes._norm_name,
-             which strips Jr/Sr/II/III/IV/V and lowercases)
-          3. first-initial + last name (handles Sam vs Samuel)
-          4. ILIKE-contains on the last name, best bid ceiling first
-        Returns None when nothing plausibly matches.
-        """
-        from backend.agents.roster_changes import _norm_name
+    async def find_by_espn_id(self, espn_id: str) -> Player | None:
+        """Exact match on the ESPN player id (from ESPN roster entries)."""
+        return await self._find_by_id_col(Player.espn_id, espn_id)
 
-        raw = (name or "").strip()
-        if not raw:
+    async def find_by_yahoo_id(self, yahoo_id: str) -> Player | None:
+        """Exact match on the REAL Yahoo id (bare numeric; the tail of a Yahoo
+        player_key "449.p.<id>"). NOT yahoo_player_id (the gsis-derived trap)."""
+        return await self._find_by_id_col(Player.yahoo_id, yahoo_id)
+
+    async def find_by_dst_team(self, team_or_name: str | None) -> Player | None:
+        """DETERMINISTIC DST resolution — a team defense isn't an NFL player (0/32
+        crosswalk to espn/yahoo ids), so DST NEVER fuzzy-matches. Resolve by team
+        abbr (exact) or the full DEF name ("Denver Broncos"), position='DEF'. 32
+        teams → exact. Mirrors the team-keyed DEF-prior/dst_team_map convention."""
+        key = (team_or_name or "").strip()
+        if not key:
             return None
-        normalized = _norm_name(raw)
-
-        # 1. Exact (case-insensitive)
         result = await self._session.execute(
             select(Player)
-            .where(func.lower(Player.name) == raw.lower())
-            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
+            .where(Player.position == "DEF")
+            .where(or_(
+                func.upper(Player.team_abbr) == key.upper(),
+                func.lower(Player.name) == key.lower(),
+            ))
             .limit(1)
         )
-        exact = result.scalar_one_or_none()
-        if exact:
-            return exact
+        return result.scalar_one_or_none()
 
-        parts = normalized.split()
+    async def resolve_player(
+        self,
+        *,
+        sleeper_id: str | None = None,
+        espn_id: str | None = None,
+        yahoo_id: str | None = None,
+        gsis_id: str | None = None,
+        sportradar_id: str | None = None,
+        name: str | None = None,
+        position: str | None = None,
+        team: str | None = None,
+    ) -> Player | None:
+        """THE canonical resolver: stable IDs first (deterministic), guarded name
+        LAST. Tries sleeper → sportradar → gsis → espn → yahoo (exact, indexed);
+        DST routes to the team map; only if no id resolves does it fall to the
+        shared #217 guard (position filter + first-name agreement + collision
+        REFUSAL + loud-warn) — never an unverified candidates[0]."""
+        from backend.utils.player_resolver import guarded_name_pick
+
+        # DST: team-keyed, never name-fuzzy.
+        if (position or "").upper() == "DEF":
+            return await self.find_by_dst_team(team or name)
+
+        # ID-first — deterministic, exact.
+        for col, val in (
+            (Player.sleeper_id, sleeper_id),
+            (Player.sportradar_id, sportradar_id),
+            (Player.gsis_id, gsis_id),
+            (Player.espn_id, espn_id),
+            (Player.yahoo_id, yahoo_id),
+        ):
+            hit = await self._find_by_id_col(col, val)
+            if hit is not None:
+                return hit
+
+        # Guarded name fallback (last resort). Candidates by last-name contains,
+        # position-filtered in-query when known; the guard makes the final call.
+        if not name:
+            return None
+        from backend.agents.roster_changes import _norm_name
+
+        parts = _norm_name(name).split()
         if not parts:
             return None
-        first, last = parts[0], parts[-1]
+        query = select(Player).where(Player.name.ilike(f"%{parts[-1]}%"))
+        if position:
+            query = query.where(Player.position == position.upper())
+        query = query.order_by(Player.recommended_bid_ceiling.desc().nulls_last())
+        candidates = list((await self._session.execute(query)).scalars().all())
+        return guarded_name_pick(candidates, name, team=team, position=position)
 
-        # Narrow to candidates whose name contains the last name, best
-        # bid ceiling first so the contains-fallback prefers real players.
-        result = await self._session.execute(
-            select(Player)
-            .where(Player.name.ilike(f"%{last}%"))
-            .order_by(Player.recommended_bid_ceiling.desc().nulls_last())
-        )
-        candidates = list(result.scalars().all())
-        if not candidates:
-            return None
-
-        # 2. Suffix-normalized equality
-        for c in candidates:
-            if _norm_name(c.name) == normalized:
-                return c
-
-        # 3. First-initial + FULL last name (Sam LaPorta -> Samuel LaPorta;
-        #    "A. Brown" -> "A.J. Brown", but NOT "Amon-Ra St. Brown"). The last
-        #    name must match in FULL (every token after the first), not just the
-        #    final token — otherwise "A. Brown" wrongly matches the high-ceiling
-        #    "Amon-Ra St. Brown" (both end in "brown") and resolves the pick to
-        #    the wrong player.
-        for c in candidates:
-            cn = _norm_name(c.name).split()
-            if len(cn) >= 2 and cn[1:] == parts[1:] and cn[0][:1] == first[:1]:
-                return c
-
-        # 4. Best-ceiling contains-match fallback
-        return candidates[0]
+    async def find_by_name_fuzzy(self, name: str) -> Player | None:
+        """Resolve a display name to a single Player via the canonical resolver's
+        GUARDED name path (draft-room DOM / demo names are name-only). Delegates to
+        ``resolve_player`` so the #217 collision guard is inherited from ONE place —
+        the old unguarded ``candidates[0]`` fallback is gone (a last-name-only
+        collision now returns None + loud-warn, never a wrong same-surname pick)."""
+        return await self.resolve_player(name=name)
 
     async def search_by_name(self, q: str, limit: int = 20) -> list[Player]:
         """Case-insensitive name search, best bid ceilings first."""
