@@ -218,6 +218,10 @@ async def load_league_for_analysis(db, user, demo: bool):
         values, _dst_matchup = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
         return state, values, DEFAULT_ROSTER_LIMIT
 
+    # Real (non-demo) path — arrives with the slice-6 league-state provider. When
+    # built, its LeagueState.week MUST derive from the canonical week source
+    # (backend.utils.seasons.get_current_nfl_week over the cached schedule), NOT
+    # from any pinned constant, so the blend/staleness are time-correct in-season.
     raise HTTPException(
         status_code=501,
         detail="real-league trade analysis is not available yet (arrives with "
