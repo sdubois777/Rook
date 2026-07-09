@@ -54,6 +54,18 @@ _CPOE_ELITE = 2.0          # cpoe >= this → elite
 _CPOE_SOLID = 0.0          # >= this → solid
 _CPOE_AVERAGE = -2.0       # >= this → average, else weak
 
+# RUN-BLOCK grade on real STUFF RATE (runs stopped at/behind LOS / total runs; the best
+# OL-isolating proxy in standard PBP — yards_before_contact is charting data, NOT
+# ingested). LOWER = better. Monotonic absolute bands (real range ~0.049–0.151).
+_STUFF_RATE_GRADE_BANDS: tuple[tuple[float, str], ...] = (
+    (0.055, "B+"), (0.065, "B"), (0.075, "B-"),
+    (0.085, "C+"), (0.095, "C"), (0.110, "C-"),
+    (float("inf"), "D+"),
+)
+# RED-ZONE philosophy thresholds (from real RZ play distribution).
+_RZ_RUN_HEAVY = 0.55       # RZ run share >= this → "rb" (pound it)
+_RZ_WR_DOMINANT = 0.55     # WR share of RZ pass targets >= this → "wr1"
+
 
 # ---------------------------------------------------------------------------
 # pure per-value mappings (fixture-injectable)
@@ -96,6 +108,17 @@ def qb_tier_from_cpoe(cpoe: Optional[float], *, is_rookie: bool = False) -> Opti
     return "weak"
 
 
+def run_block_grade_from_stuff_rate(stuff_rate: Optional[float]) -> Optional[str]:
+    """Real stuff_rate → run-blocking grade, monotonic (lower stuff = better OL). None
+    passthrough (caller loud-warns)."""
+    if stuff_rate is None:
+        return None
+    for ceiling, grade in _STUFF_RATE_GRADE_BANDS:
+        if stuff_rate <= ceiling:
+            return grade
+    return _STUFF_RATE_GRADE_BANDS[-1][1]
+
+
 # ---------------------------------------------------------------------------
 # real-stat computation (pure over injected frames)
 # ---------------------------------------------------------------------------
@@ -121,6 +144,94 @@ _TEAM_ALIASES = {"LAR": "LA", "LA": "LA", "OAK": "LV", "SD": "LAC", "STL": "LA",
 def _canon_team(t) -> str:
     s = str(t or "").strip().upper()
     return _TEAM_ALIASES.get(s, s)
+
+
+def compute_run_block_stuff_rate(pbp: pd.DataFrame) -> dict[str, float]:
+    """{team: stuff_rate} = fraction of REG run plays tackled at/behind the LOS
+    (nflverse ``tackled_for_loss``). The best OL-isolating run-block proxy available
+    in standard PBP. Pure — inject the frame."""
+    if pbp is None or getattr(pbp, "empty", True):
+        return {}
+    if "tackled_for_loss" not in pbp.columns or "posteam" not in pbp.columns:
+        return {}
+    df = pbp
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    df = df[(df["play_type"] == "run") & df["tackled_for_loss"].notna()]
+    if df.empty:
+        return {}
+    grp = df.groupby("posteam")["tackled_for_loss"].apply(lambda x: float((x == 1).mean()))
+    return {str(t): round(v, 4) for t, v in grp.items() if t and str(t) != "nan"}
+
+
+_PERSONNEL_RB = None  # (compiled lazily to avoid a module-level re import cost)
+
+
+def compute_base_personnel(pbp: pd.DataFrame) -> dict[str, str]:
+    """{team: base personnel shorthand ("11"/"12"/...)} = the team's most-used
+    (RB-count, TE-count) grouping from nflverse ``offense_personnel`` over REG
+    offensive plays. Real usage (honestly ~"11" for most teams — that IS modern NFL).
+    Pure — inject the frame."""
+    import re
+
+    if pbp is None or getattr(pbp, "empty", True) or "offense_personnel" not in pbp.columns:
+        return {}
+    df = pbp
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    df = df[df["offense_personnel"].notna() & df["posteam"].notna()]
+    if df.empty:
+        return {}
+
+    def _shorthand(p) -> Optional[str]:
+        if not isinstance(p, str):
+            return None
+        rb = re.search(r"(\d+)\s*RB", p)
+        te = re.search(r"(\d+)\s*TE", p)
+        return f"{rb.group(1) if rb else 0}{te.group(1) if te else 0}"
+
+    df = df.assign(_sh=df["offense_personnel"].map(_shorthand))
+    df = df[df["_sh"].notna()]
+    out: dict[str, str] = {}
+    for team, grp in df.groupby("posteam"):
+        mode = grp["_sh"].value_counts()
+        if len(mode):
+            out[str(team)] = str(mode.idxmax())
+    return out
+
+
+def compute_red_zone_philosophy(pbp: pd.DataFrame) -> dict[str, str]:
+    """{team: RZ weapon ("rb"/"te"/"wr1"/"spread")} from real red-zone (yardline_100
+    <= 20) run/pass + receiver-position distribution. Pure — inject the frame."""
+    if pbp is None or getattr(pbp, "empty", True):
+        return {}
+    df = pbp
+    if "season_type" in df.columns:
+        df = df[df["season_type"] == "REG"]
+    if "yardline_100" not in df.columns or "posteam" not in df.columns:
+        return {}
+    rz = df[(df["yardline_100"] <= 20) & (df["yardline_100"] > 0)
+            & df["play_type"].isin(["pass", "run"])]
+    if rz.empty:
+        return {}
+    out: dict[str, str] = {}
+    for team, grp in rz.groupby("posteam"):
+        run_share = float((grp["play_type"] == "run").mean())
+        if run_share >= _RZ_RUN_HEAVY:
+            out[str(team)] = "rb"
+            continue
+        passes = grp[grp["play_type"] == "pass"]
+        pos = (passes["receiver_position"].value_counts(normalize=True)
+               if "receiver_position" in passes.columns else pd.Series(dtype=float))
+        te = float(pos.get("TE", 0.0))
+        wr = float(pos.get("WR", 0.0))
+        if te >= max(wr, 0.35):
+            out[str(team)] = "te"
+        elif wr >= _RZ_WR_DOMINANT:
+            out[str(team)] = "wr1"
+        else:
+            out[str(team)] = "spread"
+    return out
 
 
 def compute_qb_metrics(ngs_passing: pd.DataFrame) -> dict[str, tuple[float, float]]:
@@ -171,14 +282,18 @@ async def apply_team_deterministic_fields(
 
     pass_rates = compute_pass_rates(pbp)
     qb_metrics = compute_qb_metrics(ngs_passing)
+    stuff_rates = compute_run_block_stuff_rate(pbp)          # slice 2
+    personnel = compute_base_personnel(pbp)                  # slice 2
+    red_zone = compute_red_zone_philosophy(pbp)              # slice 2
 
     rows = (await db.execute(select(TeamSystem))).scalars().all()
     latest = max((r.season_year for r in rows), default=None)
     rows = [r for r in rows if r.season_year == latest]
 
-    scheme_n = passpro_n = qbtier_n = 0
+    scheme_n = passpro_n = qbtier_n = runblock_n = personnel_n = rz_n = 0
     missing_pr: list[str] = []
     missing_cpoe: list[str] = []
+    missing_runblock: list[str] = []
     for r in rows:
         team = _canon_team(r.team_abbr)
 
@@ -212,16 +327,42 @@ async def apply_team_deterministic_fields(
             r.qb_tier = qb_tier_from_cpoe(cpoe, is_rookie=bool(r.rookie_qb_flag))
             qbtier_n += 1
 
+        # 4. RUN BLOCKING from real stuff_rate (slice 2 — the previously-absent numeric)
+        sr = stuff_rates.get(team)
+        if sr is None:
+            missing_runblock.append(r.team_abbr)   # keep existing grade; loud-warn below
+        else:
+            r.run_block_stuff_rate = Decimal(str(sr))
+            r.run_blocking_grade = run_block_grade_from_stuff_rate(sr)
+            runblock_n += 1
+
+        # 5. PERSONNEL — real base grouping from actual usage (or leave as-is if absent)
+        p = personnel.get(team)
+        if p is not None:
+            r.personnel_tendency = p
+            personnel_n += 1
+
+        # 6. RED ZONE — real weapon from RZ run/pass + receiver distribution
+        rz = red_zone.get(team)
+        if rz is not None:
+            r.red_zone_philosophy = rz
+            rz_n += 1
+
     await db.commit()
     if missing_pr:
         logger.warning("team_metrics: %d team(s) missing real pass_rate — scheme left as-is: %s", len(missing_pr), missing_pr)
     if missing_cpoe:
         logger.warning("team_metrics: %d team(s) missing real cpoe — qb_tier left as-is (rookies excepted): %s", len(missing_cpoe), missing_cpoe)
+    if missing_runblock:
+        logger.warning("team_metrics: %d team(s) missing real stuff_rate — run_blocking_grade left as-is: %s", len(missing_runblock), missing_runblock)
     logger.info(
-        "team_metrics (season %s → %d teams): scheme=%d, pass_pro=%d, qb_tier=%d written deterministically",
-        stats_season, len(rows), scheme_n, passpro_n, qbtier_n,
+        "team_metrics (season %s → %d teams): scheme=%d pass_pro=%d qb_tier=%d "
+        "run_block=%d personnel=%d red_zone=%d written deterministically",
+        stats_season, len(rows), scheme_n, passpro_n, qbtier_n, runblock_n, personnel_n, rz_n,
     )
     return {
         "teams": len(rows), "scheme": scheme_n, "pass_pro": passpro_n,
-        "qb_tier": qbtier_n, "missing_pass_rate": missing_pr, "missing_cpoe": missing_cpoe,
+        "qb_tier": qbtier_n, "run_block": runblock_n, "personnel": personnel_n,
+        "red_zone": rz_n, "missing_pass_rate": missing_pr, "missing_cpoe": missing_cpoe,
+        "missing_runblock": missing_runblock,
     }
