@@ -76,6 +76,10 @@ _QB_RUSH_BONUS_WEIGHT = 0.15
 # they're excluded from the quality composite.
 _SYSTEM_WEIGHTS = {"qb": 0.55, "pass_pro": 0.25, "run_block": 0.20}
 
+# "pass protection C or below" — the weak-line half of the compound-risk rule (rookie QB
+# behind a bad line). Deterministic pass_protection_grade is a plain A–F (no +/-).
+_WEAK_PASS_PRO = frozenset({"C", "D", "F"})
+
 # RED-ZONE philosophy thresholds (from real RZ play distribution).
 _RZ_RUN_HEAVY = 0.55       # RZ run share >= this → "rb" (pound it)
 _RZ_WR_DOMINANT = 0.55     # WR share of RZ pass targets >= this → "wr1"
@@ -486,6 +490,11 @@ async def apply_team_deterministic_fields(
         if rz is not None:
             r.red_zone_philosophy = rz
             rz_n += 1
+
+        # COMPOUND RISK — deterministic (was the LLM agent's): rookie QB behind a weak
+        # line. Now owned here since the pass_protection_grade it keys on is deterministic.
+        if r.pass_protection_grade is not None:
+            r.compound_risk_flag = bool(r.rookie_qb_flag) and r.pass_protection_grade in _WEAK_PASS_PRO
 
         # SYSTEM composite (real component percentiles — not an LLM letter).
         composite[r.team_abbr] = system_composite_pct(pass_pct, run_pct, qb_pct)

@@ -451,16 +451,16 @@ async def main() -> None:
 
     # Pipeline dependency phases — independent agents run in parallel
     _PHASES = [
-        ["team_systems"],                              # Phase 1: no deps
-        ["roster_changes"],                            # Phase 2: needs team_systems
+        ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
+        ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
+        ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
         ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
         ["player_profiles"],                           # Phase 4: needs all above
         ["kicker_baseline"],                           # Phase 4b: dedicated K prior
         ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
-        ["team_metrics"],                              # Phase 6b: deterministic Teams fields
-        ["team_notes"],                                # Phase 6c: regenerate notes from real stats
+        ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
         ["availability"],                              # Phase 7: LAST — availability discount
     ]
 

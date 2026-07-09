@@ -63,49 +63,36 @@ NFL_TEAMS: list[str] = [
 
 SYSTEM_PROMPT = """You are an NFL offensive system analyst building a pre-draft fantasy football research database.
 
-Your job is to grade one NFL team's offensive system for the upcoming season.
-You will receive pre-aggregated real data. Use it alongside your own knowledge of
-current rosters, coaching staff, and known offseason changes.
+Your job is QB IDENTITY + short NARRATIVE for one NFL team. You do NOT grade anything.
+Every grade on the Teams page (pass protection, run blocking, QB tier, scheme, the
+overall system grade) is computed DETERMINISTICALLY from real play-by-play elsewhere —
+you must not produce or imply a letter grade or tier. Identify the QB and write grounded
+prose from the real numbers you are given.
 
 Produce a JSON object matching this exact schema:
 {
   "team_abbr": "string (3-5 char NFL team code)",
-  "pass_protection_grade": "string (A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F)",
-  "run_blocking_grade": "string (A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F)",
   "qb_name": "string",
-  "qb_tier": "string (elite/solid/average/weak/rookie)",
   "qb_experience_years": integer,
   "qb_pressure_performance": "string (elite/above_avg/avg/below_avg)",
-  "qb_cpoe": number,
-  "qb_air_yards_per_attempt": number,
   "qb_downfield_aggressiveness": "string (aggressive/moderate/conservative)",
   "rookie_qb_flag": boolean,
-  "compound_risk_flag": boolean,
   "oc_name": "string",
-  "oc_scheme": "string (balanced/pass_heavy/run_heavy/west_coast/air_raid/spread)",
-  "oc_run_pass_split_tendency": number,
-  "personnel_tendency": "string (11/12/21/22/13)",
-  "red_zone_philosophy": "string (wr1/te/rb/spread/qb_scramble)",
   "system_ceiling": "string (high/moderate/low)",
-  "system_grade": "string (A+/A/A-/B+/B/B-/C+/C/C-/D+/D/F)",
-  "notes": "string (2-3 sentences, fantasy implications focus)"
+  "scheme_summary": "string (1-2 sentences on the offensive identity)",
+  "qb_notes": "string (1-2 sentences on the QB situation)",
+  "system_notes": "string (2-3 sentences, fantasy implications focus)"
 }
 
 Rules:
 - rookie_qb_flag = true ONLY if this QB has never started an NFL game in a prior season — a genuine first-year starter making his NFL debut this season. Lean on qb_experience_years: effectively 0 prior NFL seasons as a starter means rookie; 1+ prior seasons as a starter means NOT a rookie, even on a new team and even returning from injury.
   A QB who started games in ANY prior season is NOT a rookie (a QB who started last season is a SECOND-YEAR player, not a rookie). A QB who changes teams is NOT a rookie. A QB who missed time due to injury is NOT a rookie. rookie_qb_flag is about NFL experience level, not familiarity with a new team or system. Do NOT name specific players here — judge each QB from his own experience data, since the current rookie class changes every season.
-- compound_risk_flag = true ONLY when rookie_qb_flag is true AND pass_protection_grade is C or below. This flag is reserved for genuine first-year starters behind bad OLines — a rare scenario. Flag conservatively.
-- The notes field must focus on fantasy implications, not general football analysis
-
-OLine grade adjustment rules (when oline_draft_picks is provided in oline data):
-- Round 1 OT pick (picks 1-32): pass_protection_grade improves 1-2 grades above historical sack rate baseline.
-  Example: 8% sack rate = C+ baseline, but R1 OT pick → B or B+.
-- Round 1 OG/C pick (picks 1-32): run_blocking_grade improves 1-2 grades. Modest pass_protection improvement too.
-- Round 2 OT/OG (picks 33-64): improve grades by 1 grade. Day 1 starter likely but not guaranteed.
-- Round 3+ OLine picks: modest improvement, depth/rotational. 0-1 grade improvement maximum.
-- Multiple OLine picks same year: stack improvements (additive). 2 OLinemen in R1-R2 = full grade adjustments.
-- No OLine picks + historical sack_rate > 7%: grade stays at or near historical level. Do not inflate without evidence.
-- When oline_draft_picks is empty []: base grade entirely on sack_rate and avg_time_to_throw.
+- HALLUCINATION GUARD: any number you mention in prose (sack rate, time to throw, etc.)
+  MUST appear in the data you were given. Narrate FROM the provided numbers — never
+  invent, estimate, or state a statistic that is not in the input.
+- Do NOT output a pass_protection_grade, run_blocking_grade, qb_tier, system_grade,
+  scheme label, personnel package, or red-zone tendency — those are computed, not yours.
+- The narrative fields must focus on fantasy implications, not general football analysis.
 
 Output ONLY a valid JSON object. No explanation. No preamble. No markdown fences.
 Your entire response must be parseable by json.loads()."""
@@ -638,38 +625,32 @@ async def _upsert_team_system(session: AsyncSession, data: dict) -> None:
         record = TeamSystem(team_abbr=team, season_year=current_season)
         session.add(record)
 
-    record.pass_protection_grade       = data.get("pass_protection_grade")
-    record.run_blocking_grade          = data.get("run_blocking_grade")
+    # NARRATIVE + IDENTITY + INPUTS ONLY. Every GRADE (pass_protection_grade,
+    # run_blocking_grade, qb_tier, oc_scheme, oc_run_pass_split_tendency,
+    # personnel_tendency, red_zone_philosophy, qb_cpoe, qb_air_yards_per_attempt,
+    # system_grade, compound_risk_flag) is written DETERMINISTICALLY by
+    # backend.engines.team_metrics (which runs right after this agent). The agent is a
+    # narrator — it must not, and now cannot, set a grade. Deliberately NOT persisted here.
     record.qb_name                     = data.get("qb_name")
-    record.qb_tier                     = data.get("qb_tier")
     record.qb_experience_years         = data.get("qb_experience_years")
     record.qb_pressure_performance     = data.get("qb_pressure_performance")
-    record.qb_cpoe                     = data.get("qb_cpoe")
-    record.qb_air_yards_per_attempt    = data.get("qb_air_yards_per_attempt")
     record.qb_downfield_aggressiveness = data.get("qb_downfield_aggressiveness")
     record.rookie_qb_flag              = bool(data.get("rookie_qb_flag", False))
-    record.compound_risk_flag          = bool(data.get("compound_risk_flag", False))
     record.oc_name                     = data.get("oc_name")
-    record.oc_scheme                   = data.get("oc_scheme")
-    _split = data.get("oc_run_pass_split_tendency")
-    if _split is not None and _split > 1:
-        _split = round(_split / 100, 3)  # model returned 45 instead of 0.45
-    record.oc_run_pass_split_tendency  = _split
-    record.personnel_tendency          = data.get("personnel_tendency")
-    record.red_zone_philosophy         = data.get("red_zone_philosophy")
     record.system_ceiling              = data.get("system_ceiling")
-    record.system_grade                = data.get("system_grade")
-    record.notes                       = data.get("notes")
+    record.notes                       = data.get("system_notes") or data.get("notes")
 
-    # Python-computed numerics (prefixed with _ in data dict)
+    # Python-computed numerics (prefixed with _ in data dict) — the deterministic inputs
+    # team_metrics reads (sack_rate → pass-protection grade) and displays.
     record.sack_rate                   = data.get("_sack_rate")
     record.avg_time_to_throw           = data.get("_avg_time_to_throw")
     record.qb_mobility                 = data.get("_qb_mobility")
 
     await session.commit()
     logger.info(
-        "Upserted TeamSystem: %s — Grade: %s  rookie_qb=%s  compound_risk=%s",
-        team, record.system_grade, record.rookie_qb_flag, record.compound_risk_flag,
+        "Upserted TeamSystem (narrative+identity): %s — qb=%s rookie_qb=%s "
+        "(grades owned by team_metrics)",
+        team, record.qb_name, record.rookie_qb_flag,
     )
 
 

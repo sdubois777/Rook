@@ -247,6 +247,21 @@ def _run_play(team):
             "rushing_yards": 0.0, "rush_touchdown": 0.0, "fumble_lost": 0.0}
 
 
+async def test_compound_risk_flag_is_deterministic():
+    """compound_risk (rookie QB behind a weak line) is now owned by team_metrics, keyed
+    on the DETERMINISTIC pass_protection_grade — not the LLM agent."""
+    rk_bad = _TS("CHI", 0.095, rookie=True)     # rookie + worst sack_rate → weak pass-pro
+    rk_good = _TS("DEN", 0.020, rookie=True)     # rookie + best sack_rate → strong pass-pro
+    vet_bad = _TS("BAL", 0.095, rookie=False)    # weak line but NOT a rookie
+    db = _FakeDB([rk_bad, rk_good, vet_bad])
+    empty = pd.DataFrame(columns=["season_type", "posteam", "play_type"])
+    await apply_team_deterministic_fields(db, stats_season=2025, pbp=empty,
+                                          ngs_passing=pd.DataFrame(columns=["week", "team_abbr", "attempts"]))
+    assert rk_bad.pass_protection_grade == "F" and rk_bad.compound_risk_flag is True
+    assert rk_good.pass_protection_grade == "A" and rk_good.compound_risk_flag is False   # good line
+    assert vet_bad.compound_risk_flag is False                                            # not a rookie
+
+
 async def test_pass_overwrites_qb_tier_and_scheme_from_real_stats():
     den = _TS("DEN", 0.0346)         # elite QB (high EPA)
     bal = _TS("BAL", 0.0875)         # weak QB (low EPA)
