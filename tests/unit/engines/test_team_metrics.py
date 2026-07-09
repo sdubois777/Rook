@@ -196,6 +196,25 @@ class _FakeDB:
         self.commits += 1
 
 
+async def test_apply_sources_season_from_the_latest_data_resolver(monkeypatch):
+    """Provenance: when no season is passed, the season comes from the ONE resolver
+    (latest_season_with_data) — the SAME one team_systems uses — so QB value, scheme,
+    run-block and pass-pro all read a single, data-driven season. No field improvises
+    get_current_season()-1 anymore."""
+    hit = {}
+
+    def spy():
+        hit["called"] = True
+        return 2025
+
+    monkeypatch.setattr("backend.engines.team_metrics.latest_season_with_data", spy)
+    empty_pbp = pd.DataFrame(columns=["season_type", "posteam", "play_type"])
+    empty_ngs = pd.DataFrame(columns=["week", "team_abbr", "attempts"])
+    # pbp/ngs injected → no fetch; stats_season unset → must invoke the resolver
+    await apply_team_deterministic_fields(_FakeDB([]), pbp=empty_pbp, ngs_passing=empty_ngs)
+    assert hit.get("called") is True
+
+
 def _pass_play(team, passer, epa, succ, yds=25.0, td=0.0, intc=0.0):
     return {"season_type": "REG", "posteam": team, "play_type": "pass", "qb_dropback": 1,
             "passer_player_name": passer, "rusher_player_name": None, "qb_epa": epa, "success": succ,
