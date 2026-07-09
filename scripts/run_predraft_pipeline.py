@@ -108,6 +108,7 @@ PIPELINE_ORDER = [
     "beat_reporter",
     "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
     "kicker_baseline",   # dedicated K prior (offense profiler is skill-only)
+    "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
 ]
@@ -281,6 +282,20 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"{result['vet_default']} veteran-default (seasons={result['seasons']})."
         )
 
+    elif name == "defense_baseline":
+        # Dedicated preseason DEFENSE (DST) prior — writes clean_season_baseline
+        # .ppr_points for team-unit DEF rows (crude historical, not a projection).
+        # Pure data step, no Sonnet. Own DB session.
+        from backend.database import AsyncSessionLocal
+        from backend.services.defense_baseline import write_defense_baselines
+        async with AsyncSessionLocal() as _db:
+            result = await write_defense_baselines(_db)
+        print(
+            f"[{name}] {result['written']} defense profile(s): "
+            f"{result['historical']} historical, {result['default_used']} default "
+            f"(seasons={result['seasons']})."
+        )
+
     elif name == "valuation":
         from backend.engines.valuation import run_valuation_pass
         result = await run_valuation_pass()
@@ -401,6 +416,7 @@ async def main() -> None:
         ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
         ["player_profiles"],                           # Phase 4: needs all above
         ["kicker_baseline"],                           # Phase 4b: dedicated K prior
+        ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
     ]
