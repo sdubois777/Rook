@@ -39,29 +39,25 @@ logger = logging.getLogger(__name__)
 _RUN_HEAVY_MAX = 0.53      # pass_rate <= this → run_heavy
 _PASS_HEAVY_MIN = 0.60     # pass_rate >= this → pass_heavy
 
-# PASS-PROTECTION grade on real sack_rate (sacks allowed / dropbacks; LOWER = better).
-# Monotonic absolute bands (best sack_rate → best grade) — fixes the mis-order. Slice 3
-# remaps to the widened bell; this just has to order right.
-_SACK_RATE_GRADE_BANDS: tuple[tuple[float, str], ...] = (
-    (0.045, "B+"), (0.055, "B"), (0.065, "B-"),
-    (0.075, "C+"), (0.085, "C"), (0.095, "C-"),
-    (float("inf"), "D+"),
+# ───────────────────────── WIDENED-BELL CURVE (slice 3) ──────────────────────
+# ONE relative/percentile→grade curve applied to EVERY graded field (pass-pro on
+# sack_rate, run-block on stuff_rate, qb on cpoe, system on the composite). Full A–F
+# scale with a DENSE MIDDLE — over 32 teams ≈ top 10% A, next 20% B, mid 40% C, next
+# 20% D, bottom 10% F (≈3/6/13/6/3). Uses the tails that are REAL; does NOT manufacture
+# mid-pack separation (13 teams sharing "C" = the true average, by design). ``pct`` is
+# the fraction of the OTHER teams a value beats (1.0 = best). Tunable in ONE place.
+_BELL_GRADE_CUTS: tuple[tuple[float, str], ...] = (
+    (0.90, "A"), (0.70, "B"), (0.30, "C"), (0.10, "D"), (-1.0, "F"),
 )
-
-# QB TIER on real cpoe (completion % over expectation; HIGHER = better). Rookies keep
-# "rookie" (little/no data). Absolute bands over the real ~-7..+9 spread.
-_CPOE_ELITE = 2.0          # cpoe >= this → elite
-_CPOE_SOLID = 0.0          # >= this → solid
-_CPOE_AVERAGE = -2.0       # >= this → average, else weak
-
-# RUN-BLOCK grade on real STUFF RATE (runs stopped at/behind LOS / total runs; the best
-# OL-isolating proxy in standard PBP — yards_before_contact is charting data, NOT
-# ingested). LOWER = better. Monotonic absolute bands (real range ~0.049–0.151).
-_STUFF_RATE_GRADE_BANDS: tuple[tuple[float, str], ...] = (
-    (0.055, "B+"), (0.065, "B"), (0.075, "B-"),
-    (0.085, "C+"), (0.095, "C"), (0.110, "C-"),
-    (float("inf"), "D+"),
+# Same curve mapped to the qb-tier vocabulary (elite/solid/average/weak). Rookies keep
+# "rookie" (unreliable prior data) — excepted, not bell-ranked.
+_BELL_TIER_CUTS: tuple[tuple[float, str], ...] = (
+    (0.90, "elite"), (0.70, "solid"), (0.30, "average"), (-1.0, "weak"),
 )
+# SYSTEM/OVERALL composite weights on the component percentiles (all higher=better after
+# direction-correction). QB is the dominant driver of an offensive system.
+_SYSTEM_WEIGHTS = {"qb": 0.45, "pass_pro": 0.30, "run_block": 0.25}
+
 # RED-ZONE philosophy thresholds (from real RZ play distribution).
 _RZ_RUN_HEAVY = 0.55       # RZ run share >= this → "rb" (pound it)
 _RZ_WR_DOMINANT = 0.55     # WR share of RZ pass targets >= this → "wr1"
@@ -81,42 +77,56 @@ def scheme_from_pass_rate(pass_rate: Optional[float]) -> Optional[str]:
     return "balanced"
 
 
-def pass_pro_grade_from_sack_rate(sack_rate: Optional[float]) -> Optional[str]:
-    """Real sack_rate → pass-protection grade, monotonic (lower sack = better). None
-    passthrough (caller loud-warns a missing numeric)."""
-    if sack_rate is None:
+# ───────────────────────── the widened-bell mapper ──────────────────────────
+def bell_rank(value: Optional[float], all_values, *, lower_is_better: bool) -> Optional[float]:
+    """Percentile rank of ``value`` among the league's ``all_values`` — the fraction of
+    OTHER teams it beats (1.0 = best, 0.0 = worst). Direction-corrected so the best team
+    always ranks highest. Ties share a rank. None (or <2 values) → None."""
+    vals = [v for v in all_values if v is not None]
+    if value is None or len(vals) < 2:
         return None
-    for ceiling, grade in _SACK_RATE_GRADE_BANDS:
-        if sack_rate <= ceiling:
+    if lower_is_better:
+        worse = sum(1 for v in vals if v > value)      # teams with a HIGHER (worse) value
+    else:
+        worse = sum(1 for v in vals if v < value)      # teams with a LOWER (worse) value
+    return worse / (len(vals) - 1)
+
+
+def grade_from_pct(pct: Optional[float]) -> Optional[str]:
+    """Widened-bell percentile → letter grade (A–F, dense middle). None passthrough."""
+    if pct is None:
+        return None
+    for cut, grade in _BELL_GRADE_CUTS:
+        if pct >= cut:
             return grade
-    return _SACK_RATE_GRADE_BANDS[-1][1]
+    return _BELL_GRADE_CUTS[-1][1]
 
 
-def qb_tier_from_cpoe(cpoe: Optional[float], *, is_rookie: bool = False) -> Optional[str]:
-    """Real cpoe → qb tier. Rookies keep 'rookie' (no reliable prior data). None → None
-    (caller keeps the existing value + loud-warns)."""
+def tier_from_pct(pct: Optional[float], *, is_rookie: bool = False) -> Optional[str]:
+    """Widened-bell percentile → qb tier (same curve as grade_from_pct). Rookies keep
+    'rookie' (unreliable prior data), excepted from the bell."""
     if is_rookie:
         return "rookie"
-    if cpoe is None:
+    if pct is None:
         return None
-    if cpoe >= _CPOE_ELITE:
-        return "elite"
-    if cpoe >= _CPOE_SOLID:
-        return "solid"
-    if cpoe >= _CPOE_AVERAGE:
-        return "average"
-    return "weak"
+    for cut, tier in _BELL_TIER_CUTS:
+        if pct >= cut:
+            return tier
+    return _BELL_TIER_CUTS[-1][1]
 
 
-def run_block_grade_from_stuff_rate(stuff_rate: Optional[float]) -> Optional[str]:
-    """Real stuff_rate → run-blocking grade, monotonic (lower stuff = better OL). None
-    passthrough (caller loud-warns)."""
-    if stuff_rate is None:
+def system_composite_pct(pass_pct, run_pct, qb_pct) -> Optional[float]:
+    """Weighted composite of the three component percentiles (higher=better) → a single
+    0–1 system score. Missing components are dropped and the remaining weights
+    renormalised (never fabricate a component)."""
+    parts = [(_SYSTEM_WEIGHTS["qb"], qb_pct),
+             (_SYSTEM_WEIGHTS["pass_pro"], pass_pct),
+             (_SYSTEM_WEIGHTS["run_block"], run_pct)]
+    parts = [(w, p) for w, p in parts if p is not None]
+    if not parts:
         return None
-    for ceiling, grade in _STUFF_RATE_GRADE_BANDS:
-        if stuff_rate <= ceiling:
-            return grade
-    return _STUFF_RATE_GRADE_BANDS[-1][1]
+    wsum = sum(w for w, _ in parts)
+    return sum(w * p for w, p in parts) / (wsum or 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -290,14 +300,24 @@ async def apply_team_deterministic_fields(
     latest = max((r.season_year for r in rows), default=None)
     rows = [r for r in rows if r.season_year == latest]
 
+    # Gather the league's 32 values for the RELATIVE widened-bell rank per metric.
+    all_sack = [float(r.sack_rate) for r in rows if r.sack_rate is not None]
+    all_stuff = [stuff_rates[_canon_team(r.team_abbr)] for r in rows
+                 if _canon_team(r.team_abbr) in stuff_rates]
+    # qb_tier bells over NON-rookie QBs only (rookies are a separate "rookie" tier, not
+    # ranked on cpoe — thin/no prior data).
+    all_cpoe = [qb_metrics[_canon_team(r.team_abbr)][0] for r in rows
+                if _canon_team(r.team_abbr) in qb_metrics and not r.rookie_qb_flag]
+
     scheme_n = passpro_n = qbtier_n = runblock_n = personnel_n = rz_n = 0
     missing_pr: list[str] = []
     missing_cpoe: list[str] = []
     missing_runblock: list[str] = []
+    composite: dict = {}  # team_abbr → composite pct (for the system-grade bell)
     for r in rows:
         team = _canon_team(r.team_abbr)
 
-        # 1. SCHEME + real pass rate
+        # 1. SCHEME + real pass rate (absolute label — not on the A–F bell)
         pr = pass_rates.get(team)
         if pr is None:
             missing_pr.append(r.team_abbr)
@@ -306,37 +326,42 @@ async def apply_team_deterministic_fields(
             r.oc_scheme = scheme_from_pass_rate(pr)
             scheme_n += 1
 
-        # 2. PASS PROTECTION from the already-stored real sack_rate
+        # 2. PASS PROTECTION — widened-bell on real sack_rate (lower = better)
+        pass_pct = bell_rank(float(r.sack_rate) if r.sack_rate is not None else None,
+                             all_sack, lower_is_better=True)
         if r.sack_rate is None:
             logger.warning("team_metrics: %s missing sack_rate — pass_protection_grade left as-is", r.team_abbr)
         else:
-            r.pass_protection_grade = pass_pro_grade_from_sack_rate(float(r.sack_rate))
+            r.pass_protection_grade = grade_from_pct(pass_pct)
             passpro_n += 1
 
-        # 3. QB TIER from real cpoe (+ store the real cpoe/air-yards the tier is built on)
+        # 3. QB TIER — widened-bell on real cpoe (higher = better); store real cpoe/air
         m = qb_metrics.get(team)
+        qb_pct = None
         if m is None:
             missing_cpoe.append(r.team_abbr)
-            # keep the existing tier; do NOT fabricate. (rookies still tier below.)
             if r.rookie_qb_flag:
                 r.qb_tier = "rookie"
         else:
             cpoe, air = m
             r.qb_cpoe = Decimal(str(cpoe))
             r.qb_air_yards_per_attempt = Decimal(str(air))
-            r.qb_tier = qb_tier_from_cpoe(cpoe, is_rookie=bool(r.rookie_qb_flag))
+            qb_pct = bell_rank(cpoe, all_cpoe, lower_is_better=False)
+            r.qb_tier = tier_from_pct(qb_pct, is_rookie=bool(r.rookie_qb_flag))
             qbtier_n += 1
 
-        # 4. RUN BLOCKING from real stuff_rate (slice 2 — the previously-absent numeric)
+        # 4. RUN BLOCKING — widened-bell on real stuff_rate (lower = better)
         sr = stuff_rates.get(team)
+        run_pct = None
         if sr is None:
-            missing_runblock.append(r.team_abbr)   # keep existing grade; loud-warn below
+            missing_runblock.append(r.team_abbr)
         else:
             r.run_block_stuff_rate = Decimal(str(sr))
-            r.run_blocking_grade = run_block_grade_from_stuff_rate(sr)
+            run_pct = bell_rank(sr, all_stuff, lower_is_better=True)
+            r.run_blocking_grade = grade_from_pct(run_pct)
             runblock_n += 1
 
-        # 5. PERSONNEL — real base grouping from actual usage (or leave as-is if absent)
+        # 5. PERSONNEL — real base grouping from actual usage
         p = personnel.get(team)
         if p is not None:
             r.personnel_tendency = p
@@ -348,6 +373,19 @@ async def apply_team_deterministic_fields(
             r.red_zone_philosophy = rz
             rz_n += 1
 
+        # SYSTEM composite (real component percentiles — not an LLM letter).
+        composite[r.team_abbr] = system_composite_pct(pass_pct, run_pct, qb_pct)
+
+    # 7. SYSTEM/OVERALL GRADE — bell the composite across the 32 (distributes A–F).
+    all_comp = [c for c in composite.values() if c is not None]
+    system_n = 0
+    for r in rows:
+        c = composite.get(r.team_abbr)
+        sys_pct = bell_rank(c, all_comp, lower_is_better=False)
+        if sys_pct is not None:
+            r.system_grade = grade_from_pct(sys_pct)
+            system_n += 1
+
     await db.commit()
     if missing_pr:
         logger.warning("team_metrics: %d team(s) missing real pass_rate — scheme left as-is: %s", len(missing_pr), missing_pr)
@@ -357,12 +395,12 @@ async def apply_team_deterministic_fields(
         logger.warning("team_metrics: %d team(s) missing real stuff_rate — run_blocking_grade left as-is: %s", len(missing_runblock), missing_runblock)
     logger.info(
         "team_metrics (season %s → %d teams): scheme=%d pass_pro=%d qb_tier=%d "
-        "run_block=%d personnel=%d red_zone=%d written deterministically",
-        stats_season, len(rows), scheme_n, passpro_n, qbtier_n, runblock_n, personnel_n, rz_n,
+        "run_block=%d system=%d personnel=%d red_zone=%d written (widened bell)",
+        stats_season, len(rows), scheme_n, passpro_n, qbtier_n, runblock_n, system_n, personnel_n, rz_n,
     )
     return {
         "teams": len(rows), "scheme": scheme_n, "pass_pro": passpro_n,
-        "qb_tier": qbtier_n, "run_block": runblock_n, "personnel": personnel_n,
-        "red_zone": rz_n, "missing_pass_rate": missing_pr, "missing_cpoe": missing_cpoe,
-        "missing_runblock": missing_runblock,
+        "qb_tier": qbtier_n, "run_block": runblock_n, "system": system_n,
+        "personnel": personnel_n, "red_zone": rz_n, "missing_pass_rate": missing_pr,
+        "missing_cpoe": missing_cpoe, "missing_runblock": missing_runblock,
     }

@@ -13,15 +13,16 @@ import pytest
 
 from backend.engines.team_metrics import (
     apply_team_deterministic_fields,
+    bell_rank,
     compute_base_personnel,
     compute_pass_rates,
     compute_qb_metrics,
     compute_red_zone_philosophy,
     compute_run_block_stuff_rate,
-    pass_pro_grade_from_sack_rate,
-    qb_tier_from_cpoe,
-    run_block_grade_from_stuff_rate,
+    grade_from_pct,
     scheme_from_pass_rate,
+    system_composite_pct,
+    tier_from_pct,
 )
 
 
@@ -36,38 +37,54 @@ def test_scheme_distributes_across_all_three():
 
 
 # ---------------------------------------------------------------------------
-# pass-protection — monotonic by sack_rate (the mis-order fix)
+# SLICE 3 — the widened-bell mapper (one curve, full A–F, dense middle)
 # ---------------------------------------------------------------------------
-def test_pass_pro_orders_monotonically_by_sack_rate():
-    den = pass_pro_grade_from_sack_rate(0.0346)   # best
-    bal = pass_pro_grade_from_sack_rate(0.0875)   # near-worst
-    lv = pass_pro_grade_from_sack_rate(0.0992)    # worst
-    order = {"B+": 3, "B": 4, "B-": 5, "C+": 6, "C": 7, "C-": 8, "D+": 9}
-    # DEN's best sack_rate MUST grade better than BAL's (the exact bug this fixes).
-    assert order[den] < order[bal] < order[lv]
-    assert pass_pro_grade_from_sack_rate(None) is None
+def _bell_over_32(lower_is_better):
+    """Distribution of grades when 32 evenly-spaced values run through the bell."""
+    import collections
+    vals = [i / 100.0 for i in range(32)]          # 32 distinct values
+    return collections.Counter(
+        grade_from_pct(bell_rank(v, vals, lower_is_better=lower_is_better)) for v in vals
+    )
 
 
-def test_pass_pro_grade_is_monotonic_across_the_range():
-    rates = [0.03, 0.05, 0.07, 0.09, 0.11]
-    order = {"A+": 0, "A": 1, "A-": 2, "B+": 3, "B": 4, "B-": 5, "C+": 6, "C": 7, "C-": 8, "D+": 9}
-    grades = [order[pass_pro_grade_from_sack_rate(r)] for r in rates]
-    assert grades == sorted(grades)               # worse sack_rate → worse (higher) grade
+def test_bell_distribution_is_widened_dense_middle():
+    # Target ≈ 3/6/13/6/3 A/B/C/D/F over 32 teams — tails populated, dense C middle.
+    dist = _bell_over_32(lower_is_better=False)
+    assert dist["A"] == 4 and dist["F"] == 4        # tails populated (not one lone A)
+    assert dist["C"] >= 10                          # dense middle (C = the average)
+    assert set(dist) == {"A", "B", "C", "D", "F"}   # full scale used
+    assert sum(dist.values()) == 32
 
 
-# ---------------------------------------------------------------------------
-# qb_tier — discriminates by cpoe, rookies excepted
-# ---------------------------------------------------------------------------
-def test_qb_tier_discriminates_by_cpoe():
-    assert qb_tier_from_cpoe(3.09) == "elite"     # PHI
-    assert qb_tier_from_cpoe(1.0) == "solid"
-    assert qb_tier_from_cpoe(-0.28) == "average"  # CIN
-    assert qb_tier_from_cpoe(-2.23) == "weak"     # BAL
-    assert qb_tier_from_cpoe(None) is None
+def test_bell_ordering_best_gets_A_worst_gets_F():
+    vals = [0.03, 0.05, 0.07, 0.09, 0.11, 0.13]     # lower = better OL
+    assert grade_from_pct(bell_rank(0.03, vals, lower_is_better=True)) == "A"   # best → A
+    assert grade_from_pct(bell_rank(0.13, vals, lower_is_better=True)) == "F"   # worst → F
 
 
-def test_rookie_qb_keeps_rookie_tier():
-    assert qb_tier_from_cpoe(9.0, is_rookie=True) == "rookie"   # no reliable prior data
+def test_bell_direction_higher_is_better_for_cpoe():
+    vals = [-5.0, 0.0, 5.0]
+    assert grade_from_pct(bell_rank(5.0, vals, lower_is_better=False)) == "A"   # best cpoe → A
+    assert grade_from_pct(bell_rank(-5.0, vals, lower_is_better=False)) == "F"  # worst → F
+    assert bell_rank(None, vals, lower_is_better=False) is None
+    assert bell_rank(1.0, [], lower_is_better=False) is None
+
+
+def test_tier_from_pct_and_rookie_exception():
+    assert tier_from_pct(0.95) == "elite"
+    assert tier_from_pct(0.80) == "solid"
+    assert tier_from_pct(0.50) == "average"
+    assert tier_from_pct(0.05) == "weak"
+    assert tier_from_pct(0.99, is_rookie=True) == "rookie"   # rookies excepted from the bell
+
+
+def test_system_composite_weights_and_missing_components():
+    # qb weighted heaviest (0.45); a missing component renormalises, never fabricated.
+    full = system_composite_pct(pass_pct=0.5, run_pct=0.5, qb_pct=1.0)
+    assert full == pytest.approx(0.45 * 1.0 + 0.30 * 0.5 + 0.25 * 0.5)
+    assert system_composite_pct(0.8, None, None) == pytest.approx(0.8)   # single comp
+    assert system_composite_pct(None, None, None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -160,10 +177,10 @@ async def test_pass_overwrites_three_fields_and_real_cpoe():
     # scheme from real pass rate
     assert den.oc_scheme == "run_heavy" and float(den.oc_run_pass_split_tendency) == pytest.approx(0.40)
     assert bal.oc_scheme == "pass_heavy"
-    # pass-pro ordered: DEN (best sack) beats BAL
-    order = {"B+": 3, "C-": 8}
-    assert order[den.pass_protection_grade] < order[bal.pass_protection_grade]
-    # qb_tier from real cpoe; garbage cpoe replaced with real
+    # pass-pro on the widened bell: DEN (best sack) → A, BAL (worst) → F
+    assert den.pass_protection_grade == "A"
+    assert bal.pass_protection_grade == "F"
+    # qb_tier from real cpoe (bell); garbage cpoe replaced with real
     assert den.qb_tier == "elite" and float(den.qb_cpoe) == pytest.approx(3.0)
     assert bal.qb_tier == "weak"
     # rookie keeps rookie tier despite a high cpoe
@@ -173,13 +190,11 @@ async def test_pass_overwrites_three_fields_and_real_cpoe():
 # ---------------------------------------------------------------------------
 # SLICE 2 — run-block (stuff rate), personnel, red-zone
 # ---------------------------------------------------------------------------
-def test_run_block_grade_monotonic_by_stuff_rate():
-    order = {"B+": 3, "B": 4, "B-": 5, "C+": 6, "C": 7, "C-": 8, "D+": 9}
-    grades = [order[run_block_grade_from_stuff_rate(r)] for r in (0.049, 0.07, 0.09, 0.13)]
-    assert grades == sorted(grades)                 # lower stuff (better OL) → better grade
-    # DAL's best stuff_rate must grade better than LV's worst.
-    assert order[run_block_grade_from_stuff_rate(0.049)] < order[run_block_grade_from_stuff_rate(0.151)]
-    assert run_block_grade_from_stuff_rate(None) is None
+def test_run_block_bell_orders_by_stuff_rate():
+    vals = [0.049, 0.07, 0.09, 0.13, 0.151]         # lower stuff = better OL
+    # DAL's best stuff_rate → A; LV's worst → F (bell, lower_is_better).
+    assert grade_from_pct(bell_rank(0.049, vals, lower_is_better=True)) == "A"
+    assert grade_from_pct(bell_rank(0.151, vals, lower_is_better=True)) == "F"
 
 
 def test_compute_run_block_stuff_rate():
@@ -230,18 +245,22 @@ async def test_pass_writes_slice2_fields(monkeypatch):
     lv.red_zone_philosophy = "wr1"
     db = _FakeDB([lv])
     pbp = pd.DataFrame(
+        # 6 runs, 3 stuffed → stuff_rate 0.5; 6 runs / 10 plays → RZ run-share 0.6 → "rb"
         [{"season_type": "REG", "posteam": "LV", "play_type": "run", "tackled_for_loss": 1.0,
-          "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": None}] * 6
+          "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": None}] * 3
+        + [{"season_type": "REG", "posteam": "LV", "play_type": "run", "tackled_for_loss": 0.0,
+            "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": None}] * 3
         + [{"season_type": "REG", "posteam": "LV", "play_type": "pass", "tackled_for_loss": 0.0,
             "offense_personnel": "1 RB, 2 TE, 2 WR", "yardline_100": 5, "receiver_position": "WR"}] * 4
     )
     res = await apply_team_deterministic_fields(db, stats_season=2025, pbp=pbp,
                                                 ngs_passing=pd.DataFrame(columns=["week", "team_abbr", "attempts"]))
     assert res["run_block"] == 1 and res["personnel"] == 1 and res["red_zone"] == 1
-    assert lv.run_block_stuff_rate is not None                       # real numeric stored
-    assert lv.run_blocking_grade == run_block_grade_from_stuff_rate(0.6)  # 6/10 runs stuffed
-    assert lv.personnel_tendency == "12"                            # real base (was "11")
-    assert lv.red_zone_philosophy == "rb"                          # 60% RZ runs (was "wr1")
+    assert lv.run_block_stuff_rate == Decimal("0.5")               # real numeric stored (3/6 stuffed)
+    assert lv.personnel_tendency == "12"                          # real base (was "11")
+    assert lv.red_zone_philosophy == "rb"                        # 60% RZ runs (was "wr1")
+    # (the run_blocking_grade is a widened-bell rank across the league — see
+    #  test_run_block_bell_orders_by_stuff_rate; a single-team fixture has no rank.)
 
 
 async def test_pass_loud_warns_missing_numeric(caplog):
