@@ -58,6 +58,11 @@ class DraftBoardPlayer(PlayerBadgeFields):
     pay_up_flag: bool = False
     nomination_target_flag: bool = False
     value_assessment: Optional[str] = None
+    # Pre-draft availability discount (engines/availability.py): the value fields above
+    # (recommended/ai_bid_ceiling/ppr_points) are ALREADY discounted by this factor for
+    # a known multi-week absence; these expose it for the UI (badge/warning).
+    availability_factor: float = 1.0
+    availability_games_missed: int = 0
     # Snake-draft ADP (null until a pipeline run populates them — UI shows "--")
     adp_ai: Optional[float] = None
     adp_fantasypros: Optional[float] = None
@@ -188,13 +193,24 @@ async def get_draftboard(
                 hist_price = float(hp.price)
                 break
 
+        # Pre-draft availability discount — the DRAFT-RANKED value is base × factor
+        # (deterministic games-missed proration for a known multi-week absence). Base
+        # columns are untouched in the DB; discounted here at read time (idempotent).
+        avf = float(p.availability_factor) if p.availability_factor is not None else 1.0
+        _raw_proj = (
+            p.profile.clean_season_baseline.get("projected_ppr_season")
+            or p.profile.clean_season_baseline.get("ppr_points")
+        ) if (p.profile and p.profile.clean_season_baseline
+              and (p.profile.clean_season_baseline.get("projected_ppr_season") is not None
+                   or p.profile.clean_season_baseline.get("ppr_points") is not None)) else None
+
         dbp = DraftBoardPlayer(
             id=str(p.id),
             name=p.name,
             team_abbr=p.team_abbr,
             position=p.position,
             tier=p.tier,
-            recommended_bid_ceiling=float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None,
+            recommended_bid_ceiling=round(float(p.recommended_bid_ceiling) * avf, 1) if p.recommended_bid_ceiling else None,
             baseline_value=float(p.baseline_value) if p.baseline_value else None,
             market_value=float(p.market_value_fantasypros) if p.market_value_fantasypros else None,
             market_value_season=get_current_season() if p.market_value_fantasypros else None,
@@ -202,21 +218,14 @@ async def get_draftboard(
             prior_season_year=prior_year if hist_price else None,
             value_gap=float(p.value_gap) if p.value_gap else None,
             value_gap_signal=p.value_gap_signal,
-            ppr_points=(
-                float(
-                    p.profile.clean_season_baseline.get("projected_ppr_season")
-                    or p.profile.clean_season_baseline.get("ppr_points")
-                )
-                if p.profile and p.profile.clean_season_baseline
-                and (p.profile.clean_season_baseline.get("projected_ppr_season") is not None
-                     or p.profile.clean_season_baseline.get("ppr_points") is not None)
-                else None
-            ),
+            ppr_points=round(float(_raw_proj) * avf, 1) if _raw_proj is not None else None,
             breakout_flag=p.breakout_flag or False,
             is_rookie=p.is_rookie or False,
             injury_status=p.injury_status,
             injury_risk_level=p.injury_profile.overall_risk_level if p.injury_profile else None,
-            ai_bid_ceiling=p.ai_bid_ceiling,
+            availability_factor=avf,
+            availability_games_missed=p.availability_games_missed or 0,
+            ai_bid_ceiling=round(p.ai_bid_ceiling * avf) if p.ai_bid_ceiling else p.ai_bid_ceiling,
             pay_up_flag=p.pay_up_flag or False,
             nomination_target_flag=p.nomination_target_flag or False,
             value_assessment=p.value_assessment,

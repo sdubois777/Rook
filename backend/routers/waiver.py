@@ -159,16 +159,21 @@ class WaiverRecommendationsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Seam
 # ---------------------------------------------------------------------------
-async def load_waiver_source(db, demo: bool):
-    """Demo rides WAIVER_DEMO_MODE; the real per-league provider is a follow-up →
-    501 until then (after the feature check, before any credit deduction)."""
+async def load_waiver_source(db, demo: bool, user=None):
+    """Demo rides WAIVER_DEMO_MODE; the real path builds a RealWaiverSource (synced
+    rosters resolved via the canonical resolve_player + a derived FA pool). 404 if
+    the user has no synced league (after the feature check, before any deduction)."""
     if demo:
         return await seed_demo_waiver(db)
-    raise HTTPException(
-        status_code=501,
-        detail="real-league waiver recommendations are not available yet; "
-               "set WAIVER_DEMO_MODE to try it.",
-    )
+    from backend.services.trade.real_league_source import build_real_waiver_source
+
+    source = await build_real_waiver_source(db, user)
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no synced league found — connect a league on the League page first",
+        )
+    return source
 
 
 def _rec_out(
@@ -265,8 +270,9 @@ async def recommendations(
         from backend.services.feature_service import FeatureService
         FeatureService.check_feature_access(user, "waiver_wire")
 
-    # 2. Resolve the demo source (501 if real not ready — still before any charge).
-    src = await load_waiver_source(db, demo)
+    # 2. Resolve the source (demo, or the real RealWaiverSource — 404 if the user has
+    #    no synced league — still before any charge).
+    src = await load_waiver_source(db, demo, user)
 
     # 3. Resolve the acting team.
     acting = None
@@ -282,14 +288,18 @@ async def recommendations(
     if enforce:
         await credit_service.deduct(user, "waiver_wire", agent_name="waiver_wire")
 
-    # 5. News tie-in (depth-chart backbone + CONTINGENT enrichment), then rank.
+    # 5. News tie-in (depth-chart backbone + CONTINGENT enrichment), then rank on the
+    #    league's REAL shape + size (real path); demo keeps DEFAULT (unchanged).
+    from backend.services.trade.lineup import lineup_rules_from_slots
+    rules = None if demo else lineup_rules_from_slots(src.state.roster_slots)
+    roster_limit = getattr(src, "roster_limit", DEFAULT_ROSTER_LIMIT)
     pool_ids = {rp.canonical_player_id for rp in src.pool}
     news_map = await build_news_map(db, pool_ids, now=datetime.now(timezone.utc))
     faab_remaining = src.faab_remaining_by_team.get(acting.team_id, src.faab_budget)
 
     recs = recommend(
-        acting, src.pool, src.values,
-        roster_limit=DEFAULT_ROSTER_LIMIT, faab_remaining=faab_remaining, news_map=news_map,
+        acting, src.pool, src.values, rules=rules,
+        roster_limit=roster_limit, faab_remaining=faab_remaining, news_map=news_map,
     )
 
     from backend.services.trade.trade_proposals import analyze_roster
@@ -297,7 +307,7 @@ async def recommendations(
 
     silence = None
     if not recs:
-        nm = best_add(acting, src.pool, src.values, roster_limit=DEFAULT_ROSTER_LIMIT)
+        nm = best_add(acting, src.pool, src.values, rules=rules, roster_limit=roster_limit)
         silence = SilenceOut(
             reason="Nothing on waivers cracks your starting lineup right now.",
             near_miss_name=nm[0].name if nm else None,

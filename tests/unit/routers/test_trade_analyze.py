@@ -213,19 +213,25 @@ async def test_demo_enforce_gates_charges_standard(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# REAL PATH not yet available — 501 AFTER feature, BEFORE deduct
+# REAL PATH with no synced league — 404 AFTER feature, BEFORE deduct
 # ---------------------------------------------------------------------------
-async def test_real_league_path_501_without_charging(monkeypatch):
+async def test_real_league_path_404_without_charging(monkeypatch):
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
     user = _make_user(tier="pro", credits=200)
     credit = _FakeCredit()
-    # loader NOT patched → real load_league_for_analysis raises 501
+    # Real path: no synced league → build_real_league_source returns None → 404,
+    # AFTER the feature gate and BEFORE any credit deduction.
+    async def _none(db, u):
+        return None
+    monkeypatch.setattr(
+        "backend.services.trade.real_league_source.build_real_league_source", _none
+    )
     _wire(user, credit)
     try:
         resp = await _post(_BODY)
     finally:
         app.dependency_overrides.clear()
-    assert resp.status_code == 501
+    assert resp.status_code == 404
     assert credit.deducts == []
     assert user.credits_remaining == 200
 

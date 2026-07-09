@@ -21,10 +21,18 @@ class Player(Base):
     __tablename__ = "players"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # ⚠️ TRAP: yahoo_player_id holds "nfl_"+gsis_id (e.g. Malik Nabers "nfl_00-0039337"),
+    # NOT the Yahoo fantasy player key ("449.p.12345"). It CANNOT resolve a Yahoo roster
+    # entry. Do NOT use it for platform resolution — use ``yahoo_id`` (the real key) below.
     yahoo_player_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True)
     gsis_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     sportradar_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     sleeper_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    # Real platform fantasy ids for DETERMINISTIC ESPN/Yahoo roster resolution
+    # (crosswalked from import_ids primary + Sleeper dump fill). yahoo_id is the BARE
+    # numeric Yahoo key (the tail of "449.p.<id>"); espn_id is the ESPN player id.
+    espn_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    yahoo_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     team_abbr: Mapped[Optional[str]] = mapped_column(String(5))
     position: Mapped[Optional[str]] = mapped_column(String(5))  # QB, RB, WR, TE, K, DEF
@@ -38,6 +46,16 @@ class Player(Base):
     # 100% attribution), refreshed daily. Display-only — NOT a valuation input.
     injury_status: Mapped[Optional[str]] = mapped_column(String(4))
     injury_status_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    # Pre-draft AVAILABILITY discount (engines/availability.py) — a DETERMINISTIC
+    # games-missed proration for a KNOWN CURRENT multi-week absence (PUP / long-term
+    # IR / suspension). Distinct from injury_status (day-to-day badge) and from the
+    # injury-PRONENESS risk term (durability history). availability_factor in (0,1];
+    # 1.000 = fully available. The draft-ranked value reads base × availability_factor.
+    # Recomputed deterministically each pipeline run — base value fields untouched.
+    availability_factor: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=Decimal("1.000"), server_default="1.000")
+    availability_games_missed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    availability_reason: Mapped[Optional[str]] = mapped_column(String(120))
 
     # Top-level valuation (computed from pipeline agents)
     tier: Mapped[Optional[int]] = mapped_column(Integer)

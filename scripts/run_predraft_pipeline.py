@@ -107,8 +107,11 @@ PIPELINE_ORDER = [
     "schedule",
     "beat_reporter",
     "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
+    "kicker_baseline",   # dedicated K prior (offense profiler is skill-only)
+    "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
+    "availability",      # LAST: deterministic games-missed availability discount
 ]
 
 # Cost per million tokens
@@ -266,6 +269,34 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         signals = await agent.run()
         print(f"[{name}] {signals} new signal(s) written.")
 
+    elif name == "kicker_baseline":
+        # Dedicated preseason KICKER prior — writes clean_season_baseline.ppr_points
+        # for K rows (the offense profiler is skill-only, so kickers are otherwise
+        # priorless). Pure data step, no Sonnet. Own DB session.
+        from backend.database import AsyncSessionLocal
+        from backend.services.kicker_baseline import write_kicker_baselines
+        async with AsyncSessionLocal() as _db:
+            result = await write_kicker_baselines(_db)
+        print(
+            f"[{name}] {result['written']} kicker profile(s): "
+            f"{result['historical']} historical, {result['rookie_default']} rookie-default, "
+            f"{result['vet_default']} veteran-default (seasons={result['seasons']})."
+        )
+
+    elif name == "defense_baseline":
+        # Dedicated preseason DEFENSE (DST) prior — writes clean_season_baseline
+        # .ppr_points for team-unit DEF rows (crude historical, not a projection).
+        # Pure data step, no Sonnet. Own DB session.
+        from backend.database import AsyncSessionLocal
+        from backend.services.defense_baseline import write_defense_baselines
+        async with AsyncSessionLocal() as _db:
+            result = await write_defense_baselines(_db)
+        print(
+            f"[{name}] {result['written']} defense profile(s): "
+            f"{result['historical']} historical, {result['default_used']} default "
+            f"(seasons={result['seasons']})."
+        )
+
     elif name == "valuation":
         from backend.engines.valuation import run_valuation_pass
         result = await run_valuation_pass()
@@ -282,6 +313,18 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         print(
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
+        )
+
+    elif name == "availability":
+        # Deterministic pre-draft availability discount (games-missed proration for a
+        # known multi-week absence). No Sonnet. Own DB session. Runs LAST.
+        from backend.database import AsyncSessionLocal
+        from backend.engines.availability_pass import apply_availability_discounts
+        async with AsyncSessionLocal() as _db:
+            result = await apply_availability_discounts(_db)
+        print(
+            f"[{name}] {result['discounted']} player(s) discounted for a known absence "
+            f"(of {result['total']}), {result['updated']} rows updated."
         )
 
     elapsed = time.monotonic() - t0
@@ -385,8 +428,11 @@ async def main() -> None:
         ["roster_changes"],                            # Phase 2: needs team_systems
         ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
         ["player_profiles"],                           # Phase 4: needs all above
+        ["kicker_baseline"],                           # Phase 4b: dedicated K prior
+        ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
+        ["availability"],                              # Phase 7: LAST — availability discount
     ]
 
     for phase in _PHASES:

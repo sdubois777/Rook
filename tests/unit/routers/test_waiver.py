@@ -67,7 +67,7 @@ async def test_league_404_when_demo_off(monkeypatch):
 async def test_recommendations_shape_with_mocked_source(monkeypatch):
     monkeypatch.setenv("WAIVER_DEMO_MODE", "true")
 
-    async def _fake_source(db, demo):
+    async def _fake_source(db, demo, user=None):
         return _source()
 
     async def _fake_news(db, pool_ids, **kw):
