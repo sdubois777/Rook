@@ -50,6 +50,9 @@ def test_compute_qb_value_includes_rushing_production():
     assert "MOB" in v and "POC" in v
     # fantasy PPG (index 2): mobile QB is much higher purely from rushing.
     assert v["MOB"][2] > v["POC"][2] + 5.0
+    # rush_fppg (index 3, the de-confound input): mobile QB ~10/g (40yd*.1 + 6 TD), pocket 0.
+    assert v["MOB"][3] > 5.0
+    assert v["POC"][3] == pytest.approx(0.0)
 
 
 def test_qb_value_pct_blend_weights_and_missing():
@@ -58,6 +61,21 @@ def test_qb_value_pct_blend_weights_and_missing():
     assert full == pytest.approx(0.45)
     assert qb_value_pct(epa_pct=0.8, fppg_pct=None, success_pct=None) == pytest.approx(0.8)  # renormalise
     assert qb_value_pct(None, None, None) is None
+
+
+def test_qb_value_pct_rushing_bonus_is_additive_and_spares_pockets():
+    """The rushing de-confound: additive on rush_pct, never penalises non-rushers, clamped."""
+    base = qb_value_pct(0.5, 0.5, 0.5)                       # 0.50
+    # a pocket passer (rush_pct 0) does NOT move
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=0.0) == pytest.approx(base)
+    # a top rusher gets the full +0.15 bonus (0.15 * 1.0)
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=1.0) == pytest.approx(base + 0.15)
+    # bonus scales with rushing production percentile
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=0.5) == pytest.approx(base + 0.075)
+    # clamped at 1.0 (an elite dual-threat can't exceed the ceiling)
+    assert qb_value_pct(1.0, 1.0, 1.0, rush_pct=1.0) == pytest.approx(1.0)
+    # None ⇒ backward-compatible (no bonus)
+    assert qb_value_pct(0.5, 0.5, 0.5, rush_pct=None) == pytest.approx(base)
 
 
 # ---------------------------------------------------------------------------
