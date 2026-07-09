@@ -17,13 +17,47 @@ from backend.engines.team_metrics import (
     compute_base_personnel,
     compute_pass_rates,
     compute_qb_metrics,
+    compute_qb_value,
     compute_red_zone_philosophy,
     compute_run_block_stuff_rate,
     grade_from_pct,
+    qb_value_pct,
     scheme_from_pass_rate,
     system_composite_pct,
     tier_from_pct,
 )
+
+
+# ---------------------------------------------------------------------------
+# ACCURACY FIX — QB sub-composite (EPA + success + fantasy PPG incl. RUSHING)
+# ---------------------------------------------------------------------------
+def test_compute_qb_value_includes_rushing_production():
+    # A mobile QB (rushing yards + TDs) must score higher fppg than his passing alone —
+    # the exact thing cpoe misses. Two QBs, same passing, one adds rushing.
+    base = {"season_type": "REG", "qb_dropback": 1, "passing_yards": 20.0, "pass_touchdown": 0.0,
+            "interception": 0.0, "rushing_yards": 0.0, "rush_touchdown": 0.0, "fumble_lost": 0.0,
+            "qb_epa": 0.1, "success": 1.0, "game_id": "g1"}
+    rows = []
+    for g in range(6):
+        rows.append({**base, "posteam": "POC", "passer_player_name": "Pocket QB", "rusher_player_name": None, "game_id": f"p{g}"})
+        # mobile QB: same passing + 40 rush yds & a rush TD per game
+        rows.append({**base, "posteam": "MOB", "passer_player_name": "Mobile QB", "rusher_player_name": None, "game_id": f"m{g}"})
+        rows.append({"season_type": "REG", "qb_dropback": 0, "play_type": "run", "posteam": "MOB",
+                     "passer_player_name": None, "rusher_player_name": "Mobile QB", "rushing_yards": 40.0,
+                     "rush_touchdown": 1.0, "passing_yards": 0.0, "pass_touchdown": 0.0, "interception": 0.0,
+                     "fumble_lost": 0.0, "qb_epa": 0.0, "success": 0.0, "game_id": f"mr{g}"})
+    v = compute_qb_value(pd.DataFrame(rows))
+    assert "MOB" in v and "POC" in v
+    # fantasy PPG (index 2): mobile QB is much higher purely from rushing.
+    assert v["MOB"][2] > v["POC"][2] + 5.0
+
+
+def test_qb_value_pct_blend_weights_and_missing():
+    # EPA (0.45) heaviest, then fppg (0.35), then success (0.20).
+    full = qb_value_pct(epa_pct=1.0, fppg_pct=0.0, success_pct=0.0)
+    assert full == pytest.approx(0.45)
+    assert qb_value_pct(epa_pct=0.8, fppg_pct=None, success_pct=None) == pytest.approx(0.8)  # renormalise
+    assert qb_value_pct(None, None, None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -79,12 +113,21 @@ def test_tier_from_pct_and_rookie_exception():
     assert tier_from_pct(0.99, is_rookie=True) == "rookie"   # rookies excepted from the bell
 
 
-def test_system_composite_weights_and_missing_components():
-    # qb weighted heaviest (0.45); a missing component renormalises, never fabricated.
+def test_system_composite_is_qb_dominant():
+    # QB is now the heaviest component (0.55) — the reweight fix. A missing component
+    # renormalises, never fabricated.
     full = system_composite_pct(pass_pct=0.5, run_pct=0.5, qb_pct=1.0)
-    assert full == pytest.approx(0.45 * 1.0 + 0.30 * 0.5 + 0.25 * 0.5)
+    assert full == pytest.approx(0.55 * 1.0 + 0.25 * 0.5 + 0.20 * 0.5)
     assert system_composite_pct(0.8, None, None) == pytest.approx(0.8)   # single comp
     assert system_composite_pct(None, None, None) is None
+
+
+def test_qb_dominates_line_in_composite():
+    # An elite-QB / bad-line team beats a bad-QB / elite-line team — football is
+    # QB-driven (the KC-above-CHI intent: QB weight dominates line strength).
+    elite_qb = system_composite_pct(pass_pct=0.2, run_pct=0.2, qb_pct=1.0)
+    elite_line = system_composite_pct(pass_pct=1.0, run_pct=1.0, qb_pct=0.2)
+    assert elite_qb > elite_line
 
 
 # ---------------------------------------------------------------------------
@@ -153,19 +196,35 @@ class _FakeDB:
         self.commits += 1
 
 
-async def test_pass_overwrites_three_fields_and_real_cpoe():
-    den = _TS("DEN", 0.0346)
-    bal = _TS("BAL", 0.0875)
+def _pass_play(team, passer, epa, succ, yds=25.0, td=0.0, intc=0.0):
+    return {"season_type": "REG", "posteam": team, "play_type": "pass", "qb_dropback": 1,
+            "passer_player_name": passer, "rusher_player_name": None, "qb_epa": epa, "success": succ,
+            "passing_yards": yds, "pass_touchdown": td, "interception": intc,
+            "rushing_yards": 0.0, "rush_touchdown": 0.0, "fumble_lost": 0.0}
+
+
+def _run_play(team):
+    return {"season_type": "REG", "posteam": team, "play_type": "run", "qb_dropback": 0,
+            "passer_player_name": None, "rusher_player_name": None, "qb_epa": 0.0, "success": 0.0,
+            "passing_yards": 0.0, "pass_touchdown": 0.0, "interception": 0.0,
+            "rushing_yards": 0.0, "rush_touchdown": 0.0, "fumble_lost": 0.0}
+
+
+async def test_pass_overwrites_qb_tier_and_scheme_from_real_stats():
+    den = _TS("DEN", 0.0346)         # elite QB (high EPA)
+    bal = _TS("BAL", 0.0875)         # weak QB (low EPA)
     rk = _TS("CHI", 0.06, rookie=True)
     db = _FakeDB([den, bal, rk])
-    pbp = pd.DataFrame(
-        [{"season_type": "REG", "posteam": "DEN", "play_type": "run"}] * 6
-        + [{"season_type": "REG", "posteam": "DEN", "play_type": "pass"}] * 4      # 0.40 → run_heavy
-        + [{"season_type": "REG", "posteam": "BAL", "play_type": "pass"}] * 13
-        + [{"season_type": "REG", "posteam": "BAL", "play_type": "run"}] * 7       # 0.65 → pass_heavy
-        + [{"season_type": "REG", "posteam": "CHI", "play_type": "pass"}] * 5
-        + [{"season_type": "REG", "posteam": "CHI", "play_type": "run"}] * 5,      # 0.50 → run_heavy
-    )
+    # ≥6 games each so compute_qb_value keeps them; DEN high EPA/success, BAL low.
+    # DEN wins all 3 QB-value axes: high EPA + success AND high per-pass production
+    # (big yards + TDs) so fppg beats BAL despite fewer attempts; BAL throws picks.
+    rows = []
+    for g in range(6):
+        rows += [_pass_play("DEN", "Elite QB", 0.4, 1.0, yds=40.0, td=0.5)] * 4 + [dict(_run_play("DEN"), game_id=f"d{g}")] * 6
+        rows += [_pass_play("BAL", "Weak QB", -0.4, 0.0, yds=15.0, intc=0.15)] * 13 + [dict(_run_play("BAL"), game_id=f"b{g}")] * 7
+        rows += [_pass_play("CHI", "Rookie QB", 0.1, 0.5)] * 5 + [dict(_run_play("CHI"), game_id=f"c{g}")] * 5
+    pbp = pd.DataFrame(rows)
+    pbp["game_id"] = [f"{r['posteam']}{i//10}" for i, r in enumerate(rows)]
     ngs = pd.DataFrame([
         {"week": 0, "team_abbr": "DEN", "attempts": 500, "completion_percentage_above_expectation": 3.0, "avg_intended_air_yards": 8.0},
         {"week": 0, "team_abbr": "BAL", "attempts": 500, "completion_percentage_above_expectation": -2.23, "avg_intended_air_yards": 9.0},
@@ -175,16 +234,13 @@ async def test_pass_overwrites_three_fields_and_real_cpoe():
     assert res["teams"] == 3 and res["scheme"] == 3 and res["pass_pro"] == 3
 
     # scheme from real pass rate
-    assert den.oc_scheme == "run_heavy" and float(den.oc_run_pass_split_tendency) == pytest.approx(0.40)
-    assert bal.oc_scheme == "pass_heavy"
+    assert den.oc_scheme == "run_heavy" and bal.oc_scheme == "pass_heavy"
     # pass-pro on the widened bell: DEN (best sack) → A, BAL (worst) → F
-    assert den.pass_protection_grade == "A"
-    assert bal.pass_protection_grade == "F"
-    # qb_tier from real cpoe (bell); garbage cpoe replaced with real
-    assert den.qb_tier == "elite" and float(den.qb_cpoe) == pytest.approx(3.0)
-    assert bal.qb_tier == "weak"
-    # rookie keeps rookie tier despite a high cpoe
-    assert rk.qb_tier == "rookie"
+    assert den.pass_protection_grade == "A" and bal.pass_protection_grade == "F"
+    # qb_tier from the EPA-weighted SUB-COMPOSITE (not cpoe): DEN elite, BAL weak
+    assert den.qb_tier == "elite" and bal.qb_tier == "weak"
+    assert rk.qb_tier == "rookie"           # rookie excepted
+    assert float(den.qb_cpoe) == pytest.approx(3.0)   # cpoe still stored for display
 
 
 # ---------------------------------------------------------------------------
