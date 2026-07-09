@@ -29,6 +29,7 @@ from backend.services.trade.trade_demo_source import (
     assign_starter_slots,
     build_league_state,
     build_priors,
+    _load_priors,
     maybe_demo_league_source,
     seed_demo_league,
     trade_demo_enabled,
@@ -37,6 +38,7 @@ from backend.services.trade.trade_demo_source import (
 from backend.services.trade.value_engine import (
     Confidence,
     ValueTrend,
+    compute_player_value,
     evaluate_league,
 )
 
@@ -327,6 +329,106 @@ def test_null_prior_player_has_zero_prior_weight(synthetic_demo_source):
     _, by_name = _values_by_name(synthetic_demo_source)
     assert by_name["Darius Cooper"].prior_weight == 0.0
     assert "Darius Cooper" not in synthetic_demo_source.priors
+
+
+# ---------------------------------------------------------------------------
+# _load_priors FIELD SELECTION (prefer forward projection → historical fallback)
+# ---------------------------------------------------------------------------
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeDB:
+    """Minimal async db double: returns canned (player_id, clean_season_baseline)
+    rows from execute().all(), so _load_priors' field selection is unit-testable
+    without a real DB."""
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, *_a, **_k):
+        return _FakeResult(self._rows)
+
+
+async def test_load_priors_prefers_forward_projection_over_history():
+    """Founder decision: when BOTH fields exist, the prior uses projected_ppr_season
+    (forward), NOT ppr_points (historical). Real record: Jeanty proj 198.5 / ppr
+    247.1 → 198.5/17, not 247.1/17."""
+    rows = [("jeanty", {"projected_ppr_season": 198.5, "ppr_points": 247.1})]
+    priors = await _load_priors(_FakeDB(rows), ["jeanty"])
+    assert priors["jeanty"] == pytest.approx(198.5 / 17.0)
+    assert priors["jeanty"] != pytest.approx(247.1 / 17.0)
+
+
+async def test_load_priors_recovers_projection_only_players():
+    """Projection-only players (proj set, ppr_points absent) — previously fed the
+    blend None — now get a real prior. Real records: Travis Hunter 178, Golden 142."""
+    rows = [
+        ("hunter", {"projected_ppr_season": 178.0}),   # no ppr_points
+        ("golden", {"projected_ppr_season": 142.0}),
+    ]
+    priors = await _load_priors(_FakeDB(rows), ["hunter", "golden"])
+    assert priors["hunter"] == pytest.approx(178.0 / 17.0)   # ≈10.5 ppg
+    assert priors["golden"] == pytest.approx(142.0 / 17.0)   # ≈8.4 ppg
+
+
+async def test_load_priors_falls_back_to_history_when_no_projection():
+    """Historical-only players (ppr_points set, no projection) still get the
+    historical prior — no regression. Real record: Eric Ebron 141.8 → 141.8/17."""
+    rows = [("ebron", {"ppr_points": 141.8})]   # no projected_ppr_season
+    priors = await _load_priors(_FakeDB(rows), ["ebron"])
+    assert priors["ebron"] == pytest.approx(141.8 / 17.0)
+
+
+async def test_load_priors_no_profile_row_stays_null():
+    """A player with no profile row is absent from the query result → null prior
+    (unchanged). K/DEF live here today — this fix must NOT change them."""
+    priors = await _load_priors(_FakeDB([]), ["butker_k", "broncos_def"])
+    assert priors["butker_k"] is None
+    assert priors["broncos_def"] is None
+
+
+async def test_load_priors_loud_warns_profiled_but_neither_field(caplog):
+    """A profiled player with NEITHER field (e.g. an empty depth baseline) gets a
+    null prior AND is loud-warned — never a silent drop."""
+    rows = [("depth_guy", {"prompt_version": "v6"})]   # neither field present
+    with caplog.at_level("WARNING"):
+        priors = await _load_priors(_FakeDB(rows), ["depth_guy"])
+    assert priors["depth_guy"] is None
+    assert any("no preseason prior" in r.message for r in caplog.records)
+
+
+async def test_load_priors_zero_projection_falls_back_to_history():
+    """A 0/None projection is not a usable prior → fall back to ppr_points (guards
+    the truthiness edge — a 0 forward projection must not shadow real history)."""
+    rows = [("edge", {"projected_ppr_season": 0.0, "ppr_points": 170.0})]
+    priors = await _load_priors(_FakeDB(rows), ["edge"])
+    assert priors["edge"] == pytest.approx(170.0 / 17.0)
+
+
+def test_recovered_prior_dominates_forward_ppg_early_season():
+    """BLEND REFLECTS IT (verify #5): a projection-only player, recovered to a real
+    prior, produces a sane PRIOR-DOMINATED forward_ppg early-season (week 2, 1 game)
+    instead of 0/garbage. At games=1 the prior carries 0.8 weight, so the forward
+    sits near the prior, not near the thin 1-game sample."""
+    prior_ppg = 178.0 / 17.0   # Travis Hunter's recovered prior ≈ 10.47
+    weeks = pd.DataFrame([
+        {"week": 1, "snap_pct": 0.55, "target_share": 0.12,
+         "fantasy_points_ppr": 4.0, "targets": 4, "carries": 0},
+    ])
+    v = compute_player_value(
+        canonical_player_id="hunter", name="Travis Hunter", position="WR",
+        weeks=weeks, current_week=2, prior_projection_ppg=prior_ppg,
+    )
+    # 1 game → in_w=0.2, prior_w=0.8: forward is prior-dominated, well above the
+    # 1-game (4.0) sample and within reach of the ~10.5 prior.
+    assert v.forward_ppg > 8.0
+    assert v.prior_weight == pytest.approx(0.8, abs=0.01)
+    # And it's a real, non-zero value — not the 0/garbage of a null prior.
+    assert v.forward_value > 0.0
 
 
 # ---------------------------------------------------------------------------
