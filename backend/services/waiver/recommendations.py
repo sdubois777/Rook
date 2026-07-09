@@ -27,6 +27,7 @@ from backend.services.trade.lineup import (
     fit_to_limit,
     lineup_strength_ppg,
 )
+from backend.services.matchup.startsit import UNAVAILABLE_STATUS, available_lineup_roster
 from backend.services.trade.trade_proposals import analyze_roster
 from backend.services.trade.value_engine import (
     InSeasonValue,
@@ -66,11 +67,30 @@ class Recommendation:
     _rank_score: float                # ordering only (not serialized to the client)
 
 
-def _lp(rp: RosterPlayer, values: dict[str, InSeasonValue]) -> Optional[LineupPlayer]:
-    v = values.get(rp.canonical_player_id)
-    if v is None:
-        return None
-    return LineupPlayer(rp.canonical_player_id, rp.position, v.forward_value, v.forward_ppg)
+def _warn_excluded_starters(team: TeamState) -> None:
+    """Loud-warn (not a silent drop) the Out/IR roster players kept OUT of the
+    startable-lineup baseline — an unavailable player can't be an active starter."""
+    out = [rp.name for rp in team.roster if rp.injury_status in UNAVAILABLE_STATUS]
+    if out:
+        logger.warning(
+            "waiver: excluded %d Out/IR roster player(s) from the startable lineup "
+            "baseline (unavailable, not seated): %s", len(out), out,
+        )
+
+
+def _available_pool(pool: list[RosterPlayer]) -> list[RosterPlayer]:
+    """The recommendable free-agent pool with Out/IR players removed — an injured
+    player is not a valid pickup. Questionable/Doubtful STAY (they may play, and their
+    value is NOT down-weighted) — the same Out/IR-only rule start/sit uses. Loud-warns
+    the excluded set so the drop is traceable, never silent."""
+    keep = [rp for rp in pool if rp.injury_status not in UNAVAILABLE_STATUS]
+    dropped = [rp.name for rp in pool if rp.injury_status in UNAVAILABLE_STATUS]
+    if dropped:
+        logger.warning(
+            "waiver: excluded %d Out/IR free agent(s) from recommendations "
+            "(injured — not a valid pickup): %s", len(dropped), dropped[:15],
+        )
+    return keep
 
 
 def recommend(
@@ -89,7 +109,13 @@ def recommend(
     rules = rules or DEFAULT_LINEUP_RULES
     news_map = news_map or {}
 
-    roster = [lp for lp in (_lp(rp, values) for rp in acting_team.roster) if lp is not None]
+    # Injury as an INPUT (Tier-A): the baseline lineup an add must beat excludes Out/IR
+    # players (they can't start) — the SAME injury-aware helper + definition start/sit
+    # uses, so the two surfaces agree on who's startable. And an Out/IR free agent is
+    # not a valid pickup, so it's filtered from the recommendable pool. Q/D stay.
+    _warn_excluded_starters(acting_team)
+    roster = available_lineup_roster(acting_team, values, rules)
+    pool = _available_pool(pool)
     name_by_id = {rp.canonical_player_id: rp.name for rp in acting_team.roster}
     repl = replacement_ppg_by_position(values)
     base = lineup_strength_ppg(roster, rules, repl)
@@ -160,7 +186,9 @@ def best_add(
     """The single highest-gain pool add IGNORING the recommend() threshold — the
     'near-miss' for the silence state ('nothing worth claiming — closest is…')."""
     rules = rules or DEFAULT_LINEUP_RULES
-    roster = [lp for lp in (_lp(rp, values) for rp in acting_team.roster) if lp is not None]
+    # Same injury-aware baseline + pool as recommend() so the near-miss agrees.
+    roster = available_lineup_roster(acting_team, values, rules)
+    pool = _available_pool(pool)
     repl = replacement_ppg_by_position(values)
     base = lineup_strength_ppg(roster, rules, repl)
     under_limit = len(roster) < roster_limit

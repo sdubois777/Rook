@@ -93,3 +93,60 @@ def test_best_add_near_miss_returns_top_even_when_nothing_qualifies():
     assert recommend(me, pool, values, rules=RULES_1WR, roster_limit=16, faab_remaining=100) == []
     nm = best_add(me, pool, values, rules=RULES_1WR, roster_limit=16)
     assert nm is not None and nm[0].canonical_player_id == "c" and nm[1] == 0.0
+
+
+# --- injury as an INPUT (Tier-A): Out/IR excluded, Q eligible -----------------
+def test_out_ir_roster_player_excluded_from_baseline():
+    # An injured (Out) high-value WR must NOT be seated in the baseline the add beats
+    # — same injury-aware exclusion start/sit uses.
+    me = _team(
+        RosterPlayer("star", "Star", "WR", injury_status="O"),   # Out — can't start
+        RosterPlayer("healthy", "Healthy", "WR"),
+    )
+    pool = [RosterPlayer("add", "Add", "WR")]
+    values = {"star": _iv("star", 90, 20), "healthy": _iv("healthy", 50, 10), "add": _iv("add", 60, 12)}
+    recs = recommend(me, pool, values, rules=RULES_1WR, roster_limit=16, faab_remaining=100)
+    # Baseline WR = healthy (10), NOT star (20, Out). So add (12) improves by +2.
+    # If the injured star were counted, base would be 20 and the add's gain would be 0.
+    assert len(recs) == 1 and recs[0].add.canonical_player_id == "add"
+    assert recs[0].lineup_delta_ppw == 2.0
+
+
+def test_out_ir_free_agent_not_recommended():
+    # An injured free agent (huge value) must NOT be surfaced as a pickup.
+    me = _team(RosterPlayer("a", "A", "WR"))
+    pool = [
+        RosterPlayer("hurt", "Hurt Star", "WR", injury_status="IR"),
+        RosterPlayer("ok", "OK", "WR"),
+    ]
+    values = {"a": _iv("a", 50, 10), "hurt": _iv("hurt", 99, 25), "ok": _iv("ok", 70, 14)}
+    recs = recommend(me, pool, values, rules=RULES_1WR, roster_limit=16, faab_remaining=100)
+    names = {r.add.canonical_player_id for r in recs}
+    assert "hurt" not in names        # Out/IR free agent excluded from recommendations
+    assert "ok" in names              # the healthy free agent is recommended
+
+
+def test_questionable_player_stays_eligible():
+    # Q on the roster stays in the baseline; a Q free agent stays recommendable — NOT
+    # excluded, NOT down-weighted (consistent with start/sit's Q-is-flagged rule).
+    me = _team(RosterPlayer("qwr", "QWR", "WR", injury_status="Q"))
+    pool = [RosterPlayer("qadd", "QAdd", "WR", injury_status="Q")]
+    values = {"qwr": _iv("qwr", 50, 10), "qadd": _iv("qadd", 90, 15)}
+    recs = recommend(me, pool, values, rules=RULES_1WR, roster_limit=16, faab_remaining=100)
+    assert len(recs) == 1 and recs[0].add.canonical_player_id == "qadd"
+    assert recs[0].lineup_delta_ppw == 5.0    # 15 (qadd) − 10 (qwr): Q counts at full value
+
+
+def test_waiver_uses_the_same_injury_exclusion_as_start_sit():
+    # Consistency guard: the baseline roster is the SAME injury-aware set start/sit
+    # seats (available_lineup_roster), not a forked definition.
+    from backend.services.matchup.startsit import available_lineup_roster
+    me = _team(
+        RosterPlayer("out", "Out", "WR", injury_status="O"),
+        RosterPlayer("ir", "IR", "RB", injury_status="IR"),
+        RosterPlayer("q", "Q", "WR", injury_status="Q"),
+        RosterPlayer("ok", "OK", "RB"),
+    )
+    values = {p: _iv(p, 50, 10, pos=("WR" if p in ("out", "q") else "RB")) for p in ("out", "ir", "q", "ok")}
+    avail_ids = {lp.player_id for lp in available_lineup_roster(me, values)}
+    assert avail_ids == {"q", "ok"}   # Out/IR excluded, Q kept — one definition
