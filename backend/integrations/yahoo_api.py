@@ -846,11 +846,29 @@ async def get_league_settings(
     else:
         scoring_type = "standard"
 
-    # Draft type — detect from actual draft pick costs, not raw metadata
-    # Yahoo returns "live" for both auction and snake drafts
-    draft_type, auction_budget = await _detect_draft_type(
-        access_token, league_key
-    )
+    # Draft type — Yahoo's `is_auction_draft` flag is the AUTHORITATIVE signal and is
+    # present PRE-DRAFT (raw `draft_type` is "live" for BOTH auction and snake, so it
+    # can't be used). The old code inferred draft type solely from draftresults cost
+    # data, which is empty until a league drafts → every undrafted auction league was
+    # mis-stored as snake. Read the flag first; the cost check is now only a fallback
+    # for when the flag is absent/ambiguous (never overrides the flag).
+    _auction_flag = settings_data.get("is_auction_draft")
+    if _auction_flag is not None and str(_auction_flag).strip() != "":
+        is_auction = str(_auction_flag).strip() in ("1", "true", "True")
+        draft_type = "auction" if is_auction else "snake"
+        # Yahoo's auction salary cap is a FIXED $200 (no per-league budget field exists
+        # in the settings response — confirmed against the live league). None for snake.
+        auction_budget = 200 if is_auction else None
+    else:
+        # Flag missing → fall back to the post-draft cost signal, and loud-warn (this is
+        # the genuinely-undetectable case pre-draft, not a silent snake default).
+        logger.warning(
+            "Yahoo %s: is_auction_draft flag absent — falling back to draftresults "
+            "cost detection (unreliable until the league drafts)", league_key,
+        )
+        draft_type, auction_budget = await _detect_draft_type(
+            access_token, league_key
+        )
 
     # Waiver type
     waiver_rule = str(settings_data.get("waiver_type", "")).lower()
