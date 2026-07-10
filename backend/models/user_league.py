@@ -71,6 +71,11 @@ class UserLeague(Base):
         JSONB, nullable=True
     )
 
+    # The user's OWN team (platform_team_id), bound by EXACT owner-identity on every
+    # sync — never a positional guess. NULL = the user's identity matched no team in the
+    # league (fail-loud: downstream surfaces "couldn't identify your team", never guesses).
+    my_team_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
     # Draft schedule — the real synced draft date/time (NOT hardcoded). Pulled per
     # platform (Sleeper draft.start_time / ESPN draftSettings.date / Yahoo draft_time).
     draft_date: Mapped[Optional[datetime]] = mapped_column(

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Clock, TrendingUp, TrendingDown, AlertTriangle, Star, Plus } from 'lucide-react'
-import { DRAFT_DATE } from '../lib/theme'
+import { DRAFT_NOT_SCHEDULED } from '../lib/theme'
 import { fetchPlayers } from '../api/players'
 import { fetchNews } from '../api/news'
 import { fetchUserLeagues } from '../api/league'
@@ -19,18 +19,27 @@ import {
   formatAdpDiff,
 } from '../utils/playerUtils'
 
-function useCountdown() {
+// Draft banner state for a league's REAL synced draft date. draftDate: Date | null.
+// The date is rendered in UTC so it matches the stored/synced day regardless of the
+// viewer's timezone (draft_date is an absolute draft-time instant). NEVER a fake date —
+// a null (no draft scheduled) returns the honest "not scheduled" copy, no countdown.
+function draftBanner(draftDate) {
+  if (!draftDate || Number.isNaN(draftDate.getTime())) {
+    return { scheduled: false, label: DRAFT_NOT_SCHEDULED, days: null, dateText: null }
+  }
   const now = new Date()
-  const diff = DRAFT_DATE - now
-  if (diff <= 0) return { days: 0, hours: 0, label: 'Draft Day!' }
+  const dateText = draftDate.toLocaleDateString('en-US', {
+    month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+  })
+  const diff = draftDate - now
+  if (diff <= 0) return { scheduled: true, label: 'Draft Day!', days: 0, dateText }
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-  return { days, hours, label: `${days}d ${hours}h until draft` }
+  return { scheduled: true, label: `${days}d ${hours}h until draft`, days, dateText }
 }
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const countdown = useCountdown()
   const watchlist = usePreferencesStore((s) => s.watchlist)
   const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
@@ -43,7 +52,16 @@ export default function Dashboard() {
   })
   const leagues = (leaguesData || []).filter((l) => l.is_active)
 
-  const { isSnake } = useLeague()
+  const { isSnake, selectedLeague } = useLeague()
+
+  // Draft banner reads the SELECTED league's REAL synced draft_date — fresh from the API
+  // (matched by id), NOT the possibly-stale localStorage copy. Falls back to the first
+  // active league so a fresh session still shows a date. Per-league: switching the
+  // selected league re-renders this to that league's date (or "not scheduled").
+  const bannerLeague =
+    (leaguesData || []).find((l) => l.id === selectedLeague?.id) || leagues[0] || null
+  const draftDate = bannerLeague?.draft_date ? new Date(bannerLeague.draft_date) : null
+  const countdown = draftBanner(draftDate)
 
   // Top value gaps (undervalued) — auction
   const { data: valueData } = useQuery({
@@ -103,13 +121,17 @@ export default function Dashboard() {
           <Clock size={20} className="text-blue-400" />
           <div>
             <div className="text-lg font-semibold text-slate-100">{countdown.label}</div>
-            <div className="text-xs text-slate-400">
-              Draft: {DRAFT_DATE.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
-            </div>
+            {countdown.scheduled && (
+              <div className="text-xs text-slate-400">Draft: {countdown.dateText}</div>
+            )}
           </div>
         </div>
         <div className="text-3xl font-bold text-blue-400 font-mono">
-          {countdown.days}<span className="text-sm text-slate-500 ml-1">days</span>
+          {countdown.scheduled ? (
+            <>{countdown.days}<span className="text-sm text-slate-500 ml-1">days</span></>
+          ) : (
+            <span className="text-lg text-slate-500">—</span>
+          )}
         </div>
       </div>
 

@@ -97,16 +97,16 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         await self._get("mSettings")
         return True
 
-    async def _team_names(self) -> dict[str, str]:
-        """{team_id: display name} from the mTeam view. The mRoster view carries only
-        {id, roster} — team names (name / location+nickname / abbrev) live in mTeam, so
-        this is the ONLY source of ESPN team names (fixes the all-blank names bug)."""
+    async def _team_meta(self) -> dict[str, dict]:
+        """{team_id: {"name", "owners"}} from the mTeam view. The mRoster view carries
+        only {id, roster} — team names AND owner SWIDs live in mTeam, so this is the ONLY
+        source of both ESPN team names and the owner-identity list (is_me binding)."""
         try:
             data = await self._get("mTeam")
         except Exception as exc:
-            logger.warning("ESPN team-names (mTeam) fetch failed: %s", exc)
+            logger.warning("ESPN team-meta (mTeam) fetch failed: %s", exc)
             return {}
-        out: dict[str, str] = {}
+        out: dict[str, dict] = {}
         for t in data.get("teams", []):
             tid = str(t.get("id", ""))
             name = (
@@ -114,14 +114,18 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                 or " ".join(x for x in (t.get("location"), t.get("nickname")) if x).strip()
                 or t.get("abbrev", "")
             )
-            if tid and name:
-                out[tid] = name
+            # ALL owners (SWID GUIDs), not just primaryOwner — co-owned teams bind too.
+            owners = [str(o) for o in (t.get("owners") or []) if o]
+            if not owners and t.get("primaryOwner"):
+                owners = [str(t["primaryOwner"])]
+            if tid:
+                out[tid] = {"name": name, "owners": owners}
         return out
 
     async def get_rosters(self) -> list[TeamRoster]:
         data = await self._get("mRoster")
         teams = data.get("teams", [])
-        names = await self._team_names()      # mTeam — the only source of ESPN team names
+        meta = await self._team_meta()        # mTeam — the only source of ESPN names + owners
         result: list[TeamRoster] = []
         for team in teams:
             players: list[RosteredPlayer] = []
@@ -136,11 +140,13 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                     team_abbr=_ESPN_PROTEAM.get(p.get("proTeamId"), ""),
                 ))
             tid = str(team.get("id", ""))
+            tmeta = meta.get(tid, {})
             result.append(TeamRoster(
                 platform_team_id=tid,
                 manager_name="",
-                team_name=names.get(tid) or team.get("name") or team.get("abbrev", "") or f"Team {tid}",
+                team_name=tmeta.get("name") or team.get("name") or team.get("abbrev", "") or f"Team {tid}",
                 players=players,
+                owner_ids=tmeta.get("owners", []),
             ))
         return result
 
