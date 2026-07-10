@@ -637,3 +637,110 @@ async def test_sync_self_heals_is_active_on_resync():
     assert league.is_active is True           # self-healed
     assert league.league_name == "Misfits"    # metadata captured
     assert league.team_count == 12            # real count from rosters
+
+
+# ---------------------------------------------------------------------------
+# is_me / your-team binding — exact owner-identity, never positional
+# ---------------------------------------------------------------------------
+from backend.services.league_sync import bind_my_team_id, LeagueSyncService  # noqa: E402
+
+
+def _tr(team_id, owner_ids=None, is_me=None):
+    return TeamRoster(platform_team_id=str(team_id), manager_name="", team_name=f"T{team_id}",
+                      owner_ids=owner_ids or [], is_me=is_me)
+
+
+def test_bind_sleeper_by_owner_id_not_position():
+    """Sleeper: match stored user_id against owner_id — binds the RIGHT roster even when
+    it is NOT first in the list (proves it's identity-based, not team[0])."""
+    rosters = [_tr(1, owner_ids=["stranger-1"]), _tr(8, owner_ids=["me-777"]), _tr(3, owner_ids=["x"])]
+    assert bind_my_team_id(rosters, "me-777") == "8"        # roster 8, not team[0]=1
+
+
+def test_bind_espn_by_swid_case_and_braces_insensitive():
+    """ESPN: SWID match ignores braces/case; matches within the owners[] list."""
+    rosters = [_tr(1, owner_ids=["{AAAA}"]), _tr(2, owner_ids=["{b233bba4-5f04}"])]
+    assert bind_my_team_id(rosters, "{B233BBA4-5F04}") == "2"
+
+
+def test_bind_yahoo_by_flag_wins_without_identity():
+    """Yahoo: the server-tagged is_me flag binds with NO stored identity."""
+    rosters = [_tr("t.1"), _tr("t.2", is_me=True), _tr("t.3")]
+    assert bind_my_team_id(rosters, None) == "t.2"
+
+
+def test_bind_co_owner_matches_second_owner():
+    """A co-owned team binds when the user is a CO-owner (2nd in owner_ids)."""
+    rosters = [_tr(1, owner_ids=["primary-x", "me-co"]), _tr(2, owner_ids=["owner-b"])]
+    assert bind_my_team_id(rosters, "me-co") == "1"
+
+
+def test_bind_no_match_returns_none_never_team0():
+    """The core safety property: a no-match binds NOTHING (None), never a positional
+    team[0]. Covers bogus identity AND absent identity/flags."""
+    rosters = [_tr(1, owner_ids=["a"]), _tr(2, owner_ids=["b"])]
+    assert bind_my_team_id(rosters, "stranger-999") is None
+    assert bind_my_team_id(rosters, None) is None            # no identity, no flags
+
+
+@pytest.mark.asyncio
+async def test_sync_binds_my_team_id_and_reheals_on_owner_change():
+    """Sync stores my_team_id from identity, and RE-DERIVES it every sync — so an owner
+    change (co-owner added, team reindexed) self-heals instead of going stale."""
+    league = _make_league(platform="sleeper")
+    league.my_team_id = "1"                    # stale/wrong prior binding
+    mock_db = _make_mock_db(league)
+
+    # user's Sleeper id → roster 8 (NOT first)
+    rosters = [_tr(1, owner_ids=["stranger"]), _tr(8, owner_ids=["me-777"])]
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = rosters
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.get_roster_slots.return_value = None
+    mock_platform.get_league_metadata.return_value = LeagueMetadata()
+
+    async def _fake_identity(self, platform):
+        return "me-777"
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), patch.object(
+        LeagueSyncService, "_platform_identity", new=_fake_identity,
+    ), _patch_league_repo(league):
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+
+    assert league.my_team_id == "8"            # rebound to the identity-matched team, not stale "1"
+
+
+@pytest.mark.asyncio
+async def test_sync_no_match_leaves_my_team_id_unbound():
+    """A user whose identity matches no team → my_team_id None (loud-warn), never team[0]."""
+    league = _make_league(platform="sleeper")
+    league.my_team_id = "1"
+    mock_db = _make_mock_db(league)
+    rosters = [_tr(1, owner_ids=["stranger"]), _tr(2, owner_ids=["other"])]
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = rosters
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.get_roster_slots.return_value = None
+    mock_platform.get_league_metadata.return_value = LeagueMetadata()
+
+    async def _fake_identity(self, platform):
+        return "me-not-in-league"
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), patch.object(
+        LeagueSyncService, "_platform_identity", new=_fake_identity,
+    ), _patch_league_repo(league):
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+
+    assert league.my_team_id is None           # unbound, not positional
