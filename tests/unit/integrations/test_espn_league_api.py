@@ -268,3 +268,26 @@ async def test_create_raises_without_cookies():
         from backend.core.exceptions import AppError
         with pytest.raises(AppError, match="ESPN not connected"):
             await ESPNLeagueAPI.create(league, AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_get_rosters_captures_owner_swids_from_mteam():
+    """ESPN owner SWIDs come from mTeam.owners[] (all owners), not mRoster — populated
+    onto owner_ids for exact is_me binding."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+    views = {
+        "mRoster": {"teams": [{"id": 1, "roster": {"entries": []}},
+                              {"id": 2, "roster": {"entries": []}}]},
+        "mTeam": {"teams": [
+            {"id": 1, "name": "Alpha", "owners": ["{OWNER-A}"], "primaryOwner": "{OWNER-A}"},
+            {"id": 2, "name": "Beta", "owners": ["{ME-SWID}", "{CO-OWNER}"]},
+        ]},
+    }
+    async def _g(view, season=None):
+        return views.get(view, {})
+    with patch.object(api, "_get", new=_g):
+        rosters = await api.get_rosters()
+    by_id = {r.platform_team_id: r for r in rosters}
+    assert by_id["1"].owner_ids == ["{OWNER-A}"]
+    assert by_id["2"].owner_ids == ["{ME-SWID}", "{CO-OWNER}"]   # all owners, not just primary

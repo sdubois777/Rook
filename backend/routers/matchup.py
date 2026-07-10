@@ -189,9 +189,15 @@ async def league(
         acting = next((t for t in state.teams if t.team_id == my_team_id), None)
         if acting is None:
             raise HTTPException(status_code=400, detail=f"team {my_team_id!r} not in league")
-    acting = acting or state.my_team or (state.teams[0] if state.teams else None)
+    # NEVER positional — bound is_me team or an explicit switcher pick only. A no-match
+    # fails loud (the user's identity didn't bind a team); it must not scout a stranger's.
+    acting = acting or state.my_team
     if acting is None:
-        raise HTTPException(status_code=400, detail="no team to scout for")
+        raise HTTPException(
+            status_code=409,
+            detail="Couldn't identify your team in this league — re-sync the league, or "
+                   "pass my_team_id to act as a specific team.",
+        )
 
     # --- season-long strength ladder (all 12, same value basis) ---
     def _ppw(team):

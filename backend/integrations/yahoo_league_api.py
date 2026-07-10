@@ -8,7 +8,7 @@ import base64
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,27 @@ logger = logging.getLogger(__name__)
 
 _YAHOO_TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 _YAHOO_API_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
+
+
+def _yahoo_owner_identity(managers) -> tuple[Optional[bool], list[str]]:
+    """(is_me, [manager guids]) from a team's ``managers`` block. is_me = True when a
+    manager carries the AUTHORITATIVE ``is_current_login``/``is_owned_by_current_login``
+    flag (Yahoo tags the authed user's own team). guids are the stable owner ids kept as
+    a fallback. Returns (None, []) when the managers block is absent."""
+    if not managers:
+        return None, []
+    mgr_list = managers if isinstance(managers, list) else [managers]
+    guids: list[str] = []
+    is_me: Optional[bool] = False
+    for entry in mgr_list:
+        m = entry.get("manager", entry) if isinstance(entry, dict) else {}
+        if not isinstance(m, dict):
+            continue
+        if m.get("guid"):
+            guids.append(str(m["guid"]))
+        if str(m.get("is_current_login", "")) == "1" or str(m.get("is_owned_by_current_login", "")) == "1":
+            is_me = True
+    return is_me, guids
 
 
 class YahooLeagueAPI(LeaguePlatformAPI):
@@ -176,11 +197,14 @@ class YahooLeagueAPI(LeaguePlatformAPI):
                     team_abbr=p.get("editorial_team_abbr", ""),
                 ))
 
+            is_me, guids = _yahoo_owner_identity(team_info.get("managers"))
             result.append(TeamRoster(
                 platform_team_id=str(team_key),
                 manager_name=team_info.get("name", ""),
                 team_name=team_info.get("name", ""),
                 players=players,
+                owner_ids=guids,
+                is_me=is_me,
             ))
 
         return result

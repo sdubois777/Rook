@@ -280,9 +280,16 @@ async def recommendations(
         acting = next((t for t in src.state.teams if t.team_id == body.my_team_id), None)
         if acting is None:
             raise HTTPException(status_code=400, detail=f"team {body.my_team_id!r} not in league")
-    acting = acting or src.state.my_team or (src.state.teams[0] if src.state.teams else None)
+    # NEVER positional — bound is_me team or an explicit switcher pick only. A no-match
+    # fails loud (the user's identity didn't bind a team); it must not recommend for a
+    # stranger's roster.
+    acting = acting or src.state.my_team
     if acting is None:
-        raise HTTPException(status_code=400, detail="no team to recommend for")
+        raise HTTPException(
+            status_code=409,
+            detail="Couldn't identify your team in this league — re-sync the league, or "
+                   "pass my_team_id to act as a specific team.",
+        )
 
     # 4. CREDIT DEDUCT (402) — only now, the recommendation is about to run.
     if enforce:
