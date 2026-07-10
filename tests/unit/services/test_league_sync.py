@@ -387,6 +387,36 @@ async def test_sync_espn_redetects_draft_type():
 
 
 @pytest.mark.asyncio
+async def test_sync_espn_snake_clears_stale_budget():
+    """ESPN snake detection now clears a stale auction budget (was left at 200 because
+    sync only overwrote budget when non-None)."""
+    league = _make_league(platform="espn")
+    league.draft_type = "auction"
+    league.budget = 200                       # stale auction budget from a prior state
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = []
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.get_roster_slots.return_value = None
+    mock_platform.get_league_metadata.return_value = LeagueMetadata()
+    mock_platform.detect_draft_type.return_value = ("snake", None)
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), _patch_league_repo(league):
+        from backend.services.league_sync import LeagueSyncService
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+
+    assert league.draft_type == "snake"
+    assert league.budget is None              # cleared, not stale 200
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_picks_without_player_info():
     """Picks with no player_name and no platform_player_id should be skipped."""
     league = _make_league()

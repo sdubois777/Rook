@@ -202,20 +202,52 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         return meta
 
     async def detect_draft_type(self) -> tuple[str, int | None]:
-        """Detect auction vs snake from draft pick data.
+        """Auction vs snake + budget.
 
-        Returns (draft_type, budget):
-            - ("auction", 200) if any pick has bidAmount > 0
-            - ("snake", None) otherwise or if no picks exist
+        PRIMARY: ``mSettings.settings.draftSettings.type`` ('AUCTION'/'SNAKE') — the
+        authoritative flag, present PRE-DRAFT, with the real ``auctionBudget``. The old
+        code inferred auction ONLY from ``bidAmount > 0`` in mDraftDetail picks, which
+        are all 0 until the auction runs → every UNDRAFTED ESPN auction league was
+        mis-stored as snake (the exact mirror of the Yahoo is_auction_draft bug).
+
+        FALLBACK: the mDraftDetail bidAmount check, used ONLY when draftSettings.type is
+        absent/ambiguous — an empty pre-draft picks array can no longer override the
+        explicit type. Loud-warns when neither signal is available.
+
+        Returns (draft_type, budget): budget = real auctionBudget for auction, None for
+        snake (so snake never carries a stale budget).
         """
+        # PRIMARY — authoritative draft settings (available pre-draft)
+        try:
+            s = (await self._get("mSettings")).get("settings", {}) or {}
+            ds = s.get("draftSettings", {}) or {}
+            dtype = str(ds.get("type", "")).strip().upper()
+            if dtype == "AUCTION":
+                budget = ds.get("auctionBudget")
+                try:
+                    budget = int(budget) if budget else 200
+                except (TypeError, ValueError):
+                    budget = 200
+                return ("auction", budget)
+            if dtype == "SNAKE":
+                return ("snake", None)
+        except Exception as exc:
+            logger.warning(
+                "ESPN %s draftSettings.type read failed: %s — falling back to picks",
+                self._league.league_id, exc,
+            )
+
+        # FALLBACK — post-draft bidAmount signal (unreliable pre-draft)
         try:
             data = await self._get("mDraftDetail")
             picks = data.get("draftDetail", {}).get("picks", [])
+            if any((p.get("bidAmount") or 0) > 0 for p in picks):
+                return ("auction", 200)
             if not picks:
-                return ("snake", None)
-            for pick in picks:
-                if (pick.get("bidAmount") or 0) > 0:
-                    return ("auction", 200)
+                logger.warning(
+                    "ESPN %s: draftSettings.type absent AND no draft picks — draft type "
+                    "undetectable, defaulting snake", self._league.league_id,
+                )
             return ("snake", None)
         except Exception as exc:
             logger.warning("ESPN draft type detection failed: %s", exc)

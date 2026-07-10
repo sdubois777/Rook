@@ -67,9 +67,11 @@ class LeagueSyncService:
                         "ESPN draft type updated: %s → %s",
                         user_league.draft_type, draft_type,
                     )
-                    user_league.draft_type = draft_type
-                    if budget is not None:
-                        user_league.budget = budget
+                # Always write both: draft_type from the authoritative draftSettings.type,
+                # and budget from it too — None for snake CLEARS a stale auction budget
+                # (was only overwritten when non-None, so snake leagues kept a bogus 200).
+                user_league.draft_type = draft_type
+                user_league.budget = budget
             except Exception as exc:
                 logger.warning("ESPN draft type re-detection failed: %s", exc)
             # T3 lineup config (defensive/sample-gated — unknown id → default).
