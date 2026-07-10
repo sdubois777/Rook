@@ -32,14 +32,18 @@ from backend.services.trade.value_engine import (
     InSeasonValue,
     ValueTrend,
     replacement_ppg_by_position,
+    rescale_vor,
     vor_value,
     waiver_aware_replacement,
 )
 
 # Verdict is the change in your STARTING LINEUP's points/week on the RESULTING
-# roster (trade_lineup_value_design.md §7), NOT summed forward_value. Thresholds
-# in lineup ppg: within the maintains-tolerance reads "even"; a gain at/above the
-# value threshold reads "lopsided", between is a "lean".
+# roster (trade_lineup_value_design.md §7), NOT summed value. A trade is a win iff it
+# improves what you START — so surplus-for-need (give value, get a lineup fit) reads
+# as the win it is, and the 2-for-1 refill cost is priced in. The displayed value
+# (chips/prose = rescaled 0-100 VOR) is coherent context but does NOT gate the verdict.
+# Thresholds in lineup ppg: within the maintains-tolerance reads "even"; a gain at/above
+# the threshold reads "lopsided", between is a "lean".
 _MAINTAINS_TOLERANCE = 0.5    # |Δlineup| within this → even / barely moves
 _LINEUP_GAIN_THRESHOLD = 5.0  # |Δlineup| at/above this → lopsided; between → lean
 
@@ -58,8 +62,9 @@ class PlayerGrounding:
     name: str
     position: str
     side: str            # "give" | "get"
-    forward_value: float  # 0-100 position-relative (kept for reference/ordering)
-    vor: float            # LEAGUE-LOCAL VOR: points above the best rosterable replacement
+    forward_value: float  # 0-100 position-relative (internal ranking only — NOT displayed)
+    vor: float            # THE displayed value: league-local VOR rescaled to 0-100 (top→100,
+                          # streamable K/DEF→~0). chips + prose + totals all read this.
     value_trend: str      # (proposer∪proposee bench + this league's wire). The trade currency.
     confidence: str
     buy_low: bool
@@ -92,7 +97,7 @@ class TradeAnalysis:
     get: list[PlayerGrounding]
     give_value: float
     get_value: float
-    value_delta: float            # get − give of league-local VOR (grounding only; does NOT drive the verdict)
+    value_delta: float            # get − give of the rescaled 0-100 VOR (display/grounding; does NOT drive the verdict)
     lineup_gain: float            # HEADLINE: Δ your starting-lineup points/week (resulting roster, net of drops)
     winner: str                   # "you" | "opponent" | "even" — from lineup_gain
     fairness: str                 # fair | lean you/opponent | lopsided you/opponent
@@ -222,14 +227,17 @@ def analyze_trade(
     replacement = waiver_aware_replacement(values, wire_ppg_by_pos or {})
 
     def _vor(pid: str) -> float:
+        # raw VOR sets the SHAPE, then rescale_vor anchors it to the 0-100 display scale
+        # (elite skill → ~top, streamable K/DEF stay ~0). This ONE number is what every
+        # consumer shows — chips, prose, give/get totals — so nothing splits scales.
         v = values[pid]
-        return vor_value(v.forward_ppg, v.position, replacement)
+        return rescale_vor(vor_value(v.forward_ppg, v.position, replacement))
 
     give = [_grounding(values[pid], "give", _vor(pid)) for pid in give_ids]
     get = [_grounding(values[pid], "get", _vor(pid)) for pid in get_ids]
-    give_value = round(sum(g.vor for g in give), 1)   # VOR, not absolute forward_value
+    give_value = round(sum(g.vor for g in give), 1)   # rescaled 0-100 VOR, not forward_value
     get_value = round(sum(g.vor for g in get), 1)
-    value_delta = round(get_value - give_value, 1)   # grounding only; NOT the verdict
+    value_delta = round(get_value - give_value, 1)   # display/grounding (0-100 scale); NOT the verdict
 
     # HEADLINE (§7): the change in YOUR optimal STARTING LINEUP's points/week on the
     # RESULTING roster (incoming + outgoing + forced drops), evaluated ONCE — not a

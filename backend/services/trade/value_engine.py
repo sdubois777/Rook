@@ -601,8 +601,45 @@ def vor_value(forward_ppg: float, position: str, replacement: dict[str, float]) 
     """Trade VALUE = points ABOVE the league-local replacement at this position, floored
     at 0. Replaces absolute forward_value as the trade currency (a below-replacement
     player has ~0 trade value, not negative). Runs FREE — no cap; a genuine elite outlier
-    exceeds the typical band iff its margin over replacement is real."""
+    exceeds the typical band iff its margin over replacement is real.
+
+    This is the SHAPE (relative ordering + K/DEF→~0); the user-facing 0-100 number is
+    ``rescale_vor(...)`` applied on top. Kept separate so the verdict's ``lineup_gain``
+    (which reasons in raw ppg) never sees the display rescale."""
     return round(max(0.0, float(forward_ppg) - replacement.get(position, 0.0)), 1)
+
+
+# ---------------------------------------------------------------------------
+# VOR → 0-100 display rescale (anchor the top, PIN the floor)
+# ---------------------------------------------------------------------------
+# #261's raw VOR (ppg over replacement) has the right SHAPE but a compressed 0-~14
+# ruler, so an elite RB reads "11.7" and looks middling. Rescale to a clean 0-100 so
+# elite skill returns to the ~top while K/DEF stay ~0.
+#
+# CRITICAL — this is an ANCHOR-THE-TOP, PIN-THE-FLOOR curve, NOT a uniform multiply.
+# A naive linear stretch (VOR * 100/max_vor) would lift a streamable DEF from ~2.6 VOR
+# to ~22, re-breaking the fix. Instead a convex power curve maps top-VOR→100 while
+# near-zero VOR stays near-zero: a DEF at ~2.6 VOR lands ~2-3, an elite RB at ~12 VOR
+# lands ~90+.
+#
+# The anchor is a STABLE constant (an elite-tier VOR benchmark), NOT the per-trade max
+# VOR — so the 0-100 scale is consistent across trades (it doesn't jump when the pool
+# changes). A player at/above the anchor clamps to 100 (as elites did on the old scale).
+_VOR_ELITE_ANCHOR = 12.0   # VOR (ppg over replacement) that maps to 100 — a stable
+                           # elite-skill benchmark, position-agnostic, not the pool max.
+_VOR_CURVE_EXP = 2.5       # convexity >1: steep at the top (anchor→100), flat near 0
+                           # (streamable K/DEF at ~2-3 VOR stay ~2-3, NOT lifted to ~22).
+
+
+def rescale_vor(vor: float) -> float:
+    """Map raw VOR (ppg over replacement, ``vor_value``) onto a stable 0-100 display
+    scale. Anchor-the-top / pin-the-floor: 0→0, ``_VOR_ELITE_ANCHOR``→100 (clamped),
+    and a convex curve in between so near-zero VOR (streamable K/DEF) stays near-zero
+    instead of being stretched up. This is the ONE number every consumer shows — chips,
+    prose, give/get totals — so they never split-brain across scales."""
+    if vor <= 0.0:
+        return 0.0
+    return round(100.0 * min(1.0, float(vor) / _VOR_ELITE_ANCHOR) ** _VOR_CURVE_EXP, 1)
 
 
 # ---------------------------------------------------------------------------
