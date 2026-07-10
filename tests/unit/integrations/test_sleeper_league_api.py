@@ -164,3 +164,22 @@ async def test_roster_missing_owner():
         rosters = await api.get_rosters()
         assert len(rosters) == 1
         assert rosters[0].manager_name == ""
+
+
+@pytest.mark.asyncio
+async def test_get_rosters_captures_owner_and_co_owners():
+    """owner_id + co_owners → owner_ids for exact is_me binding (co-owned team)."""
+    league = _make_league()
+    api = SleeperLeagueAPI(league)
+    rosters_data = [
+        {"roster_id": 8, "owner_id": "me-777", "co_owners": ["partner-9"], "players": []},
+    ]
+    users_data = [{"user_id": "me-777", "display_name": "Me", "metadata": {}}]
+
+    async def mock_get(path):
+        return rosters_data if "rosters" in path else users_data
+
+    with patch.object(api, "_get", new=mock_get):
+        rosters = await api.get_rosters()
+    assert rosters[0].platform_team_id == "8"
+    assert rosters[0].owner_ids == ["me-777", "partner-9"]   # owner + co-owner

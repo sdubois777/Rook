@@ -46,6 +46,13 @@ class TeamRoster:
     wins: int = 0
     losses: int = 0
     points_for: float = 0.0
+    # OWNER IDENTITY for exact is_me binding (never name/position). Sleeper: [owner_id,
+    # *co_owners]; ESPN: the SWID owners[] list (all owners, not just primary). Matched
+    # against the user's stored platform identity.
+    owner_ids: list[str] = field(default_factory=list)
+    # Server-tagged "this is the authed user's team" (Yahoo is_owned_by_current_login).
+    # None = platform doesn't tag it (bind via owner_ids instead).
+    is_me: Optional[bool] = None
 
 
 @dataclass

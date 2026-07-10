@@ -24,6 +24,33 @@ logger = logging.getLogger(__name__)
 HISTORY_SEASONS = settings.league_sync_history_seasons
 
 
+def _norm_owner(x) -> str:
+    """Normalise an owner identity token for comparison. ESPN SWID/owners carry braces
+    (`{GUID}`); casing varies. Sleeper user_ids are plain. Strip braces + upper-case."""
+    return str(x or "").strip().strip("{}").upper()
+
+
+def bind_my_team_id(rosters, identity: str | None) -> str | None:
+    """The user's OWN team_id by EXACT owner-identity — never position or name.
+
+    1. A platform SERVER-TAG wins first (Yahoo ``is_owned_by_current_login`` → the
+       TeamRoster.is_me flag).
+    2. Else the user's stored identity (Sleeper user_id / ESPN SWID) is matched against
+       each roster's ``owner_ids`` (which INCLUDE co-owners) — so a co-owned team binds.
+
+    Returns None when nothing matches — the caller fails LOUD and leaves is_me unbound;
+    a no-match must NEVER fall back to a positional guess (team[0])."""
+    for r in rosters:
+        if getattr(r, "is_me", None):                      # Yahoo authoritative flag
+            return str(r.platform_team_id)
+    if identity:
+        nid = _norm_owner(identity)
+        for r in rosters:
+            if nid in {_norm_owner(o) for o in (getattr(r, "owner_ids", None) or [])}:
+                return str(r.platform_team_id)
+    return None
+
+
 class LeagueSyncService:
     def __init__(self, db: AsyncSession, user_id: uuid.UUID):
         self._db = db
@@ -122,6 +149,27 @@ class LeagueSyncService:
         if rosters and user_league.platform in ("espn", "sleeper"):
             user_league.team_count = len(rosters)
 
+        # is_me BINDING — the user's OWN team by EXACT owner-identity, recomputed on
+        # EVERY sync (self-heals across co-owner adds / manager swaps / ESPN team-index
+        # reindex). NEVER positional. None → loud-warn + unbound (downstream fails safe,
+        # never guesses a team). A binding failure never crashes the sync.
+        try:
+            identity = await self._platform_identity(user_league.platform)
+            bound = bind_my_team_id(rosters, identity)
+            if bound is None:
+                logger.warning(
+                    "league %s (%s): user identity matched NO team's owner — is_me UNBOUND "
+                    "(no positional fallback). had_identity=%s teams=%d",
+                    user_league.id, user_league.platform,
+                    bool(identity) or any(r.is_me for r in rosters), len(rosters),
+                )
+            user_league.my_team_id = bound
+        except Exception as exc:
+            logger.warning(
+                "league %s (%s): is_me binding failed (%s) — left unbound",
+                user_league.id, user_league.platform, exc,
+            )
+
         # is_active SELF-HEAL: recompute from the season on EVERY sync (initial +
         # re-sync). Previously set once at connect and never touched here, so it went
         # stale over the calendar rollover and a re-sync couldn't repair it.
@@ -190,6 +238,19 @@ class LeagueSyncService:
 
         await self._db.commit()
         return summary
+
+    async def _platform_identity(self, platform: str) -> str | None:
+        """The user's stored platform identity for id-matching a team owner. Yahoo returns
+        None — it binds on the per-team ``is_owned_by_current_login`` flag, not a stored id."""
+        from backend.repositories.credential_repo import CredentialRepository
+        repo = CredentialRepository(self._db)
+        if platform == "sleeper":
+            cred = await repo.get_for_user(self._user_id, "sleeper")
+            return getattr(cred, "sleeper_user_id", None) if cred else None
+        if platform == "espn":
+            cookies = await repo.get_espn_cookies(self._user_id)
+            return cookies[1] if cookies else None   # SWID
+        return None
 
     def _apply_league_metadata(self, user_league: UserLeague, meta) -> None:
         """Store the non-None fields of a LeagueMetadata onto the league. None means

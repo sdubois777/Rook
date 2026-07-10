@@ -111,6 +111,9 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 )
                 for pid in player_ids
             ]
+            # Owner identity for is_me binding: owner_id + any co_owners (co-owned team).
+            owner_ids = [str(roster["owner_id"])] if roster.get("owner_id") else []
+            owner_ids += [str(c) for c in (roster.get("co_owners") or [])]
             result.append(TeamRoster(
                 platform_team_id=str(roster["roster_id"]),
                 manager_name=user.get("display_name", ""),
@@ -121,6 +124,7 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 ),
                 wins=roster.get("settings", {}).get("wins", 0),
                 losses=roster.get("settings", {}).get("losses", 0),
+                owner_ids=owner_ids,
             ))
         return result
 

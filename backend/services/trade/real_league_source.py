@@ -236,6 +236,12 @@ async def build_real_league_source(
     if league is None:
         return None
 
+    # is_me comes from the league's stored binding (exact owner-identity, recomputed each
+    # sync) unless the caller explicitly overrides it (the 'acting as' switcher). NULL
+    # binding → is_me stays unbound; downstream fails loud, never guesses a team.
+    if my_team_id is None:
+        my_team_id = getattr(league, "my_team_id", None)
+
     season = league.season_year or get_current_season()
     week = get_current_nfl_week(season)
 
