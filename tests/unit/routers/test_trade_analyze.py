@@ -78,6 +78,10 @@ def _fixture_league(roster_limit=16):
 
 def _patch_loader(monkeypatch, league=None):
     league = league or _fixture_league()
+    # tolerate a 3-tuple (state, values, roster_limit) OR the 4-tuple that now also
+    # carries the waiver wire — append an empty wire so VOR uses the anchor fallback.
+    if len(league) == 3:
+        league = (*league, {})
 
     async def _fake(db, user, demo):
         return league

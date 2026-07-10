@@ -49,7 +49,7 @@ def _fixture():
         "g": _iv("g", 20, trend=ValueTrend.FALLING, sell=True),
         "x": _iv("x", 90, conf=Confidence.LIMITED, buy=True),
     }
-    return state, values, 16
+    return state, values, 16, {}
 
 
 async def _get():

@@ -569,6 +569,42 @@ def replacement_ppg_by_position(values: dict[str, "InSeasonValue"]) -> dict[str,
     return {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
 
 
+def waiver_aware_replacement(
+    values: dict[str, "InSeasonValue"],
+    wire_ppg_by_pos: dict[str, list[float]] | None = None,
+) -> dict[str, float]:
+    """{position: replacement ppg} — LEAGUE-LOCAL, WAIVER-AWARE value-over-replacement.
+
+    Replacement at position P = the STREAMABLE level = ``derive_anchors``' replacement
+    (the band just below the league's starter-demand cutoff) over the combined pool of —
+      * this league's ROSTERED players at P (from ``values``), and
+      * this league's WAIVER WIRE at P (``wire_ppg_by_pos``, the derived FA pool).
+    League-LOCAL (this league's rosters + its wire), NEVER all-NFL. The wire supplies the
+    below-cutoff tier, so K/DEF replacement reflects REAL streamable DEF/K — removing the
+    wire lowers the replacement and RAISES VOR (un-compresses), confirming the wire does
+    the compression work. K/DEF compress NATURALLY: a good DEF's margin over a wire full
+    of streamable DEF is small — no K/DEF special-case. Empty pool (too sparse) → the
+    documented ``_PPG_ANCHORS`` fallback so VOR stays bounded.
+    """
+    ppg_by_pos: dict[str, list[float]] = {}
+    for v in values.values():
+        if v.position in _VALUE_POSITIONS:
+            ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
+    for pos, lst in (wire_ppg_by_pos or {}).items():
+        if pos in _VALUE_POSITIONS:
+            ppg_by_pos.setdefault(pos, []).extend(lst)
+    anchors = derive_anchors(ppg_by_pos)
+    return {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
+
+
+def vor_value(forward_ppg: float, position: str, replacement: dict[str, float]) -> float:
+    """Trade VALUE = points ABOVE the league-local replacement at this position, floored
+    at 0. Replaces absolute forward_value as the trade currency (a below-replacement
+    player has ~0 trade value, not negative). Runs FREE — no cap; a genuine elite outlier
+    exceeds the typical band iff its margin over replacement is real."""
+    return round(max(0.0, float(forward_ppg) - replacement.get(position, 0.0)), 1)
+
+
 # ---------------------------------------------------------------------------
 # the engine
 # ---------------------------------------------------------------------------
