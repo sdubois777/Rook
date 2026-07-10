@@ -39,8 +39,8 @@ function PlayerRow({ p }) {
         {p.why && <div className="mt-0.5 text-xs text-slate-500 line-clamp-2">{p.why}</div>}
       </div>
       <div className="flex shrink-0 items-center gap-2.5 text-sm">
-        <span className="tabular-nums font-semibold text-white" title="forward value (0-100)">
-          {Math.round(p.forward_value)}
+        <span className="tabular-nums font-semibold text-white" title="trade value — points above your league-local waiver replacement (VOR)">
+          {(p.vor ?? p.forward_value).toFixed(1)}
         </span>
         <t.Icon size={15} className={t.cls} />
         <span className={`text-[11px] ${CONF_TEXT[p.confidence] || 'text-slate-400'}`}>{p.confidence}</span>

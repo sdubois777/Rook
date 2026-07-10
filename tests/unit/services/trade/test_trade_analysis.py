@@ -44,7 +44,9 @@ def test_lopsided_trade_reads_lopsided():
     state = _two_team_state([RosterPlayer("g", "Give", "WR")], [RosterPlayer("x", "Get", "WR")])
     values = {"g": _iv("g", "Give", 20), "x": _iv("x", "Get", 90)}
     a = analyze_trade(state, values, "me", ["g"], ["x"])
-    assert a.value_delta == 70.0
+    # value_delta is now LEAGUE-LOCAL VOR (points above the WR replacement anchor 8.0,
+    # too-sparse pool → fallback): get 90/5−8=10, give 20/5<8→0 ⇒ +10.
+    assert a.value_delta == 10.0
     assert a.winner == "you"
     assert a.fairness == "lopsided you"
     assert a.hedged is False
@@ -103,7 +105,8 @@ def test_verdict_follows_engine_value_not_reputation():
     }
     a = analyze_trade(state, values, "me", ["g"], ["x"])
     # I gave away the higher engine value → I lose, regardless of the names.
-    assert a.value_delta == -50.0
+    # VOR delta: give 80/5−8=8, get 30/5<8→0 ⇒ -8.
+    assert a.value_delta == -8.0
     assert a.winner == "opponent"
 
 
@@ -214,3 +217,35 @@ def test_unfilled_flex_is_not_flagged():
     values = {p: _iv(p, p, fv, pos=pos) for p, pos, fv in specs}
     a = analyze_trade(state, values, "me", ["wr3"], ["owr"], roster_limit=16)  # FLEX stays empty
     assert a.warnings == ()          # unfilled FLEX is NOT a warning
+
+
+# ---------------------------------------------------------------------------
+# League-local waiver-aware VOR (the K/DEF over-valuation fix)
+# ---------------------------------------------------------------------------
+from backend.services.trade.value_engine import vor_value, waiver_aware_replacement  # noqa: E402
+
+
+def test_vor_value_floors_at_zero_and_runs_uncapped():
+    repl = {"DEF": 6.0, "RB": 8.0}
+    assert vor_value(9.0, "DEF", repl) == 3.0      # above replacement → the margin
+    assert vor_value(5.0, "DEF", repl) == 0.0      # below replacement → floored to 0, never negative
+    assert vor_value(30.0, "RB", repl) == 22.0     # NO cap — a genuine elite outlier runs free
+    assert vor_value(9.0, "K", repl) == 9.0        # position absent from replacement → 0 floor
+
+
+def test_waiver_wire_lowers_vor_by_raising_replacement():
+    """The wire does the compression: adding streamable DEFs to the pool RAISES the DEF
+    replacement, so the same DEF's VOR DROPS (uncompressed without the wire)."""
+    # 18 rostered DEFs spanning 6-13 ppg so derive_anchors can derive (12-team demand +
+    # a full below-cutoff band), then a wire of streamable ~7-8 DEFs.
+    vals = {}
+    for i in range(18):
+        pid = f"d{i}"
+        vals[pid] = _iv(pid, f"DEF{i}", 50, pos="DEF")
+        vals[pid].forward_ppg = 13.0 - i * 0.4        # 13.0 down to ~6.2
+    wire = {"DEF": [7.5, 7.2, 6.9, 6.6, 6.3]}
+    repl_no = waiver_aware_replacement(vals, {})["DEF"]
+    repl_wire = waiver_aware_replacement(vals, wire)["DEF"]
+    assert repl_wire >= repl_no                       # wire adds below-cutoff streamers
+    # a 9.5-ppg DEF is worth LESS over the waiver-aware replacement
+    assert vor_value(9.5, "DEF", {"DEF": repl_wire}) <= vor_value(9.5, "DEF", {"DEF": repl_no})
