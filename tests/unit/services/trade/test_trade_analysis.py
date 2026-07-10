@@ -44,9 +44,9 @@ def test_lopsided_trade_reads_lopsided():
     state = _two_team_state([RosterPlayer("g", "Give", "WR")], [RosterPlayer("x", "Get", "WR")])
     values = {"g": _iv("g", "Give", 20), "x": _iv("x", "Get", 90)}
     a = analyze_trade(state, values, "me", ["g"], ["x"])
-    # value_delta is now LEAGUE-LOCAL VOR (points above the WR replacement anchor 8.0,
-    # too-sparse pool → fallback): get 90/5−8=10, give 20/5<8→0 ⇒ +10.
-    assert a.value_delta == 10.0
+    # value_delta is league-local VOR RESCALED to 0-100 (points above the WR replacement
+    # anchor 8.0, sparse pool → fallback): get raw 18−8=10 → rescale 63.4, give 4<8→0.
+    assert a.value_delta == 63.4
     assert a.winner == "you"
     assert a.fairness == "lopsided you"
     assert a.hedged is False
@@ -105,8 +105,8 @@ def test_verdict_follows_engine_value_not_reputation():
     }
     a = analyze_trade(state, values, "me", ["g"], ["x"])
     # I gave away the higher engine value → I lose, regardless of the names.
-    # VOR delta: give 80/5−8=8, get 30/5<8→0 ⇒ -8.
-    assert a.value_delta == -8.0
+    # VOR delta (rescaled 0-100): give raw 16−8=8 → rescale 36.3, get 6<8→0 ⇒ -36.3.
+    assert a.value_delta == -36.3
     assert a.winner == "opponent"
 
 
@@ -222,7 +222,28 @@ def test_unfilled_flex_is_not_flagged():
 # ---------------------------------------------------------------------------
 # League-local waiver-aware VOR (the K/DEF over-valuation fix)
 # ---------------------------------------------------------------------------
-from backend.services.trade.value_engine import vor_value, waiver_aware_replacement  # noqa: E402
+from backend.services.trade.value_engine import (  # noqa: E402
+    rescale_vor,
+    vor_value,
+    waiver_aware_replacement,
+)
+
+
+def test_rescale_vor_anchors_top_and_pins_floor():
+    """The 0-100 display rescale: anchor the top to 100, PIN the floor at 0, and keep
+    near-zero VOR near-zero — NOT a uniform stretch (which would lift a streamable DEF
+    to ~22 and re-break the K/DEF fix)."""
+    assert rescale_vor(0.0) == 0.0                      # floor pinned
+    assert rescale_vor(-1.0) == 0.0                     # below replacement → 0
+    assert rescale_vor(12.0) == 100.0                   # elite anchor → 100
+    assert rescale_vor(20.0) == 100.0                   # above anchor clamps (no overflow)
+    # an elite RB (~11.7 VOR) returns to the ~top of the scale
+    assert rescale_vor(11.7) >= 88.0
+    # a streamable DEF (~2.6 VOR) STAYS low — the anchor-the-top curve does NOT
+    # multiply it up the way a naive linear stretch (2.6 * 100/12 ≈ 22) would.
+    assert rescale_vor(2.6) <= 5.0
+    # monotonic: more VOR → more display value
+    assert rescale_vor(2.6) < rescale_vor(6.0) < rescale_vor(11.7)
 
 
 def test_vor_value_floors_at_zero_and_runs_uncapped():

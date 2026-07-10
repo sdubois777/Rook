@@ -42,7 +42,7 @@ def _fmt_player(p) -> str:
         flags.append("sell-high")
     flag = f" [{', '.join(flags)}]" if flags else ""
     return (
-        f"  - {p.name} ({p.position}): forward_value={p.forward_value}, "
+        f"  - {p.name} ({p.position}): value={p.vor}, "
         f"trend={p.value_trend}, confidence={p.confidence}{flag}. why: {p.why}"
     )
 
@@ -66,7 +66,7 @@ def format_user_prompt(a: TradeAnalysis) -> str:
 
 def fallback_rationale(a: TradeAnalysis) -> str:
     base = (
-        f"{a.fairness.capitalize()} — you net {a.value_delta:+} forward-value "
+        f"{a.fairness.capitalize()} — you net {a.value_delta:+} value "
         f"({a.get_value} for {a.give_value}), based on in-season usage."
     )
     if a.hedged:
