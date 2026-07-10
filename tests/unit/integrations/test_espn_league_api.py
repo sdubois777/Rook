@@ -183,6 +183,77 @@ async def test_detect_draft_type_api_error_defaults_snake():
     assert budget is None
 
 
+def _view_dispatch(views):
+    """AsyncMock side_effect returning a per-view response (mSettings / mDraftDetail)."""
+    async def _g(view, season=None):
+        return views.get(view, {})
+    return _g
+
+
+@pytest.mark.asyncio
+async def test_detect_auction_from_draftsettings_reads_real_budget():
+    """The fix: draftSettings.type='AUCTION' → auction + the REAL auctionBudget, WITHOUT
+    any bidAmount (undrafted). The authoritative flag must win over the empty picks that
+    used to mis-store undrafted auction leagues as snake."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+
+    views = {
+        "mSettings": {"settings": {"draftSettings": {"type": "AUCTION", "auctionBudget": 250}}},
+        # picks exist pre-draft but all bidAmount 0 — the old path would say snake
+        "mDraftDetail": {"draftDetail": {"picks": [{"playerId": 1, "bidAmount": 0}]}},
+    }
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(views)
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "auction"
+    assert budget == 250                              # real budget, NOT hard-coded 200
+    mock_get.assert_awaited_once_with("mSettings")     # never consulted mDraftDetail
+
+
+@pytest.mark.asyncio
+async def test_detect_auction_default_budget_when_absent():
+    """type='AUCTION' with no auctionBudget → Yahoo-style default 200."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+    views = {"mSettings": {"settings": {"draftSettings": {"type": "AUCTION"}}}}
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(views)
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "auction" and budget == 200
+
+
+@pytest.mark.asyncio
+async def test_detect_snake_from_draftsettings_wins_over_bids():
+    """type='SNAKE' → snake + no budget, even if mDraftDetail had bids — the flag is
+    authoritative (won't false-auction)."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+    views = {
+        "mSettings": {"settings": {"draftSettings": {"type": "SNAKE"}}},
+        "mDraftDetail": {"draftDetail": {"picks": [{"playerId": 1, "bidAmount": 99}]}},
+    }
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(views)
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "snake" and budget is None
+
+
+@pytest.mark.asyncio
+async def test_detect_falls_back_to_bids_when_type_absent():
+    """draftSettings.type absent → fall back to the post-draft bidAmount signal."""
+    league = _make_league()
+    api = ESPNLeagueAPI(league=league, espn_s2="s2", swid="{SWID}")
+    views = {
+        "mSettings": {"settings": {"draftSettings": {}}},   # no type
+        "mDraftDetail": {"draftDetail": {"picks": [{"playerId": 1, "bidAmount": 40}]}},
+    }
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(views)
+        draft_type, budget = await api.detect_draft_type()
+    assert draft_type == "auction" and budget == 200      # via fallback
+
+
 @pytest.mark.asyncio
 async def test_create_raises_without_cookies():
     league = _make_league()
