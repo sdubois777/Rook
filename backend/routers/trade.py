@@ -38,6 +38,10 @@ from backend.services.trade.trade_proposals import (
     build_silence_context,
     evaluate_candidates,
 )
+from backend.services.trade.value_engine import (
+    trade_value,
+    waiver_aware_replacement,
+)
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
@@ -97,7 +101,7 @@ class TradeAnalyzeResponse(BaseModel):
     winner: str
     fairness: str
     lineup_gain: float       # HEADLINE: Δ your starting-lineup points/week (resulting roster)
-    value_delta: float       # raw forward_value delta — grounding only, does NOT drive the verdict
+    value_delta: float       # get − give of canonical trade_value (0-100); grounding only, NOT the verdict
     give_value: float
     get_value: float
     confidence: str
@@ -172,7 +176,7 @@ class LeaguePlayerOut(PlayerBadgeFields):
     position: str
     nfl_team: Optional[str] = None
     starter_slot: Optional[str] = None
-    forward_value: float
+    value: float          # canonical trade_value (0-100) — SAME scale the verdict chips show
     value_trend: str
     confidence: str
     buy_low: bool
@@ -492,10 +496,10 @@ async def ideas(
 @router.get("/league", response_model=TradeLeagueResponse)
 async def league(user=Depends(get_current_user), db=Depends(get_db)):
     """READ-ONLY support for the trade page's picker + team-switcher. Exposes the
-    SAME slice-2 seeded demo LeagueState run through the SAME evaluate_league, so
-    picker values match verdict values exactly. Demo-only: with TRADE_DEMO_MODE
-    off it 404s (no real-league exposure here). Adds NO trade logic — it just
-    reshapes what load_league_for_analysis already returns."""
+    SAME slice-2 seeded demo LeagueState, and emits each player's CANONICAL
+    ``trade_value`` (the SAME value_engine function the verdict chips read) so picker
+    values match verdict values exactly — one scale, no split-brain. Demo-only: with
+    TRADE_DEMO_MODE off it 404s (no real-league exposure here). Adds NO trade logic."""
     demo = trade_demo_enabled()
     if not demo:
         raise HTTPException(
@@ -503,7 +507,10 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             detail="trade demo league is only available under TRADE_DEMO_MODE",
         )
 
-    state, values, _, _wire = await load_league_for_analysis(db, user, demo)
+    state, values, _, wire = await load_league_for_analysis(db, user, demo)
+    # ONE replacement per league (waiver-aware), passed into the shared trade_value —
+    # exactly what analyze_trade does, so a player reads identically in both sections.
+    replacement = waiver_aware_replacement(values, wire)
 
     teams: list[LeagueTeamOut] = []
     for team in state.teams:
@@ -513,7 +520,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             roster.append(LeaguePlayerOut(
                 id=rp.canonical_player_id, name=rp.name, position=rp.position,
                 nfl_team=rp.nfl_team, starter_slot=rp.starter_slot,
-                forward_value=v.forward_value if v else 0.0,
+                value=trade_value(v, replacement) if v else 0.0,
                 value_trend=v.value_trend.value if v else "stable",
                 confidence=v.confidence.value if v else "insufficient",
                 buy_low=v.buy_low if v else False,
