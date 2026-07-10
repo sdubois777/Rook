@@ -66,7 +66,7 @@ function PlayerRow({ p, selected, onToggle, accent }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <span className="tabular-nums text-sm font-semibold text-white">{Math.round(p.forward_value)}</span>
+        <span className="tabular-nums text-sm font-semibold text-white">{Math.round(p.value)}</span>
         <t.Icon size={14} className={t.cls} />
       </div>
     </button>
@@ -74,11 +74,11 @@ function PlayerRow({ p, selected, onToggle, accent }) {
 }
 
 function RosterColumn({ players, selected, onToggle, accent }) {
-  // Starters first, then by forward_value desc — scannable.
+  // Starters first, then by canonical trade value desc — scannable.
   const sorted = useMemo(() => {
     const isStarter = (p) => p.starter_slot && p.starter_slot !== 'BENCH'
     return [...players].sort((a, b) =>
-      (isStarter(b) - isStarter(a)) || (b.forward_value - a.forward_value))
+      (isStarter(b) - isStarter(a)) || (b.value - a.value))
   }, [players])
   return (
     <div className="max-h-[30rem] space-y-1 overflow-y-auto rounded-lg border border-border bg-surface-1 p-2">

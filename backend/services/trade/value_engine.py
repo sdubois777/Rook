@@ -72,6 +72,13 @@ _ELITE_PCT = 0.95          # elite = 95th percentile of the position pool
 _REPL_BAND = 5             # replacement = mean of this many waiver-tier players below the cutoff
 _MIN_POOL_MARGIN = _REPL_BAND  # need cutoff + a full band to derive, else fall back
 
+# DEEP-WAIVER correction (waiver_aware_replacement): WR/TE rosters run deep past their
+# starter line, so the starter-demand replacement overstates the streamable level and
+# crushes mid WR/TE to ~0. For these positions the replacement drops to the MARGINAL
+# ROSTER SPOT instead. RB (scarcity) + K/DEF (streamed at the line) are NOT corrected.
+_DEEP_WAIVER_POSITIONS = ("WR", "TE")
+_REPLACEMENT_JUNK_PPG = 2.0   # below this ppg = a roster stash, not a streamable replacement
+
 # Usage-trend threshold: composite (snap%+target share)/2 change, last-2 vs
 # prior-3. 0.045 ≈ a ~5–9 point swing in snaps or target share.
 _TREND_THRESHOLD = 0.045
@@ -585,16 +592,40 @@ def waiver_aware_replacement(
     the compression work. K/DEF compress NATURALLY: a good DEF's margin over a wire full
     of streamable DEF is small — no K/DEF special-case. Empty pool (too sparse) → the
     documented ``_PPG_ANCHORS`` fallback so VOR stays bounded.
+
+    DEEP-WAIVER correction (WR/TE) — ``_DEEP_WAIVER_POSITIONS``. The starter-demand cutoff
+    counts only STARTERS, so the derived replacement is the best *bench* player. For deep
+    positions (WR/TE rosters run many players past their starter line) that overstates the
+    streamable level — a genuine WR3 then reads ~0 above "replacement." So for WR/TE the
+    replacement is re-derived as the MARGINAL ROSTER SPOT: the band of the worst
+    STARTER-CALIBER rostered players (junk stashes < ``_REPLACEMENT_JUNK_PPG`` excluded),
+    i.e. the last players who cleared a roster ≈ the real waiver line. It only LOWERS
+    (``min``), never raises. RB (scarce — high replacement is real) and K/DEF (streamed at
+    the starter line, the wire sets it) keep the plain waiver-aware level.
     """
     ppg_by_pos: dict[str, list[float]] = {}
     for v in values.values():
         if v.position in _VALUE_POSITIONS:
             ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
+    pool = {pos: list(lst) for pos, lst in ppg_by_pos.items()}
     for pos, lst in (wire_ppg_by_pos or {}).items():
         if pos in _VALUE_POSITIONS:
-            ppg_by_pos.setdefault(pos, []).extend(lst)
-    anchors = derive_anchors(ppg_by_pos)
-    return {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
+            pool.setdefault(pos, []).extend(lst)
+    anchors = derive_anchors(pool)
+    repl = {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
+
+    for pos in _DEEP_WAIVER_POSITIONS:
+        starter = int(round(_starter_demand(pos, LEAGUE_TEAMS)))
+        playable = sorted(
+            (p for p in ppg_by_pos.get(pos, []) if p >= _REPLACEMENT_JUNK_PPG),
+            reverse=True,
+        )
+        if len(playable) - starter < _REPL_BAND:
+            continue  # no real bench depth to correct for → keep the waiver-aware level
+        hi = len(playable)
+        lo = max(starter, hi - _REPL_BAND)   # the _REPL_BAND worst starter-caliber rostered
+        repl[pos] = min(repl[pos], round(sum(playable[lo:hi]) / (hi - lo), 1))
+    return repl
 
 
 def vor_value(forward_ppg: float, position: str, replacement: dict[str, float]) -> float:
@@ -627,8 +658,10 @@ def vor_value(forward_ppg: float, position: str, replacement: dict[str, float]) 
 # changes). A player at/above the anchor clamps to 100 (as elites did on the old scale).
 _VOR_ELITE_ANCHOR = 12.0   # VOR (ppg over replacement) that maps to 100 — a stable
                            # elite-skill benchmark, position-agnostic, not the pool max.
-_VOR_CURVE_EXP = 2.5       # convexity >1: steep at the top (anchor→100), flat near 0
+_VOR_CURVE_EXP = 2.2       # convexity >1: steep at the top (anchor→100), flat near 0
                            # (streamable K/DEF at ~2-3 VOR stay ~2-3, NOT lifted to ~22).
+                           # 2.2 (from 2.5) lifts the mid tier off the floor while keeping
+                           # streamers low; paired with the deep-waiver WR/TE replacement.
 
 
 def rescale_vor(vor: float) -> float:
@@ -640,6 +673,16 @@ def rescale_vor(vor: float) -> float:
     if vor <= 0.0:
         return 0.0
     return round(100.0 * min(1.0, float(vor) / _VOR_ELITE_ANCHOR) ** _VOR_CURVE_EXP, 1)
+
+
+def trade_value(v: "InSeasonValue", replacement: dict[str, float]) -> float:
+    """THE canonical trade value — the ONE 0-100 number every trade surface shows
+    (Build-a-Trade picker, analyze/ideas chips, give/get totals). League-local,
+    waiver-aware VOR (points above the best rosterable replacement) rescaled onto the
+    stable 0-100 curve. ``replacement`` is computed ONCE per league via
+    ``waiver_aware_replacement(values, wire)`` and passed in — never recomputed
+    per-trade, so a player's value is identical in every trade and every section."""
+    return rescale_vor(vor_value(v.forward_ppg, v.position, replacement))
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,7 @@ from backend.services.trade.value_engine import (
     InSeasonValue,
     ValueTrend,
     replacement_ppg_by_position,
-    rescale_vor,
-    vor_value,
+    trade_value,
     waiver_aware_replacement,
 )
 
@@ -227,11 +226,9 @@ def analyze_trade(
     replacement = waiver_aware_replacement(values, wire_ppg_by_pos or {})
 
     def _vor(pid: str) -> float:
-        # raw VOR sets the SHAPE, then rescale_vor anchors it to the 0-100 display scale
-        # (elite skill → ~top, streamable K/DEF stay ~0). This ONE number is what every
-        # consumer shows — chips, prose, give/get totals — so nothing splits scales.
-        v = values[pid]
-        return rescale_vor(vor_value(v.forward_ppg, v.position, replacement))
+        # THE canonical trade value (value_engine.trade_value) — the ONE 0-100 number
+        # every trade surface shows (picker, chips, totals) so nothing splits scales.
+        return trade_value(values[pid], replacement)
 
     give = [_grounding(values[pid], "give", _vor(pid)) for pid in give_ids]
     get = [_grounding(values[pid], "get", _vor(pid)) for pid in get_ids]

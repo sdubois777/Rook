@@ -45,8 +45,8 @@ def test_lopsided_trade_reads_lopsided():
     values = {"g": _iv("g", "Give", 20), "x": _iv("x", "Get", 90)}
     a = analyze_trade(state, values, "me", ["g"], ["x"])
     # value_delta is league-local VOR RESCALED to 0-100 (points above the WR replacement
-    # anchor 8.0, sparse pool → fallback): get raw 18−8=10 → rescale 63.4, give 4<8→0.
-    assert a.value_delta == 63.4
+    # anchor 8.0, sparse pool → fallback): get raw 18−8=10 → rescale 67.0, give 4<8→0.
+    assert a.value_delta == 67.0
     assert a.winner == "you"
     assert a.fairness == "lopsided you"
     assert a.hedged is False
@@ -105,8 +105,8 @@ def test_verdict_follows_engine_value_not_reputation():
     }
     a = analyze_trade(state, values, "me", ["g"], ["x"])
     # I gave away the higher engine value → I lose, regardless of the names.
-    # VOR delta (rescaled 0-100): give raw 16−8=8 → rescale 36.3, get 6<8→0 ⇒ -36.3.
-    assert a.value_delta == -36.3
+    # VOR delta (rescaled 0-100): give raw 16−8=8 → rescale 41.0, get 6<8→0 ⇒ -41.0.
+    assert a.value_delta == -41.0
     assert a.winner == "opponent"
 
 
@@ -223,10 +223,37 @@ def test_unfilled_flex_is_not_flagged():
 # League-local waiver-aware VOR (the K/DEF over-valuation fix)
 # ---------------------------------------------------------------------------
 from backend.services.trade.value_engine import (  # noqa: E402
+    derive_anchors,
     rescale_vor,
+    trade_value,
     vor_value,
     waiver_aware_replacement,
 )
+
+
+def test_deep_waiver_correction_lowers_wr_not_shallow_def():
+    """WR/TE get the deep-waiver replacement correction: with a full WR pool the
+    replacement drops to the MARGINAL ROSTER SPOT (below the starter-cutoff band the wire
+    inflates), so a mid WR reads a real value instead of ~0. A shallow position with no
+    bench depth (DEF) is NOT corrected. Only LOWERS, never raises."""
+    vals = {}
+    for i in range(50):                       # 50 rostered WRs — deep past the 42 starter line
+        ppg = 20.0 - i * 0.36
+        vals[f"w{i}"] = _iv(f"w{i}", f"WR{i}", ppg * 5, pos="WR")   # fv/5 == ppg
+    for i in range(14):                       # shallow DEF pool (≈ the 12 starter line, no bench)
+        vals[f"d{i}"] = _iv(f"d{i}", f"DEF{i}", (12.0 - i * 0.7) * 5, pos="DEF")
+    wire = {"WR": [10.0] * 20}                 # a rich wire that inflates the starter-cutoff band
+    repl = waiver_aware_replacement(vals, wire)
+
+    pool_wr = [v.forward_ppg for v in vals.values() if v.position == "WR"] + wire["WR"]
+    plain_wr = derive_anchors({"WR": pool_wr})["WR"][0]
+    assert repl["WR"] < plain_wr               # WR corrected DOWN to the marginal roster spot
+    # a mid WR (~10 ppg) now clears the floor instead of reading ~0
+    mid = next(v for v in vals.values() if v.position == "WR" and 9.5 <= v.forward_ppg <= 10.5)
+    assert trade_value(mid, repl) > 5.0
+    # DEF has no bench depth → uncorrected (plain derive_anchors / fallback)
+    assert repl["DEF"] == derive_anchors(
+        {"DEF": [v.forward_ppg for v in vals.values() if v.position == "DEF"]})["DEF"][0]
 
 
 def test_rescale_vor_anchors_top_and_pins_floor():
