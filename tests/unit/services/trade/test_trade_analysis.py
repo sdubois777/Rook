@@ -234,8 +234,9 @@ from backend.services.trade.value_engine import (  # noqa: E402
 def test_deep_waiver_correction_lowers_wr_not_shallow_def():
     """WR/TE get the deep-waiver replacement correction: with a full WR pool the
     replacement drops to the MARGINAL ROSTER SPOT (below the starter-cutoff band the wire
-    inflates), so a mid WR reads a real value instead of ~0. A shallow position with no
-    bench depth (DEF) is NOT corrected. Only LOWERS, never raises."""
+    inflates), so a mid WR reads a real value instead of ~0. DEF is NOT deep-waiver
+    corrected — (Build C) it gets the STREAMING baseline (mean of the top of its pool),
+    which sits at/above the top of the shallow rostered pool, not the marginal spot."""
     vals = {}
     for i in range(50):                       # 50 rostered WRs — deep past the 42 starter line
         ppg = 20.0 - i * 0.36
@@ -251,9 +252,10 @@ def test_deep_waiver_correction_lowers_wr_not_shallow_def():
     # a mid WR (~10 ppg) now clears the floor instead of reading ~0
     mid = next(v for v in vals.values() if v.position == "WR" and 9.5 <= v.forward_ppg <= 10.5)
     assert trade_value(mid, repl) > 5.0
-    # DEF has no bench depth → uncorrected (plain derive_anchors / fallback)
-    assert repl["DEF"] == derive_anchors(
-        {"DEF": [v.forward_ppg for v in vals.values() if v.position == "DEF"]})["DEF"][0]
+    # DEF (no wire here) → streaming baseline = mean of the top-3 of its rostered pool —
+    # the TOP of the pool, far above the deep-waiver marginal spot the WRs got.
+    assert repl["DEF"] == round((12.0 + 11.3 + 10.6) / 3, 1)
+    assert repl["DEF"] > repl["WR"]
 
 
 def test_rescale_vor_anchors_top_and_pins_floor():
@@ -282,18 +284,46 @@ def test_vor_value_floors_at_zero_and_runs_uncapped():
 
 
 def test_waiver_wire_lowers_vor_by_raising_replacement():
-    """The wire does the compression: adding streamable DEFs to the pool RAISES the DEF
-    replacement, so the same DEF's VOR DROPS (uncompressed without the wire)."""
-    # 18 rostered DEFs spanning 6-13 ppg so derive_anchors can derive (12-team demand +
-    # a full below-cutoff band), then a wire of streamable ~7-8 DEFs.
+    """The wire does the compression (derive_anchors mechanism, skill positions):
+    adding streamable RBs to the pool RAISES the RB replacement, so the same RB's VOR
+    DROPS (uncompressed without the wire). (Build C moved K/DEF onto the streaming
+    baseline — see test_kdef_streaming_baseline — so this asserts on RB, where the
+    derive_anchors band mechanism still governs.)"""
+    # 40 rostered RBs so derive_anchors can derive (30-starter demand + a full
+    # below-cutoff band), then a wire of streamable RBs.
     vals = {}
-    for i in range(18):
+    for i in range(40):
+        pid = f"r{i}"
+        vals[pid] = _iv(pid, f"RB{i}", 50, pos="RB")
+        vals[pid].forward_ppg = 18.0 - i * 0.3        # 18.0 down to ~6.3
+    wire = {"RB": [7.5, 7.2, 6.9, 6.6, 6.3]}
+    repl_no = waiver_aware_replacement(vals, {})["RB"]
+    repl_wire = waiver_aware_replacement(vals, wire)["RB"]
+    assert repl_wire >= repl_no                       # wire adds below-cutoff streamers
+    # a 9.5-ppg RB is worth LESS over the waiver-aware replacement
+    assert vor_value(9.5, "RB", {"RB": repl_wire}) <= vor_value(9.5, "RB", {"RB": repl_no})
+
+
+def test_kdef_streaming_baseline_collapses_def_value():
+    """(Build C) K/DEF replacement = the STREAMING baseline (mean of the top wire
+    options), NOT the derive_anchors band or the _PPG_ANCHORS sparse-pool fallback —
+    a 12-team league rosters exactly 12 DEF (the cutoff, zero bench), so the derived
+    path could never work and the fallback (5.0) inflated DEF VOR (an elite DEF read
+    like an elite WR). With the wire's best streamers at ~11-12 ppg, even a 13.3-ppg
+    top DEF keeps only a small margin, and a startable 9.9-ppg DEF floors at 0."""
+    vals = {}
+    for i in range(12):                               # exactly 12 rostered DEF = cutoff
         pid = f"d{i}"
         vals[pid] = _iv(pid, f"DEF{i}", 50, pos="DEF")
-        vals[pid].forward_ppg = 13.0 - i * 0.4        # 13.0 down to ~6.2
-    wire = {"DEF": [7.5, 7.2, 6.9, 6.6, 6.3]}
-    repl_no = waiver_aware_replacement(vals, {})["DEF"]
-    repl_wire = waiver_aware_replacement(vals, wire)["DEF"]
-    assert repl_wire >= repl_no                       # wire adds below-cutoff streamers
-    # a 9.5-ppg DEF is worth LESS over the waiver-aware replacement
-    assert vor_value(9.5, "DEF", {"DEF": repl_wire}) <= vor_value(9.5, "DEF", {"DEF": repl_no})
+        vals[pid].forward_ppg = 13.3 - i * 1.0
+    wire = {"DEF": [11.8, 11.7, 9.9, 8.1, 7.9]}
+    repl = waiver_aware_replacement(vals, wire)
+    assert repl["DEF"] == round((11.8 + 11.7 + 9.9) / 3, 1)   # mean of top-3 wire
+    top = max(vals.values(), key=lambda v: v.forward_ppg)
+    assert 0.0 < trade_value(top, repl) <= 5.0        # top DEF: small margin, NOT the 30s
+    mid = next(v for v in vals.values() if 9.0 <= v.forward_ppg <= 10.5)
+    assert trade_value(mid, repl) == 0.0              # startable-but-not-elite DEF → 0
+    # thin wire → falls back to rostered ∪ wire, ~the same level (pool-independent)
+    repl_thin = waiver_aware_replacement(vals, {})
+    assert repl_thin["DEF"] == round((13.3 + 12.3 + 11.3) / 3, 1)  # top-3 of rostered
+    assert trade_value(top, repl_thin) <= 5.0

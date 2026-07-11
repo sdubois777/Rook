@@ -79,6 +79,20 @@ _MIN_POOL_MARGIN = _REPL_BAND  # need cutoff + a full band to derive, else fall 
 _DEEP_WAIVER_POSITIONS = ("WR", "TE")
 _REPLACEMENT_JUNK_PPG = 2.0   # below this ppg = a roster stash, not a streamable replacement
 
+# STREAMING-BASELINE replacement (waiver_aware_replacement): K and DEF are STREAMED
+# weekly — every manager can pick up the best available matchup play, so the honest
+# replacement is the TOP of the available pool, not the season-average of a below-cutoff
+# band (and never the sparse-pool _PPG_ANCHORS fallback: a 12-team league rosters exactly
+# 12 K / 12 DEF — the starter cutoff with zero bench — so derive_anchors can NEVER derive
+# for them and always fell back, inflating K/DEF VOR: Vikings DEF read 31.5 == an elite
+# WR; the finder's no-wire path read 44.4). Baseline = mean of the top _STREAM_TOP_N of
+# the WIRE (what's actually go-and-get-able); a thin wire falls back to rostered ∪ wire,
+# which lands within ~0.3 ppg of the same level — pool-independent either way. Result:
+# even the best season-long DEF keeps only a small margin (~2-3), typical DEF/K → 0.
+# K/DEF ONLY — RB/WR/TE keep the Build-A derived replacement byte-for-byte.
+_STREAMED_POSITIONS = ("K", "DEF")
+_STREAM_TOP_N = 3
+
 # Usage-trend threshold: composite (snap%+target share)/2 change, last-2 vs
 # prior-3. 0.045 ≈ a ~5–9 point swing in snaps or target share.
 _TREND_THRESHOLD = 0.045
@@ -586,12 +600,8 @@ def waiver_aware_replacement(
     (the band just below the league's starter-demand cutoff) over the combined pool of —
       * this league's ROSTERED players at P (from ``values``), and
       * this league's WAIVER WIRE at P (``wire_ppg_by_pos``, the derived FA pool).
-    League-LOCAL (this league's rosters + its wire), NEVER all-NFL. The wire supplies the
-    below-cutoff tier, so K/DEF replacement reflects REAL streamable DEF/K — removing the
-    wire lowers the replacement and RAISES VOR (un-compresses), confirming the wire does
-    the compression work. K/DEF compress NATURALLY: a good DEF's margin over a wire full
-    of streamable DEF is small — no K/DEF special-case. Empty pool (too sparse) → the
-    documented ``_PPG_ANCHORS`` fallback so VOR stays bounded.
+    League-LOCAL (this league's rosters + its wire), NEVER all-NFL. Empty pool (too
+    sparse) → the documented ``_PPG_ANCHORS`` fallback so VOR stays bounded.
 
     DEEP-WAIVER correction (WR/TE) — ``_DEEP_WAIVER_POSITIONS``. The starter-demand cutoff
     counts only STARTERS, so the derived replacement is the best *bench* player. For deep
@@ -600,8 +610,16 @@ def waiver_aware_replacement(
     replacement is re-derived as the MARGINAL ROSTER SPOT: the band of the worst
     STARTER-CALIBER rostered players (junk stashes < ``_REPLACEMENT_JUNK_PPG`` excluded),
     i.e. the last players who cleared a roster ≈ the real waiver line. It only LOWERS
-    (``min``), never raises. RB (scarce — high replacement is real) and K/DEF (streamed at
-    the starter line, the wire sets it) keep the plain waiver-aware level.
+    (``min``), never raises. RB (scarce — high replacement is real) keeps the plain
+    derived level.
+
+    STREAMING BASELINE (K/DEF) — ``_STREAMED_POSITIONS``. K/DEF are streamed WEEKLY, and a
+    12-team league rosters exactly 12 of each (the starter cutoff, zero bench), so
+    ``derive_anchors`` can never derive for them (it silently fell back to ``_PPG_ANCHORS``,
+    inflating their VOR — an elite DEF read like an elite WR). Their replacement is instead
+    the streamable level itself: the mean of the top ``_STREAM_TOP_N`` wire options (thin
+    wire → rostered ∪ wire). High relative to K/DEF output by nature → their VOR collapses:
+    typical K/DEF → 0, the league's best DEF keeps only a small (~2-3) margin.
     """
     ppg_by_pos: dict[str, list[float]] = {}
     for v in values.values():
@@ -625,6 +643,19 @@ def waiver_aware_replacement(
         hi = len(playable)
         lo = max(starter, hi - _REPL_BAND)   # the _REPL_BAND worst starter-caliber rostered
         repl[pos] = min(repl[pos], round(sum(playable[lo:hi]) / (hi - lo), 1))
+
+    # STREAMING BASELINE (K/DEF only — see _STREAMED_POSITIONS): the replacement is the
+    # level a manager can STREAM this week — the mean of the top _STREAM_TOP_N wire
+    # options (thin wire → the full rostered ∪ wire pool, ~the same level). Replaces the
+    # derived/fallback value entirely for these positions, so K/DEF are pool-independent
+    # and even the top season-long DEF keeps only a small margin. A degenerate pool
+    # (< _STREAM_TOP_N anywhere) keeps the derive_anchors/_PPG_ANCHORS value.
+    for pos in _STREAMED_POSITIONS:
+        wire_pool = sorted((wire_ppg_by_pos or {}).get(pos, []), reverse=True)
+        stream_pool = wire_pool if len(wire_pool) >= _STREAM_TOP_N else sorted(
+            pool.get(pos, []), reverse=True)
+        if len(stream_pool) >= _STREAM_TOP_N:
+            repl[pos] = round(sum(stream_pool[:_STREAM_TOP_N]) / _STREAM_TOP_N, 1)
     return repl
 
 

@@ -616,6 +616,9 @@ def evaluate_candidates(
             analysis = analyze_trade(
                 state, values, my_team_id,
                 list(cand.give_ids), list(cand.get_ids), roster_limit=roster_limit,
+                wire_ppg_by_pos=wire,   # SAME wire dict as the gate + picker — the one
+                # consumer Build B missed; without it the displayed chips computed a
+                # rostered-only replacement (K/DEF fell back to _PPG_ANCHORS → 44.4 vs 31.5).
             )
         except Exception:
             continue  # unresolvable candidate — skip, never surface
