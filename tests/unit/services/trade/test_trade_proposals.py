@@ -117,8 +117,13 @@ def _league(my_spec, opp_spec):
 
 
 def test_evaluate_candidates_surfaces_the_mutual_benefit_trade():
+    # (Build D) rm4 -> wt4: the same mutual-benefit shape (my surplus RB fills
+    # their RB hole, their WR fills my empty WR3), on a pair that is value-FAIR
+    # under the tightened gate — rm4 15 ppg → trade_value 30.6, wt4 14 ppg → 21.8
+    # (ratio 0.71 within [0.5, 2]; gap 8.8 <= abs-tol). rm4 -> wt5 (13 → 14.6) is
+    # now correctly ratio-unfair (0.48, gap 16) and no longer the canonical pair.
     state, values = _league(ME_STRONG, THEM)
-    cand = Candidate(("rm4",), ("wt5",), "opp")
+    cand = Candidate(("rm4",), ("wt4",), "opp")
     out = evaluate_candidates(state, values, "me", [cand], roster_limit=16)
     assert len(out) == 1
     _, _, edge = out[0]
@@ -142,7 +147,8 @@ def test_never_pads_when_nothing_clears():
 def test_cleared_candidates_ranked_by_lineup_gain_descending():
     # Give my surplus RB for progressively better WRs — bigger WR = bigger lineup
     # gain. (ME_STRONG's empty WR3 is credited replacement ppg now, so the gains
-    # are over the streamable baseline; wt3/wt4/wt5 still clear at 8/6/5.)
+    # are over the streamable baseline; wt3/wt4 clear at 8/6 — wt5 is now
+    # value-UNFAIR under the Build-D gate: 14.6 vs 30.6, ratio 0.48, gap 16.)
     state, values = _league(ME_STRONG, THEM)
     cands = [Candidate(("rm4",), ("wt5",), "opp"),
              Candidate(("rm4",), ("wt3",), "opp"),
