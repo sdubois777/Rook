@@ -947,8 +947,10 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
         to canonical ids via `_resolve_rosters`, `starter_slot` re-derived per team
         from the engine's `forward_value` (`assign_starter_slots`) + `nfl_team`
         preserved, default acting team `USER_TEAM_NAME` ("Have you seen McConkeys"),
-        demo anchor `DEMO_SEASON`/`DEMO_CURRENT_WEEK` pinned HERE, currently **week
-        14** — not in the engine/data layer), `scripts/seed_demo_league.py` (CLI),
+        demo anchor `DEMO_SEASON`/`DEMO_CURRENT_WEEK` pinned HERE (a configurable
+        test knob — currently **week 3** to exercise the early-season low-sample,
+        prior-dominated blend; bump it to read a later trade-window week) — not in the
+        engine/data layer), `scripts/seed_demo_league.py` (CLI),
         `tests/unit/services/trade/test_trade_demo.py`.
       - analyzer agent + `POST /api/trade/analyze`; proposals agent +
         `POST /api/trade/ideas` (pro-only). PERMANENT.
