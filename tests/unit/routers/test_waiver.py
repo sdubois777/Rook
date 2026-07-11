@@ -64,6 +64,85 @@ async def test_league_404_when_demo_off(monkeypatch):
     assert resp.status_code == 404
 
 
+def _wire_source():
+    """A source whose pool includes a NULL-team player and out-of-order ppg, to prove
+    the wire endpoint sorts by forward_ppg desc and never drops the null-team FA."""
+    me = TeamState("me", "You", True, (RosterPlayer("a", "A", "WR", nfl_team="SF"),))
+    state = LeagueState(2025, 3, (me,))
+    pool = [
+        RosterPlayer("b", "Mid WR", "WR", nfl_team="CIN"),
+        RosterPlayer("c", "Top QB", "QB", nfl_team="LV"),
+        RosterPlayer("d", "No Team WR", "WR", nfl_team=None),   # nfl_team null on purpose
+    ]
+    values = {
+        "a": _iv("a", 40, 8, pos="WR"),
+        "b": _iv("b", 60, 11, pos="WR"),
+        "c": _iv("c", 24, 17, pos="QB"),
+        "d": _iv("d", 30, 9, pos="WR"),
+    }
+    return WaiverDemoSource(
+        state=state, pool=pool, values=values, weekly_usage=pd.DataFrame(), priors={},
+        faab_remaining_by_team={"me": 50},
+    )
+
+
+async def test_wire_free_sorted_and_keeps_null_team(monkeypatch):
+    """The FREE browse list: sorted by forward_ppg desc, null-team player PRESENT with
+    null (not dropped), and NO credit service is even wired (browsing never debits)."""
+    monkeypatch.setenv("WAIVER_DEMO_MODE", "true")
+
+    async def _fake_source(db, demo, user=None):
+        return _wire_source()
+
+    monkeypatch.setattr(waiver_mod, "load_waiver_source", _fake_source)
+    # Intro tier has NO waiver_wire feature — the free wire must still 200.
+    intro = _user(); intro.tier = "intro"; intro.credits_remaining = 0
+    app.dependency_overrides[get_current_user] = lambda: intro
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/waiver/wire")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200  # free — no 403 for a feature-less tier, no 402 at 0 credits
+    data = resp.json()
+    assert data["season"] == 2025 and data["week"] == 3 and data["demo_mode"] is True
+    players = data["players"]
+    assert len(players) == 3  # only the 3 pool players (roster excluded)
+    # Sorted by forward_ppg desc: QB(17) > No-Team WR? no — Mid WR(11) > No-Team WR(9).
+    assert [p["id"] for p in players] == ["c", "b", "d"]
+    assert [p["forward_ppg"] for p in players] == [17.0, 11.0, 9.0]
+    # Null-team FA is present, emitted as null — never dropped.
+    null_row = next(p for p in players if p["id"] == "d")
+    assert null_row["nfl_team"] is None
+    assert {p["nfl_team"] for p in players} == {"LV", "CIN", None}
+
+
+async def test_wire_never_debits_credits(monkeypatch):
+    """Even a credit-service override that would explode if called proves browsing is
+    un-metered — the endpoint doesn't depend on get_credit_service at all."""
+    monkeypatch.setenv("WAIVER_DEMO_MODE", "true")
+
+    async def _fake_source(db, demo, user=None):
+        return _wire_source()
+
+    exploding = MagicMock()
+    exploding.deduct.side_effect = AssertionError("wire must not debit credits")
+    monkeypatch.setattr(waiver_mod, "load_waiver_source", _fake_source)
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    app.dependency_overrides[get_credit_service] = lambda: exploding
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/waiver/wire")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    exploding.deduct.assert_not_called()
+
+
 async def test_recommendations_shape_with_mocked_source(monkeypatch):
     monkeypatch.setenv("WAIVER_DEMO_MODE", "true")
 

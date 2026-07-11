@@ -75,6 +75,24 @@ class WaiverLeagueResponse(BaseModel):
     enforced: bool
 
 
+class WirePlayerOut(BaseModel):
+    """One available free agent for the FREE browse list. name/position/nfl_team/
+    forward_ppg only — ``nfl_team`` is NULLABLE (some rows have no team_abbr): emit
+    null, never drop the player."""
+    id: str
+    name: str
+    position: str
+    nfl_team: Optional[str]
+    forward_ppg: float
+
+
+class WaiverWireResponse(BaseModel):
+    season: int
+    week: int
+    players: list[WirePlayerOut]
+    demo_mode: bool
+
+
 class AddOut(PlayerBadgeFields):
     id: str
     name: str
@@ -252,6 +270,36 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
         season=src.state.season, week=src.state.week, teams=teams,
         waiver_type=src.waiver_type, faab_budget=src.faab_budget,
         demo_mode=demo, enforced=waiver_demo_enforce_gates(),
+    )
+
+
+@router.get("/wire", response_model=WaiverWireResponse)
+async def wire(user=Depends(get_current_user), db=Depends(get_db)):
+    """FREE, UN-METERED browse list of the full available wire pool.
+
+    Exposes the ALREADY-COMPUTED pool (``src.pool`` + ``src.values``) sorted by
+    forward_ppg desc — ZERO new value logic (no recompute / re-rank / re-value).
+    Deliberately NOT behind ``check_feature_access`` and it NEVER debits credits:
+    browsing the wire is free for every tier; only ``/recommendations`` costs. Waivers
+    are a weekly-points question, so the metric is forward_ppg — NOT trade_value.
+    """
+    demo = waiver_demo_enabled()
+    src = await load_waiver_source(db, demo, user)
+
+    players: list[WirePlayerOut] = []
+    for rp in src.pool:
+        v = src.values.get(rp.canonical_player_id)
+        if v is None:
+            continue
+        players.append(WirePlayerOut(
+            id=rp.canonical_player_id, name=rp.name, position=rp.position,
+            nfl_team=rp.nfl_team,  # nullable — emitted as-is, never dropped
+            forward_ppg=v.forward_ppg,
+        ))
+    players.sort(key=lambda p: p.forward_ppg, reverse=True)
+
+    return WaiverWireResponse(
+        season=src.state.season, week=src.state.week, players=players, demo_mode=demo,
     )
 
 
