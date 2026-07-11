@@ -72,6 +72,27 @@ _ELITE_PCT = 0.95          # elite = 95th percentile of the position pool
 _REPL_BAND = 5             # replacement = mean of this many waiver-tier players below the cutoff
 _MIN_POOL_MARGIN = _REPL_BAND  # need cutoff + a full band to derive, else fall back
 
+# DEEP-WAIVER correction (waiver_aware_replacement): WR/TE rosters run deep past their
+# starter line, so the starter-demand replacement overstates the streamable level and
+# crushes mid WR/TE to ~0. For these positions the replacement drops to the MARGINAL
+# ROSTER SPOT instead. RB (scarcity) + K/DEF (streamed at the line) are NOT corrected.
+_DEEP_WAIVER_POSITIONS = ("WR", "TE")
+_REPLACEMENT_JUNK_PPG = 2.0   # below this ppg = a roster stash, not a streamable replacement
+
+# STREAMING-BASELINE replacement (waiver_aware_replacement): K and DEF are STREAMED
+# weekly — every manager can pick up the best available matchup play, so the honest
+# replacement is the TOP of the available pool, not the season-average of a below-cutoff
+# band (and never the sparse-pool _PPG_ANCHORS fallback: a 12-team league rosters exactly
+# 12 K / 12 DEF — the starter cutoff with zero bench — so derive_anchors can NEVER derive
+# for them and always fell back, inflating K/DEF VOR: Vikings DEF read 31.5 == an elite
+# WR; the finder's no-wire path read 44.4). Baseline = mean of the top _STREAM_TOP_N of
+# the WIRE (what's actually go-and-get-able); a thin wire falls back to rostered ∪ wire,
+# which lands within ~0.3 ppg of the same level — pool-independent either way. Result:
+# even the best season-long DEF keeps only a small margin (~2-3), typical DEF/K → 0.
+# K/DEF ONLY — RB/WR/TE keep the Build-A derived replacement byte-for-byte.
+_STREAMED_POSITIONS = ("K", "DEF")
+_STREAM_TOP_N = 3
+
 # Usage-trend threshold: composite (snap%+target share)/2 change, last-2 vs
 # prior-3. 0.045 ≈ a ~5–9 point swing in snaps or target share.
 _TREND_THRESHOLD = 0.045
@@ -567,6 +588,132 @@ def replacement_ppg_by_position(values: dict[str, "InSeasonValue"]) -> dict[str,
             ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
     anchors = derive_anchors(ppg_by_pos)
     return {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
+
+
+def waiver_aware_replacement(
+    values: dict[str, "InSeasonValue"],
+    wire_ppg_by_pos: dict[str, list[float]] | None = None,
+) -> dict[str, float]:
+    """{position: replacement ppg} — LEAGUE-LOCAL, WAIVER-AWARE value-over-replacement.
+
+    Replacement at position P = the STREAMABLE level = ``derive_anchors``' replacement
+    (the band just below the league's starter-demand cutoff) over the combined pool of —
+      * this league's ROSTERED players at P (from ``values``), and
+      * this league's WAIVER WIRE at P (``wire_ppg_by_pos``, the derived FA pool).
+    League-LOCAL (this league's rosters + its wire), NEVER all-NFL. Empty pool (too
+    sparse) → the documented ``_PPG_ANCHORS`` fallback so VOR stays bounded.
+
+    DEEP-WAIVER correction (WR/TE) — ``_DEEP_WAIVER_POSITIONS``. The starter-demand cutoff
+    counts only STARTERS, so the derived replacement is the best *bench* player. For deep
+    positions (WR/TE rosters run many players past their starter line) that overstates the
+    streamable level — a genuine WR3 then reads ~0 above "replacement." So for WR/TE the
+    replacement is re-derived as the MARGINAL ROSTER SPOT: the band of the worst
+    STARTER-CALIBER rostered players (junk stashes < ``_REPLACEMENT_JUNK_PPG`` excluded),
+    i.e. the last players who cleared a roster ≈ the real waiver line. It only LOWERS
+    (``min``), never raises. RB (scarce — high replacement is real) keeps the plain
+    derived level.
+
+    STREAMING BASELINE (K/DEF) — ``_STREAMED_POSITIONS``. K/DEF are streamed WEEKLY, and a
+    12-team league rosters exactly 12 of each (the starter cutoff, zero bench), so
+    ``derive_anchors`` can never derive for them (it silently fell back to ``_PPG_ANCHORS``,
+    inflating their VOR — an elite DEF read like an elite WR). Their replacement is instead
+    the streamable level itself: the mean of the top ``_STREAM_TOP_N`` wire options (thin
+    wire → rostered ∪ wire). High relative to K/DEF output by nature → their VOR collapses:
+    typical K/DEF → 0, the league's best DEF keeps only a small (~2-3) margin.
+    """
+    ppg_by_pos: dict[str, list[float]] = {}
+    for v in values.values():
+        if v.position in _VALUE_POSITIONS:
+            ppg_by_pos.setdefault(v.position, []).append(v.forward_ppg)
+    pool = {pos: list(lst) for pos, lst in ppg_by_pos.items()}
+    for pos, lst in (wire_ppg_by_pos or {}).items():
+        if pos in _VALUE_POSITIONS:
+            pool.setdefault(pos, []).extend(lst)
+    anchors = derive_anchors(pool)
+    repl = {pos: anchors[pos][0] for pos in _VALUE_POSITIONS}
+
+    for pos in _DEEP_WAIVER_POSITIONS:
+        starter = int(round(_starter_demand(pos, LEAGUE_TEAMS)))
+        playable = sorted(
+            (p for p in ppg_by_pos.get(pos, []) if p >= _REPLACEMENT_JUNK_PPG),
+            reverse=True,
+        )
+        if len(playable) - starter < _REPL_BAND:
+            continue  # no real bench depth to correct for → keep the waiver-aware level
+        hi = len(playable)
+        lo = max(starter, hi - _REPL_BAND)   # the _REPL_BAND worst starter-caliber rostered
+        repl[pos] = min(repl[pos], round(sum(playable[lo:hi]) / (hi - lo), 1))
+
+    # STREAMING BASELINE (K/DEF only — see _STREAMED_POSITIONS): the replacement is the
+    # level a manager can STREAM this week — the mean of the top _STREAM_TOP_N wire
+    # options (thin wire → the full rostered ∪ wire pool, ~the same level). Replaces the
+    # derived/fallback value entirely for these positions, so K/DEF are pool-independent
+    # and even the top season-long DEF keeps only a small margin. A degenerate pool
+    # (< _STREAM_TOP_N anywhere) keeps the derive_anchors/_PPG_ANCHORS value.
+    for pos in _STREAMED_POSITIONS:
+        wire_pool = sorted((wire_ppg_by_pos or {}).get(pos, []), reverse=True)
+        stream_pool = wire_pool if len(wire_pool) >= _STREAM_TOP_N else sorted(
+            pool.get(pos, []), reverse=True)
+        if len(stream_pool) >= _STREAM_TOP_N:
+            repl[pos] = round(sum(stream_pool[:_STREAM_TOP_N]) / _STREAM_TOP_N, 1)
+    return repl
+
+
+def vor_value(forward_ppg: float, position: str, replacement: dict[str, float]) -> float:
+    """Trade VALUE = points ABOVE the league-local replacement at this position, floored
+    at 0. Replaces absolute forward_value as the trade currency (a below-replacement
+    player has ~0 trade value, not negative). Runs FREE — no cap; a genuine elite outlier
+    exceeds the typical band iff its margin over replacement is real.
+
+    This is the SHAPE (relative ordering + K/DEF→~0); the user-facing 0-100 number is
+    ``rescale_vor(...)`` applied on top. Kept separate so the verdict's ``lineup_gain``
+    (which reasons in raw ppg) never sees the display rescale."""
+    return round(max(0.0, float(forward_ppg) - replacement.get(position, 0.0)), 1)
+
+
+# ---------------------------------------------------------------------------
+# VOR → 0-100 display rescale (anchor the top, PIN the floor)
+# ---------------------------------------------------------------------------
+# #261's raw VOR (ppg over replacement) has the right SHAPE but a compressed 0-~14
+# ruler, so an elite RB reads "11.7" and looks middling. Rescale to a clean 0-100 so
+# elite skill returns to the ~top while K/DEF stay ~0.
+#
+# CRITICAL — this is an ANCHOR-THE-TOP, PIN-THE-FLOOR curve, NOT a uniform multiply.
+# A naive linear stretch (VOR * 100/max_vor) would lift a streamable DEF from ~2.6 VOR
+# to ~22, re-breaking the fix. Instead a convex power curve maps top-VOR→100 while
+# near-zero VOR stays near-zero: a DEF at ~2.6 VOR lands ~2-3, an elite RB at ~12 VOR
+# lands ~90+.
+#
+# The anchor is a STABLE constant (an elite-tier VOR benchmark), NOT the per-trade max
+# VOR — so the 0-100 scale is consistent across trades (it doesn't jump when the pool
+# changes). A player at/above the anchor clamps to 100 (as elites did on the old scale).
+_VOR_ELITE_ANCHOR = 12.0   # VOR (ppg over replacement) that maps to 100 — a stable
+                           # elite-skill benchmark, position-agnostic, not the pool max.
+_VOR_CURVE_EXP = 2.2       # convexity >1: steep at the top (anchor→100), flat near 0
+                           # (streamable K/DEF at ~2-3 VOR stay ~2-3, NOT lifted to ~22).
+                           # 2.2 (from 2.5) lifts the mid tier off the floor while keeping
+                           # streamers low; paired with the deep-waiver WR/TE replacement.
+
+
+def rescale_vor(vor: float) -> float:
+    """Map raw VOR (ppg over replacement, ``vor_value``) onto a stable 0-100 display
+    scale. Anchor-the-top / pin-the-floor: 0→0, ``_VOR_ELITE_ANCHOR``→100 (clamped),
+    and a convex curve in between so near-zero VOR (streamable K/DEF) stays near-zero
+    instead of being stretched up. This is the ONE number every consumer shows — chips,
+    prose, give/get totals — so they never split-brain across scales."""
+    if vor <= 0.0:
+        return 0.0
+    return round(100.0 * min(1.0, float(vor) / _VOR_ELITE_ANCHOR) ** _VOR_CURVE_EXP, 1)
+
+
+def trade_value(v: "InSeasonValue", replacement: dict[str, float]) -> float:
+    """THE canonical trade value — the ONE 0-100 number every trade surface shows
+    (Build-a-Trade picker, analyze/ideas chips, give/get totals). League-local,
+    waiver-aware VOR (points above the best rosterable replacement) rescaled onto the
+    stable 0-100 curve. ``replacement`` is computed ONCE per league via
+    ``waiver_aware_replacement(values, wire)`` and passed in — never recomputed
+    per-trade, so a player's value is identical in every trade and every section."""
+    return rescale_vor(vor_value(v.forward_ppg, v.position, replacement))
 
 
 # ---------------------------------------------------------------------------

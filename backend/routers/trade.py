@@ -38,6 +38,10 @@ from backend.services.trade.trade_proposals import (
     build_silence_context,
     evaluate_candidates,
 )
+from backend.services.trade.value_engine import (
+    trade_value,
+    waiver_aware_replacement,
+)
 
 router = APIRouter(prefix="/trade", tags=["trade"])
 
@@ -57,6 +61,7 @@ class PlayerGroundingOut(PlayerBadgeFields):
     position: str
     side: str
     forward_value: float
+    vor: float               # league-local waiver-aware VOR — the trade value shown to the user
     value_trend: str
     confidence: str
     buy_low: bool
@@ -96,7 +101,7 @@ class TradeAnalyzeResponse(BaseModel):
     winner: str
     fairness: str
     lineup_gain: float       # HEADLINE: Δ your starting-lineup points/week (resulting roster)
-    value_delta: float       # raw forward_value delta — grounding only, does NOT drive the verdict
+    value_delta: float       # get − give of canonical trade_value (0-100); grounding only, NOT the verdict
     give_value: float
     get_value: float
     confidence: str
@@ -171,7 +176,7 @@ class LeaguePlayerOut(PlayerBadgeFields):
     position: str
     nfl_team: Optional[str] = None
     starter_slot: Optional[str] = None
-    forward_value: float
+    value: float          # canonical trade_value (0-100) — SAME scale the verdict chips show
     value_trend: str
     confidence: str
     buy_low: bool
@@ -196,8 +201,42 @@ class TradeLeagueResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Seams (patch points for tests + the slice-6 real provider)
 # ---------------------------------------------------------------------------
+async def _wire_ppg_by_position(db, state, weekly_usage, priors, season, week):
+    """Value this league's WAIVER WIRE (the derived FA pool) → {position: [forward_ppg]}
+    — the wire side of the league-local, waiver-aware VOR replacement pool. Reuses the
+    SAME derive + aug-state valuation the waiver source uses, so the wire's K/DEF are
+    priced on the same basis as rostered players. Empty (pre-draft, no in-season pool) →
+    {} → VOR falls back to the documented anchor replacement."""
+    from backend.services.kdef_matchup import apply_dst_matchup
+    from backend.services.trade.league_state import LeagueState, TeamState
+    from backend.services.trade.real_league_source import _derive_pool
+    from backend.services.trade.value_engine import evaluate_league
+
+    rostered = {rp.canonical_player_id for t in state.teams for rp in t.roster}
+    pool = await _derive_pool(db, weekly_usage, rostered)
+    if not pool:
+        return {}
+    aug = LeagueState(
+        season=state.season, week=state.week,
+        teams=state.teams + (TeamState(team_id="waiver-pool", team_name="Free Agents",
+                                       is_me=False, roster=tuple(pool)),),
+        roster_slots=state.roster_slots,
+    )
+    vals = evaluate_league(aug, weekly_usage, priors=priors)
+    vals, _ = apply_dst_matchup(vals, aug, season=season, week=week)
+    wire: dict[str, list[float]] = {}
+    for rp in pool:
+        v = vals.get(rp.canonical_player_id)
+        if v is not None:
+            wire.setdefault(v.position, []).append(v.forward_ppg)
+    return wire
+
+
 async def load_league_for_analysis(db, user, demo: bool):
-    """Return (LeagueState, {player_id: InSeasonValue}, roster_limit).
+    """Return (LeagueState, {player_id: InSeasonValue}, roster_limit, wire_ppg_by_pos).
+
+    ``wire_ppg_by_pos`` = the derived waiver wire priced by position — the wire side of
+    the league-local waiver-aware VOR replacement (value_engine.waiver_aware_replacement).
 
     Demo rides the existing TRADE_DEMO_MODE seam (#152). The real per-user
     league-state provider arrives with slice 6; until then the non-demo path
@@ -216,7 +255,9 @@ async def load_league_for_analysis(db, user, demo: bool):
         from backend.services.kdef_matchup import apply_dst_matchup
         from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
         values, _dst_matchup = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
-        return state, values, DEFAULT_ROSTER_LIMIT
+        wire = await _wire_ppg_by_position(db, state, source.weekly_usage, source.priors,
+                                           DEMO_SEASON, DEMO_CURRENT_WEEK)
+        return state, values, DEFAULT_ROSTER_LIMIT, wire
 
     # Real (non-demo) path — the RealLeagueSource: synced platform rosters resolved
     # deterministically via the canonical resolve_player (#243), the live week from
@@ -235,7 +276,9 @@ async def load_league_for_analysis(db, user, demo: bool):
     state = source.get_league_state()
     values = evaluate_league(state, source.weekly_usage, priors=source.priors)
     values, _dst = apply_dst_matchup(values, state, season=source.season, week=source.week)
-    return state, values, source.roster_limit
+    wire = await _wire_ppg_by_position(db, state, source.weekly_usage, source.priors,
+                                       source.season, source.week)
+    return state, values, source.roster_limit, wire
 
 
 def get_trade_analyzer():
@@ -272,7 +315,7 @@ def _to_response(
     def out(p):
         return PlayerGroundingOut(
             id=p.canonical_player_id, name=p.name, position=p.position, side=p.side,
-            forward_value=p.forward_value, value_trend=p.value_trend,
+            forward_value=p.forward_value, vor=p.vor, value_trend=p.value_trend,
             confidence=p.confidence, buy_low=p.buy_low, sell_high=p.sell_high, why=p.why,
             injury_status=injury_by_id.get(p.canonical_player_id),
         )
@@ -319,7 +362,7 @@ async def analyze(
 
     # 2. Resolve the league + per-player engine values (501 if real not ready —
     #    still before any credit deduction).
-    state, values, roster_limit = await load_league_for_analysis(db, user, demo)
+    state, values, roster_limit, wire = await load_league_for_analysis(db, user, demo)
 
     # 3. Validate the trade (400) — cheap, BEFORE any deduction.
     try:
@@ -338,7 +381,7 @@ async def analyze(
     rules = None if demo else lineup_rules_from_slots(state.roster_slots)
     analysis = analyze_trade(
         state, values, body.my_team_id, body.give, body.get,
-        roster_limit=roster_limit, rules=rules,
+        roster_limit=roster_limit, rules=rules, wire_ppg_by_pos=wire,
     )
     analysis.rationale = await agent.explain_trade(analysis)
 
@@ -347,7 +390,7 @@ async def analyze(
     #    confidence. Never gates — it only annotates the verdict.
     acc = acceptability_read(
         state, values, body.my_team_id, body.give, body.get,
-        hedged=analysis.hedged, roster_limit=roster_limit,
+        hedged=analysis.hedged, roster_limit=roster_limit, wire=wire,
     )
     acceptability = AcceptabilityOut(
         verdict=acc.verdict, their_lineup_gain=acc.their_lineup_gain,
@@ -377,7 +420,7 @@ async def ideas(
         FeatureService.check_feature_access(user, "trade_finder")
 
     # 2. League + per-player values (501 if real not ready — before any deduct).
-    state, values, roster_limit = await load_league_for_analysis(db, user, demo)
+    state, values, roster_limit, _wire = await load_league_for_analysis(db, user, demo)
 
     my_team_id = body.my_team_id or (state.my_team.team_id if state.my_team else None)
     if my_team_id is None:
@@ -391,9 +434,11 @@ async def ideas(
 
     # 4. Generate candidates (LLM, deterministic fallback) → filter through the
     #    four-condition EDGE BAND (slice 4) → rank by your_net → cap (never-pad).
-    candidates = await proposals_agent.generate_candidates(state, my_team_id, values)
+    candidates = await proposals_agent.generate_candidates(
+        state, my_team_id, values, wire=_wire,
+    )
     surfaced = evaluate_candidates(
-        state, values, my_team_id, candidates, roster_limit=roster_limit,
+        state, values, my_team_id, candidates, roster_limit=roster_limit, wire=_wire,
     )
 
     # Generate the per-proposal rationales CONCURRENTLY — each is a Sonnet call,
@@ -425,7 +470,9 @@ async def ideas(
     # candidate results; never changes what surfaced.
     silence_context = None
     if not proposals:
-        sc = build_silence_context(state, values, my_team_id, candidates, roster_limit=roster_limit)
+        sc = build_silence_context(
+            state, values, my_team_id, candidates, roster_limit=roster_limit, wire=_wire,
+        )
         if sc is not None:
             def _ref(pid: str) -> PlayerRefOut:
                 v = values[pid]
@@ -453,10 +500,10 @@ async def ideas(
 @router.get("/league", response_model=TradeLeagueResponse)
 async def league(user=Depends(get_current_user), db=Depends(get_db)):
     """READ-ONLY support for the trade page's picker + team-switcher. Exposes the
-    SAME slice-2 seeded demo LeagueState run through the SAME evaluate_league, so
-    picker values match verdict values exactly. Demo-only: with TRADE_DEMO_MODE
-    off it 404s (no real-league exposure here). Adds NO trade logic — it just
-    reshapes what load_league_for_analysis already returns."""
+    SAME slice-2 seeded demo LeagueState, and emits each player's CANONICAL
+    ``trade_value`` (the SAME value_engine function the verdict chips read) so picker
+    values match verdict values exactly — one scale, no split-brain. Demo-only: with
+    TRADE_DEMO_MODE off it 404s (no real-league exposure here). Adds NO trade logic."""
     demo = trade_demo_enabled()
     if not demo:
         raise HTTPException(
@@ -464,7 +511,10 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             detail="trade demo league is only available under TRADE_DEMO_MODE",
         )
 
-    state, values, _ = await load_league_for_analysis(db, user, demo)
+    state, values, _, wire = await load_league_for_analysis(db, user, demo)
+    # ONE replacement per league (waiver-aware), passed into the shared trade_value —
+    # exactly what analyze_trade does, so a player reads identically in both sections.
+    replacement = waiver_aware_replacement(values, wire)
 
     teams: list[LeagueTeamOut] = []
     for team in state.teams:
@@ -474,7 +524,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             roster.append(LeaguePlayerOut(
                 id=rp.canonical_player_id, name=rp.name, position=rp.position,
                 nfl_team=rp.nfl_team, starter_slot=rp.starter_slot,
-                forward_value=v.forward_value if v else 0.0,
+                value=trade_value(v, replacement) if v else 0.0,
                 value_trend=v.value_trend.value if v else "stable",
                 confidence=v.confidence.value if v else "insufficient",
                 buy_low=v.buy_low if v else False,

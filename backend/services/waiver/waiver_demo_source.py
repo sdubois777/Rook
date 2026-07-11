@@ -30,6 +30,7 @@ chart data is real-CURRENT — the news tie-in demonstrates the MECHANISM
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -41,7 +42,7 @@ from sqlalchemy import select
 
 from backend.models.player import Player
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
-from backend.services.trade.trade_demo_source import seed_demo_league
+from backend.services.trade.trade_demo_source import _seed_lock, seed_demo_league
 from backend.services.trade.value_engine import InSeasonValue, evaluate_league
 from backend.services.waiver.faab import FAAB_BUDGET_DEFAULT
 
@@ -94,9 +95,43 @@ def _demo_faab_remaining(team_id: str, idx: int) -> int:
     return max(20, FAAB_BUDGET_DEFAULT - (idx * 17) % 80)
 
 
+# Per-process seed cache — same pattern (and rationale) as the trade demo's
+# _SEED_CACHE: the waiver seed re-ran the trade seed PLUS the pool build and a
+# SECOND evaluate_league over the augmented state (~8s measured) on every
+# /waiver/league, /waiver/wire AND /recommendations call. All inputs are pinned +
+# deterministic; every state dataclass is frozen → one shared instance is safe.
+# Injected ``weekly_usage`` (tests) bypasses. Grep WAIVER_DEMO to tear down.
+_WAIVER_SEED_CACHE: dict[tuple[int, int], WaiverDemoSource] = {}
+_WAIVER_SEED_LOCKS: dict[int, asyncio.Lock] = {}   # per-loop locks (see _seed_lock)
+
+
+def clear_waiver_seed_cache() -> None:
+    """Drop the cached waiver seed (tests / CLI after DB changes)."""
+    _WAIVER_SEED_CACHE.clear()
+
+
 async def seed_demo_waiver(db, *, weekly_usage: Optional[pd.DataFrame] = None) -> WaiverDemoSource:
-    """Build the waiver demo from the REAL DB: reuse the trade demo's 12-team state
-    + per-week layer, add the available pool, and value everyone together."""
+    """Build the waiver demo — cached per process (see _WAIVER_SEED_CACHE).
+    ``weekly_usage`` injection (tests) bypasses the cache."""
+    from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
+
+    if weekly_usage is not None:
+        return await _seed_demo_waiver_uncached(db, weekly_usage)
+    key = (DEMO_SEASON, DEMO_CURRENT_WEEK)
+    if (hit := _WAIVER_SEED_CACHE.get(key)) is not None:
+        return hit
+    async with _seed_lock(_WAIVER_SEED_LOCKS):
+        if (hit := _WAIVER_SEED_CACHE.get(key)) is not None:   # lost the race
+            return hit
+        src = await _seed_demo_waiver_uncached(db, None)
+        _WAIVER_SEED_CACHE[key] = src
+        logger.info("waiver demo seed cached (per-process) for season=%d week=%d", *key)
+        return src
+
+
+async def _seed_demo_waiver_uncached(db, weekly_usage: Optional[pd.DataFrame]) -> WaiverDemoSource:
+    """The real build: reuse the trade demo's 12-team state + per-week layer, add
+    the available pool, and value everyone together."""
     trade_src = await seed_demo_league(db, weekly_usage=weekly_usage)
     state = trade_src.get_league_state()
     weekly = trade_src.weekly_usage

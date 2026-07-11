@@ -24,7 +24,7 @@ asymmetry is what makes positive-sum (mutually-acceptable) trades representable.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from backend.services.trade.lineup import (
     DEFAULT_LINEUP_RULES,
@@ -45,15 +45,22 @@ def contextual_value(
     player: LineupPlayer,
     roster: list[LineupPlayer],
     rules: Optional[LineupRules] = None,
+    *,
+    value_of: Optional[Callable[[LineupPlayer], float]] = None,
 ) -> float:
     """Value of ``player`` TO ``roster`` (roster excludes the player). Roster-
     relative: judged against this roster's optimal lineup + its starters at the
-    player's position, never a global slot count."""
+    player's position, never a global slot count.
+
+    ``value_of`` selects the per-player value everything here is measured in;
+    default ``forward_value``. The FINDER passes the canonical trade_value
+    selector so pool 'does this help' membership is on the displayed scale."""
     rules = rules or DEFAULT_LINEUP_RULES
+    val = value_of or (lambda p: p.forward_value)
 
     # 1. Starter upgrade — marginal contribution to the optimal lineup.
-    base = optimal_lineup(roster, rules).strength
-    with_player = optimal_lineup([*roster, player], rules).strength
+    base = optimal_lineup(roster, rules, value_of=value_of).strength
+    with_player = optimal_lineup([*roster, player], rules, value_of=value_of).strength
     starter_upgrade = round(with_player - base, 1)  # ≥ 0
 
     # 2. Bench-depth value — closeness to the weakest DEDICATED starter at his
@@ -61,17 +68,17 @@ def contextual_value(
     #    upgrade term above; this only binds when he wouldn't start at all).
     k = rules.slots.get(player.position, 0)
     same_pos = sorted(
-        (p.forward_value for p in roster if p.position == player.position),
+        (val(p) for p in roster if p.position == player.position),
         reverse=True,
     )
     if k >= 1 and len(same_pos) >= k and same_pos[k - 1] > 0:
         weakest_pos_starter = same_pos[k - 1]
-        closeness = min(1.0, player.forward_value / weakest_pos_starter)
+        closeness = min(1.0, val(player) / weakest_pos_starter)
     else:
         # Roster thin at his position → he'd start; the upgrade term governs.
         closeness = 1.0
     bench_depth_value = round(
-        _BENCH_DEPTH_WEIGHT * player.forward_value * (closeness ** _BENCH_DEPTH_STEEPNESS),
+        _BENCH_DEPTH_WEIGHT * val(player) * (closeness ** _BENCH_DEPTH_STEEPNESS),
         1,
     )
 

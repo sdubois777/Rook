@@ -8,6 +8,14 @@ export async function fetchWaiverLeague() {
   return data
 }
 
+// FREE, un-metered browse list of the whole available wire pool — one row per free
+// agent (name/position/nfl_team/forward_ppg), sorted by forward_ppg desc. Browsing
+// never debits credits or checks the tier gate; only recommendations cost.
+export async function fetchWaiverWire() {
+  const { data } = await apiClient.get('/waiver/wire')
+  return data
+}
+
 // Recommendations value the whole free-agent pool + run a news/depth-chart query,
 // so allow a longer timeout than the 15s client default.
 const REC_TIMEOUT_MS = 60000
