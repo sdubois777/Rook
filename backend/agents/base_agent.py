@@ -60,6 +60,35 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Prompt caching — Anthropic-side (NOT the Rook agent_cache)
+# ---------------------------------------------------------------------------
+# The system prompt (+ optional shared context) is marked with cache_control so
+# repeat calls read the static prefix at ~0.1x instead of re-paying full input
+# price — measured at 71-80% of the dominant stage's input. Two hard rules:
+#   * TTL MUST be "1h": a full pipeline run spans ~40 min; the default 5-min TTL
+#     expires mid-run and silently re-bills full price. 1h write costs 2x (vs
+#     1.25x) but one write covers the whole stage.
+#   * Minimum cacheable prefix (Sonnet 4.6 = 2048 tok, Haiku 4.5 = 4096 tok):
+#     shorter prefixes SILENTLY don't cache (no error, no write premium either).
+#     That is why callers with a sub-minimum system prompt pass shared_context —
+#     stable per-entity context moved INTO the cached block to clear the bar.
+_CACHE_TTL = "1h"
+
+# Cache-write multiplier for the 1h TTL (writes bill at 2x input price; reads 0.1x).
+_CACHE_WRITE_MULT = 2.0
+_CACHE_READ_MULT = 0.1
+
+
+def build_system_blocks(system: str, shared_context: str | None = None) -> list[dict]:
+    """System prompt (+ optional stable shared context) as content blocks, with
+    a 1h-TTL cache breakpoint on the LAST block — caching the whole prefix."""
+    blocks: list[dict] = [{"type": "text", "text": system}]
+    if shared_context:
+        blocks.append({"type": "text", "text": shared_context})
+    blocks[-1]["cache_control"] = {"type": "ephemeral", "ttl": _CACHE_TTL}
+    return blocks
+
+# ---------------------------------------------------------------------------
 # Client singleton
 # ---------------------------------------------------------------------------
 
@@ -117,6 +146,7 @@ class BaseAgent:
         entity_id: str = "",
         model: str | None = None,
         max_tokens: int | None = None,
+        shared_context: str | None = None,
     ) -> str:
         """
         Single API call with transparent caching and usage logging.
@@ -124,12 +154,20 @@ class BaseAgent:
         Args:
             model: Override class AGENT_MODEL for this call (e.g. Sonnet for complex players).
             max_tokens: Override class AGENT_MAX_TOKENS for this call.
+            shared_context: STABLE content shared across many calls (e.g. the
+                per-team context repeated for every player of a team). Moved into
+                the Anthropic-cached system prefix — required where the system
+                prompt alone is under the model's minimum cacheable size (Sonnet
+                4.6 = 2048 tok). Must be byte-stable across the calls that share
+                it. The semantic content the model sees is unchanged — this is a
+                transport optimization, not a prompt rewrite.
 
         Steps:
           1. Hash input_data with sha256
           2. Check agent_cache — if hit, log cache_hit=True and return cached text
           3. If dry_run=True, log estimate and return ""
           4. Call client.messages.create() with effective model and max_tokens
+             (the system prefix carries a 1h-TTL prompt-cache breakpoint)
           5. Log to api_usage_log (cache_hit=False)
           6. Write raw response text to agent_cache
           7. Return response text
@@ -177,17 +215,22 @@ class BaseAgent:
             max_tokens=effective_max,
             system=system,
             user=user,
+            shared_context=shared_context,
         )
 
         raw = response.content[0].text
 
-        # 4. Log + cache
+        # 4. Log + cache. usage.input_tokens is the UNCACHED remainder only —
+        # cache_creation/cache_read carry the prefix tokens at 2x / 0.1x rates.
+        usage = response.usage
         await self._log_usage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             cache_hit=False,
             entity_id=entity_id,
             model_override=effective_model,
+            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
         )
         await self._write_cache(input_hash, raw, entity_id)
 
@@ -204,19 +247,26 @@ class BaseAgent:
         system: str,
         user: str,
         max_retries: int = 6,
+        shared_context: str | None = None,
     ) -> anthropic.types.Message:
         """Call messages.create() with exponential backoff for 529 / rate limits.
+
+        The system prompt (+ optional shared_context) goes as content blocks with
+        a 1h-TTL prompt-cache breakpoint on the last block (build_system_blocks).
+        Prefixes under the model's minimum cacheable size silently don't cache —
+        no error and no write premium, so this is safe to apply universally.
 
         Retry schedule (base * 2^attempt + jitter):
           429 RateLimitError:  5s, 10s, 20s, 40s, 80s, 160s
           529 Overloaded:     10s, 20s, 40s, 80s, 160s, 320s
         """
+        system_blocks = build_system_blocks(system, shared_context)
         for attempt in range(max_retries):
             try:
                 return await self._client.messages.create(
                     model=model,
                     max_tokens=max_tokens,
-                    system=system,
+                    system=system_blocks,
                     messages=[{"role": "user", "content": user}],
                 )
 
@@ -297,6 +347,8 @@ class BaseAgent:
         cache_hit: bool,
         entity_id: str,
         model_override: str | None = None,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
     ) -> None:
         from backend.models.api_usage_log import ApiUsageLog
 
@@ -304,8 +356,12 @@ class BaseAgent:
         in_price, out_price = _MODEL_PRICING.get(
             effective_model, (SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK)
         )
+        # Honest cost: usage.input_tokens is the UNCACHED remainder; cache writes
+        # bill at 2x (1h TTL) and cache reads at 0.1x of the input price.
         cost = Decimal(str(
             input_tokens * in_price / 1_000_000
+            + cache_creation_tokens * in_price * _CACHE_WRITE_MULT / 1_000_000
+            + cache_read_tokens * in_price * _CACHE_READ_MULT / 1_000_000
             + output_tokens * out_price / 1_000_000
         ))
 
@@ -324,9 +380,11 @@ class BaseAgent:
 
         if not cache_hit and (input_tokens or output_tokens):
             logger.info(
-                "%s / %s — %d in + %d out tokens, est. $%.5f",
+                "%s / %s — %d in + %d out tokens "
+                "(prompt-cache: %d written, %d read), est. $%.5f",
                 self.AGENT_NAME, entity_id,
-                input_tokens, output_tokens, float(cost),
+                input_tokens, output_tokens,
+                cache_creation_tokens, cache_read_tokens, float(cost),
             )
 
 

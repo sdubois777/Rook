@@ -3,9 +3,23 @@ scripts/run_predraft_pipeline.py
 
 Runs the pre-draft AI agent pipeline in order.
 
+INCREMENTAL BY DEFAULT (the cost model — measured $10.82/full-sweep):
+  * Default runs are DIRTY-ONLY: player_profiles regenerates only players whose
+    MATERIAL inputs changed (value-delta fingerprint — injury status, depth,
+    dependency flags, beat signals, team system; see profile_needs_refresh),
+    and every agent's identical inputs hit agent_cache at zero tokens. A
+    realistic in-season cycle re-profiles a handful of players (~$0.05-2),
+    not all ~660 ($10.82).
+  * FULL SWEEP is explicit: --full-sweep (alias --force) bypasses the dirty
+    test. Operating model: full sweeps belong to PRE-DRAFT (profiles rebuild
+    off completed-season baselines); IN-SEASON is daily news ingestion +
+    event-triggered dirty refreshes only — no scheduled full sweeps.
+  * Prompt caching (1h TTL) rides on every call automatically via BaseAgent.
+
 Usage:
     uv run python scripts/run_predraft_pipeline.py --dry-run
-    uv run python scripts/run_predraft_pipeline.py --agent all
+    uv run python scripts/run_predraft_pipeline.py --agent all              # dirty-only
+    uv run python scripts/run_predraft_pipeline.py --agent all --full-sweep # pre-draft rebuild
     uv run python scripts/run_predraft_pipeline.py --agent team_systems
     uv run python scripts/run_predraft_pipeline.py --agent roster_changes --team LAC
 """
@@ -387,9 +401,11 @@ async def main() -> None:
         help="Skip re-seeding the players table (assume it is already populated)",
     )
     parser.add_argument(
-        "--force",
+        "--force", "--full-sweep",
+        dest="force",
         action="store_true",
-        help="Force regeneration of all profiles, bypassing cache invalidation",
+        help="FULL SWEEP (pre-draft): regenerate all profiles, bypassing the "
+             "value-delta dirty test. Default runs are dirty-only (in-season).",
     )
     args = parser.parse_args()
 
