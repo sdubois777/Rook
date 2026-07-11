@@ -76,14 +76,17 @@ def test_likely_accept_when_their_lineup_improves():
 # LIKELY REJECT — the headline: great for YOU, their lineup falls → they'd reject
 # ---------------------------------------------------------------------------
 def test_likely_reject_when_trade_is_a_robbery_for_you():
-    # I give a scrub WR (5) and get their RB stud (24): huge for me, but they LOSE
-    # their RB1 → THEIR lineup falls → likely_reject, NOT a win.
-    me = [("q", "QB", 22), ("r1", "RB", 20), ("r2", "RB", 18), ("w1", "WR", 16),
-          ("w2", "WR", 14), ("w3", "WR", 12), ("t", "TE", 13), ("scrub", "WR", 5)]
-    them = [("q2", "QB", 19), ("stud", "RB", 24), ("r9", "RB", 9), ("w4", "WR", 15),
-            ("w5", "WR", 13), ("w6", "WR", 11), ("t2", "TE", 10)]
+    # (Build B) I give a fair-value WR (13 → trade_value 14.6) and get their RB1 stud
+    # (18 → 67): value-FAIR (ratio 4.6 < 5), huge for me, but they LOSE their RB1 →
+    # THEIR lineup CRATERS → likely_reject for the lineup-DROP reason, not a fleece.
+    # Give ppg sits in the discriminating band so the give has real trade_value and
+    # the reject is driven by cond-2 (their lineup falls), exactly as intended.
+    me = [("q", "QB", 22), ("r1", "RB", 12), ("r2", "RB", 11), ("gwr", "WR", 13),
+          ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 13), ("bwr", "WR", 10)]
+    them = [("q2", "QB", 19), ("stud", "RB", 18), ("r9", "RB", 9), ("w4", "WR", 16),
+            ("w5", "WR", 15), ("w6", "WR", 14), ("t2", "TE", 10)]
     state, values = _league(me, them)
-    acc = acceptability_read(state, values, "me", ["scrub"], ["stud"], hedged=False)
+    acc = acceptability_read(state, values, "me", ["gwr"], ["stud"], hedged=False)
     assert acc.verdict == ACCEPT_REJECT
     assert acc.their_lineup_gain < -_MAINTAIN_TOL   # their lineup falls below the maintain bar
     assert "drops" in acc.why                       # honest: it guts their lineup
@@ -110,13 +113,17 @@ def test_modest_fair_improvement_is_accept_and_agrees_with_gate():
 
 
 def test_pure_lateral_is_marginal():
-    # Give a low RB (6) that doesn't crack their RB-thin lineup (9,7) for a benched
-    # WR — their lineup is unchanged (~0, within the maintain band) and it's fair →
-    # marginal (a lateral they may not jump at), not a clear accept.
+    # (Build B) Give a fair-value bench WR (13 → trade_value 14.6) for their benched
+    # WR (wt6, 12 → 8.9): both sit BELOW their WR starter line, so their lineup is
+    # unchanged (~0, within the maintain band) and the swap is value-fair (ratio 0.61)
+    # → marginal (a lateral they may not jump at), not a clear accept. (An RB give
+    # can't be a lateral here — any real-trade_value RB cracks their RB-thin 9/7
+    # lineup and reads as an improvement — so the lateral is WR-for-benched-WR at
+    # comparable trade_value.)
     me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
-          ("rlow", "RB", 6), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
+          ("wlow", "WR", 13), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
     state, values = _league(me, THEM)
-    acc = acceptability_read(state, values, "me", ["rlow"], ["wt6"], hedged=False)
+    acc = acceptability_read(state, values, "me", ["wlow"], ["wt6"], hedged=False)
     assert acc.verdict == ACCEPT_MARGINAL
     assert -_MAINTAIN_TOL <= acc.their_lineup_gain <= _MAINTAIN_TOL
     assert "lateral" in acc.why
@@ -146,14 +153,17 @@ def test_reverse_fleece_is_labeled_reject():
 # so they can't drift. Moving _FAIRNESS_RATIO flips BOTH together.
 # ---------------------------------------------------------------------------
 def test_analyzer_and_gate_share_fairness_constant(monkeypatch):
-    # A fair-but-lopsided trade (acquirer ratio 3.5): give a surplus RB (10) for a
-    # benched WR (35). At R=5 it's fair → gate clears + analyzer accepts; tighten
-    # R to 2 and BOTH flip — the gate stops clearing AND the analyzer says reject.
+    # (Build B) A fair-but-lopsided trade on the trade_value scale (acquirer ratio
+    # ~3.1): give a surplus RB (14 → trade_value 21.8) for a benched WR (18 → 67). At
+    # R=5 it's fair → gate clears + analyzer accepts; tighten R to 2 and BOTH flip
+    # (3.1 > 2) — the gate stops clearing AND the analyzer says reject. Give/get ppg
+    # live in the discriminating band and the opp WR corps is stacked ABOVE 18 so the
+    # benched WR is genuine surplus (their lineup maintains when they ship it).
     me = [("q", "QB", 22), ("r1", "RB", 24), ("r2", "RB", 22), ("r3", "RB", 20),
-          ("rlow", "RB", 10), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
+          ("rlow", "RB", 14), ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 15)]
     opp = [("oq", "QB", 19), ("orb1", "RB", 9), ("orb2", "RB", 7),
-           ("ow1", "WR", 44), ("ow2", "WR", 42), ("ow3", "WR", 40), ("ow4", "WR", 38),
-           ("benchwr", "WR", 35), ("ote", "TE", 14)]
+           ("ow1", "WR", 24), ("ow2", "WR", 23), ("ow3", "WR", 22), ("ow4", "WR", 21),
+           ("benchwr", "WR", 18), ("ote", "TE", 14)]
     state, values = _league(me, opp)
     mlp, tlp = _lineup_roster(state.teams[0], values), _lineup_roster(state.teams[1], values)
 

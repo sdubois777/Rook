@@ -61,13 +61,20 @@ def _agent_with_llm(raw):
 # Gronk-shaped: strong everywhere but a badly WEAK QB (need), with RB depth to spend;
 # the opponent is RB-thin and holds a SURPLUS QB that's a big upgrade for me. The
 # broadened enumerator pays for that QB out of my RB depth — give(rb2) -> get(surplusQB),
-# a value-fair swap (RB2 20 ~= surplus QB 20) that clears the LINEUP gate (my QB jump
-# dwarfs the RB2 downgrade, and the RB-thin opponent maintains by adding a real RB).
-GRONK = [("weakQB", "QB", 5), ("rb1", "RB", 22), ("rb2", "RB", 20), ("surplusRB", "RB", 14),
+# a value-fair swap that clears the LINEUP gate (my QB jump dwarfs the RB2 downgrade,
+# and the RB-thin opponent maintains by adding a real RB).
+# (Build B) fixture ppg live in the trade_value-DISCRIMINATING band (~8-20 for RB/WR)
+# so need/surplus + value-fairness read a real cross-positional scale, not saturated
+# forward_value. rb2 (ppg 14 -> trade_value 21.8) ~= surplusQB (ppg 20 -> 21.8) is the
+# best-BALANCED fair pairing, so give(rb2)->get(surplusQB) survives the per-shape cap;
+# the opp WR corps is stacked (all >=20) so the opp needs only RB, keeping my give-pool
+# RB-centric (rb2 in it). oQB1 (ppg 26) is the opp's locked QB1; taking it craters their
+# lineup, so only the SURPLUS QB clears — exactly the intended trade.
+GRONK = [("weakQB", "QB", 5), ("rb1", "RB", 22), ("rb2", "RB", 14), ("surplusRB", "RB", 13),
          ("wr1", "WR", 18), ("wr2", "WR", 17), ("wr3", "WR", 16), ("wr4", "WR", 16),
          ("te", "TE", 14), ("te2", "TE", 12)]
-OPP = [("oQB1", "QB", 24), ("surplusQB", "QB", 20), ("orb1", "RB", 8), ("orb2", "RB", 7),
-       ("owr1", "WR", 20), ("owr2", "WR", 18), ("owr3", "WR", 16), ("owr4", "WR", 15),
+OPP = [("oQB1", "QB", 26), ("surplusQB", "QB", 20), ("orb1", "RB", 8), ("orb2", "RB", 7),
+       ("owr1", "WR", 22), ("owr2", "WR", 21), ("owr3", "WR", 20), ("owr4", "WR", 20),
        ("ote", "TE", 14)]
 
 _GOOD = Candidate(("rb2",), ("surplusQB",), "opp")   # what the enumerator builds

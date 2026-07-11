@@ -62,12 +62,17 @@ def _league(my_spec, opp_spec):
 
 
 # Me RB-rich / WR-thin; them WR-rich / RB-thin — the asymmetry positive-sum needs.
-ME_STRONG = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
-             ("rm4", "RB", 15), ("rm5", "RB", 13), ("wm1", "WR", 16), ("wm2", "WR", 14),
-             ("tm", "TE", 15)]
-THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
-        ("wt1", "WR", 20), ("wt2", "WR", 18), ("wt3", "WR", 16), ("wt4", "WR", 14),
-        ("wt5", "WR", 13), ("wt6", "WR", 12), ("tt", "TE", 14)]
+# (Build B) fixture ppg live in the trade_value-DISCRIMINATING band (~8-20 for RB/WR,
+# so values span 0-100 without saturating), and both QBs sit high enough (ppg 22) that
+# the compressed QB scale doesn't spuriously flag QB as a "weak-starter" NEED. ME is
+# RB-deep (5 RBs, 3 start → 2 surplus) with only 2 WRs (WR3 slot empty → WR NEED);
+# THEM is the mirror (RB-thin → RB need, WR-deep → WR surplus).
+ME_STRONG = [("qm", "QB", 22), ("rm1", "RB", 20), ("rm2", "RB", 19), ("rm3", "RB", 18),
+             ("rm4", "RB", 16), ("rm5", "RB", 15), ("wm1", "WR", 17), ("wm2", "WR", 16),
+             ("tm", "TE", 16)]
+THEM = [("qt", "QB", 22), ("rt1", "RB", 12), ("btr", "RB", 11),
+        ("wt1", "WR", 20), ("wt2", "WR", 19), ("wt3", "WR", 18), ("wt4", "WR", 17),
+        ("wt5", "WR", 16), ("wt6", "WR", 15), ("tt", "TE", 16)]
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +99,14 @@ def test_multiplayer_shapes_generated_and_judged_by_lineup_gain():
     cands = enumerate_candidates(state, values, "me")
 
     # Consolidate two surplus RBs into ONE of their starting WRs — a multi-player
-    # shape the old exhaustive 1-for-1 enumeration could never produce.
-    consolidation = Candidate(("rm4", "rm5"), ("wt1",), "opp")
-    assert consolidation in cands             # GENERATED (1-for-1 never could)
+    # shape the old exhaustive 1-for-1 enumeration could never produce. (Build B: the
+    # per-shape value-BALANCE ordering picks WHICH 2-for-1 survives the cap on the
+    # trade_value scale, so assert the SHAPE is generated, not one exact pairing.)
+    consolidations = [c for c in cands
+                      if len(c.give_ids) == 2 and len(c.get_ids) == 1
+                      and all(g in {"rm1", "rm2", "rm3", "rm4", "rm5"} for g in c.give_ids)
+                      and c.get_ids[0] in {"wt1", "wt2", "wt3", "wt4", "wt5"}]
+    assert consolidations                     # a 2-RB-for-1-WR consolidation is GENERATED
 
     surfaced = evaluate_candidates(state, values, "me", cands, roster_limit=16)
     assert surfaced                                          # genuine swaps still surface
