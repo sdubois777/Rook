@@ -22,6 +22,7 @@ Teardown deletes: this file, ``scripts/seed_demo_league.py``, the
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import Counter
@@ -388,11 +389,57 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
     return prior_by_id
 
 
+# --- per-process seed cache (demo-only; teardown removes with the rest) -------
+# The demo is a DETERMINISTIC pinned snapshot (static DEMO_ROSTERS + the
+# DEMO_SEASON/DEMO_CURRENT_WEEK pin + parquet-cached weekly data), yet every
+# request re-ran the full seed (~7s measured: 159 fuzzy name resolutions + the
+# weekly build + evaluate_league) — the whole reason the trade/waiver pages were
+# slow. Cache the built source per process: every state dataclass is frozen, so
+# sharing one instance across requests is safe. Keyed by the (season, week) pin
+# so a knob change can't serve a stale week (and --reload resets the module —
+# and thus the cache — on any code edit anyway). Injected ``weekly_usage``
+# (tests) BYPASSES the cache entirely. Grep TRADE_DEMO to tear down.
+_SEED_CACHE: dict[tuple[int, int], TradeDemoSource] = {}
+# Single-flight guard. asyncio.Lock binds to the first loop that awaits it (and
+# raises from another loop — pytest creates a loop per test), so keep one lock
+# PER RUNNING LOOP rather than one module-level lock.
+_SEED_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _seed_lock(locks: dict[int, asyncio.Lock]) -> asyncio.Lock:
+    loop_id = id(asyncio.get_running_loop())
+    lock = locks.get(loop_id)
+    if lock is None:
+        lock = locks[loop_id] = asyncio.Lock()
+    return lock
+
+
+def clear_demo_seed_cache() -> None:
+    """Drop the cached seed (tests / CLI after DB changes)."""
+    _SEED_CACHE.clear()
+
+
 async def seed_demo_league(db, *, weekly_usage: Optional[pd.DataFrame] = None) -> TradeDemoSource:
-    """Build the demo source from the REAL DB + per-week layer. ``weekly_usage``
-    can be injected (tests) to avoid the live fetch. Starter slots are re-derived
-    from the engine's forward value, so the lineup reflects in-season production —
-    not draft order."""
+    """Build the demo source from the REAL DB + per-week layer — cached per process
+    (see _SEED_CACHE). ``weekly_usage`` can be injected (tests) to avoid the live
+    fetch; the injected path is never cached."""
+    if weekly_usage is not None:
+        return await _seed_demo_league_uncached(db, weekly_usage)
+    key = (DEMO_SEASON, DEMO_CURRENT_WEEK)
+    if (hit := _SEED_CACHE.get(key)) is not None:
+        return hit
+    async with _seed_lock(_SEED_LOCKS):
+        if (hit := _SEED_CACHE.get(key)) is not None:   # lost the race — reuse
+            return hit
+        src = await _seed_demo_league_uncached(db, None)
+        _SEED_CACHE[key] = src
+        logger.info("demo seed cached (per-process) for season=%d week=%d", *key)
+        return src
+
+
+async def _seed_demo_league_uncached(db, weekly_usage: Optional[pd.DataFrame]) -> TradeDemoSource:
+    """The real build. Starter slots are re-derived from the engine's forward
+    value, so the lineup reflects in-season production — not draft order."""
     teams_data, prior_by_id = await _resolve_rosters(db)
     priors = build_priors(prior_by_id)
     if weekly_usage is None:

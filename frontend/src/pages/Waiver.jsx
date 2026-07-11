@@ -240,8 +240,11 @@ function BrowseList({ wire, isLoading, error }) {
 }
 
 export default function Waiver() {
+  // staleTime: league/wire snapshots move on a weekly cadence — don't refetch on
+  // every window focus (each refetch is a full backend source load).
   const { data: league, isLoading, error } = useQuery({
     queryKey: ['waiver-league'], queryFn: fetchWaiverLeague, retry: false,
+    staleTime: 5 * 60 * 1000,
   })
 
   const [myTeamId, setMyTeamId] = useState(null)
@@ -249,7 +252,10 @@ export default function Waiver() {
   const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
 
   // FREE wire browse list — independent of the acting team + the metered flow.
-  const wireQuery = useQuery({ queryKey: ['waiver-wire'], queryFn: fetchWaiverWire, retry: false })
+  const wireQuery = useQuery({
+    queryKey: ['waiver-wire'], queryFn: fetchWaiverWire, retry: false,
+    staleTime: 5 * 60 * 1000,
+  })
 
   const qc = useQueryClient()
   const { tierLimits } = useMe()
