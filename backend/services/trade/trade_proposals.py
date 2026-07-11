@@ -69,18 +69,30 @@ MAX_PROPOSALS = 5
 #   cond 4 — overtake:      the #168 relative guard
 # Requiring BOTH sides to GAIN >=5 (the old gate) demanded every trade be a major
 # upgrade for both managers — rare, so almost nothing surfaced. Loosening cond 2 to
-# "maintain" surfaces fair asymmetric trades; cond 3 (value ratio) kills the
-# reverse-fleece that loosening would otherwise open (give a stud/startable bench
-# for junk). Ratio, NOT absolute gap (gap doesn't separate the cases — measured).
-# (Build B) cond 3 + all cross-positional value now read the canonical
-# ``trade_value`` (not position-relative forward_value), so DEF+TE no longer read
-# "≈ Bijan": the image-1 robbery is give 10.8 / get 94.6, ratio 8.76 → rejected,
-# while the legit 2-WR-for-RB deal is 31.8 / 38.8, ratio 1.22 → fair. cond 1/2
-# (lineup ppg) are UNTOUCHED — they never read the value scale.
+# "maintain" surfaces fair asymmetric trades; cond 3 (value ratio, with a small-stakes
+# absolute-gap allowance — Build D) kills the fleece that loosening would otherwise
+# open (give a stud/startable bench for junk), in BOTH directions.
+# (Build B) cond 3 + all cross-positional value read the canonical ``trade_value``
+# (not position-relative forward_value), so DEF+TE no longer read "≈ Bijan".
+# cond 1/2 (lineup ppg) are UNTOUCHED — they never read the value scale.
 _LINEUP_GAIN_THRESHOLD = 5.0   # cond 1: ppg starting-lineup gain the ACQUIRER must clear (UNCHANGED)
 _MAINTAIN_TOL = 0.5            # cond 2: the opponent need only not get WORSE on the field (UNCHANGED)
-_FAIRNESS_RATIO = 5.0         # cond 3: acquirer get/give trade_value ratio bound (re-verified on
-                              #   the new scale: robbery 8.76 vs fair 1.22 — 5.0 splits them cleanly)
+# cond 3: acquirer get/give trade_value ratio bound. CALIBRATED FROM THE SWEEP (Build D):
+# across every lineup-viable candidate in the demo (passes cond-1/2/4), the ratios cluster
+# at 0.37-1.22 and then jump straight to 3.92 — nothing in between. The plausible-accept
+# trades top out at 1.22 (McConkey+Addison->Javonte); 3.92 is the Ferguson+Herbert+DEF->
+# Bijan+Achane fleece (the counterparty's +4.5 ppg lineup "gain" is mostly streamable for
+# free — the DEF chunk is exactly what the streaming baseline prices at ~2). 2.0 sits with
+# margin on both sides of the void: keeps every counterparty-plausible trade, rejects every
+# fleece IN BOTH DIRECTIONS (the mirror rows — give two elite RBs for streamables, ratios
+# 0.37-0.46 — die at 1/R too). Was 5.0 (kept "fair consolidations (Swift 3.92)" — the sweep
+# shows that class IS the fleece on the canonical value scale).
+_FAIRNESS_RATIO = 2.0
+# Small-stakes allowance: ratios explode on tiny denominators (Andrews->Herbert is a
+# plausible 12.7-for-5.5 QB-slot fill, ratio 0.43 — but the GAP is one bench player).
+# A trade within this absolute trade_value gap is fair regardless of ratio; a genuine
+# fleece (gap 124 on the Bijan trade) is untouched by it.
+_FAIRNESS_ABS_TOL = 10.0
 
 # DEPRECATED (superseded by the lineup objective): the old contextual-value comfort
 # epsilon. Kept only as the acceptability READ's marginal-band label.
@@ -177,15 +189,20 @@ class EdgeBand:
 
 
 def _value_fair(get_val: float, give_val: float) -> bool:
-    """cond 3 — anti-reverse-fleece. The acquirer's get/give ratio (Σ canonical
-    trade_value — Build B; was position-relative Σforward_value) must be within
-    [1/R, R]; rejects trades where one side gives up more than R× the value it
-    receives — on the cross-positional scale the DEF+TE-for-Bijan robbery is ratio
-    8.76 (reject) while the legit 2-WR-for-RB deal is 1.22 (fair). Ratio, not
-    absolute gap. Guards BOTH directions: give-nothing-for-something is as unfair
-    as the reverse."""
+    """cond 3 — anti-fleece, BOTH directions. The acquirer's get/give ratio
+    (Σ canonical trade_value) must be within [1/R, R] (R = ``_FAIRNESS_RATIO``,
+    sweep-calibrated to 2.0 — Build D): no rational counterparty hands over more
+    than ~2× the value they receive (Ferguson+Herbert+DEF->Bijan+Achane, ratio
+    3.92, rejects), and the finder shouldn't advise the user to do so either (the
+    mirror fleeces at 0.37-0.46 reject via 1/R). The legit cluster (0.37-1.22 …
+    within [0.5, 2]) survives. SMALL-STAKES allowance: a trade whose absolute
+    value gap is within ``_FAIRNESS_ABS_TOL`` is fair regardless of ratio —
+    ratios explode on tiny denominators (a 12.7-for-5.5 QB-slot fill is one bench
+    player of imbalance, not a fleece). Give-nothing-for-something stays unfair."""
     if give_val <= 0:
         return get_val <= 0          # giving no real value for something → unfair
+    if abs(get_val - give_val) <= _FAIRNESS_ABS_TOL:
+        return True                  # small stakes — within one bench player of even
     return (1.0 / _FAIRNESS_RATIO) <= (get_val / give_val) <= _FAIRNESS_RATIO
 
 

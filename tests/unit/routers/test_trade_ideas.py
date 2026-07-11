@@ -26,12 +26,15 @@ from backend.services.trade.value_engine import Confidence, InSeasonValue, Value
 
 # A real positive-sum league: me RB-rich/WR-thin, them WR-rich/RB-thin.
 # rm4(surplus RB) ↔ wt5(surplus WR) clears the edge band; wt1-wt4 are their
-# starters (giving them fails the opponent-comfort condition).
+# starters (giving them fails the opponent-comfort condition). (Build D) wt5 is
+# 14 ppg so the canned trade is value-FAIR under the tightened cond-3: rm4
+# 15 ppg → trade_value 30.6, wt5 14 ppg → 21.8 (ratio 0.71 within [0.5, 2];
+# gap 8.8 <= abs-tol 10) — at 13 ppg (14.6) it was ratio 0.48 / gap 16, unfair.
 ME = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
       ("rm4", "RB", 15), ("wm1", "WR", 16), ("wm2", "WR", 14), ("tm", "TE", 15)]
 THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
         ("wt1", "WR", 20), ("wt2", "WR", 18), ("wt3", "WR", 16), ("wt4", "WR", 14),
-        ("wt5", "WR", 13), ("tt", "TE", 14)]
+        ("wt5", "WR", 14), ("tt", "TE", 14)]
 # Strictly-dominant me — no swap helps both sides (never-pad).
 DOM_ME = [("q", "QB", 25), ("r1", "RB", 24), ("r2", "RB", 22), ("w1", "WR", 20),
           ("w2", "WR", 18), ("w3", "WR", 16), ("t", "TE", 14), ("br", "RB", 13)]

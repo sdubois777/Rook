@@ -29,9 +29,13 @@ ME_STRONG = [("qm", "QB", 22), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB
              ("tm", "TE", 15)]
 ME_WEAK = [("qm", "QB", 8), ("rm1", "RB", 24), ("rm2", "RB", 22), ("rm3", "RB", 20),
            ("rm4", "RB", 15), ("wm1", "WR", 6), ("wm2", "WR", 5), ("tm", "TE", 6)]
+# (Build D) wt5 is 14 ppg so the canonical rm4 ↔ wt5 swap is value-FAIR under the
+# tightened cond-3: rm4 15 ppg → trade_value 30.6, wt5 14 ppg → 21.8 (ratio 0.71
+# within [0.5, 2]; gap 8.8 <= abs-tol 10). At 13 ppg (14.6) it was ratio 0.48 /
+# gap 16 → unfair, which would turn the accept reads below into fleece-rejects.
 THEM = [("qt", "QB", 19), ("rt1", "RB", 9), ("btr", "RB", 7),
         ("wt1", "WR", 20), ("wt2", "WR", 18), ("wt3", "WR", 16), ("wt4", "WR", 14),
-        ("wt5", "WR", 13), ("wt6", "WR", 12), ("tt", "TE", 14)]
+        ("wt5", "WR", 14), ("wt6", "WR", 12), ("tt", "TE", 14)]
 
 
 def _iv(pid, pos, fv):
@@ -76,12 +80,14 @@ def test_likely_accept_when_their_lineup_improves():
 # LIKELY REJECT — the headline: great for YOU, their lineup falls → they'd reject
 # ---------------------------------------------------------------------------
 def test_likely_reject_when_trade_is_a_robbery_for_you():
-    # (Build B) I give a fair-value WR (13 → trade_value 14.6) and get their RB1 stud
-    # (18 → 67): value-FAIR (ratio 4.6 < 5), huge for me, but they LOSE their RB1 →
-    # THEIR lineup CRATERS → likely_reject for the lineup-DROP reason, not a fleece.
-    # Give ppg sits in the discriminating band so the give has real trade_value and
-    # the reject is driven by cond-2 (their lineup falls), exactly as intended.
-    me = [("q", "QB", 22), ("r1", "RB", 12), ("r2", "RB", 11), ("gwr", "WR", 13),
+    # (Build D) I give a fair-value WR (16 → trade_value 41.0) and get their RB1 stud
+    # (18 → 67): value-FAIR under the tightened R=2 gate (ratio 1.63), huge for me,
+    # but they LOSE their RB1 → THEIR lineup CRATERS → likely_reject for the
+    # lineup-DROP reason, not a fleece. Give ppg sits in the discriminating band so
+    # the give has real trade_value and the reject is driven by cond-2 (their
+    # lineup falls), exactly as intended. (At 13 ppg → 14.6 the ratio was 4.59 —
+    # now ALSO unfair, which would mask the lineup-drop reason with the fleece one.)
+    me = [("q", "QB", 22), ("r1", "RB", 12), ("r2", "RB", 11), ("gwr", "WR", 16),
           ("w1", "WR", 16), ("w2", "WR", 14), ("t", "TE", 13), ("bwr", "WR", 10)]
     them = [("q2", "QB", 19), ("stud", "RB", 18), ("r9", "RB", 9), ("w4", "WR", 16),
             ("w5", "WR", 15), ("w6", "WR", 14), ("t2", "TE", 10)]
