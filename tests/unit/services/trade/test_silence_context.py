@@ -113,8 +113,15 @@ def test_scarcity_when_cond1_passers_are_blocked_by_cond2():
 # ---------------------------------------------------------------------------
 def test_near_miss_present_when_within_threshold():
     # A trade that improves the team ~4 ppg (short of 5 by <10) → near-miss present.
-    me = _roster("m", 30, 40, 38, 20, 36, 34, 8, 30, 12)   # WR3 weak (8) → upgradeable
-    opp = _roster("o", 28, 9, 8, 6, 20, 18, 16, 9, 7)      # surplus WRs to acquire
+    # (Build D) the intended near-miss (mbn → owr3) must be value-FAIR under the
+    # tightened cond-3 — near-misses only consider fair+no-overtake candidates —
+    # so both sit in the fair band: mbn 18 ppg → trade_value 67, owr3 22 → 100
+    # (ratio 1.49 within [0.5, 2]). It misses on the PPG conditions (my gain +4 is
+    # short of 5; their WR1 slips), never on fairness — the shortfall margin (4.5)
+    # beats the mrb3→owr2 flex-downgrade's (7), so it stays the selected near-miss
+    # with a non-negative would-be gain.
+    me = _roster("m", 30, 40, 38, 20, 36, 34, 8, 30, 18)   # WR3 weak (8); bn 18 starts WR3
+    opp = _roster("o", 28, 9, 8, 6, 20, 18, 22, 9, 7)      # surplus WRs to acquire
     state, values = _state(("me", "Me", True, me), ("opp", "Opp", False, opp))
     cands = [Candidate(("mbn",), ("owr3",), "opp"), Candidate(("mrb3",), ("owr2",), "opp")]
     sc = build_silence_context(state, values, "me", cands, roster_limit=16)

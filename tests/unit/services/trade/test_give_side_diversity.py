@@ -20,7 +20,13 @@ from backend.services.trade.trade_proposals import (
     _PREMIUM_GIVE_VALUE,
     _select_diverse,
 )
-from backend.services.trade.value_engine import Confidence, InSeasonValue, ValueTrend
+from backend.services.trade.value_engine import (
+    Confidence,
+    InSeasonValue,
+    ValueTrend,
+    trade_value,
+    waiver_aware_replacement,
+)
 
 
 def _iv(pid, fv):
@@ -36,13 +42,19 @@ def _iv(pid, fv):
 
 
 # Premium assets (above the bar) + cheaper alternatives + a scrub (below the bar).
+# (Build B) fixture ppg live in the trade_value-DISCRIMINATING band (~8-20 for WR) so
+# "premium" (trade_value >= _PREMIUM_GIVE_VALUE = 25) is a real cross-positional cut,
+# not the old saturated forward_value>=30. allen (ppg20 -> tv100) stays the dominant
+# premium asset; kelce (ppg18 -> tv67) premium; lawrence/dart/scrub sit BELOW the bar
+# (ppg 13/12/9 -> tv 14.6/8.9/0.4). getA/B/C are only ever GET pieces (never gives),
+# so their value never enters the diversity cap.
 _VALUES = {
-    "allen": _iv("allen", 100),    # premium
-    "kelce": _iv("kelce", 40),     # premium
-    "lawrence": _iv("lawrence", 20),  # sub-premium (a cheaper alternative give)
-    "dart": _iv("dart", 18),       # sub-premium
-    "scrub": _iv("scrub", 8),      # scrub throw-in (well below the bar)
-    "getA": _iv("getA", 60), "getB": _iv("getB", 55), "getC": _iv("getC", 50),
+    "allen": _iv("allen", 20),     # premium (tv 100)
+    "kelce": _iv("kelce", 18),     # premium (tv 67)
+    "lawrence": _iv("lawrence", 13),  # sub-premium (tv 14.6 — a cheaper alternative give)
+    "dart": _iv("dart", 12),       # sub-premium (tv 8.9)
+    "scrub": _iv("scrub", 9),      # scrub throw-in (tv 0.4 — well below the bar)
+    "getA": _iv("getA", 17), "getB": _iv("getB", 16), "getC": _iv("getC", 15),
 }
 
 
@@ -57,9 +69,13 @@ def _gives(selected):
 
 
 def test_premium_bar_sanity():
-    assert _VALUES["allen"].forward_value >= _PREMIUM_GIVE_VALUE      # premium
-    assert _VALUES["lawrence"].forward_value < _PREMIUM_GIVE_VALUE    # not premium
-    assert _VALUES["scrub"].forward_value < _PREMIUM_GIVE_VALUE       # scrub
+    # (Build B) the premium bar is now the canonical cross-positional trade_value,
+    # not the position-relative forward_value — read it exactly as _select_diverse does.
+    repl = waiver_aware_replacement(_VALUES, {})
+    assert trade_value(_VALUES["allen"], repl) >= _PREMIUM_GIVE_VALUE     # premium
+    assert trade_value(_VALUES["kelce"], repl) >= _PREMIUM_GIVE_VALUE     # premium
+    assert trade_value(_VALUES["lawrence"], repl) < _PREMIUM_GIVE_VALUE   # not premium
+    assert trade_value(_VALUES["scrub"], repl) < _PREMIUM_GIVE_VALUE      # scrub
 
 
 # ---------------------------------------------------------------------------

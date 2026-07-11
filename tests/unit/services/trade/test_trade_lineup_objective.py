@@ -12,6 +12,7 @@ from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamS
 from backend.services.trade.trade_analysis import analyze_trade
 from backend.services.trade.trade_proposals import (
     Candidate,
+    _FAIRNESS_ABS_TOL,
     _FAIRNESS_RATIO,
     _LINEUP_GAIN_THRESHOLD,
     _MAINTAIN_TOL,
@@ -101,12 +102,14 @@ def test_forced_drop_of_a_starter_reads_as_a_loss():
 def test_genuine_starter_upgrade_clears_clause_a():
     # Mutual surplus-for-need: I'm RB-rich / WR-thin (empty WR3), they're WR-rich /
     # RB-thin. Give my surplus RB (fills their RB hole, +their lineup), get their
-    # surplus WR (fills my WR3, +my lineup). BOTH lineups improve 5+; I gain more.
+    # surplus WR (fills my WR3, +my lineup). BOTH lineups improve 5+. The swap is
+    # value-FAIR under the Build-D gate: rsurplus 15 ppg → trade_value 30.6,
+    # wsurplus 14 ppg → 21.8 (ratio 0.71 within [0.5, 2]; gap 8.8 <= abs-tol too).
     me = [("qb", "QB", 22), ("rb1", "RB", 24), ("rb2", "RB", 22), ("rb3", "RB", 20),
           ("rsurplus", "RB", 15), ("wr1", "WR", 16), ("wr2", "WR", 14), ("te", "TE", 15)]
     opp = [("oqb", "QB", 19), ("orb1", "RB", 9), ("orb2", "RB", 7),
            ("ow1", "WR", 20), ("ow2", "WR", 18), ("ow3", "WR", 16), ("ow4", "WR", 14),
-           ("wsurplus", "WR", 13), ("ote", "TE", 14)]
+           ("wsurplus", "WR", 14), ("ote", "TE", 14)]
     state, values = _state(me, opp)
     out = evaluate_candidates(state, values, "me", [Candidate(("rsurplus",), ("wsurplus",), "opp")], roster_limit=16)
     assert len(out) == 1
@@ -119,15 +122,23 @@ def test_genuine_starter_upgrade_clears_clause_a():
 # ASYMMETRIC GATE — the value-fairness condition (cond 3, anti-reverse-fleece)
 # ---------------------------------------------------------------------------
 def test_value_fairness_ratio_brackets_the_calibration_cases():
-    # The three measured calibration ratios: McLaurin-fleece 16.7 (FAIL), Swift
-    # 3.92 (PASS), Bijan 1.30 (PASS). R=5 brackets them cleanly.
-    assert _value_fair(get_val=96.9, give_val=5.8) is False   # McLaurin: ratio 16.7 > R
-    assert _value_fair(get_val=89.4, give_val=22.8) is True    # Swift: ratio 3.92 < R
-    assert _value_fair(get_val=94.6, give_val=72.9) is True    # Bijan: ratio 1.30
-    # boundary: just under R passes, just over fails (ratio, not gap)
-    assert _value_fair(get_val=4.9, give_val=1.0) is True      # 4.9 < 5
-    assert _value_fair(get_val=5.1, give_val=1.0) is False     # 5.1 > 5
-    assert _value_fair(get_val=1.0, give_val=5.1) is False     # reverse direction guarded
+    # Sweep-calibrated (Build D): across the real-records sweep, legit trades
+    # cluster at ratio 0.37-1.22 and the fleeces start at 3.92 — R=2.0 splits the
+    # void with margin, in BOTH directions. Plus the small-stakes allowance: a
+    # trade whose ABSOLUTE trade_value gap is <= _FAIRNESS_ABS_TOL is fair
+    # regardless of ratio (ratios explode on tiny denominators).
+    assert _FAIRNESS_RATIO == 2.0 and _FAIRNESS_ABS_TOL == 10.0
+    assert _value_fair(get_val=166.1, give_val=42.4) is False  # Ferguson fleece: 3.92 > R
+    assert _value_fair(get_val=38.8, give_val=31.8) is True    # legit cluster top: 1.22
+    assert _value_fair(get_val=42.4, give_val=114.8) is False  # mirror fleece: 0.37 < 1/R
+    assert _value_fair(get_val=96.9, give_val=5.8) is False    # McLaurin: ratio 16.7 > R
+    # SMALL-STAKES: ratio 0.43 falls outside [1/R, R], but the gap is 7.2 <= 10
+    # (one bench player of imbalance — the Andrews->Herbert QB-slot fill) → fair.
+    assert _value_fair(get_val=5.5, give_val=12.7) is True
+    # boundary on the RATIO arm — gaps > 10 so the abs-tol can't mask the ratio:
+    assert _value_fair(get_val=39.9, give_val=20.0) is True    # 1.995 < 2 (gap 19.9)
+    assert _value_fair(get_val=41.0, give_val=20.0) is False   # 2.05 > 2 (gap 21.0)
+    assert _value_fair(get_val=20.0, give_val=41.0) is False   # reverse direction guarded
     assert _value_fair(get_val=10.0, give_val=0.0) is False    # give nothing of value
 
 

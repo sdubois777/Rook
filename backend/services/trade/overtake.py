@@ -13,7 +13,7 @@ lineup logic reimplemented.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from backend.services.trade.lineup import LineupPlayer, LineupRules, roster_strength
 
@@ -75,6 +75,8 @@ def overtake_guard(
     give_ids: list[str],
     get_ids: list[str],
     rules: Optional[LineupRules] = None,
+    *,
+    value_of: Optional[Callable[[LineupPlayer], float]] = None,
 ) -> OvertakeResult:
     """§4 condition 4 — NO-OVERTAKE-ONLY (relative, trade-caused). The guard FAILS
     iff the trade flips me from AHEAD-OR-TIED to BEHIND on the field:
@@ -88,11 +90,11 @@ def overtake_guard(
     narrow their own lead and still pass (conditions 1-3 already stop them being
     fleeced on the value of the trade itself). c4 blocks ONLY the specific case of
     a trade that hands the other side a lead they didn't have."""
-    my_pre = roster_strength(list(my_roster), rules)
-    their_pre = roster_strength(list(their_roster), rules)
+    my_pre = roster_strength(list(my_roster), rules, value_of=value_of)
+    their_pre = roster_strength(list(their_roster), rules, value_of=value_of)
     post = apply_trade(my_roster, their_roster, give_ids, get_ids)
-    my_post = roster_strength(list(post.my_roster), rules)
-    their_post = roster_strength(list(post.their_roster), rules)
+    my_post = roster_strength(list(post.my_roster), rules, value_of=value_of)
+    their_post = roster_strength(list(post.their_roster), rules, value_of=value_of)
 
     was_ahead_or_tied = my_pre >= their_pre
     is_behind_after = my_post < their_post

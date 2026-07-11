@@ -49,7 +49,7 @@ def _fixture():
         "g": _iv("g", 20, trend=ValueTrend.FALLING, sell=True),
         "x": _iv("x", 90, conf=Confidence.LIMITED, buy=True),
     }
-    return state, values, 16
+    return state, values, 16, {}
 
 
 async def _get():
@@ -87,8 +87,10 @@ async def test_league_returns_teams_rosters_and_values(monkeypatch):
     me = next(t for t in data["teams"] if t["is_me"])
     assert me["team_name"] == "You"
     g = me["roster"][0]
-    # picker value bundle mirrors the engine output exactly
-    assert g["id"] == "g" and g["forward_value"] == 20 and g["value_trend"] == "falling"
+    # picker now emits the CANONICAL trade_value (same scale as the verdict chips), NOT
+    # position-relative forward_value. g is 4 ppg (fv/5) — below the WR replacement
+    # anchor 8.0 (sparse pool → fallback) → VOR 0 → trade_value 0.0.
+    assert g["id"] == "g" and g["value"] == 0.0 and g["value_trend"] == "falling"
     assert g["sell_high"] is True and g["nfl_team"] == "SF"
     assert g["starter_slot"] == "WR1"
     opp = next(t for t in data["teams"] if not t["is_me"])

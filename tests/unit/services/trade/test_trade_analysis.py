@@ -44,7 +44,9 @@ def test_lopsided_trade_reads_lopsided():
     state = _two_team_state([RosterPlayer("g", "Give", "WR")], [RosterPlayer("x", "Get", "WR")])
     values = {"g": _iv("g", "Give", 20), "x": _iv("x", "Get", 90)}
     a = analyze_trade(state, values, "me", ["g"], ["x"])
-    assert a.value_delta == 70.0
+    # value_delta is league-local VOR RESCALED to 0-100 (points above the WR replacement
+    # anchor 8.0, sparse pool → fallback): get raw 18−8=10 → rescale 67.0, give 4<8→0.
+    assert a.value_delta == 67.0
     assert a.winner == "you"
     assert a.fairness == "lopsided you"
     assert a.hedged is False
@@ -103,7 +105,8 @@ def test_verdict_follows_engine_value_not_reputation():
     }
     a = analyze_trade(state, values, "me", ["g"], ["x"])
     # I gave away the higher engine value → I lose, regardless of the names.
-    assert a.value_delta == -50.0
+    # VOR delta (rescaled 0-100): give raw 16−8=8 → rescale 41.0, get 6<8→0 ⇒ -41.0.
+    assert a.value_delta == -41.0
     assert a.winner == "opponent"
 
 
@@ -214,3 +217,113 @@ def test_unfilled_flex_is_not_flagged():
     values = {p: _iv(p, p, fv, pos=pos) for p, pos, fv in specs}
     a = analyze_trade(state, values, "me", ["wr3"], ["owr"], roster_limit=16)  # FLEX stays empty
     assert a.warnings == ()          # unfilled FLEX is NOT a warning
+
+
+# ---------------------------------------------------------------------------
+# League-local waiver-aware VOR (the K/DEF over-valuation fix)
+# ---------------------------------------------------------------------------
+from backend.services.trade.value_engine import (  # noqa: E402
+    derive_anchors,
+    rescale_vor,
+    trade_value,
+    vor_value,
+    waiver_aware_replacement,
+)
+
+
+def test_deep_waiver_correction_lowers_wr_not_shallow_def():
+    """WR/TE get the deep-waiver replacement correction: with a full WR pool the
+    replacement drops to the MARGINAL ROSTER SPOT (below the starter-cutoff band the wire
+    inflates), so a mid WR reads a real value instead of ~0. DEF is NOT deep-waiver
+    corrected — (Build C) it gets the STREAMING baseline (mean of the top of its pool),
+    which sits at/above the top of the shallow rostered pool, not the marginal spot."""
+    vals = {}
+    for i in range(50):                       # 50 rostered WRs — deep past the 42 starter line
+        ppg = 20.0 - i * 0.36
+        vals[f"w{i}"] = _iv(f"w{i}", f"WR{i}", ppg * 5, pos="WR")   # fv/5 == ppg
+    for i in range(14):                       # shallow DEF pool (≈ the 12 starter line, no bench)
+        vals[f"d{i}"] = _iv(f"d{i}", f"DEF{i}", (12.0 - i * 0.7) * 5, pos="DEF")
+    wire = {"WR": [10.0] * 20}                 # a rich wire that inflates the starter-cutoff band
+    repl = waiver_aware_replacement(vals, wire)
+
+    pool_wr = [v.forward_ppg for v in vals.values() if v.position == "WR"] + wire["WR"]
+    plain_wr = derive_anchors({"WR": pool_wr})["WR"][0]
+    assert repl["WR"] < plain_wr               # WR corrected DOWN to the marginal roster spot
+    # a mid WR (~10 ppg) now clears the floor instead of reading ~0
+    mid = next(v for v in vals.values() if v.position == "WR" and 9.5 <= v.forward_ppg <= 10.5)
+    assert trade_value(mid, repl) > 5.0
+    # DEF (no wire here) → streaming baseline = mean of the top-3 of its rostered pool —
+    # the TOP of the pool, far above the deep-waiver marginal spot the WRs got.
+    assert repl["DEF"] == round((12.0 + 11.3 + 10.6) / 3, 1)
+    assert repl["DEF"] > repl["WR"]
+
+
+def test_rescale_vor_anchors_top_and_pins_floor():
+    """The 0-100 display rescale: anchor the top to 100, PIN the floor at 0, and keep
+    near-zero VOR near-zero — NOT a uniform stretch (which would lift a streamable DEF
+    to ~22 and re-break the K/DEF fix)."""
+    assert rescale_vor(0.0) == 0.0                      # floor pinned
+    assert rescale_vor(-1.0) == 0.0                     # below replacement → 0
+    assert rescale_vor(12.0) == 100.0                   # elite anchor → 100
+    assert rescale_vor(20.0) == 100.0                   # above anchor clamps (no overflow)
+    # an elite RB (~11.7 VOR) returns to the ~top of the scale
+    assert rescale_vor(11.7) >= 88.0
+    # a streamable DEF (~2.6 VOR) STAYS low — the anchor-the-top curve does NOT
+    # multiply it up the way a naive linear stretch (2.6 * 100/12 ≈ 22) would.
+    assert rescale_vor(2.6) <= 5.0
+    # monotonic: more VOR → more display value
+    assert rescale_vor(2.6) < rescale_vor(6.0) < rescale_vor(11.7)
+
+
+def test_vor_value_floors_at_zero_and_runs_uncapped():
+    repl = {"DEF": 6.0, "RB": 8.0}
+    assert vor_value(9.0, "DEF", repl) == 3.0      # above replacement → the margin
+    assert vor_value(5.0, "DEF", repl) == 0.0      # below replacement → floored to 0, never negative
+    assert vor_value(30.0, "RB", repl) == 22.0     # NO cap — a genuine elite outlier runs free
+    assert vor_value(9.0, "K", repl) == 9.0        # position absent from replacement → 0 floor
+
+
+def test_waiver_wire_lowers_vor_by_raising_replacement():
+    """The wire does the compression (derive_anchors mechanism, skill positions):
+    adding streamable RBs to the pool RAISES the RB replacement, so the same RB's VOR
+    DROPS (uncompressed without the wire). (Build C moved K/DEF onto the streaming
+    baseline — see test_kdef_streaming_baseline — so this asserts on RB, where the
+    derive_anchors band mechanism still governs.)"""
+    # 40 rostered RBs so derive_anchors can derive (30-starter demand + a full
+    # below-cutoff band), then a wire of streamable RBs.
+    vals = {}
+    for i in range(40):
+        pid = f"r{i}"
+        vals[pid] = _iv(pid, f"RB{i}", 50, pos="RB")
+        vals[pid].forward_ppg = 18.0 - i * 0.3        # 18.0 down to ~6.3
+    wire = {"RB": [7.5, 7.2, 6.9, 6.6, 6.3]}
+    repl_no = waiver_aware_replacement(vals, {})["RB"]
+    repl_wire = waiver_aware_replacement(vals, wire)["RB"]
+    assert repl_wire >= repl_no                       # wire adds below-cutoff streamers
+    # a 9.5-ppg RB is worth LESS over the waiver-aware replacement
+    assert vor_value(9.5, "RB", {"RB": repl_wire}) <= vor_value(9.5, "RB", {"RB": repl_no})
+
+
+def test_kdef_streaming_baseline_collapses_def_value():
+    """(Build C) K/DEF replacement = the STREAMING baseline (mean of the top wire
+    options), NOT the derive_anchors band or the _PPG_ANCHORS sparse-pool fallback —
+    a 12-team league rosters exactly 12 DEF (the cutoff, zero bench), so the derived
+    path could never work and the fallback (5.0) inflated DEF VOR (an elite DEF read
+    like an elite WR). With the wire's best streamers at ~11-12 ppg, even a 13.3-ppg
+    top DEF keeps only a small margin, and a startable 9.9-ppg DEF floors at 0."""
+    vals = {}
+    for i in range(12):                               # exactly 12 rostered DEF = cutoff
+        pid = f"d{i}"
+        vals[pid] = _iv(pid, f"DEF{i}", 50, pos="DEF")
+        vals[pid].forward_ppg = 13.3 - i * 1.0
+    wire = {"DEF": [11.8, 11.7, 9.9, 8.1, 7.9]}
+    repl = waiver_aware_replacement(vals, wire)
+    assert repl["DEF"] == round((11.8 + 11.7 + 9.9) / 3, 1)   # mean of top-3 wire
+    top = max(vals.values(), key=lambda v: v.forward_ppg)
+    assert 0.0 < trade_value(top, repl) <= 5.0        # top DEF: small margin, NOT the 30s
+    mid = next(v for v in vals.values() if 9.0 <= v.forward_ppg <= 10.5)
+    assert trade_value(mid, repl) == 0.0              # startable-but-not-elite DEF → 0
+    # thin wire → falls back to rostered ∪ wire, ~the same level (pool-independent)
+    repl_thin = waiver_aware_replacement(vals, {})
+    assert repl_thin["DEF"] == round((13.3 + 12.3 + 11.3) / 3, 1)  # top-3 of rostered
+    assert trade_value(top, repl_thin) <= 5.0

@@ -20,7 +20,11 @@ from backend.services.trade.trade_proposals import (
     enumerate_candidates,
     merge_candidates,
 )
-from backend.services.trade.value_engine import InSeasonValue
+from backend.services.trade.value_engine import (
+    InSeasonValue,
+    trade_value,
+    waiver_aware_replacement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +39,14 @@ Return ONLY a JSON array, each item:
 Use the exact canonical player ids and team ids provided. No prose."""
 
 
-def _format_roster(team, values) -> str:
+def _format_roster(team, values, repl) -> str:
     lines = [f"team_id={team.team_id} ({team.team_name}){' [ME]' if team.is_me else ''}:"]
     for rp in team.roster:
         v = values.get(rp.canonical_player_id)
         sig = (
-            f"fv={v.forward_value},trend={v.value_trend.value},conf={v.confidence.value}"
+            # value = canonical cross-positional trade_value (0-100, Build B) — the
+            # same scale the gate + UI use, so the LLM proposes on the right scale.
+            f"value={trade_value(v, repl):.0f},trend={v.value_trend.value},conf={v.confidence.value}"
             f"{',buy' if v.buy_low else ''}{',sell' if v.sell_high else ''}"
             if v else "no-value"
         )
@@ -90,6 +96,7 @@ class TradeProposalsAgent(BaseAgent):
         state: LeagueState,
         my_team_id: str,
         values: dict[str, InSeasonValue],
+        wire: dict[str, list[float]] | None = None,
     ) -> list[Candidate]:
         """Candidate generation = the UNION of two generators, deduped: the LLM's
         plausibility-driven ideas AND the slice-6 need/surplus-targeted enumerator.
@@ -103,15 +110,17 @@ class TradeProposalsAgent(BaseAgent):
         if my_team is None or not others:
             return []
 
+        repl = waiver_aware_replacement(values, wire or {})   # ONCE per league (Build B)
+
         # Deterministic targeted enumerator — always run (bounded by its own
         # need/surplus targeting; ~10-12 for the demo league).
-        enumerated = enumerate_candidates(state, values, my_team_id)
+        enumerated = enumerate_candidates(state, values, my_team_id, wire=wire)
 
         # LLM candidates — best-effort; the enumerator covers us if it fails/empty.
         llm: list[Candidate] = []
         user = "\n\n".join([
-            "MY TEAM:", _format_roster(my_team, values),
-            "OTHER TEAMS:", *[_format_roster(t, values) for t in others],
+            "MY TEAM:", _format_roster(my_team, values, repl),
+            "OTHER TEAMS:", *[_format_roster(t, values, repl) for t in others],
             "Propose plausible candidate trades as the JSON array described.",
         ])
         input_data = {

@@ -25,6 +25,7 @@ from backend.services.trade.lineup import (
     DEFAULT_LINEUP_RULES,
     LineupPlayer,
     LineupRules,
+    _by_trade_value,
     fit_to_limit,
     lineup_strength_ppg,
     optimal_lineup,
@@ -39,7 +40,22 @@ from backend.services.trade.trade_analysis import (
 from backend.services.trade.value_engine import (
     InSeasonValue,
     replacement_ppg_by_position,
+    trade_value,
+    waiver_aware_replacement,
 )
+
+# The finder's cross-positional value = the canonical, displayed
+# ``value_engine.trade_value`` (Build B). ``repl`` = ``waiver_aware_replacement``,
+# computed ONCE per league and threaded down — never per-trade. The ppg lineup gate
+# (cond 1/2, ``lineup_strength_ppg``) is deliberately UNCHANGED (still forward_value-
+# ranked); only the cross-positional value reads migrate.
+Replacement = dict[str, float]
+
+
+def _tv(pid: str, values: dict[str, InSeasonValue], repl: Replacement) -> float:
+    """Canonical cross-positional trade value of a player (0 if unknown)."""
+    v = values.get(pid)
+    return trade_value(v, repl) if v is not None else 0.0
 
 MAX_PROPOSALS = 5
 
@@ -49,17 +65,34 @@ MAX_PROPOSALS = 5
 # The gate is ASYMMETRIC + value-fairness (all thresholds MEASURED):
 #   cond 1 — you improve:   Δlineup_me   >= _LINEUP_GAIN_THRESHOLD
 #   cond 2 — they maintain: Δlineup_them >= -_MAINTAIN_TOL  (need only not get worse)
-#   cond 3 — value-fair:    acquirer asset-value get/give ratio within [1/R, R]
+#   cond 3 — value-fair:    acquirer trade_value get/give ratio within [1/R, R]
 #   cond 4 — overtake:      the #168 relative guard
 # Requiring BOTH sides to GAIN >=5 (the old gate) demanded every trade be a major
 # upgrade for both managers — rare, so almost nothing surfaced. Loosening cond 2 to
-# "maintain" surfaces fair asymmetric trades; cond 3 (value ratio) kills the
-# reverse-fleece that loosening would otherwise open (give a stud/startable bench
-# for junk) while keeping deep-owner deals (Bijan ratio 1.30) + fair consolidations
-# (Swift 3.92). Ratio, NOT absolute gap (gap doesn't separate the cases — measured).
-_LINEUP_GAIN_THRESHOLD = 5.0   # cond 1: ppg starting-lineup gain the ACQUIRER must clear
-_MAINTAIN_TOL = 0.5            # cond 2: the opponent need only not get WORSE on the field
-_FAIRNESS_RATIO = 5.0         # cond 3: acquirer get/give asset-value ratio bound
+# "maintain" surfaces fair asymmetric trades; cond 3 (value ratio, with a small-stakes
+# absolute-gap allowance — Build D) kills the fleece that loosening would otherwise
+# open (give a stud/startable bench for junk), in BOTH directions.
+# (Build B) cond 3 + all cross-positional value read the canonical ``trade_value``
+# (not position-relative forward_value), so DEF+TE no longer read "≈ Bijan".
+# cond 1/2 (lineup ppg) are UNTOUCHED — they never read the value scale.
+_LINEUP_GAIN_THRESHOLD = 5.0   # cond 1: ppg starting-lineup gain the ACQUIRER must clear (UNCHANGED)
+_MAINTAIN_TOL = 0.5            # cond 2: the opponent need only not get WORSE on the field (UNCHANGED)
+# cond 3: acquirer get/give trade_value ratio bound. CALIBRATED FROM THE SWEEP (Build D):
+# across every lineup-viable candidate in the demo (passes cond-1/2/4), the ratios cluster
+# at 0.37-1.22 and then jump straight to 3.92 — nothing in between. The plausible-accept
+# trades top out at 1.22 (McConkey+Addison->Javonte); 3.92 is the Ferguson+Herbert+DEF->
+# Bijan+Achane fleece (the counterparty's +4.5 ppg lineup "gain" is mostly streamable for
+# free — the DEF chunk is exactly what the streaming baseline prices at ~2). 2.0 sits with
+# margin on both sides of the void: keeps every counterparty-plausible trade, rejects every
+# fleece IN BOTH DIRECTIONS (the mirror rows — give two elite RBs for streamables, ratios
+# 0.37-0.46 — die at 1/R too). Was 5.0 (kept "fair consolidations (Swift 3.92)" — the sweep
+# shows that class IS the fleece on the canonical value scale).
+_FAIRNESS_RATIO = 2.0
+# Small-stakes allowance: ratios explode on tiny denominators (Andrews->Herbert is a
+# plausible 12.7-for-5.5 QB-slot fill, ratio 0.43 — but the GAP is one bench player).
+# A trade within this absolute trade_value gap is fair regardless of ratio; a genuine
+# fleece (gap 124 on the Bijan trade) is untouched by it.
+_FAIRNESS_ABS_TOL = 10.0
 
 # DEPRECATED (superseded by the lineup objective): the old contextual-value comfort
 # epsilon. Kept only as the acceptability READ's marginal-band label.
@@ -77,7 +110,11 @@ _MATCH_POOL_CAP = 5
 # value-BALANCED packages — so every shape stays represented (a clean 1-for-1 starter
 # swap isn't crowded out by the many near-zero-imbalance 3-for-3s a bigger package
 # trivially hits) while the count stays bounded. The gate still judges every survivor.
-_PER_SHAPE_CAP = 2
+# (Build B) raised 2→4: on the trade_value scale the value-balance ordering shifts
+# (throw-ins compress to ~0), so a cap of 2 crowded out lineup-passing packages that
+# rank ~3rd on balance — 4 restores them (the legit 2-WR-for-RB deal) while the count
+# stays bounded (~185 for the demo); the gate still judges every survivor.
+_PER_SHAPE_CAP = 4
 # Give-side DIVERSITY cap (surfacing only): a team with one dominant asset (Ben
 # Dover's Josh Allen) otherwise ships it in ALL 5 surfaced trades — cheaper-give
 # alternatives clear the gate but rank lower and get crowded out. Cap how many
@@ -86,18 +123,26 @@ _PER_SHAPE_CAP = 2
 # (a scrub throw-in never triggers the cap); this DEMOTES repeats, never promotes a
 # worse trade or pads (never-pad holds).
 _MAX_TRADES_PER_GIVE_ASSET = 2
-_PREMIUM_GIVE_VALUE = 30.0   # forward_value bar for "premium" (above replacement/startable)
+# (Build B) trade_value bar for a "premium" give-asset. Re-tuned from the old
+# forward_value 30 (where mid WRs like McConkey fv34 wrongly tripped it): on the
+# trade_value scale the cohort splits good-starter+ (McBride 31.5, Javonte 38.8,
+# Bijan 94.6) from mid (McConkey 15.9, Bowers 9.9) at ~25.
+_PREMIUM_GIVE_VALUE = 25.0
 # Explain-the-silence: when a team surfaces 0 trades, a near-miss is only worth
 # showing if it misses clearing by ≤ this many ppg (sum of the cond1/cond2
 # shortfalls). Beyond it, nothing is close enough to be a negotiation starter.
 _NEAR_MISS_PPG = 10.0
 # A dedicated starter weaker than this fraction of the team's MEDIAN starter is a
-# fixable weakness → that position is a NEED (scale-free, relative to the roster).
+# fixable weakness → that position is a NEED (a fraction, so scale-free). Re-verified
+# on trade_value: for the demo user (median starter 15.9) it flags exactly RB (0.1),
+# K (0.0), DEF (0.9) — the genuinely weak slots — and NOT WR/TE/QB. Unchanged.
 _NEED_REL_FRACTION = 0.6
 # A piece only joins a side's pool if it adds at least this much CONTEXTUAL value
 # to the destination roster — i.e. it plausibly helps that side. Screens out
-# deep-bench junk that would otherwise pad multi-player trades with zero-value
-# extra players (same your_net/their_net, more bodies). Tunable.
+# deep-bench junk that would otherwise pad multi-player trades with zero-value extra
+# players. Re-verified on the trade_value scale (contextual_value is now on it): it
+# still cleanly separates real helpers (Swift 6.1, Javonte 38.7) from throw-ins
+# (Croskey 0.0) — trade_value just compresses more junk below the bar. Unchanged.
 _HELP_EPSILON = 1.0
 
 
@@ -144,14 +189,20 @@ class EdgeBand:
 
 
 def _value_fair(get_val: float, give_val: float) -> bool:
-    """cond 3 — anti-reverse-fleece. The acquirer's ASSET-value get/give ratio
-    (Σforward_value) must be within [1/R, R]; rejects trades where one side gives
-    up more than R× the value it receives (the McLaurin-for-junk class, ratio 16.7)
-    while keeping deep-owner deals (Bijan, 1.30) and fair consolidations (Swift,
-    3.92). Ratio, not absolute gap (measured: gap doesn't separate the cases).
-    Guards BOTH directions: give-nothing-for-something is as unfair as the reverse."""
+    """cond 3 — anti-fleece, BOTH directions. The acquirer's get/give ratio
+    (Σ canonical trade_value) must be within [1/R, R] (R = ``_FAIRNESS_RATIO``,
+    sweep-calibrated to 2.0 — Build D): no rational counterparty hands over more
+    than ~2× the value they receive (Ferguson+Herbert+DEF->Bijan+Achane, ratio
+    3.92, rejects), and the finder shouldn't advise the user to do so either (the
+    mirror fleeces at 0.37-0.46 reject via 1/R). The legit cluster (0.37-1.22 …
+    within [0.5, 2]) survives. SMALL-STAKES allowance: a trade whose absolute
+    value gap is within ``_FAIRNESS_ABS_TOL`` is fair regardless of ratio —
+    ratios explode on tiny denominators (a 12.7-for-5.5 QB-slot fill is one bench
+    player of imbalance, not a fleece). Give-nothing-for-something stays unfair."""
     if give_val <= 0:
         return get_val <= 0          # giving no real value for something → unfair
+    if abs(get_val - give_val) <= _FAIRNESS_ABS_TOL:
+        return True                  # small stakes — within one bench player of even
     return (1.0 / _FAIRNESS_RATIO) <= (get_val / give_val) <= _FAIRNESS_RATIO
 
 
@@ -202,12 +253,15 @@ def _acceptability_why(
     fair: bool,
     overtake_flag: bool,
     hedged: bool,
+    repl: Replacement,
 ) -> str:
     """A one-line WHY grounded in THEIR side, reflecting the REAL accept/reject
     reason (maintain + fair vs lineup-drop vs fleece)."""
     def _cv(pid: str) -> float:
         v = values[pid]
-        return contextual_value(LineupPlayer(pid, v.position, v.forward_value), their_roster)
+        return contextual_value(
+            LineupPlayer(pid, v.position, v.forward_value, trade_val=trade_value(v, repl)),
+            their_roster, value_of=_by_trade_value)
 
     incoming = [g for g in give_ids if g in values]
     best = max(incoming, key=_cv) if incoming else None
@@ -238,6 +292,7 @@ def acceptability_read(
     *,
     hedged: bool,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
+    wire: dict[str, list[float]] | None = None,
 ) -> Acceptability:
     """The §5/§6c analyzer read: evaluate the SAME trade from the counterparty's
     side and report whether they'd likely accept it. The counterparty is the team
@@ -256,8 +311,9 @@ def acceptability_read(
         return Acceptability(ACCEPT_REJECT, 0.0, False, hedged,
                              "could not evaluate the other side of this trade")
 
-    my_roster = _lineup_roster(my_team, values)
-    their_roster = _lineup_roster(counterparty, values)
+    repl = waiver_aware_replacement(values, wire or {})   # ONCE per league (Build B)
+    my_roster = _lineup_roster(my_team, values, repl)
+    their_roster = _lineup_roster(counterparty, values, repl)
     replacement_ppg = replacement_ppg_by_position(values)
     try:
         edge = evaluate_edge_band(
@@ -269,14 +325,14 @@ def acceptability_read(
 
     overtake_flag = edge.my_strength < edge.their_strength   # guard failed → they overtake
     # Value-fairness read off the SAME helper + constants the gate uses (the
-    # acquirer's asset-value get/give ratio) — one source of truth, can't drift.
+    # acquirer's trade_value get/give ratio) — one source of truth, can't drift.
     my_by = {p.player_id: p for p in my_roster}
     their_by = {p.player_id: p for p in their_roster}
-    give_val = sum(my_by[g].forward_value for g in give_ids if g in my_by)
-    get_val = sum(their_by[g].forward_value for g in get_ids if g in their_by)
+    give_val = sum(my_by[g].trade_val for g in give_ids if g in my_by)
+    get_val = sum(their_by[g].trade_val for g in get_ids if g in their_by)
     fair = _value_fair(get_val, give_val)
     verdict = _acceptability_verdict(edge.their_lineup_gain, fair)
-    why = _acceptability_why(values, their_roster, give_ids, verdict, fair, overtake_flag, hedged)
+    why = _acceptability_why(values, their_roster, give_ids, verdict, fair, overtake_flag, hedged, repl)
     return Acceptability(verdict, edge.their_lineup_gain, overtake_flag, hedged, why)
 
 
@@ -287,7 +343,7 @@ class RosterAnalysis:
     starting lineup, so adding them back wouldn't improve it — low contextual
     value to their OWN team). NEED = positions the roster is thin/weak at."""
     team_id: str
-    surplus_ids: tuple[str, ...]   # non-starters, highest forward_value first
+    surplus_ids: tuple[str, ...]   # non-starters, highest trade_value first
     needs: frozenset[str]          # positions where the team is thin/weak
 
 
@@ -300,19 +356,25 @@ def analyze_roster(
     team: TeamState,
     values: dict[str, InSeasonValue],
     rules: LineupRules | None = None,
+    *,
+    repl: Replacement | None = None,
 ) -> RosterAnalysis:
     """Derive need + surplus for one roster, reusing optimal_lineup (§6d). A player
     is SURPLUS if he's not in the optimal starting lineup (he doesn't improve it).
     A position is a NEED if a dedicated slot is empty (thin) or its weakest starter
-    is weak relative to the team's own starters (a low-value starter to upgrade)."""
+    is weak relative to the team's own starters (a low-value starter to upgrade).
+    (Build B) the optimal lineup + surplus order + need detection all read the
+    canonical cross-positional trade_value."""
     rules = rules or DEFAULT_LINEUP_RULES
-    roster = _lineup_roster(team, values)
-    lineup = optimal_lineup(roster, rules)
+    if repl is None:
+        repl = waiver_aware_replacement(values, {})
+    roster = _lineup_roster(team, values, repl)
+    lineup = optimal_lineup(roster, rules, value_of=_by_trade_value)
     starter_ids = {p.player_id for p in lineup.starters}
 
     surplus = sorted(
         (p for p in roster if p.player_id not in starter_ids),
-        key=lambda p: (-p.forward_value, p.player_id),
+        key=lambda p: (-p.trade_val, p.player_id),
     )
 
     needs: set[str] = set()
@@ -322,11 +384,11 @@ def analyze_roster(
         if pid is None and pos in rules.slots:
             needs.add(pos)
     # Weak: a dedicated starter well below the team's median starter value.
-    starter_fvs = sorted(p.forward_value for p in lineup.starters)
-    if starter_fvs:
-        median = starter_fvs[len(starter_fvs) // 2]
+    starter_tvs = sorted(p.trade_val for p in lineup.starters)
+    if starter_tvs:
+        median = starter_tvs[len(starter_tvs) // 2]
         for pos in rules.slots:
-            at_pos = [p.forward_value for p in lineup.starters if p.position == pos]
+            at_pos = [p.trade_val for p in lineup.starters if p.position == pos]
             if at_pos and min(at_pos) < _NEED_REL_FRACTION * median:
                 needs.add(pos)
 
@@ -366,6 +428,7 @@ def enumerate_candidates(
     *,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
     rules: LineupRules | None = None,
+    wire: dict[str, list[float]] | None = None,
 ) -> list[Candidate]:
     """Need/surplus-TARGETED candidate generation (slice 6 BUILD 2, §6d/§6e),
     replacing the old exhaustive 1-for-1 enumeration. For each opponent, match MY
@@ -379,29 +442,31 @@ def enumerate_candidates(
     my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
     if my_team is None:
         return []
-    me = analyze_roster(my_team, values, rules)
+    repl = waiver_aware_replacement(values, wire or {})   # ONCE per league (Build B)
+    me = analyze_roster(my_team, values, rules, repl=repl)
     my_size = len(my_team.roster)
-    my_roster_lp = _lineup_roster(my_team, values)
+    my_roster_lp = _lineup_roster(my_team, values, repl)
 
     def _lp(pid: str) -> LineupPlayer:
         v = values[pid]
-        return LineupPlayer(pid, v.position, v.forward_value)
+        return LineupPlayer(pid, v.position, v.forward_value, trade_val=trade_value(v, repl))
 
     out: list[Candidate] = []
     for opp in state.teams:
         if opp.team_id == my_team_id:
             continue
-        them = analyze_roster(opp, values, rules)
-        their_roster_lp = _lineup_roster(opp, values)
+        them = analyze_roster(opp, values, rules, repl=repl)
+        their_roster_lp = _lineup_roster(opp, values, repl)
         # GIVE-pool: ANY of my players (surplus OR a startable piece I can spare) at
         # a position THEY need that materially helps THEM — so I can pay fair value
-        # for a starter, not only dump bench. Top-valued, capped.
+        # for a starter, not only dump bench. Top-valued (trade_value), capped.
         give_pool = sorted(
             (rp.canonical_player_id for rp in my_team.roster
              if rp.canonical_player_id in values
              and values[rp.canonical_player_id].position in them.needs
-             and contextual_value(_lp(rp.canonical_player_id), their_roster_lp, rules) > _HELP_EPSILON),
-            key=lambda pid: -values[pid].forward_value,
+             and contextual_value(_lp(rp.canonical_player_id), their_roster_lp, rules,
+                                   value_of=_by_trade_value) > _HELP_EPSILON),
+            key=lambda pid: -_tv(pid, values, repl),
         )[:_MATCH_POOL_CAP]
         # GET-pool: ANY of their players at a position I need that materially improves
         # MY lineup — STARTABLE players, not just their bench surplus (the funnel fix).
@@ -409,8 +474,9 @@ def enumerate_candidates(
             (rp.canonical_player_id for rp in opp.roster
              if rp.canonical_player_id in values
              and values[rp.canonical_player_id].position in me.needs
-             and contextual_value(_lp(rp.canonical_player_id), my_roster_lp, rules) > _HELP_EPSILON),
-            key=lambda pid: -values[pid].forward_value,
+             and contextual_value(_lp(rp.canonical_player_id), my_roster_lp, rules,
+                                   value_of=_by_trade_value) > _HELP_EPSILON),
+            key=lambda pid: -_tv(pid, values, repl),
         )[:_MATCH_POOL_CAP]
         if not give_pool or not get_pool:
             continue  # no two-sided fit with this opponent
@@ -424,13 +490,13 @@ def enumerate_candidates(
                     continue
                 shape: list[tuple[float, float, tuple[str, ...], tuple[str, ...]]] = []
                 for give in itertools.combinations(give_pool, give_n):
-                    give_val = sum(values[g].forward_value for g in give)
+                    give_val = sum(_tv(g, values, repl) for g in give)
                     for get in itertools.combinations(get_pool, get_n):
-                        # VALUE-FAIRNESS pre-filter (the gate's cond-3 rule): only
-                        # build packages of comparable asset value, so a starter is
-                        # paid for fairly — and the candidate space stays bounded (no
-                        # give-junk-for-their-stud fleeces are even generated).
-                        get_val = sum(values[g].forward_value for g in get)
+                        # VALUE-FAIRNESS pre-filter (the gate's cond-3 rule, now on
+                        # trade_value): only build packages of comparable asset value,
+                        # so a starter is paid for fairly — and the candidate space
+                        # stays bounded (no give-junk-for-their-stud fleeces generated).
+                        get_val = sum(_tv(g, values, repl) for g in get)
                         if not _value_fair(get_val, give_val):
                             continue
                         # Rank within the shape by value-balance (then richer target).
@@ -441,10 +507,17 @@ def enumerate_candidates(
     return out
 
 
-def _lineup_roster(team: TeamState, values: dict[str, InSeasonValue]) -> list[LineupPlayer]:
+def _lineup_roster(
+    team: TeamState, values: dict[str, InSeasonValue], repl: Replacement | None = None,
+) -> list[LineupPlayer]:
     """A team's roster as LineupPlayers for the lineup / contextual primitives.
-    Carries forward_ppg (for lineup_strength_ppg) and the #170 buy-low/ascending
-    signal (for the depth clause §5a). Players without a computed value are skipped."""
+    Carries forward_ppg (for the ppg lineup gate, forward_value-ranked — UNCHANGED)
+    AND trade_val (the canonical cross-positional value the FINDER ranks/scores by),
+    plus the #170 buy-low signal. Players without a computed value are skipped.
+    ``repl`` defaults to the rostered-only waiver-aware replacement (callers on the
+    hot path pass the wire-aware one, computed once)."""
+    if repl is None:
+        repl = waiver_aware_replacement(values, {})
     out = []
     for rp in team.roster:
         v = values.get(rp.canonical_player_id)
@@ -453,6 +526,7 @@ def _lineup_roster(team: TeamState, values: dict[str, InSeasonValue]) -> list[Li
         out.append(LineupPlayer(
             rp.canonical_player_id, rp.position, v.forward_value,
             forward_ppg=v.forward_ppg, rising=bool(v.buy_low),
+            trade_val=trade_value(v, repl),
         ))
     return out
 
@@ -488,13 +562,18 @@ def evaluate_edge_band(
         lineup_strength_ppg(their_post, rules, replacement_ppg)
         - lineup_strength_ppg(their_roster, rules, replacement_ppg), 2)
 
-    # cond 3 asset value (Σforward_value) of what the ACQUIRER gives vs gets.
+    # cond 3 asset value — Σ canonical trade_value (cross-positional) of what the
+    # ACQUIRER gives vs gets. On this scale DEF+TE no longer reads "≈ Bijan".
     my_by = {p.player_id: p for p in my_roster}
     their_by = {p.player_id: p for p in their_roster}
-    give_val = sum(my_by[g].forward_value for g in give_ids if g in my_by)
-    get_val = sum(their_by[g].forward_value for g in get_ids if g in their_by)
+    give_val = sum(my_by[g].trade_val for g in give_ids if g in my_by)
+    get_val = sum(their_by[g].trade_val for g in get_ids if g in their_by)
 
-    guard = overtake_guard(my_roster, their_roster, list(give_ids), list(get_ids), rules)  # cond 4 (#168)
+    # cond 4 (#168) — overtake on trade_value lineup strength (cross-positional).
+    guard = overtake_guard(
+        my_roster, their_roster, list(give_ids), list(get_ids), rules,
+        value_of=_by_trade_value,
+    )
 
     clears = (
         your_lineup_gain >= _LINEUP_GAIN_THRESHOLD     # 1: you improve (acquirer)
@@ -516,6 +595,7 @@ def evaluate_candidates(
     *,
     roster_limit: int,
     max_results: int = MAX_PROPOSALS,
+    wire: dict[str, list[float]] | None = None,
 ) -> list[tuple[Candidate, TradeAnalysis, EdgeBand]]:
     """Keep only candidates that CLEAR the four-condition edge band, rank by your
     edge (your_net) descending, cap. Pure + deterministic — the never-pad + cap
@@ -524,9 +604,10 @@ def evaluate_candidates(
     my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
     if my_team is None:
         return []
-    my_roster = _lineup_roster(my_team, values)
+    repl = waiver_aware_replacement(values, wire or {})   # ONCE per league (Build B)
+    my_roster = _lineup_roster(my_team, values, repl)
     opp_rosters = {
-        t.team_id: _lineup_roster(t, values)
+        t.team_id: _lineup_roster(t, values, repl)
         for t in state.teams if t.team_id != my_team_id
     }
     replacement_ppg = replacement_ppg_by_position(values)
@@ -552,19 +633,23 @@ def evaluate_candidates(
             analysis = analyze_trade(
                 state, values, my_team_id,
                 list(cand.give_ids), list(cand.get_ids), roster_limit=roster_limit,
+                wire_ppg_by_pos=wire,   # SAME wire dict as the gate + picker — the one
+                # consumer Build B missed; without it the displayed chips computed a
+                # rostered-only replacement (K/DEF fell back to _PPG_ANCHORS → 44.4 vs 31.5).
             )
         except Exception:
             continue  # unresolvable candidate — skip, never surface
         scored.append((cand, analysis, edge))
 
     scored.sort(key=lambda ce: ce[2].your_lineup_gain, reverse=True)
-    return _select_diverse(scored, values, max_results)
+    return _select_diverse(scored, values, max_results, repl)
 
 
 def _select_diverse(
     scored: list[tuple[Candidate, TradeAnalysis, EdgeBand]],
     values: dict[str, InSeasonValue],
     max_results: int,
+    repl: Replacement | None = None,
 ) -> list[tuple[Candidate, TradeAnalysis, EdgeBand]]:
     """Give-side DIVERSITY cap on the FINAL surfaced set (surfacing only — the
     ranking is untouched). Walk the already-ranked (best-first) list and take each
@@ -574,11 +659,13 @@ def _select_diverse(
     if there aren't ``max_results`` diverse cleared trades, we surface FEWER. A
     multi-premium give counts against EACH premium asset (either capped → skip); a
     sub-premium throw-in never triggers the cap."""
+    if repl is None:
+        repl = waiver_aware_replacement(values, {})
     selected: list[tuple[Candidate, TradeAnalysis, EdgeBand]] = []
     asset_uses: dict[str, int] = {}
     for cand, analysis, edge in scored:
         premium = [g for g in cand.give_ids
-                   if g in values and values[g].forward_value >= _PREMIUM_GIVE_VALUE]
+                   if g in values and _tv(g, values, repl) >= _PREMIUM_GIVE_VALUE]
         if any(asset_uses.get(g, 0) >= _MAX_TRADES_PER_GIVE_ASSET for g in premium):
             continue
         selected.append((cand, analysis, edge))
@@ -635,6 +722,7 @@ def build_silence_context(
     *,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
     rules: LineupRules | None = None,
+    wire: dict[str, list[float]] | None = None,
 ) -> Optional[SilenceContext]:
     """Explain why a team surfaced NO trades. Re-reads each candidate through the
     SAME ``evaluate_edge_band`` gate (no new condition math), classifies the
@@ -645,16 +733,18 @@ def build_silence_context(
     my_team = next((t for t in state.teams if t.team_id == my_team_id), None)
     if my_team is None:
         return None
-    my_roster = _lineup_roster(my_team, values)
+    repl = waiver_aware_replacement(values, wire or {})   # ONCE per league (Build B)
+    my_roster = _lineup_roster(my_team, values, repl)
     opp_rosters = {
-        t.team_id: _lineup_roster(t, values)
+        t.team_id: _lineup_roster(t, values, repl)
         for t in state.teams if t.team_id != my_team_id
     }
     replacement_ppg = replacement_ppg_by_position(values)
 
     # Am I strong or weak? — decides lineup_too_strong vs asset_poor. My optimal
-    # starting-lineup ppg vs the league's median team (no magic constant).
-    strengths = [lineup_strength_ppg(_lineup_roster(t, values), rules) for t in state.teams]
+    # starting-lineup ppg vs the league's median team (no magic constant). This is a
+    # PPG read (unchanged) — the value migration doesn't touch lineup strength here.
+    strengths = [lineup_strength_ppg(_lineup_roster(t, values, repl), rules) for t in state.teams]
     league_median = statistics.median(strengths) if strengths else 0.0
     my_strength = lineup_strength_ppg(my_roster, rules)
 
@@ -677,8 +767,8 @@ def build_silence_context(
                 roster_limit=roster_limit, replacement_ppg=replacement_ppg)
         except Exception:
             continue
-        give_val = sum(values[g].forward_value for g in cand.give_ids if g in values)
-        get_val = sum(values[g].forward_value for g in cand.get_ids if g in values)
+        give_val = sum(_tv(g, values, repl) for g in cand.give_ids if g in values)
+        get_val = sum(_tv(g, values, repl) for g in cand.get_ids if g in values)
         c1 = edge.your_lineup_gain >= _LINEUP_GAIN_THRESHOLD
         c2 = edge.their_lineup_gain >= -_MAINTAIN_TOL
         c3 = _value_fair(get_val, give_val)

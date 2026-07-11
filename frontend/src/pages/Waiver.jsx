@@ -13,7 +13,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Waves, TrendingUp, TrendingDown, Minus, Lock, ArrowRight, Newspaper, Target, Shield,
 } from 'lucide-react'
-import { fetchWaiverLeague, fetchWaiverRecommendations } from '../api/waiver'
+import { fetchWaiverLeague, fetchWaiverRecommendations, fetchWaiverWire } from '../api/waiver'
 import { useMe } from '../hooks/useMe'
 import { CREDIT_COSTS } from '../lib/constants'
 import { PlayerBadges } from '../components/shared/PlayerName'
@@ -140,14 +140,122 @@ function RecCard({ rec }) {
   )
 }
 
+// FREE browse-list filters. Position includes a FLEX pseudo-position (RB+WR+TE).
+const POS_FILTERS = ['FLEX', 'QB', 'RB', 'WR', 'TE', 'K', 'DEF']
+const FLEX_SET = new Set(['RB', 'WR', 'TE'])
+const UNKNOWN_TEAM = '__unknown__'
+
+function matchesPos(pos, filter) {
+  return filter === 'FLEX' ? FLEX_SET.has(pos) : pos === filter
+}
+
+// The FREE, un-metered wire browse list. Sorted by forward_ppg (a weekly-points
+// question — NOT trade_value, which would bury streamable K/DEF). Defaults to FLEX
+// (RB/WR/TE): an unfiltered ppg sort floods the top with QB + K/DEF (a correct number
+// answering a question nobody asks — a starting QB out-scores a WR3 weekly), so
+// FLEX-by-default makes first paint useful; QB/K/DEF are one click away.
+function BrowseList({ wire, isLoading, error }) {
+  const [pos, setPos] = useState('FLEX')
+  const [team, setTeam] = useState('ALL')
+
+  const players = useMemo(() => wire?.players ?? [], [wire])
+  const hasNullTeam = useMemo(() => players.some((p) => !p.nfl_team), [players])
+  const teams = useMemo(
+    () => [...new Set(players.map((p) => p.nfl_team).filter(Boolean))].sort(),
+    [players],
+  )
+  const filtered = useMemo(() => {
+    const rows = players.filter((p) => {
+      if (!matchesPos(p.position, pos)) return false
+      if (team === 'ALL') return true
+      if (team === UNKNOWN_TEAM) return !p.nfl_team   // never silently drop null-team FAs
+      return p.nfl_team === team
+    })
+    // Backend already sorts by forward_ppg desc; re-sort defensively after filtering.
+    return [...rows].sort((a, b) => b.forward_ppg - a.forward_ppg)
+  }, [players, pos, team])
+
+  if (isLoading) return <div className="text-sm text-slate-400">Loading available players…</div>
+  if (error) return <div className="text-sm text-red-300">Could not load the wire.</div>
+
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1">
+          {POS_FILTERS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPos(p)}
+              className={`min-h-9 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                pos === p ? 'bg-brand text-white' : 'bg-surface-2 text-slate-400 hover:text-white'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <select
+          value={team}
+          onChange={(e) => setTeam(e.target.value)}
+          className="min-h-9 rounded-md border border-border bg-surface-2 px-2 py-1 text-sm text-white"
+        >
+          <option value="ALL">All teams</option>
+          {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+          {hasNullTeam && <option value={UNKNOWN_TEAM}>Unknown</option>}
+        </select>
+      </div>
+
+      <div className="mb-2 text-xs text-slate-500">
+        Showing {filtered.length} of {players.length} available · sorted by ppg
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-left text-xs text-slate-500">
+              <th scope="col" className="py-2 pr-2 font-medium">Pos</th>
+              <th scope="col" className="py-2 pr-2 font-medium">Player</th>
+              <th scope="col" className="py-2 pr-2 font-medium">Team</th>
+              <th scope="col" className="py-2 pl-2 text-right font-medium">PPG</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((p) => (
+              <tr key={p.id} className="border-b border-border/40 hover:bg-surface-2/50">
+                <td className="py-2 pr-2"><PlayerBadges position={p.position} variant="compact" /></td>
+                <td className="py-2 pr-2 font-medium text-white">{p.name}</td>
+                <td className="py-2 pr-2 text-slate-400">{p.nfl_team || '—'}</td>
+                <td className="py-2 pl-2 text-right tabular-nums text-white">{p.forward_ppg.toFixed(1)}</td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} className="py-6 text-center text-slate-500">No players match this filter.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
 export default function Waiver() {
+  // staleTime: league/wire snapshots move on a weekly cadence — don't refetch on
+  // every window focus (each refetch is a full backend source load).
   const { data: league, isLoading, error } = useQuery({
     queryKey: ['waiver-league'], queryFn: fetchWaiverLeague, retry: false,
+    staleTime: 5 * 60 * 1000,
   })
 
   const [myTeamId, setMyTeamId] = useState(null)
   const effMyId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
   const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
+
+  // FREE wire browse list — independent of the acting team + the metered flow.
+  const wireQuery = useQuery({
+    queryKey: ['waiver-wire'], queryFn: fetchWaiverWire, retry: false,
+    staleTime: 5 * 60 * 1000,
+  })
 
   const qc = useQueryClient()
   const { tierLimits } = useMe()
@@ -184,7 +292,7 @@ export default function Waiver() {
   const data = recMut.data
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
+    <div className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6">
       {/* Header + demo perspective switch */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -211,51 +319,66 @@ export default function Waiver() {
         )}
       </div>
 
-      {/* Run */}
-      <div className="flex flex-wrap items-center gap-3">
-        {locked ? (
-          <UpgradeInline label="Waiver wire" tier="Standard" />
-        ) : (
-          <button
-            type="button"
-            disabled={recMut.isPending}
-            onClick={() => recMut.mutate()}
-            className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets · ${costLabel}`}
-          </button>
-        )}
-        {data?.needs?.length > 0 && (
-          <span className="text-xs text-slate-500">
-            Roster needs: {data.needs.map((n) => <span key={n} className="mr-1 rounded bg-surface-2 px-1.5 py-0.5 text-brand-accent">{n}</span>)}
-          </span>
-        )}
-      </div>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+        {/* LEFT — FREE, un-metered browse list of the whole wire (sorted by ppg). */}
+        <section className="rounded-lg border border-border bg-surface-1 p-4">
+          <h2 className="mb-3 text-sm font-semibold text-white">Available players</h2>
+          <BrowseList wire={wireQuery.data} isLoading={wireQuery.isLoading} error={wireQuery.error} />
+        </section>
 
-      {recMut.isError && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300">
-          {recMut.error?.response?.data?.detail || recMut.error?.response?.data?.message || 'Could not fetch waiver targets.'}
-        </div>
-      )}
+        {/* RIGHT — the EXISTING metered recommendations flow, RELOCATED to a side
+            panel. The button, the credit/feature behavior, and the result rendering
+            are unchanged — only the container moved. */}
+        <aside className="space-y-3 lg:sticky lg:top-4 lg:self-start">
+          <h2 className="text-sm font-semibold text-white">AI waiver targets</h2>
 
-      {/* Empty state — explain the silence, don't look broken */}
-      {data && data.recommendations.length === 0 && (
-        <div className="rounded-lg border border-border bg-surface-1 p-6 text-sm text-slate-300">
-          <div className="mb-1 font-semibold text-white">{data.silence?.reason || 'Nothing worth claiming right now.'}</div>
-          {data.silence?.near_miss_name && (
-            <div className="text-slate-500">
-              Closest: <span className="text-slate-300">{data.silence.near_miss_name}</span>
-              {' '}({data.silence.near_miss_gain > 0 ? '+' : ''}{data.silence.near_miss_gain} ppw) — not enough to spend on.
+          {/* Run */}
+          <div className="flex flex-wrap items-center gap-3">
+            {locked ? (
+              <UpgradeInline label="Waiver wire" tier="Standard" />
+            ) : (
+              <button
+                type="button"
+                disabled={recMut.isPending}
+                onClick={() => recMut.mutate()}
+                className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets · ${costLabel}`}
+              </button>
+            )}
+            {data?.needs?.length > 0 && (
+              <span className="text-xs text-slate-500">
+                Roster needs: {data.needs.map((n) => <span key={n} className="mr-1 rounded bg-surface-2 px-1.5 py-0.5 text-brand-accent">{n}</span>)}
+              </span>
+            )}
+          </div>
+
+          {recMut.isError && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300">
+              {recMut.error?.response?.data?.detail || recMut.error?.response?.data?.message || 'Could not fetch waiver targets.'}
             </div>
           )}
-        </div>
-      )}
 
-      {data && data.recommendations.length > 0 && (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {data.recommendations.map((rec) => <RecCard key={rec.add.id} rec={rec} />)}
-        </div>
-      )}
+          {/* Empty state — explain the silence, don't look broken */}
+          {data && data.recommendations.length === 0 && (
+            <div className="rounded-lg border border-border bg-surface-1 p-6 text-sm text-slate-300">
+              <div className="mb-1 font-semibold text-white">{data.silence?.reason || 'Nothing worth claiming right now.'}</div>
+              {data.silence?.near_miss_name && (
+                <div className="text-slate-500">
+                  Closest: <span className="text-slate-300">{data.silence.near_miss_name}</span>
+                  {' '}({data.silence.near_miss_gain > 0 ? '+' : ''}{data.silence.near_miss_gain} ppw) — not enough to spend on.
+                </div>
+              )}
+            </div>
+          )}
+
+          {data && data.recommendations.length > 0 && (
+            <div className="space-y-3">
+              {data.recommendations.map((rec) => <RecCard key={rec.add.id} rec={rec} />)}
+            </div>
+          )}
+        </aside>
+      </div>
     </div>
   )
 }

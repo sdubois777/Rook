@@ -24,8 +24,11 @@ from backend.services.trade.value_engine import Confidence, InSeasonValue, Value
 
 
 def _lp(spec):
-    # forward_ppg == forward_value here so lineup_strength_ppg is exercised.
-    return [LineupPlayer(pid, pos, fv, forward_ppg=fv) for pid, pos, fv in spec]
+    # forward_ppg == forward_value here so lineup_strength_ppg is exercised; trade_val
+    # == forward_value too so the Build-B finder (which ranks/scores cross-positional
+    # value by trade_val) sees the SAME fixture numbers — these unit tests exercise the
+    # gate logic, not the value engine's scale.
+    return [LineupPlayer(pid, pos, fv, forward_ppg=fv, trade_val=fv) for pid, pos, fv in spec]
 
 
 # Me: RB-rich / WR-thin (only 2 WR → an empty WR3 slot an incoming WR fills);
@@ -114,8 +117,13 @@ def _league(my_spec, opp_spec):
 
 
 def test_evaluate_candidates_surfaces_the_mutual_benefit_trade():
+    # (Build D) rm4 -> wt4: the same mutual-benefit shape (my surplus RB fills
+    # their RB hole, their WR fills my empty WR3), on a pair that is value-FAIR
+    # under the tightened gate — rm4 15 ppg → trade_value 30.6, wt4 14 ppg → 21.8
+    # (ratio 0.71 within [0.5, 2]; gap 8.8 <= abs-tol). rm4 -> wt5 (13 → 14.6) is
+    # now correctly ratio-unfair (0.48, gap 16) and no longer the canonical pair.
     state, values = _league(ME_STRONG, THEM)
-    cand = Candidate(("rm4",), ("wt5",), "opp")
+    cand = Candidate(("rm4",), ("wt4",), "opp")
     out = evaluate_candidates(state, values, "me", [cand], roster_limit=16)
     assert len(out) == 1
     _, _, edge = out[0]
@@ -139,7 +147,8 @@ def test_never_pads_when_nothing_clears():
 def test_cleared_candidates_ranked_by_lineup_gain_descending():
     # Give my surplus RB for progressively better WRs — bigger WR = bigger lineup
     # gain. (ME_STRONG's empty WR3 is credited replacement ppg now, so the gains
-    # are over the streamable baseline; wt3/wt4/wt5 still clear at 8/6/5.)
+    # are over the streamable baseline; wt3/wt4 clear at 8/6 — wt5 is now
+    # value-UNFAIR under the Build-D gate: 14.6 vs 30.6, ratio 0.48, gap 16.)
     state, values = _league(ME_STRONG, THEM)
     cands = [Candidate(("rm4",), ("wt5",), "opp"),
              Candidate(("rm4",), ("wt3",), "opp"),
@@ -161,7 +170,16 @@ def test_enumerate_candidates_is_targeted_and_acquires_starters():
     # Targeting preserved (gives at their RB need, gets at my WR need) but the
     # get-pool is BROADENED past bench surplus to their startable WRs, so I can buy
     # a starter. Bounded by the per-shape cap; every candidate is vs the opponent.
-    state, values = _league(ME_STRONG, THEM)
+    # (Build B) fixture ppg in the trade_value-discriminating band (~8-20) with QBs
+    # bumped so the compressed QB scale doesn't spuriously flag QB as a need — the
+    # enumeration targets need/surplus on trade_value now.
+    me = [("qm", "QB", 22), ("rm1", "RB", 20), ("rm2", "RB", 19), ("rm3", "RB", 18),
+          ("rm4", "RB", 16), ("rm5", "RB", 15), ("wm1", "WR", 17), ("wm2", "WR", 16),
+          ("tm", "TE", 16)]
+    them = [("qt", "QB", 22), ("rt1", "RB", 12), ("btr", "RB", 11),
+            ("wt1", "WR", 20), ("wt2", "WR", 19), ("wt3", "WR", 18), ("wt4", "WR", 17),
+            ("wt5", "WR", 16), ("wt6", "WR", 15), ("tt", "TE", 16)]
+    state, values = _league(me, them)
     cands = enumerate_candidates(state, values, "me")
     assert 0 < len(cands) <= 50                                   # bounded
     assert all(c.counterparty_team_id == "opp" for c in cands)

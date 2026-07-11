@@ -32,12 +32,17 @@ from backend.services.trade.value_engine import (
     InSeasonValue,
     ValueTrend,
     replacement_ppg_by_position,
+    trade_value,
+    waiver_aware_replacement,
 )
 
 # Verdict is the change in your STARTING LINEUP's points/week on the RESULTING
-# roster (trade_lineup_value_design.md §7), NOT summed forward_value. Thresholds
-# in lineup ppg: within the maintains-tolerance reads "even"; a gain at/above the
-# value threshold reads "lopsided", between is a "lean".
+# roster (trade_lineup_value_design.md §7), NOT summed value. A trade is a win iff it
+# improves what you START — so surplus-for-need (give value, get a lineup fit) reads
+# as the win it is, and the 2-for-1 refill cost is priced in. The displayed value
+# (chips/prose = rescaled 0-100 VOR) is coherent context but does NOT gate the verdict.
+# Thresholds in lineup ppg: within the maintains-tolerance reads "even"; a gain at/above
+# the threshold reads "lopsided", between is a "lean".
 _MAINTAINS_TOLERANCE = 0.5    # |Δlineup| within this → even / barely moves
 _LINEUP_GAIN_THRESHOLD = 5.0  # |Δlineup| at/above this → lopsided; between → lean
 
@@ -56,8 +61,10 @@ class PlayerGrounding:
     name: str
     position: str
     side: str            # "give" | "get"
-    forward_value: float
-    value_trend: str
+    forward_value: float  # 0-100 position-relative (internal ranking only — NOT displayed)
+    vor: float            # THE displayed value: league-local VOR rescaled to 0-100 (top→100,
+                          # streamable K/DEF→~0). chips + prose + totals all read this.
+    value_trend: str      # (proposer∪proposee bench + this league's wire). The trade currency.
     confidence: str
     buy_low: bool
     sell_high: bool
@@ -89,7 +96,7 @@ class TradeAnalysis:
     get: list[PlayerGrounding]
     give_value: float
     get_value: float
-    value_delta: float            # get − give of raw forward_value (grounding only; does NOT drive the verdict)
+    value_delta: float            # get − give of the rescaled 0-100 VOR (display/grounding; does NOT drive the verdict)
     lineup_gain: float            # HEADLINE: Δ your starting-lineup points/week (resulting roster, net of drops)
     winner: str                   # "you" | "opponent" | "even" — from lineup_gain
     fairness: str                 # fair | lean you/opponent | lopsided you/opponent
@@ -101,10 +108,10 @@ class TradeAnalysis:
     warnings: tuple[TradeWarning, ...] = ()   # non-blocking roster-consequence notices
 
 
-def _grounding(v: InSeasonValue, side: str) -> PlayerGrounding:
+def _grounding(v: InSeasonValue, side: str, vor: float) -> PlayerGrounding:
     return PlayerGrounding(
         canonical_player_id=v.canonical_player_id, name=v.name, position=v.position,
-        side=side, forward_value=v.forward_value, value_trend=v.value_trend.value,
+        side=side, forward_value=v.forward_value, vor=vor, value_trend=v.value_trend.value,
         confidence=v.confidence.value, buy_low=v.buy_low, sell_high=v.sell_high,
         why=v.why,
     )
@@ -195,6 +202,7 @@ def analyze_trade(
     *,
     roster_limit: int = DEFAULT_ROSTER_LIMIT,
     rules: LineupRules | None = None,
+    wire_ppg_by_pos: dict[str, list[float]] | None = None,
 ) -> TradeAnalysis:
     """Compute the deterministic, engine-grounded verdict. Assumes the trade has
     already passed ``validate_trade``.
@@ -202,15 +210,31 @@ def analyze_trade(
     ``rules`` is the league's real starting-lineup shape (from
     lineup_rules_from_slots(roster_slots)); None → DEFAULT_LINEUP_RULES. Threading it
     is the ledgered prod-config fix — a real 2-QB/superflex/non-3-WR league now
-    evaluates the lineup gain on its OWN shape, not the 3-WR default."""
+    evaluates the lineup gain on its OWN shape, not the 3-WR default.
+
+    ``wire_ppg_by_pos`` is this league's waiver wire priced by position — the wire side
+    of the LEAGUE-LOCAL, WAIVER-AWARE VOR: a traded player's grounding value is now
+    points ABOVE the best replacement rosterable from (both involved rosters' bench +
+    the wire), NOT absolute forward_value. K/DEF compress to near-zero naturally (the
+    wire is full of streamable DEF/K). None/empty → the anchor-replacement fallback."""
     rules = rules or DEFAULT_LINEUP_RULES
     validate_trade(state, values, my_team_id, give_ids, get_ids)
 
-    give = [_grounding(values[pid], "give") for pid in give_ids]
-    get = [_grounding(values[pid], "get") for pid in get_ids]
-    give_value = round(sum(g.forward_value for g in give), 1)
-    get_value = round(sum(g.forward_value for g in get), 1)
-    value_delta = round(get_value - give_value, 1)   # grounding only; NOT the verdict
+    # LEAGUE-LOCAL, WAIVER-AWARE VOR replacement (this league's rosters + its wire — never
+    # all-NFL). The wire compresses K/DEF: the streamable replacement DEF/K is close to a
+    # good one, so their margin (VOR) is small.
+    replacement = waiver_aware_replacement(values, wire_ppg_by_pos or {})
+
+    def _vor(pid: str) -> float:
+        # THE canonical trade value (value_engine.trade_value) — the ONE 0-100 number
+        # every trade surface shows (picker, chips, totals) so nothing splits scales.
+        return trade_value(values[pid], replacement)
+
+    give = [_grounding(values[pid], "give", _vor(pid)) for pid in give_ids]
+    get = [_grounding(values[pid], "get", _vor(pid)) for pid in get_ids]
+    give_value = round(sum(g.vor for g in give), 1)   # rescaled 0-100 VOR, not forward_value
+    get_value = round(sum(g.vor for g in get), 1)
+    value_delta = round(get_value - give_value, 1)   # display/grounding (0-100 scale); NOT the verdict
 
     # HEADLINE (§7): the change in YOUR optimal STARTING LINEUP's points/week on the
     # RESULTING roster (incoming + outgoing + forced drops), evaluated ONCE — not a
