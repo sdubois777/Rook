@@ -24,8 +24,11 @@ from backend.services.trade.value_engine import Confidence, InSeasonValue, Value
 
 
 def _lp(spec):
-    # forward_ppg == forward_value here so lineup_strength_ppg is exercised.
-    return [LineupPlayer(pid, pos, fv, forward_ppg=fv) for pid, pos, fv in spec]
+    # forward_ppg == forward_value here so lineup_strength_ppg is exercised; trade_val
+    # == forward_value too so the Build-B finder (which ranks/scores cross-positional
+    # value by trade_val) sees the SAME fixture numbers — these unit tests exercise the
+    # gate logic, not the value engine's scale.
+    return [LineupPlayer(pid, pos, fv, forward_ppg=fv, trade_val=fv) for pid, pos, fv in spec]
 
 
 # Me: RB-rich / WR-thin (only 2 WR → an empty WR3 slot an incoming WR fills);
@@ -161,7 +164,16 @@ def test_enumerate_candidates_is_targeted_and_acquires_starters():
     # Targeting preserved (gives at their RB need, gets at my WR need) but the
     # get-pool is BROADENED past bench surplus to their startable WRs, so I can buy
     # a starter. Bounded by the per-shape cap; every candidate is vs the opponent.
-    state, values = _league(ME_STRONG, THEM)
+    # (Build B) fixture ppg in the trade_value-discriminating band (~8-20) with QBs
+    # bumped so the compressed QB scale doesn't spuriously flag QB as a need — the
+    # enumeration targets need/surplus on trade_value now.
+    me = [("qm", "QB", 22), ("rm1", "RB", 20), ("rm2", "RB", 19), ("rm3", "RB", 18),
+          ("rm4", "RB", 16), ("rm5", "RB", 15), ("wm1", "WR", 17), ("wm2", "WR", 16),
+          ("tm", "TE", 16)]
+    them = [("qt", "QB", 22), ("rt1", "RB", 12), ("btr", "RB", 11),
+            ("wt1", "WR", 20), ("wt2", "WR", 19), ("wt3", "WR", 18), ("wt4", "WR", 17),
+            ("wt5", "WR", 16), ("wt6", "WR", 15), ("tt", "TE", 16)]
+    state, values = _league(me, them)
     cands = enumerate_candidates(state, values, "me")
     assert 0 < len(cands) <= 50                                   # bounded
     assert all(c.counterparty_team_id == "opp" for c in cands)

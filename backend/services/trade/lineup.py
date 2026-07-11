@@ -27,7 +27,7 @@ solve before a non-single-flex real league is in scope.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -39,14 +39,27 @@ class LineupPlayer:
     the pipeline computes) — the optimizer still RANKS by the 0-100 forward_value,
     but ``lineup_strength_ppg`` reads forward_ppg to report lineup change in real
     points (trade_lineup_value_design.md §3). ``rising`` carries the #170 buy-low /
-    ascending-usage signal for the depth clause (§5a). Both default-safe so
-    existing callers that build a bare LineupPlayer are unaffected; the optimizer
-    ignores them."""
+    ascending-usage signal for the depth clause (§5a). ``trade_val`` carries the
+    canonical CROSS-positional ``value_engine.trade_value`` (0-100) — the FINDER
+    ranks/sums by it (pass ``value_of=_by_trade_value`` to ``optimal_lineup``) so
+    its value comparisons match the UI, while the ppg lineup gate keeps the default
+    forward_value ranking. All default-safe so existing callers are unaffected."""
     player_id: str
     position: str
     forward_value: float
     forward_ppg: float = 0.0
     rising: bool = False
+    trade_val: float = 0.0
+
+
+def _by_forward_value(p: "LineupPlayer") -> float:
+    return p.forward_value
+
+
+def _by_trade_value(p: "LineupPlayer") -> float:
+    """Rank/strength selector for the canonical cross-positional trade_value —
+    what the FINDER passes so its lineup value is on the displayed scale."""
+    return p.trade_val
 
 
 @dataclass(frozen=True)
@@ -111,17 +124,28 @@ def _sort_key(p: LineupPlayer):
 def optimal_lineup(
     roster: list[LineupPlayer],
     rules: Optional[LineupRules] = None,
+    *,
+    value_of: Optional[Callable[[LineupPlayer], float]] = None,
 ) -> OptimalLineup:
     """Best legal starting lineup + its strength. Degenerate rosters (fewer
     players than slots, or none at a required position) fill what's legal and
-    leave the rest empty — never crashing, never negative."""
+    leave the rest empty — never crashing, never negative.
+
+    ``value_of`` selects the value the optimizer RANKS and STRENGTHS by; default
+    ``forward_value`` (unchanged for every existing caller, incl. the ppg lineup
+    gate). The FINDER passes ``_by_trade_value`` so its cross-positional lineup
+    value is the displayed trade_value scale."""
     rules = rules or DEFAULT_LINEUP_RULES
+    value_of = value_of or _by_forward_value
+
+    def key(p: LineupPlayer):
+        return (-value_of(p), p.player_id)
 
     by_pos: dict[str, list[LineupPlayer]] = {}
     for p in roster:
         by_pos.setdefault(p.position, []).append(p)
     for plist in by_pos.values():
-        plist.sort(key=_sort_key)
+        plist.sort(key=key)
 
     used: set[str] = set()
     starters: list[LineupPlayer] = []
@@ -144,7 +168,7 @@ def optimal_lineup(
     flex_avail = sorted(
         (p for p in roster
          if p.position in rules.flex_positions and p.player_id not in used),
-        key=_sort_key,
+        key=key,
     )
     for i in range(rules.flex_count):
         label = f"FLEX{i + 1}" if rules.flex_count > 1 else "FLEX"
@@ -156,17 +180,23 @@ def optimal_lineup(
         else:
             slot_assign.append((label, None))
 
-    strength = round(sum(p.forward_value for p in starters), 1)
+    strength = round(sum(value_of(p) for p in starters), 1)
     return OptimalLineup(
         starters=tuple(starters), strength=strength, slots=tuple(slot_assign),
     )
 
 
-def roster_strength(roster: list[LineupPlayer], rules: Optional[LineupRules] = None) -> float:
+def roster_strength(
+    roster: list[LineupPlayer],
+    rules: Optional[LineupRules] = None,
+    *,
+    value_of: Optional[Callable[[LineupPlayer], float]] = None,
+) -> float:
     """A roster's team strength = its optimal STARTING-lineup strength (§4:
     fantasy is won by who you start). Thin wrapper over optimal_lineup; bench
-    depth is explicitly a v2 refinement (see the design's deferred ledger)."""
-    return optimal_lineup(roster, rules).strength
+    depth is explicitly a v2 refinement (see the design's deferred ledger).
+    ``value_of`` forwarded (the overtake guard passes the trade_value selector)."""
+    return optimal_lineup(roster, rules, value_of=value_of).strength
 
 
 def fit_to_limit(roster: list[LineupPlayer], limit: int) -> list[LineupPlayer]:

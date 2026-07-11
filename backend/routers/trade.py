@@ -390,7 +390,7 @@ async def analyze(
     #    confidence. Never gates — it only annotates the verdict.
     acc = acceptability_read(
         state, values, body.my_team_id, body.give, body.get,
-        hedged=analysis.hedged, roster_limit=roster_limit,
+        hedged=analysis.hedged, roster_limit=roster_limit, wire=wire,
     )
     acceptability = AcceptabilityOut(
         verdict=acc.verdict, their_lineup_gain=acc.their_lineup_gain,
@@ -434,9 +434,11 @@ async def ideas(
 
     # 4. Generate candidates (LLM, deterministic fallback) → filter through the
     #    four-condition EDGE BAND (slice 4) → rank by your_net → cap (never-pad).
-    candidates = await proposals_agent.generate_candidates(state, my_team_id, values)
+    candidates = await proposals_agent.generate_candidates(
+        state, my_team_id, values, wire=_wire,
+    )
     surfaced = evaluate_candidates(
-        state, values, my_team_id, candidates, roster_limit=roster_limit,
+        state, values, my_team_id, candidates, roster_limit=roster_limit, wire=_wire,
     )
 
     # Generate the per-proposal rationales CONCURRENTLY — each is a Sonnet call,
@@ -468,7 +470,9 @@ async def ideas(
     # candidate results; never changes what surfaced.
     silence_context = None
     if not proposals:
-        sc = build_silence_context(state, values, my_team_id, candidates, roster_limit=roster_limit)
+        sc = build_silence_context(
+            state, values, my_team_id, candidates, roster_limit=roster_limit, wire=_wire,
+        )
         if sc is not None:
             def _ref(pid: str) -> PlayerRefOut:
                 v = values[pid]
