@@ -22,6 +22,28 @@ class CreditService:
         self._user_repo = user_repo
         self._credit_repo = credit_repo
 
+    async def charge_metered(
+        self,
+        user: User,
+        action: str,
+        agent_name: str | None = None,
+    ) -> int:
+        """THE GATE-SEMANTICS FLIP — one call per metered route, BEFORE compute.
+
+        * PAID tier (unlimited_features): allowed, NO debit, no credit check.
+        * FREE tier with credits: allowed, debit CREDIT_COSTS[action].
+        * FREE tier without: InsufficientCreditsError (402) — no debit, and the
+          caller must not have done any compute/LLM work yet.
+
+        Uses the EFFECTIVE tier, so an expired season entitlement meters as
+        free. Entitlement features (live_draft) never come through here.
+        """
+        from backend.models.user import effective_tier, is_unlimited
+
+        if is_unlimited(effective_tier(user)):
+            return user.credits_remaining
+        return await self.deduct(user, action, agent_name=agent_name)
+
     async def deduct(
         self,
         user: User,

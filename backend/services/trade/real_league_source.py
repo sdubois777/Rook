@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
 from sqlalchemy import select
 
+from backend.core.exceptions import UndraftedLeagueError
 from backend.integrations.platform_models import TeamRoster
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
@@ -154,14 +156,32 @@ def _roster_limit_from_slots(roster_slots: dict | None) -> int:
 
 async def _fetch_weekly(db, season: int, week: int) -> pd.DataFrame:
     """Real per-week usage (offense + scored K/DST) for weeks 1..week — the SAME
-    frame the demo builds, but for the live season. week 0 (offseason) → empty
-    frame → the blend falls to prior-only, which is correct."""
+    frame the demo builds, but for the live season.
+
+    A not-yet-started season has NO weekly data: get_current_nfl_week returns 0 in
+    the offseason, and the nflverse fetchers 404 when asked for a season that hasn't
+    published (e.g. 2026 in Aug 2026). That is a HANDLED no-data state, not an error
+    — return an EMPTY frame so the value blend falls to prior-only. We never pretend
+    data exists; the miss is loud-warned. (Undrafted leagues short-circuit before this
+    via the undrafted guard; this still protects the drafted-but-pre-season window and
+    any transient nflverse gap.)"""
+    if week < 1:
+        logger.info("real league: season %s week %s — no in-season data yet; "
+                    "weekly frame is empty (prior-only value).", season, week)
+        return pd.DataFrame()
+
     from backend.integrations.nfl_weekly import weekly_player_usage
     from backend.services.kdef_scoring import weekly_kdef_value_frame
 
     weeks = range(1, week + 1)
-    weekly = await weekly_player_usage(season, weeks=weeks, db=db)
-    kdef = await weekly_kdef_value_frame(season, weeks=weeks, db=db)
+    try:
+        weekly = await weekly_player_usage(season, weeks=weeks, db=db)
+        kdef = await weekly_kdef_value_frame(season, weeks=weeks, db=db)
+    except Exception as exc:  # nflverse 404 / no-data for a season that hasn't published
+        logger.warning("real league: weekly-data fetch failed for season %s wk1-%s (%s: %s) "
+                       "— degrading to an EMPTY frame (prior-only value), not a 500.",
+                       season, week, type(exc).__name__, exc)
+        return pd.DataFrame()
     if kdef is not None and not kdef.empty:
         weekly = pd.concat([weekly, kdef], ignore_index=True)
     return weekly
@@ -195,6 +215,23 @@ async def _derive_pool(db, weekly: pd.DataFrame, rostered_ids: set[str]) -> list
                      nfl_team=team, injury_status=inj)
         for pid, name, pos, team, inj in rows
     ]
+
+
+def persisted_undrafted_signal(league) -> Optional[str]:
+    """EXPLICIT undrafted signal from persisted sync fields — no live fetch, so it can
+    short-circuit before the roster/weekly fetch (which also sidesteps the offseason
+    no-data path). Priority: Sleeper draft_status, then a future draft_date
+    (Yahoo/ESPN). Returns the signal name, or None when the league looks drafted /
+    unknown (fall to the empty-roster inference after the sync)."""
+    status = (getattr(league, "draft_status", None) or "").strip().lower()
+    if status in ("pre_draft", "predraft", "drafting"):
+        return "draft_status"
+    if status == "complete":
+        return None  # explicitly drafted — never infer over it
+    draft_date = getattr(league, "draft_date", None)
+    if draft_date is not None and draft_date > datetime.now(timezone.utc):
+        return "draft_date"
+    return None
 
 
 async def _pick_league(db, user, user_league):
@@ -236,6 +273,20 @@ async def build_real_league_source(
     if league is None:
         return None
 
+    # Injected rosters (tests / the simulated-drafted path) bypass BOTH undrafted
+    # guards — the caller is supplying its own roster shape on purpose.
+    injected = team_rosters is not None
+
+    # UNDRAFTED GUARD (explicit): short-circuit BEFORE any roster/weekly fetch so an
+    # undrafted league never hits the value path (no nonsense, and it sidesteps the
+    # offseason no-data fetch entirely).
+    if not injected:
+        signal = persisted_undrafted_signal(league)
+        if signal:
+            logger.info("real league %s (%s): undrafted via %s — short-circuit to empty state",
+                        league.id, league.platform, signal)
+            raise UndraftedLeagueError(signal)
+
     # is_me comes from the league's stored binding (exact owner-identity, recomputed each
     # sync) unless the caller explicitly overrides it (the 'acting as' switcher). NULL
     # binding → is_me stays unbound; downstream fails loud, never guesses a team.
@@ -257,6 +308,18 @@ async def build_real_league_source(
             "real league %s (%s): %d/%d roster players unresolved (dropped)",
             league.id, league.platform, len(unresolved), total,
         )
+
+    # UNDRAFTED GUARD (inference fallback): no explicit signal fired, but every team's
+    # roster came back empty. This is INFERENCE — a failed/partial sync looks identical
+    # — so LOUD-WARN and use the hedged 'inferred' copy (never asserts undrafted as
+    # certain). Only when the live fetch actually returned teams (not an injected path).
+    if not injected and teams and not any(t.roster for t in teams):
+        logger.warning(
+            "real league %s (%s): NO explicit draft signal and ALL rosters empty — "
+            "INFERRING undrafted (could also be a failed sync). Serving the empty state.",
+            league.id, league.platform,
+        )
+        raise UndraftedLeagueError("inferred")
 
     roster_slots = league.roster_slots
     roster_limit = _roster_limit_from_slots(roster_slots)

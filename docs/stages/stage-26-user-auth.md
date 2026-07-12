@@ -353,6 +353,11 @@ export function useApi() {
 
 Implement in `backend/models/user.py`:
 
+> **SUPERSEDED:** the tier/credit/pack numbers below are a HISTORICAL
+> snapshot from this stage's build. The live definition is
+> `backend/models/user.py` (TIER_LIMITS / CREDIT_COSTS / CREDIT_PACKS) —
+> the single source of truth. Do not copy values from here.
+
 ```python
 TIER_LIMITS = {
     # NOTE: No "free" tier. Intro at $5 is the entry point.

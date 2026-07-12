@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { createCheckout, createPackCheckout, createPortal, redirectTo } from '../api/billing'
-import { TIER_LABELS } from '../lib/constants'
+import { usePricing } from '../hooks/usePricing'
 
 /**
  * Global billing affordance. Listens for the `billing:*` window events the API
@@ -12,6 +12,7 @@ import { TIER_LABELS } from '../lib/constants'
  * the CTA just routes the user to Stripe Checkout (the webhook flips the tier).
  */
 export default function BillingNotice() {
+  const { tierLabel } = usePricing()
   const [notice, setNotice] = useState(null) // { kind, ...detail }
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -58,7 +59,7 @@ export default function BillingNotice() {
       ? 'League parked'
       : 'Out of credits'
   const message = isFeature
-    ? `This feature needs the ${TIER_LABELS[requiredTier] || requiredTier} plan.`
+    ? `This feature needs the ${tierLabel(requiredTier)} plan.`
     : isSuspended
       ? (notice.message || 'This league is parked over your plan limit.')
       : `You need ${notice.required} credits but have ${notice.available}.`

@@ -31,7 +31,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.exceptions import UnauthorizedError
+from backend.core.exceptions import ForbiddenError, UnauthorizedError
 from backend.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,22 @@ async def get_league_service(
 
 # ── Guard dependencies ───────────────────────────────────
 
+async def require_admin(user=Depends(get_current_user)):
+    """Gate for operator-only routers (pipeline + admin — paid-compute triggers).
+
+    Reuses Clerk auth (get_current_user resolves the JWT → User with a real email),
+    then requires that email be in the ADMIN_EMAILS allowlist. A regular
+    authenticated user is NOT enough — these routes can start a ~$10 pipeline run.
+    Rejects (401 unauth via get_current_user, else 403) BEFORE the endpoint body,
+    so no pipeline stage or LLM call is reached. Fail-closed: empty allowlist = no
+    admins.
+    """
+    from backend.config import settings
+    if not settings.is_admin_email(getattr(user, "email", None)):
+        raise ForbiddenError("Admin access required")
+    return user
+
+
 def require_feature(feature: str):
     """
     Dependency factory — raises FeatureNotAvailableError
@@ -312,20 +328,8 @@ def require_credits(action: str):
         user=Depends(get_current_user),
         service=Depends(get_credit_service),
     ):
-        from backend.services.feature_service import FeatureService
-        from backend.models.user import CREDIT_COSTS
-
-        # Infer feature from action
-        feature_map = {
-            "trade_analysis": "trade_analyzer",
-            "trade_finder": "trade_finder",
-            "waiver_wire": "waiver_wire",
-        }
-        feature = feature_map.get(action)
-        if feature:
-            FeatureService.check_feature_access(user, feature)
-
-        cost = CREDIT_COSTS.get(action, 0)
-        if cost > 0:
-            await service.deduct(user, action)
+        # Gate-semantics flip: metered actions carry NO tier gate. Paid tiers
+        # run free (unlimited); the free tier debits CREDIT_COSTS[action] or
+        # 402s. Entitlement features (live_draft) use require_feature instead.
+        await service.charge_metered(user, action)
     return _check

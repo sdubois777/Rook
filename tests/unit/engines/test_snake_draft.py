@@ -205,6 +205,7 @@ def _engine(config, sonnet_text):
     session = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = _mock_player()
+    result.scalars.return_value.all.return_value = [_mock_player()]
     session.execute = AsyncMock(return_value=result)
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=session)
@@ -262,26 +263,53 @@ def test_snake_rec_has_action_field():
     assert "action" in _broadcast_msg(ws)
 
 
-def test_snake_rec_action_is_draft_or_wait():
+def test_snake_rec_engine_drafts_open_need():
+    # DETERMINISTIC contract: the ENGINE decides. An RB at fair ADP value on an
+    # empty roster fills an open need -> draft, regardless of what Sonnet says.
     eng, ws = _engine(
         _snake_config(),
-        '{"action":"wait","reasoning":"Reach — wait.","confidence":"medium"}',
+        '{"reasoning":"nuance","confidence":"medium"}',
     )
     asyncio.run(eng.on_nomination({"player_id": "nfl.p.100", "player_name": "Bijan Robinson"}))
-    assert _broadcast_msg(ws)["action"] == "wait"
+    msg = ws.broadcast.call_args_list[0][0][0]     # the FIRST (deterministic) broadcast
+    assert msg["action"] == "draft"
+    assert msg["ai_enriched"] is False
 
 
-def test_snake_rec_falls_back_to_wait_on_bad_json():
+def test_snake_rec_engine_waits_on_filled_position():
+    # Position starters (incl. flex) filled -> the ENGINE says wait, however
+    # good the player looks. This decision no longer belongs to the model.
+    eng, ws = _engine(_snake_config(), '{"reasoning":"x","confidence":"low"}')
+    for i, name in enumerate(["RB One", "RB Two", "RB Three"]):
+        eng.state.record_snake_pick(name, position="RB", pick_number=i + 1,
+                                    round_num=i + 1, is_yours=True)
+    asyncio.run(eng.on_nomination({
+        "player_id": "nfl.p.100", "player_name": "Bijan Robinson",
+        "current_pick": 10,   # adp_ai=14 is NOT a big value at pick 10
+    }))
+    msg = ws.broadcast.call_args_list[0][0][0]
+    assert msg["action"] == "wait"
+
+
+def test_snake_rec_survives_bad_enrichment_json():
+    # Bad model JSON only affects the ENRICHMENT: the deterministic rec has
+    # already been broadcast and stands; no crash, no second broadcast.
     eng, ws = _engine(_snake_config(), "not json at all")
-    asyncio.run(eng.on_nomination({"player_id": "nfl.p.100", "player_name": "Bijan Robinson"}))
-    assert _broadcast_msg(ws)["action"] == "wait"
+
+    async def run():
+        await eng.on_nomination({"player_id": "nfl.p.100", "player_name": "Bijan Robinson"})
+        await eng.wait_for_ai()
+    asyncio.run(run())
+
+    assert ws.broadcast.call_count == 1
+    assert ws.broadcast.call_args_list[0][0][0]["type"] == "recommendation"
 
 
 def test_snake_prompt_includes_injury_guardrails():
     p = _SNAKE_SYSTEM_PROMPT.lower()
     assert "forbidden" in p
     assert "injury diagnoses" in p
-    assert "chronic condition" in p
+    assert "chronic" in p
 
 
 def test_start_draft_request_accepts_draft_type():
@@ -438,12 +466,13 @@ def test_snake_pick_recorded_into_state():
     assert "nfl.p.101" in state.get_drafted_player_ids()
 
 
-def test_your_turn_prompt_has_value_vs_consensus():
+def test_your_turn_prompt_is_explain_only():
+    # Deterministic-first: the ENGINE picks; the prompt must instruct Sonnet to
+    # EXPLAIN the already-made pick and never choose a different player.
     from backend.engines.live_draft import _SNAKE_YOUR_TURN_PROMPT
     p = _SNAKE_YOUR_TURN_PROMPT
-    assert "Value vs Consensus" in p
-    assert "can_wait" in p
-    assert "wait_until_pick" in p
+    assert "ALREADY PICKED" in p
+    assert "never change the" in p
     assert "FORBIDDEN" in p
 
 
@@ -462,10 +491,20 @@ def test_on_your_turn_broadcasts_full_payload():
     assert msg["player_name"] == "Bijan Robinson"
 
 
-def test_on_your_turn_skips_broadcast_on_empty_rec():
-    # If the parsed recommendation has no player_name, the guard must skip the
-    # broadcast (and log) rather than push an empty card to the UI.
+def test_on_your_turn_deterministic_rec_survives_model_failure():
+    # Deterministic-first degradation contract: if the Sonnet enrichment call
+    # FAILS, the deterministic recommendation has already been broadcast and
+    # stands — a model outage means no nuance text, never no recommendation.
     eng, ws, _ = _your_turn_engine(YOUR_TURN_JSON, _sample_available())
-    eng._parse_your_turn_recommendation = lambda *a, **k: {"type": "recommendation"}
-    asyncio.run(eng.on_your_turn({"round": 1, "pick": 1}))
-    ws.broadcast.assert_not_called()
+    eng._client.messages.create = AsyncMock(side_effect=RuntimeError("api down"))
+
+    async def run():
+        await eng.on_your_turn({"round": 1, "pick": 1})
+        await eng.wait_for_ai()
+    asyncio.run(run())
+
+    assert ws.broadcast.call_count == 1          # the deterministic rec only
+    msg = ws.broadcast.call_args[0][0]
+    assert msg["type"] == "recommendation"
+    assert msg["player_name"]                    # a real pick, not empty
+    assert msg["ai_enriched"] is False

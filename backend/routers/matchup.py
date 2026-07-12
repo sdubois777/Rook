@@ -159,18 +159,19 @@ async def league(
     """Read-only H2H scouting for the acting team (defaults to the is_me team; the
     'Acting as' switcher passes ``my_team_id``). Demo-only: 404s with TRADE_DEMO_MODE
     off (no real-league exposure — the real provider is trade slice 6)."""
+    # Un-gated: demo ON serves the seeded demo league; demo OFF serves the user's real
+    # synced league via the same seam (UndraftedLeagueError → 409 before the value path
+    # when undrafted; 404 when none is synced).
     demo = trade_demo_enabled()
-    if not demo:
-        raise HTTPException(
-            status_code=404,
-            detail="matchup demo league is only available under TRADE_DEMO_MODE",
-        )
 
     # SAME seam + SAME evaluate_league (incl. the slice-4 DST tilt) as /trade/league,
     # so every number is consistent across pages. This path touches ONLY pure
     # primitives — no agent, no credit deduction.
     from backend.routers.trade import load_league_for_analysis
-    state, values, _ = await load_league_for_analysis(db, user, demo)
+    # (Fix: the trade arc widened this to a 4-tuple — the rigid 3-value unpack
+    # crashed this endpoint with ValueError. Star-unpack tolerates the shape;
+    # behavior otherwise unchanged — only state + values are consumed here.)
+    state, values, *_extra = await load_league_for_analysis(db, user, demo)
 
     # The league's real starting-slot shape drives the optimal lineup — read the
     # league's roster_slots through the canonical bridge (the demo seeds a 2-WR config;

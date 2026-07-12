@@ -7,7 +7,8 @@ import { createPortal, redirectTo } from '../api/billing'
 import ChangePlanCard from '../components/billing/ChangePlanCard'
 import BuyCreditsCard from '../components/billing/BuyCreditsCard'
 import LeagueChooser from '../components/billing/LeagueChooser'
-import { SCORING_LABELS, TIER_LABELS } from '../lib/constants'
+import { SCORING_LABELS } from '../lib/constants'
+import { usePricing } from '../hooks/usePricing'
 
 const SUBSCRIPTION_STATUS_COPY = {
   past_due: 'Your last payment failed — update your payment method to keep your plan.',
@@ -226,6 +227,7 @@ function LeagueCard({ league }) {
 }
 
 export default function AccountPage() {
+  const { tierLabel } = usePricing()
   const { user: clerkUser, isLoaded } = useUser()
 
   const { data, isLoading, error } = useQuery({
@@ -311,7 +313,7 @@ export default function AccountPage() {
             <div>
               <div className="text-sm text-gray-400 mb-1">Current Plan</div>
               <div className={`text-xl font-semibold ${TIER_COLORS[user.tier]}`}>
-                {TIER_LABELS[user.tier] || user.tier}
+                {tierLabel(user.tier)}
               </div>
             </div>
             {user.subscription_status ? (

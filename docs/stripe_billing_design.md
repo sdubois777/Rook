@@ -15,7 +15,7 @@
 |---|---|---|
 | 1 | Entitlement source of truth | **Rook DB `users.tier`.** Stripe = billing record, syncs into the DB via webhook; Clerk = identity only. Read on the hot path, reconcile via webhook (§3). |
 | 2 | Stale tier doc | **`backend/models/user.py` + CLAUDE.md are canonical** (intro/standard/pro). The stale `stage-25` `free\|starter\|pro\|league` block gets removed in a **separate cleanup PR** (step 7). |
-| 3 | `/season` semantics | **Defer `/season` for v1 — ship recurring MONTHLY subscriptions only.** Seasonal can come later once the subscription path is proven. Removes the one-time-pass / expiry-job complexity entirely. |
+| 3 | `/season` semantics | **UPDATED (July 2026): seasonal is IN.** A season pass is a ONE-TIME payment (Checkout mode=payment) granting the tier until `users.tier_expires_at` (March 1 after the season, per `utils/seasons`). Not a subscription: no renewal, no proration; change-plan stays monthly<->monthly and season purchases supersede a monthly sub by cancel-at-period-end. Expiry is enforced by `effective_tier()` on the hot path + lazy write-back on `/account/me`. |
 | 4 | Cancellation | **Period-end, not immediate.** Cancel sets `cancel_at_period_end=true` (Stripe Portal default) → the user **keeps their tier through the period they paid for**. Downgrade to `intro` fires **only** on `customer.subscription.deleted` (which Stripe emits *at* `current_period_end` for a period-end cancel). **Credits persist.** See §4 for the explicit "what does NOT downgrade." |
 | 5 | Payment-failed grace | **Honor Stripe's retries** — mark `past_due` on `invoice.payment_failed`, keep access, downgrade only on the terminal `subscription.deleted`. No custom grace logic. |
 | 6 | Monthly credit grant | **Webhook-driven, once per paid monthly invoice.** Grant `credits_monthly` **only** on `invoice.payment_succeeded` **AND** `invoice.billing_reason == "subscription_cycle"` (renewals only — see §4 for the non-grant invoices). Idempotency keyed on **`event.id`** (global webhook dedup) **plus** the grant recorded against **`invoice.id`** (one invoice per cycle) so it's provably once-per-invoice. Signup bonus is the separate one-time grant. |
@@ -103,16 +103,13 @@ theft *through Rook* as a possibility and closes the self-upgrade hole.
 source of truth for subscription rules. No other file should define these values."*).
 **Prose mirror:** `CLAUDE.md` → "SaaS Pricing (Stages 25-30)".
 
-| Tier | Price | Signup credits | Monthly credits | Leagues | live_draft | trade_analyzer | trade_finder | waiver_wire |
-|---|---|---|---|---|---|---|---|---|
-| **intro** | $5/mo · $15/season | 25 (one-time) | 0 | 1 | ✗ | ✗ | ✗ | ✗ |
-| **standard** | $9/mo · $29/season | 75 | 20 | 2 | ✓ | ✓ | ✗ | ✓ |
-| **pro** | $18/mo · $49/season | 200 | 50 | unlimited | ✓ | ✓ | ✓ | ✓ |
-
-The `/season` column is the *eventual* pricing; **v1 ships monthly only** (Decision
-#3) — the `/season` Prices come in a later add. `injury_monitoring` + projections /
-draft board / news / league sync / draft history are **free on all tiers** (no gate).
-**No free tier** — `intro` is the floor.
+THE TIER TABLE LIVES IN CODE — `backend/models/user.py` (`TIER_LIMITS` /
+`CREDIT_COSTS` / `CREDIT_PACKS`). This doc deliberately does NOT restate the
+numbers (restating them created the four-way drift). Semantics: FREE = metered
+via credits w/ one-time signup grant; STANDARD/PRO = unlimited (no credits,
+no monthly grants — deleted), live draft entitlement, PRO adds unlimited
+leagues + cross-league view. Always-free surfaces are listed in user.py's
+header comment.
 Credit costs (feature unlocked *then* credits charged): `trade_analysis`=10,
 `trade_finder`=20, `waiver_wire`=8 (`user.py:64-70`). Credit packs (one-time):
 $5→75, $10→175, $25→500 (`user.py:73-77`). **Live draft is a tier entitlement, not a

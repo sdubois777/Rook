@@ -15,6 +15,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Swords, ArrowLeftRight, Trophy, Scale, ClipboardList, ArrowRightLeft, Stethoscope, AlertTriangle, Waves } from 'lucide-react'
 import { fetchMatchupLeague } from '../api/matchup'
+import { leagueLoadMessage } from '../lib/leagueError'
 import PositionBadge from '../components/shared/PositionBadge'
 import PlayerName from '../components/shared/PlayerName'
 
@@ -312,16 +313,13 @@ export default function Matchup() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading matchup…</div>
   if (error) {
-    const demoOff = error?.response?.status === 404
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">
           <h1 className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
             <Swords size={20} /> Matchup
           </h1>
-          {demoOff
-            ? 'The matchup demo league is only available with TRADE_DEMO_MODE enabled.'
-            : 'Could not load the matchup.'}
+          {leagueLoadMessage(error, 'Could not load the matchup.')}
         </div>
       </div>
     )

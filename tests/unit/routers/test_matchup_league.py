@@ -27,6 +27,7 @@ def _user():
     u = MagicMock(spec=User)
     u.id = uuid.uuid4()
     u.tier = "pro"
+    u.tier_expires_at = None
     u.credits_remaining = 999
     return u
 
@@ -73,8 +74,15 @@ async def _get(params=""):
         return await ac.get(f"/api/matchup/league{params}")
 
 
-async def test_404_when_demo_off(monkeypatch):
+async def test_404_when_no_synced_league(monkeypatch):
+    """Un-gated: demo off + no synced league → 404 (real seam returns None)."""
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _none(db, u):
+        return None
+    monkeypatch.setattr(
+        "backend.services.trade.real_league_source.build_real_league_source", _none
+    )
     app.dependency_overrides[get_current_user] = lambda: _user()
     app.dependency_overrides[get_db] = lambda: None
     try:
@@ -82,6 +90,26 @@ async def test_404_when_demo_off(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 404
+
+
+async def test_409_undrafted(monkeypatch):
+    """Un-gated: demo off + undrafted league → 409 error=undrafted_league."""
+    from backend.core.exceptions import UndraftedLeagueError
+    monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _undrafted(db, u):
+        raise UndraftedLeagueError("draft_status")
+    monkeypatch.setattr(
+        "backend.services.trade.real_league_source.build_real_league_source", _undrafted
+    )
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "undrafted_league"
 
 
 async def test_returns_pairing_ladder_and_scout(monkeypatch):

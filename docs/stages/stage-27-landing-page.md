@@ -174,6 +174,11 @@ Price                   $9-18/mo    $8-10/mo     $15/mo
 
 ### Pricing section
 
+> **SUPERSEDED:** the tier/credit/pack numbers below are a HISTORICAL
+> snapshot from this stage's build. The live definition is
+> `backend/models/user.py` (TIER_LIMITS / CREDIT_COSTS / CREDIT_PACKS) —
+> the single source of truth. Do not copy values from here.
+
 ```
 ┌──────────────┬──────────────┬──────────────┐
 │    INTRO     │   STANDARD   │     PRO      │

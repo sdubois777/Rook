@@ -21,16 +21,7 @@ export const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Sta
 
 export const DRAFT_LABELS = { auction: 'Auction', snake: 'Snake' }
 
-export const TIER_LABELS = {
-  intro: 'Intro — $5/mo',
-  standard: 'Standard — $9/mo',
-  pro: 'Pro — $18/mo',
-}
-
-// Mirrors CREDIT_COSTS in backend/models/user.py (server is the source of truth;
-// this is display-only — it labels how many credits an action will spend).
-export const CREDIT_COSTS = {
-  trade_analysis: 10,
-  trade_finder: 20,
-  waiver_wire: 8,
-}
+// TIER labels, credit costs, prices, and packs are NOT defined here.
+// They are fetched from GET /billing/pricing (backend/models/user.py is the
+// single source of truth) via hooks/usePricing — hardcoding them re-creates
+// the four-way pricing drift that hook exists to kill.

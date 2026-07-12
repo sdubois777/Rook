@@ -50,7 +50,7 @@ UID = uuid.uuid4()
 
 @pytest.mark.asyncio
 async def test_drop_does_not_autopark():
-    # 3 active leagues, drop to standard (cap 2): reconcile parks NOTHING.
+    # 3 active leagues, drop to standard (cap 1): reconcile parks NOTHING.
     lg = [_Lg(), _Lg(), _Lg()]
     repo = FakeRepo(lg)
     await LeagueReconciler(repo).reconcile_for_tier(UID, "standard")
@@ -60,13 +60,11 @@ async def test_drop_does_not_autopark():
 
 @pytest.mark.asyncio
 async def test_rise_restores_parked_up_to_cap():
-    # 1 active + 2 parked; rise to standard (cap 2) restores exactly 1 (longest-parked).
-    active = _Lg()
+    # 0 active + 2 parked; rise to standard (cap 1) restores exactly 1 (longest-parked).
     parked_old = _Lg(suspended_at=1)
     parked_new = _Lg(suspended_at=2)
-    repo = FakeRepo([active, parked_old, parked_new])
+    repo = FakeRepo([parked_old, parked_new])
     await LeagueReconciler(repo).reconcile_for_tier(UID, "standard")
-    assert active.suspended_at is None
     assert parked_old.suspended_at is None   # longest-parked restored first
     assert parked_new.suspended_at == 2      # still parked (cap reached)
 
@@ -81,8 +79,8 @@ async def test_pro_restores_everything():
 
 @pytest.mark.asyncio
 async def test_rise_no_room_restores_nothing():
-    # 2 active at cap 2, 1 parked → no room.
-    repo = FakeRepo([_Lg(), _Lg(), _Lg(suspended_at=1)])
+    # 1 active at cap 1, 1 parked → no room.
+    repo = FakeRepo([_Lg(), _Lg(suspended_at=1)])
     await LeagueReconciler(repo).reconcile_for_tier(UID, "standard")
     assert repo.set_calls == []
 
@@ -95,7 +93,7 @@ async def test_limit_state_over():
     state = await LeagueReconciler(repo).limit_state(UID, "standard")
     assert state["over_limit"] is True
     assert state["active_count"] == 3
-    assert state["max_leagues"] == 2
+    assert state["max_leagues"] == 1
     assert len(state["candidates"]) == 3
 
 
@@ -113,20 +111,20 @@ async def test_limit_state_pro_never_over():
 async def test_resolve_keep_parks_the_rest():
     a, b, c = _Lg(), _Lg(), _Lg()
     repo = FakeRepo([a, b, c])
-    await LeagueReconciler(repo).resolve_keep(UID, "standard", [a.id, b.id])
-    assert a.suspended_at is None and b.suspended_at is None
-    assert c.suspended_at is not None   # parked, not deleted
+    await LeagueReconciler(repo).resolve_keep(UID, "standard", [a.id])  # cap 1
+    assert a.suspended_at is None
+    assert b.suspended_at is not None and c.suspended_at is not None  # parked, not deleted
 
 
 @pytest.mark.asyncio
 async def test_resolve_keep_is_idempotent_and_can_swap():
     a, b, c = _Lg(), _Lg(), _Lg()
     r = LeagueReconciler(FakeRepo([a, b, c]))
-    await r.resolve_keep(UID, "standard", [a.id, b.id])
-    # Re-choose to swap: keep a + c instead → b parks, c restored.
-    await r.resolve_keep(UID, "standard", [a.id, c.id])
-    assert a.suspended_at is None and c.suspended_at is None
-    assert b.suspended_at is not None
+    await r.resolve_keep(UID, "standard", [a.id])   # cap 1
+    # Re-choose to swap: keep c instead — a parks, c restored.
+    await r.resolve_keep(UID, "standard", [c.id])
+    assert c.suspended_at is None
+    assert a.suspended_at is not None and b.suspended_at is not None
 
 
 @pytest.mark.asyncio

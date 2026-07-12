@@ -148,25 +148,10 @@ class UserRepository(BaseRepository[User]):
         )
         return await self.get_or_404(user_id)
 
-    async def add_monthly_credits(
-        self,
-        tier: str,
-        monthly_amount: int,
-    ) -> int:
-        """
-        Add monthly credits for all users of a tier.
-        Returns count of users updated.
-        Credits accumulate — never reset to cap.
-        """
-        result = await self._session.execute(
+    async def set_tier_expiry(self, user_id, expires_at) -> None:
+        """Set/clear the season-entitlement expiry (None = monthly-managed)."""
+        await self._session.execute(
             update(User)
-            .where(User.tier == tier)
-            .where(User.deleted_at.is_(None))
-            .values(
-                credits_remaining=(
-                    User.credits_remaining + monthly_amount
-                )
-            )
-            .returning(User.id)
+            .where(User.id == user_id)
+            .values(tier_expires_at=expires_at)
         )
-        return len(result.fetchall())

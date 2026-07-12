@@ -19,7 +19,6 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from backend.models.user import TIER_LIMITS
 from backend.services.billing.catalog import price_to_tier
 
 logger = logging.getLogger(__name__)
@@ -33,19 +32,17 @@ class WebhookResult:
 
 
 class StripeWebhookService:
-    def __init__(self, db, *, user_repo, user_service, events, invoices, packs, leagues):
+    def __init__(self, db, *, user_repo, user_service, events, packs, leagues):
         self._db = db
         self._users = user_repo
         self._user_service = user_service
         self._events = events
-        self._invoices = invoices
         self._packs = packs
         self._leagues = leagues  # LeagueReconciler
 
     @classmethod
     def from_session(cls, db) -> "StripeWebhookService":
         from backend.repositories.billing_repo import (
-            GrantedInvoiceRepository,
             GrantedPackSessionRepository,
             ProcessedStripeEventRepository,
         )
@@ -60,7 +57,6 @@ class StripeWebhookService:
             user_repo=repo,
             user_service=UserService(repo),
             events=ProcessedStripeEventRepository(db),
-            invoices=GrantedInvoiceRepository(db),
             packs=GrantedPackSessionRepository(db),
             leagues=LeagueReconciler(LeagueRepository(db)),
         )
@@ -119,13 +115,45 @@ class StripeWebhookService:
                 await self._users.set_stripe_subscription_id(
                     user.id, subscription_id
                 )
-            # upgrade_tier grants the tier's signup bonus exactly once here (it is
-            # the sole first-purchase signal); plan-change/downgrade pass False.
+            # (Signup bonuses on paid tiers are 0 under the new spec — the only
+            # signup grant is the free tier's 30, applied at account creation.)
             await self._user_service.upgrade_tier(
-                user, tier, grant_signup_bonus=True, commit=False
+                user, tier, grant_signup_bonus=False, commit=False
             )
+            # A monthly subscription supersedes any season expiry — Stripe's
+            # subscription lifecycle manages the entitlement from here.
+            await self._users.set_tier_expiry(user.id, None)
             await self._users.set_subscription_status(user.id, "active")
             await self._leagues.reconcile_for_tier(user.id, tier)
+
+        elif mode == "payment" and (obj.get("metadata") or {}).get("interval") == "season":
+            # SEASON purchase: one-time payment -> tier held until the season
+            # entitlement end (users.tier_expires_at). Not a subscription — no
+            # renewal, no proration.
+            tier = metadata.get("tier")
+            if not tier:
+                logger.warning("Stripe checkout: season payment with no tier meta")
+                return
+            await self._user_service.upgrade_tier(
+                user, tier, grant_signup_bonus=False, commit=False
+            )
+            await self._users.set_tier_expiry(user.id, _season_end())
+            await self._users.set_subscription_status(user.id, "active")
+            await self._leagues.reconcile_for_tier(user.id, tier)
+            # Best-effort: stop double-billing an active monthly sub — it ends
+            # at the period the user already paid for; the season carries on.
+            if user.stripe_subscription_id:
+                try:
+                    from backend.services.billing import stripe_gateway
+                    stripe_gateway.cancel_at_period_end(
+                        sub_id=user.stripe_subscription_id,
+                        idempotency_key=f"season_cancel_{user.id}_{obj.get('id')}",
+                    )
+                except Exception as exc:  # never fail the entitlement grant
+                    logger.warning(
+                        "Could not cancel monthly sub %s after season purchase: %s",
+                        user.stripe_subscription_id, exc,
+                    )
 
         elif mode == "payment":
             credits = _as_int(metadata.get("credits"))
@@ -188,40 +216,28 @@ class StripeWebhookService:
                 await self._leagues.reconcile_for_tier(user.id, tier)
 
     async def _on_subscription_deleted(self, obj: dict) -> None:
-        """The ONLY downgrade. Tier -> intro, credits persist, clear sub id."""
+        """The monthly downgrade path. Tier -> free, credits persist, clear sub
+        id. EXCEPTION: an unexpired SEASON entitlement keeps its tier — this
+        fires when a monthly sub ends after a season purchase superseded it."""
+        from datetime import datetime, timezone
+
         user = await self._user_for(obj.get("customer"))
         if user is None:
             return
-        await self._user_service.upgrade_tier(
-            user, "intro", grant_signup_bonus=False, commit=False
+        expires = getattr(user, "tier_expires_at", None)
+        season_active = (
+            expires is not None and datetime.now(timezone.utc) < expires
         )
+        if not season_active:
+            await self._user_service.upgrade_tier(
+                user, "free", grant_signup_bonus=False, commit=False
+            )
         await self._users.set_stripe_subscription_id(user.id, None)
         await self._users.set_subscription_status(user.id, "active")
-        # Drop to intro (cap 1). Never auto-parks — if active > 1 the account is
-        # in the computed over-limit "must choose" state until the user resolves.
-        await self._leagues.reconcile_for_tier(user.id, "intro")
-
-    async def _on_invoice_payment_succeeded(self, obj: dict) -> None:
-        """Grant monthly credits ONLY on a real renewal, once per invoice."""
-        if obj.get("billing_reason") != "subscription_cycle":
-            return  # signup / proration / manual invoices do NOT grant
-
-        user = await self._user_for(obj.get("customer"))
-        if user is None:
-            return
-
-        invoice_id = obj.get("id")
-        credits = TIER_LIMITS.get(user.tier, {}).get("credits_monthly", 0)
-
-        # Layer 2 — record the grant against the invoice id; skip if already done.
-        is_new = await self._invoices.record_grant(invoice_id, user.id, credits)
-        if not is_new:
-            logger.info(
-                "Stripe invoice %s already granted — skipping", invoice_id
-            )
-            return
-        if credits > 0:
-            await self._users.update_credits(user.id, credits)
+        if not season_active:
+            # Drop to free (cap 1). Never auto-parks — if active > 1 the account
+            # is in the computed over-limit "must choose" state until resolved.
+            await self._leagues.reconcile_for_tier(user.id, "free")
 
     async def _on_invoice_payment_failed(self, obj: dict) -> None:
         """Mark past_due; honor Stripe retries — do NOT downgrade (Decision #5)."""
@@ -235,12 +251,22 @@ class StripeWebhookService:
         "customer.subscription.created": _on_subscription_created,
         "customer.subscription.updated": _on_subscription_updated,
         "customer.subscription.deleted": _on_subscription_deleted,
-        "invoice.payment_succeeded": _on_invoice_payment_succeeded,
         "invoice.payment_failed": _on_invoice_payment_failed,
     }
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
+
+def _season_end():
+    """The instant a season purchase entitles through: March 1 after the season
+    being played — aligned with backend.utils.seasons (March new-league-year
+    cutoff), so "the season" means the same thing everywhere."""
+    from datetime import datetime, timezone
+
+    from backend.utils.seasons import get_current_season
+
+    return datetime(get_current_season() + 1, 3, 1, tzinfo=timezone.utc)
+
 
 def _first_price_id(subscription_obj: dict) -> Optional[str]:
     items = (subscription_obj.get("items") or {}).get("data") or []

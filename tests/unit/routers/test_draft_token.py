@@ -27,6 +27,7 @@ def _make_user(uid=None, draft_token=None, tier="standard"):
     user.external_id = "clerk-test"
     user.email = "test@test.com"
     user.tier = tier
+    user.tier_expires_at = None
     user.draft_token = draft_token
     user.credits_remaining = 50
     return user

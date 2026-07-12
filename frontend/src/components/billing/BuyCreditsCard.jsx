@@ -1,13 +1,6 @@
 import { useState } from 'react'
 import { createPackCheckout, redirectTo } from '../../api/billing'
-
-// Mirrors CREDIT_PACKS in backend/models/user.py (server is the source of truth;
-// these are display-only — the server maps pack -> price and grants the credits).
-const PACKS = [
-  { id: 'small', usd: 5, credits: 75 },
-  { id: 'medium', usd: 10, credits: 175 },
-  { id: 'large', usd: 25, credits: 500 },
-]
+import { usePricing } from '../../hooks/usePricing'
 
 /**
  * One-time credit-pack purchase. Each option redirects to Stripe Checkout
@@ -15,6 +8,7 @@ const PACKS = [
  * the webhook on return; the parent polls /account/me for the new balance.
  */
 export default function BuyCreditsCard() {
+  const { packs } = usePricing()
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState('')
 
@@ -33,7 +27,7 @@ export default function BuyCreditsCard() {
     <div className="mt-6 border-t border-gray-800 pt-4">
       <div className="text-sm text-gray-400 mb-3">Buy credits</div>
       <div className="grid grid-cols-3 gap-3">
-        {PACKS.map((p) => (
+        {packs.map((p) => (
           <button
             key={p.id}
             onClick={() => buy(p.id)}
@@ -41,7 +35,7 @@ export default function BuyCreditsCard() {
             className="rounded-lg border border-gray-700 hover:border-brand bg-gray-800 px-3 py-3 text-center disabled:opacity-50 transition-colors"
           >
             <div className="text-white font-semibold">{p.credits} cr</div>
-            <div className="text-xs text-gray-400">${p.usd}</div>
+            <div className="text-xs text-gray-400">${p.price_usd}</div>
           </button>
         ))}
       </div>
