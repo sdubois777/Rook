@@ -10,7 +10,11 @@ export const PRICING_FIXTURE = {
     { id: 'pro', label: 'Pro', price_monthly_usd: 18, price_season_usd: 59, credits_signup_bonus: 0, max_leagues: null, unlimited_features: true, live_draft: true, cross_league_view: true },
   ],
   credit_costs: { trade_analysis: 1, waiver_wire: 2, trade_finder: 5 },
-  packs: [{ id: 'credits_100', price_usd: 5, credits: 100 }],
+  packs: [
+    { id: 'credits_100', price_usd: 5, credits: 100 },
+    { id: 'credits_200', price_usd: 9, credits: 200 },
+    { id: 'credits_500', price_usd: 25, credits: 500 },
+  ],
 }
 
 export function pricingHookValue() {

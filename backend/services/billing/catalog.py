@@ -31,9 +31,12 @@ _TIER_PRICE_ATTR = {
     ("pro", "season"):       "stripe_price_pro_season",
 }
 
-# Pack <-> one-time Price. Pack names come from CREDIT_PACKS (single source).
+# Pack <-> one-time Price. Both the pack names AND the env-attr naming convention
+# (stripe_price_pack_<credits>) derive from CREDIT_PACKS — add a pack in user.py
+# and this map grows automatically; only the config field needs declaring.
 _PACK_PRICE_ATTR = {
-    "credits_100": "stripe_price_pack_100",
+    name: f"stripe_price_pack_{cfg['credits']}"
+    for name, cfg in CREDIT_PACKS.items()
 }
 
 # Tier ordering derives from user.py's TIER_ORDER — never re-declared.

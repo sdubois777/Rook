@@ -61,14 +61,9 @@ def _catalog() -> tuple[list, list]:
 
 
 def _env_var(lookup_key: str) -> str:
-    mapping = {
-        "rook_standard_monthly": "STRIPE_PRICE_STANDARD_MONTHLY",
-        "rook_standard_season": "STRIPE_PRICE_STANDARD_SEASON",
-        "rook_pro_monthly": "STRIPE_PRICE_PRO_MONTHLY",
-        "rook_pro_season": "STRIPE_PRICE_PRO_SEASON",
-        "rook_pack_100": "STRIPE_PRICE_PACK_100",
-    }
-    return mapping.get(lookup_key, lookup_key.upper())
+    # rook_<tier>_<interval> -> STRIPE_PRICE_<TIER>_<INTERVAL>
+    # rook_pack_<credits>    -> STRIPE_PRICE_PACK_<CREDITS>
+    return "STRIPE_PRICE_" + lookup_key.removeprefix("rook_").upper()
 
 
 def _find_price(lookup_key: str):

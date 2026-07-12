@@ -50,8 +50,10 @@ class Settings(BaseSettings):
     stripe_price_standard_season: Optional[str] = None
     stripe_price_pro_monthly: Optional[str] = None
     stripe_price_pro_season: Optional[str] = None
-    # Credit-pack price ids (one-time payments)
+    # Credit-pack price ids (one-time payments) — one per CREDIT_PACKS entry
     stripe_price_pack_100: Optional[str] = None
+    stripe_price_pack_200: Optional[str] = None
+    stripe_price_pack_500: Optional[str] = None
 
     # Rate limits — requests per minute, per client IP
     rate_limit_api_rpm: int = 120        # general API endpoints
