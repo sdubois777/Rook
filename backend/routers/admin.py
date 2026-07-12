@@ -13,16 +13,27 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from backend.core.dependencies import require_admin
 from backend.database import AsyncSessionLocal
+from backend.middleware.rate_limit import rate_limit_pipeline
 from backend.models.agent_cache import AgentCache
 from backend.models.api_usage_log import ApiUsageLog
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/admin", tags=["admin"])
+
+# Operator-only router (pipeline status, cost reports, backtests, and the LLM
+# pipeline trigger). ADMIN auth gates the WHOLE router — a regular logged-in user
+# must not read cost data or start a run. The one paid-compute trigger
+# (/pipeline/run) additionally carries the per-IP pipeline rate cap.
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +135,7 @@ async def get_pipeline_status():
     return PipelineStatusResponse(agents=agents)
 
 
-@router.post("/pipeline/run", response_model=PipelineRunResponse)
+@router.post("/pipeline/run", response_model=PipelineRunResponse, dependencies=[Depends(rate_limit_pipeline)])
 async def trigger_pipeline_run(body: PipelineRunRequest):
     """Trigger a pipeline agent run in the background."""
     if body.agent_name not in KNOWN_AGENTS:

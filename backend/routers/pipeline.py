@@ -8,11 +8,27 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from backend.core.dependencies import require_admin
+from backend.middleware.rate_limit import rate_limit_pipeline
+
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/pipeline", tags=["pipeline"])
+
+# Operator-only router: every route triggers agent runs / scrapes / syncs that cost
+# real money and time. ADMIN auth gates the whole router (a regular logged-in user
+# must not be able to start a run); the expensive POST triggers additionally carry a
+# per-IP rate cap. Stephen's normal workflow is the CLI (scripts/run_predraft_pipeline.py),
+# which bypasses HTTP entirely and is unaffected.
+router = APIRouter(
+    prefix="/pipeline",
+    tags=["pipeline"],
+    dependencies=[Depends(require_admin)],
+)
+
+# Applied per-trigger so the cheap GET status read isn't throttled with the runs.
+_ratelimit = Depends(rate_limit_pipeline)
 
 
 class PipelineResponse(BaseModel):
@@ -21,7 +37,7 @@ class PipelineResponse(BaseModel):
     details: dict | list = {}
 
 
-@router.post("/run-team-systems", response_model=PipelineResponse)
+@router.post("/run-team-systems", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def run_team_systems(background_tasks: BackgroundTasks):
     """
     Trigger Team Systems Agent for all 32 NFL teams.
@@ -42,7 +58,7 @@ async def run_team_systems(background_tasks: BackgroundTasks):
     )
 
 
-@router.post("/run-roster-changes", response_model=PipelineResponse)
+@router.post("/run-roster-changes", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def run_roster_changes(background_tasks: BackgroundTasks):
     """Trigger Roster Changes Agent for all 32 teams. Runs in background."""
     from backend.agents.roster_changes import run_all_teams
@@ -59,7 +75,7 @@ async def run_roster_changes(background_tasks: BackgroundTasks):
     )
 
 
-@router.post("/run-roster-changes/{team_abbr}", response_model=PipelineResponse)
+@router.post("/run-roster-changes/{team_abbr}", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def run_roster_changes_single(team_abbr: str):
     """Run Roster Changes Agent for a single team synchronously."""
     from backend.agents.roster_changes import run_for_team
@@ -77,7 +93,7 @@ async def run_roster_changes_single(team_abbr: str):
     )
 
 
-@router.post("/run-team-systems/{team_abbr}", response_model=PipelineResponse)
+@router.post("/run-team-systems/{team_abbr}", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def run_team_systems_single(team_abbr: str):
     """
     Run Team Systems Agent for a single team. Runs synchronously — blocks until done.
@@ -100,7 +116,7 @@ async def run_team_systems_single(team_abbr: str):
     )
 
 
-@router.post("/sync-yahoo-players", response_model=PipelineResponse)
+@router.post("/sync-yahoo-players", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def sync_yahoo_players():
     """
     Pull Yahoo player universe and match IDs to draft bible records.
@@ -123,7 +139,7 @@ async def sync_yahoo_players():
     )
 
 
-@router.post("/refresh-market-values", response_model=PipelineResponse)
+@router.post("/refresh-market-values", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def refresh_market_values():
     """
     Scrape FantasyPros auction values and update market_value fields on players.
@@ -201,7 +217,7 @@ async def market_values_status():
 
 
 
-@router.post("/import-league-auction", response_model=PipelineResponse)
+@router.post("/import-league-auction", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def import_league_auction(
     csv_path: str = Query(..., description="Path to CSV file from Yahoo Draft Recap"),
     year: int = Query(..., description="Season year the auction took place"),
@@ -234,7 +250,7 @@ async def import_league_auction(
     )
 
 
-@router.post("/rematch-auction-history", response_model=PipelineResponse)
+@router.post("/rematch-auction-history", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def rematch_auction_history():
     """
     Re-match league_auction_history rows with player_id=NULL to existing players.
@@ -262,7 +278,7 @@ async def rematch_auction_history():
     )
 
 
-@router.post("/sync-league-history", response_model=PipelineResponse)
+@router.post("/sync-league-history", response_model=PipelineResponse, dependencies=[_ratelimit])
 async def sync_league_history():
     """
     Auto-discover all historical auction leagues via Yahoo API and pull draft results.
