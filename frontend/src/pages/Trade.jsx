@@ -117,7 +117,9 @@ export default function Trade() {
   const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
   const qc = useQueryClient()
-  useMe()  // keeps /account/me warm for the balance shown after debits
+  // /account/me: keeps the balance warm AND tells us the effective entitlement.
+  // Paid (unlimited) tiers pay no credits, so we don't show a credit-cost note.
+  const { tierLimits } = useMe()
   const { creditCost } = usePricing()
   // Refresh the shared credit balance (sidebar) after a spend.
   const refreshCredits = () => qc.invalidateQueries({ queryKey: ['me'] })
@@ -166,7 +168,15 @@ export default function Trade() {
   // Show a proactive locked CTA whenever the gate is live and the tier lacks it.
   const demo = !!league.demo_mode
   const enforced = !!league.enforced
-  const costLabel = (n) => (demo && !enforced ? 'demo · no charge' : `${n} cr`)
+  const unlimited = tierLimits?.unlimited_features === true
+  // Trailing cost note on an action button. Unlimited (paid) tiers pay nothing,
+  // so no note is shown; free tiers show the credit price; a non-enforced demo
+  // shows an explicit no-charge note.
+  const costNote = (n) => {
+    if (demo && !enforced) return ' · demo · no charge'
+    if (unlimited) return ''
+    return ` · ${n} cr`
+  }
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
@@ -264,7 +274,7 @@ export default function Trade() {
               >
                 {analyzeMut.isPending
                   ? 'Analyzing…'
-                  : `Analyze my trade · ${costLabel(creditCost('trade_analysis'))}`}
+                  : `Analyze my trade${costNote(creditCost('trade_analysis'))}`}
               </button>
             </div>
           </div>
@@ -288,7 +298,7 @@ export default function Trade() {
           >
             {ideasMut.isPending
               ? 'Finding trades…'
-              : `Give me trade ideas · ${costLabel(creditCost('trade_finder'))}`}
+              : `Give me trade ideas${costNote(creditCost('trade_finder'))}`}
           </button>
 
           {ideasMut.isError && (

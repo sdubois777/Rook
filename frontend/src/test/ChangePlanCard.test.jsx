@@ -87,11 +87,33 @@ describe('ChangePlanCard', () => {
     expect(screen.queryByText(/choose which stay active/i)).not.toBeInTheDocument()
   })
 
-  it('offers only the PAID tiers other than the current one (free is not a plan-change target)', () => {
+  it('offers every other tier — including Free (cancel) — but not the current one', () => {
     render(<ChangePlanCard currentTier="pro" onApplied={() => {}} />)
     expect(screen.getByRole('button', { name: /Change to.*Standard/i })).toBeInTheDocument()
+    // Free is now a valid downgrade target (cancels the sub at period end).
+    expect(screen.getByRole('button', { name: /Change to.*Free/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Change to.*Pro/i })).not.toBeInTheDocument()
-    // Free is not purchasable/changeable-to — cancel via the portal instead.
-    expect(screen.queryByRole('button', { name: /Change to.*Free/i })).not.toBeInTheDocument()
+  })
+
+  it('downgrade to Free: previews a scheduled line, confirm shows scheduled', async () => {
+    previewChangePlan.mockResolvedValue({
+      direction: 'downgrade', amount_due_today: 0, currency: 'usd',
+      effective: '2026-08-01T00:00:00+00:00', proration_date: null, target_tier: 'free',
+    })
+    confirmChangePlan.mockResolvedValue({
+      status: 'scheduled', effective: '2026-08-01T00:00:00+00:00', target_tier: 'free',
+    })
+    const onApplied = vi.fn()
+
+    render(<ChangePlanCard currentTier="pro" onApplied={onApplied} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Change to.*Free/i }))
+    await waitFor(() => expect(previewChangePlan).toHaveBeenCalledWith('free'))
+    expect(screen.getByText(/No charge today/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm/i }))
+    await waitFor(() => expect(confirmChangePlan).toHaveBeenCalledWith('free', null))
+    expect(await screen.findByText(/Scheduled:/i)).toBeInTheDocument()
+    expect(onApplied).not.toHaveBeenCalled()
   })
 })

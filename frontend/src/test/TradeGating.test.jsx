@@ -9,7 +9,8 @@ vi.mock('../api/trade', () => ({
   analyzeTrade: vi.fn(),
   fetchTradeIdeas: vi.fn(),
 }))
-vi.mock('../hooks/useMe', () => ({ useMe: () => ({ tierLimits: null }) }))
+const h = vi.hoisted(() => ({ me: { tierLimits: null } }))
+vi.mock('../hooks/useMe', () => ({ useMe: () => h.me }))
 vi.mock('../hooks/usePricing', () => ({ usePricing: () => pricingHookValue() }))
 
 import Trade from '../pages/Trade'
@@ -47,6 +48,7 @@ function renderTrade() {
 describe('Trade page credit labels (never tier-locked)', () => {
   beforeEach(() => {
     fetchTradeLeague.mockReset()
+    h.me = { tierLimits: null }  // default: tier unknown → cost shown (safe)
   })
 
   it('demo: shows "no charge" label', async () => {
@@ -78,5 +80,24 @@ describe('Trade page credit labels (never tier-locked)', () => {
     expect(await screen.findByText(/Analyze my trade · 1 cr/i)).toBeInTheDocument()
     expect(screen.queryByText(/no charge/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/needs Standard/i)).not.toBeInTheDocument()
+  })
+
+  it('paid (unlimited) tier: the action is shown with NO credit cost', async () => {
+    h.me = { tierLimits: { unlimited_features: true } }
+    fetchTradeLeague.mockResolvedValue(league(false))
+    renderTrade()
+    // The button still renders (paid users use the feature)…
+    expect(await screen.findByRole('button', { name: /Analyze my trade/i })).toBeInTheDocument()
+    // …but with no credit-cost note — unlimited pays nothing.
+    expect(screen.queryByText(/1 cr/i)).not.toBeInTheDocument()
+  })
+
+  it('paid (unlimited) tier under demo enforcement: still no credit cost', async () => {
+    h.me = { tierLimits: { unlimited_features: true } }
+    fetchTradeLeague.mockResolvedValue(league(true, true))
+    renderTrade()
+    expect(await screen.findByRole('button', { name: /Analyze my trade/i })).toBeInTheDocument()
+    expect(screen.queryByText(/1 cr/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/no charge/i)).not.toBeInTheDocument()
   })
 })

@@ -316,6 +316,32 @@ async def test_change_plan_preview_downgrade(stripe_configured, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_change_plan_preview_downgrade_to_free(stripe_configured, monkeypatch):
+    """Free is a valid downgrade target: no price lookup, no charge, period-end."""
+    from backend.services.billing import stripe_gateway
+    monkeypatch.setattr(
+        stripe_gateway, "subscription_snapshot", lambda sid: _snap(price_id="price_pro")
+    )
+    monkeypatch.setattr(
+        "backend.repositories.league_repo.LeagueRepository.count_active",
+        AsyncMock(return_value=1),
+    )
+    user = _make_user(tier="pro", subscription_id="sub_1")
+    _override_auth(user)
+    try:
+        resp = await _post("/api/billing/change-plan/preview", {"target_tier": "free"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["direction"] == "downgrade"
+    assert data["amount_due_today"] == 0
+    assert data["target_tier"] == "free"
+    assert data["effective"].startswith("20")
+
+
+@pytest.mark.asyncio
 async def test_change_plan_preview_same_tier_rejected(stripe_configured):
     user = _make_user(tier="pro", subscription_id="sub_1")
     _override_auth(user)
@@ -416,3 +442,34 @@ async def test_change_plan_confirm_downgrade_schedules(stripe_configured, monkey
     assert captured["current_price_id"] == "price_pro"
     assert captured["target_price_id"] == "price_standard"
     assert user.tier == "pro"  # unchanged until the schedule advances
+
+
+@pytest.mark.asyncio
+async def test_change_plan_confirm_downgrade_to_free_cancels(stripe_configured, monkeypatch):
+    """Downgrade to free cancels the sub at period end — no price schedule; the
+    webhook drops the tier to free when the sub actually ends."""
+    from backend.services.billing import stripe_gateway
+    monkeypatch.setattr(
+        stripe_gateway, "subscription_snapshot", lambda sid: _snap(price_id="price_pro")
+    )
+    captured = {}
+    monkeypatch.setattr(
+        stripe_gateway, "cancel_at_period_end", lambda **kw: captured.update(kw)
+    )
+    monkeypatch.setattr(
+        stripe_gateway, "schedule_downgrade",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("free must not schedule a price")),
+    )
+    user = _make_user(tier="pro", subscription_id="sub_1")
+    _override_auth(user)
+    try:
+        resp = await _post("/api/billing/change-plan/confirm", {"target_tier": "free"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "scheduled"
+    assert body["target_tier"] == "free"
+    assert captured["sub_id"] == "sub_1"
+    assert user.tier == "pro"  # webhook is the sole tier-writer, on sub end
