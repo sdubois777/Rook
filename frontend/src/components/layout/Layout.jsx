@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import Sidebar from './Sidebar'
-import AssistantButton from '../AssistantButton'
-import AssistantPanel from '../AssistantPanel'
 import Logo from '../brand/Logo'
 import { useUIStore } from '../../stores/ui'
 
@@ -45,8 +43,6 @@ export default function Layout({ children }) {
       >
         <div className="p-4 lg:p-6">{children}</div>
       </main>
-      <AssistantButton />
-      <AssistantPanel />
     </div>
   )
 }

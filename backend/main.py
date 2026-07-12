@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.core.exceptions import AppError
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
-from backend.routers import admin, assistant, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
+from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
 from backend.routers import account, billing, matchup, trade, waiver, webhooks
 from backend.websocket.manager import news_ws_manager
 
@@ -76,7 +76,6 @@ async def app_error_handler(request, exc: AppError):
 # coordinated Clerk dashboard change.
 for _router in (
     admin.router,
-    assistant.router,
     auth.router,
     draft.router,
     draftboard.router,
