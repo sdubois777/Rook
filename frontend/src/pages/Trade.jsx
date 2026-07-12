@@ -13,6 +13,7 @@ import {
   ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, X,
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
+import { leagueLoadMessage } from '../lib/leagueError'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
@@ -146,16 +147,13 @@ export default function Trade() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading trade league…</div>
   if (error) {
-    const demoOff = error?.response?.status === 404
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">
           <h1 className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
             <ArrowLeftRight size={20} /> Trade
           </h1>
-          {demoOff
-            ? 'The trade demo league is only available with TRADE_DEMO_MODE enabled.'
-            : 'Could not load the trade league.'}
+          {leagueLoadMessage(error, 'Could not load the trade league.')}
         </div>
       </div>
     )

@@ -159,12 +159,10 @@ async def league(
     """Read-only H2H scouting for the acting team (defaults to the is_me team; the
     'Acting as' switcher passes ``my_team_id``). Demo-only: 404s with TRADE_DEMO_MODE
     off (no real-league exposure — the real provider is trade slice 6)."""
+    # Un-gated: demo ON serves the seeded demo league; demo OFF serves the user's real
+    # synced league via the same seam (UndraftedLeagueError → 409 before the value path
+    # when undrafted; 404 when none is synced).
     demo = trade_demo_enabled()
-    if not demo:
-        raise HTTPException(
-            status_code=404,
-            detail="matchup demo league is only available under TRADE_DEMO_MODE",
-        )
 
     # SAME seam + SAME evaluate_league (incl. the slice-4 DST tilt) as /trade/league,
     # so every number is consistent across pages. This path touches ONLY pure

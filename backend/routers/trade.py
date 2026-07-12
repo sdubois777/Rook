@@ -504,13 +504,10 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
     ``trade_value`` (the SAME value_engine function the verdict chips read) so picker
     values match verdict values exactly — one scale, no split-brain. Demo-only: with
     TRADE_DEMO_MODE off it 404s (no real-league exposure here). Adds NO trade logic."""
+    # Un-gated: demo ON serves the seeded demo league; demo OFF serves the user's real
+    # synced league via the same seam (which raises UndraftedLeagueError → 409 before
+    # the value path when the league hasn't drafted, and 404 when none is synced).
     demo = trade_demo_enabled()
-    if not demo:
-        raise HTTPException(
-            status_code=404,
-            detail="trade demo league is only available under TRADE_DEMO_MODE",
-        )
-
     state, values, _, wire = await load_league_for_analysis(db, user, demo)
     # ONE replacement per league (waiver-aware), passed into the shared trade_value —
     # exactly what analyze_trade does, so a player reads identically in both sections.

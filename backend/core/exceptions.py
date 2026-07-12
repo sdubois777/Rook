@@ -34,6 +34,31 @@ class ConflictError(AppError):
     error_code = "conflict"
 
 
+class UndraftedLeagueError(AppError):
+    """The synced league hasn't drafted yet — trade/waiver/matchup can't run over
+    empty rosters. Raised BEFORE the value path so no compute/charge happens.
+
+    ``signal`` records how we knew: 'draft_status'/'draft_date' are EXPLICIT platform
+    signals; 'inferred' means we only saw empty rosters (which a failed sync also
+    produces) — the copy for that case must not assert 'undrafted' as certain.
+    """
+    status_code = 409
+    error_code = "undrafted_league"
+
+    _MESSAGES = {
+        "draft_status": "This league hasn't drafted yet — come back after your draft.",
+        "draft_date": "This league hasn't drafted yet — come back after your draft.",
+        "inferred": "This league has no rostered players yet. If you've already "
+                    "drafted, re-sync it on the League page.",
+    }
+
+    def __init__(self, signal: str):
+        super().__init__(
+            self._MESSAGES.get(signal, self._MESSAGES["inferred"]),
+            {"signal": signal},
+        )
+
+
 class UnauthorizedError(AppError):
     status_code = 401
     error_code = "unauthorized"

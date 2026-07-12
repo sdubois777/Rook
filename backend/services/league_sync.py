@@ -266,6 +266,8 @@ class LeagueSyncService:
             user_league.draft_type = meta.draft_type
         if meta.draft_date:
             user_league.draft_date = meta.draft_date
+        if meta.draft_status:
+            user_league.draft_status = meta.draft_status
 
     async def _sync_yahoo_settings(
         self, user_league: UserLeague, league_key: str | None = None,
