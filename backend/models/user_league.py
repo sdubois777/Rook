@@ -82,6 +82,11 @@ class UserLeague(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Explicit draft status where the platform exposes one. Sleeper: pre_draft |
+    # drafting | complete (its draft object's .status, previously dropped). ESPN/Yahoo
+    # don't publish a status → NULL there (use draft_date instead). NULL = unknown.
+    draft_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
     # Extra Yahoo settings that get_league_settings already pulls (previously dropped).
     trade_deadline: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     waiver_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)

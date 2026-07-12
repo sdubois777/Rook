@@ -237,15 +237,12 @@ def _rec_out(
 # ---------------------------------------------------------------------------
 @router.get("/league", response_model=WaiverLeagueResponse)
 async def league(user=Depends(get_current_user), db=Depends(get_db)):
-    """READ-ONLY picker/team-switcher for the waiver page. Demo-only: 404s with
-    WAIVER_DEMO_MODE off (no real-league exposure here)."""
+    """READ-ONLY picker/team-switcher for the waiver page. Un-gated: demo ON serves the
+    seeded demo league; demo OFF serves the user's real synced league via the same seam
+    (UndraftedLeagueError → 409 before the value path when undrafted; 404 when none is
+    synced)."""
     demo = waiver_demo_enabled()
-    if not demo:
-        raise HTTPException(
-            status_code=404,
-            detail="waiver demo league is only available under WAIVER_DEMO_MODE",
-        )
-    src = await load_waiver_source(db, demo)
+    src = await load_waiver_source(db, demo, user)
 
     teams: list[LeagueTeamOut] = []
     for team in src.state.teams:

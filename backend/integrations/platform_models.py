@@ -21,6 +21,7 @@ class LeagueMetadata:
     team_count: Optional[int] = None
     draft_type: Optional[str] = None       # auction | snake
     draft_date: Optional[datetime] = None
+    draft_status: Optional[str] = None     # pre_draft | drafting | complete (Sleeper); None elsewhere
 
 
 @dataclass

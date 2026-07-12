@@ -13,6 +13,7 @@ import {
   Waves, TrendingUp, TrendingDown, Minus, ArrowRight, Newspaper, Target, Shield,
 } from 'lucide-react'
 import { fetchWaiverLeague, fetchWaiverRecommendations, fetchWaiverWire } from '../api/waiver'
+import { leagueLoadMessage } from '../lib/leagueError'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
@@ -259,16 +260,13 @@ export default function Waiver() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading waiver wire…</div>
   if (error) {
-    const demoOff = error?.response?.status === 404
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">
           <h1 className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
             <Waves size={20} /> Waiver Wire
           </h1>
-          {demoOff
-            ? 'The waiver demo league is only available with WAIVER_DEMO_MODE enabled.'
-            : 'Could not load the waiver wire.'}
+          {leagueLoadMessage(error, 'Could not load the waiver wire.')}
         </div>
       </div>
     )

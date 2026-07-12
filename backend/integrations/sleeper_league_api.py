@@ -82,6 +82,11 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 draft = drafts[0]
                 dtype = str(draft.get("type", "")).lower()
                 meta.draft_type = "auction" if dtype == "auction" else "snake"
+                # Explicit draft status (pre_draft | drafting | complete) — the
+                # undrafted signal for Sleeper (whose draft_date is often null).
+                status = str(draft.get("status", "")).strip().lower()
+                if status:
+                    meta.draft_status = status
                 start_ms = draft.get("start_time")
                 if start_ms:
                     meta.draft_date = datetime.fromtimestamp(int(start_ms) / 1000, tz=timezone.utc)
