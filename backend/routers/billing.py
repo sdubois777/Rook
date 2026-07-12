@@ -220,11 +220,12 @@ async def checkout_pack(
 # ── Change plan (preview + confirm) ─────────────────────────────────────
 
 class ChangePlanRequest(BaseModel):
-    target_tier: Literal["standard", "pro"]
+    # free = downgrade-to-free (cancels the subscription at period end).
+    target_tier: Literal["free", "standard", "pro"]
 
 
 class ChangePlanConfirmRequest(BaseModel):
-    target_tier: Literal["standard", "pro"]
+    target_tier: Literal["free", "standard", "pro"]
     proration_date: Optional[int] = None  # from preview; required for upgrades
 
 
@@ -263,11 +264,17 @@ def _change_plan_context(user: User, target_tier: str):
         raise HTTPException(
             status_code=400, detail="Target tier must differ from the current tier"
         )
-    target_price = catalog.tier_to_price(target_tier)
-    if not target_price:
-        raise HTTPException(
-            status_code=400, detail=f"No price configured for tier '{target_tier}'"
-        )
+    # Free has no price — downgrading to it CANCELS the subscription at period end
+    # (the webhook drops the tier to free when the sub actually ends). It is always
+    # a downgrade, so the upgrade path never dereferences the None price. Every
+    # other target maps to its monthly price.
+    target_price = None
+    if target_tier != "free":
+        target_price = catalog.tier_to_price(target_tier)
+        if not target_price:
+            raise HTTPException(
+                status_code=400, detail=f"No price configured for tier '{target_tier}'"
+            )
     snap = stripe_gateway.subscription_snapshot(user.stripe_subscription_id)
     return direction, target_price, snap
 
@@ -352,15 +359,24 @@ async def change_plan_confirm(
             status="applied", effective="now", target_tier=body.target_tier
         )
 
-    result = stripe_gateway.schedule_downgrade(
-        sub_id=user.stripe_subscription_id,
-        current_price_id=snap["price_id"],
-        target_price_id=target_price,
-        idempotency_key=f"chg_{user.id}_{body.target_tier}_{snap['period_end']}",
-    )
-    effective = datetime.fromtimestamp(
-        result["effective"], tz=timezone.utc
-    ).isoformat()
+    # Downgrade. To FREE = cancel the subscription at period end (there is no
+    # target price to switch to); the webhook flips the tier to free when the sub
+    # actually ends. To a lower PAID tier = schedule the price drop at period end.
+    if body.target_tier == "free":
+        stripe_gateway.cancel_at_period_end(
+            sub_id=user.stripe_subscription_id,
+            idempotency_key=f"chg_{user.id}_free_{snap['period_end']}",
+        )
+        effective_ts = snap["period_end"]
+    else:
+        result = stripe_gateway.schedule_downgrade(
+            sub_id=user.stripe_subscription_id,
+            current_price_id=snap["price_id"],
+            target_price_id=target_price,
+            idempotency_key=f"chg_{user.id}_{body.target_tier}_{snap['period_end']}",
+        )
+        effective_ts = result["effective"]
+    effective = datetime.fromtimestamp(effective_ts, tz=timezone.utc).isoformat()
     return ChangePlanConfirmResponse(
         status="scheduled", effective=effective, target_tier=body.target_tier
     )

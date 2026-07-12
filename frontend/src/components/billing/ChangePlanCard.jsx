@@ -26,9 +26,11 @@ function formatDate(iso) {
  */
 export default function ChangePlanCard({ currentTier, onApplied }) {
   const { tiers, tierLabel } = usePricing()
-  // Change-plan targets are PAID MONTHLY tiers only (season passes are
-  // purchases via checkout, not plan changes).
-  const TIER_ORDER = tiers.filter((t) => t.price_monthly_usd > 0).map((t) => t.id)
+  // Plan-change targets: every tier except the current one. Free is a valid
+  // DOWNGRADE target — confirming it cancels the subscription at period end and
+  // the webhook drops the tier to free. (Season passes are purchases via
+  // checkout, not plan changes, so they never appear here.)
+  const TIER_ORDER = tiers.map((t) => t.id)
   const [target, setTarget] = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult] = useState(null)

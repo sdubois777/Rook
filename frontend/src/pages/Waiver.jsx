@@ -247,7 +247,8 @@ export default function Waiver() {
   })
 
   const qc = useQueryClient()
-  useMe()  // keeps /account/me warm for the balance shown after debits
+  // /account/me: keeps the balance warm AND tells us the effective entitlement.
+  const { tierLimits } = useMe()
   const { creditCost } = usePricing()
   const recMut = useMutation({
     mutationFn: () => fetchWaiverRecommendations({ myTeamId: effMyId }),
@@ -275,7 +276,11 @@ export default function Waiver() {
 
   const demo = !!league.demo_mode
   const enforced = !!league.enforced
-  const costLabel = demo && !enforced ? 'demo · no charge' : `${creditCost('waiver_wire')} cr`
+  const unlimited = tierLimits?.unlimited_features === true
+  // Paid (unlimited) tiers pay nothing → no cost note; free tiers show the price;
+  // a non-enforced demo shows an explicit no-charge note.
+  const costNote =
+    demo && !enforced ? ' · demo · no charge' : unlimited ? '' : ` · ${creditCost('waiver_wire')} cr`
   const remaining = myTeam?.faab_remaining ?? league.faab_budget
   const data = recMut.data
 
@@ -330,7 +335,7 @@ export default function Waiver() {
               onClick={() => recMut.mutate()}
               className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets · ${costLabel}`}
+              {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets${costNote}`}
             </button>
             {data?.needs?.length > 0 && (
               <span className="text-xs text-slate-500">
