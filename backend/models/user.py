@@ -90,9 +90,13 @@ CREDIT_COSTS: dict[str, int] = {
     # Live draft: tier entitlement — NOT a credit cost, never metered.
 }
 
-# Credit top-up packs — exactly ONE.
+# Credit top-up packs. Add a pack here and everything else derives — config env
+# field (stripe_price_pack_<credits>), catalog attr map, seeder price, checkout
+# validation, public /pricing sheet, and the frontend BuyCreditsCard all read this.
 CREDIT_PACKS: dict[str, dict] = {
-    "credits_100": {"price_usd": 5, "credits": 100},
+    "credits_100": {"price_usd": 5,  "credits": 100},
+    "credits_200": {"price_usd": 9,  "credits": 200},
+    "credits_500": {"price_usd": 25, "credits": 500},
 }
 
 

@@ -17,15 +17,17 @@ describe('BuyCreditsCard', () => {
     redirectTo.mockClear()
   })
 
-  it('renders the single pack from the fetched pricing sheet', () => {
+  it('renders every pack from the fetched pricing sheet', () => {
     render(<BuyCreditsCard />)
     expect(screen.getByText('100 cr')).toBeInTheDocument()
+    expect(screen.getByText('200 cr')).toBeInTheDocument()
+    expect(screen.getByText('500 cr')).toBeInTheDocument()
   })
 
   it('clicking a pack starts checkout for that pack and redirects', async () => {
     render(<BuyCreditsCard />)
-    fireEvent.click(screen.getByText('100 cr'))
-    await waitFor(() => expect(createPackCheckout).toHaveBeenCalledWith('credits_100'))
+    fireEvent.click(screen.getByText('200 cr'))
+    await waitFor(() => expect(createPackCheckout).toHaveBeenCalledWith('credits_200'))
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith('https://checkout.stripe.com/pack')
     )

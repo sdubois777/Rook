@@ -21,7 +21,7 @@ from backend.config import settings
 from backend.core.dependencies import get_current_user, get_db
 from backend.core.exceptions import ValidationError
 from backend.middleware.rate_limit import rate_limit_auth
-from backend.models.user import User
+from backend.models.user import CREDIT_PACKS, User
 from backend.repositories.user_repo import UserRepository
 from backend.services.billing import catalog, stripe_gateway
 
@@ -81,12 +81,14 @@ class CheckoutRequest(BaseModel):
     monthly = recurring subscription; season = one-time fixed-term entitlement."""
     tier: Optional[Literal["standard", "pro"]] = None
     interval: Literal["monthly", "season"] = "monthly"
-    pack: Optional[Literal["credits_100"]] = None
+    pack: Optional[str] = None  # validated against CREDIT_PACKS (source of truth)
 
     @model_validator(mode="after")
     def _exactly_one(self):
         if bool(self.tier) == bool(self.pack):
             raise ValueError("Provide exactly one of 'tier' or 'pack'")
+        if self.pack is not None and self.pack not in CREDIT_PACKS:
+            raise ValueError(f"Unknown pack '{self.pack}'")
         return self
 
 
@@ -193,7 +195,13 @@ async def create_checkout(
 
 
 class CheckoutPackRequest(BaseModel):
-    pack: Literal["credits_100"]
+    pack: str  # validated against CREDIT_PACKS (source of truth)
+
+    @model_validator(mode="after")
+    def _known_pack(self):
+        if self.pack not in CREDIT_PACKS:
+            raise ValueError(f"Unknown pack '{self.pack}'")
+        return self
 
 
 @router.post("/checkout-pack", response_model=CheckoutResponse)
