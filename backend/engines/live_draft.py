@@ -1,24 +1,29 @@
 """
 Live Draft Engine — real-time recommendation orchestrator.
 
-Model: claude-sonnet-4-6 (real-time decision-making)
-Max tokens: 400 per recommendation
-Target: under 2000ms end-to-end per nomination
+DETERMINISTIC-FIRST: THE ENGINE DECIDES, SONNET EXPLAINS.
+The engine computes the pick / bid (roster needs, budget feasibility, round-phase
+rules, flags, blocks — all pure Python) and broadcasts it IMMEDIATELY. Sonnet is
+then called ASYNC purely to enrich the already-displayed recommendation with
+trend/situation nuance — it never changes the player, never changes the bid
+number, never does arithmetic. A model failure means the nuance text doesn't
+arrive; the recommendation is already on screen.
 
+Model: claude-sonnet-4-6 (nuance/explanation only)
 This is the ONE engine that calls messages.create() directly
-(per PATTERNS.md Pattern 6). Every nomination has unique context,
-so BaseAgent caching would be counterproductive.
+(per PATTERNS.md Pattern 6). Every nomination has unique context and the
+prompts are far below Sonnet's 2,048-token cache minimum, so neither BaseAgent
+caching nor prompt caching applies here.
 
 Architecture:
-  nomination event → _get_player_record (DB query)
-                   → DependencyResolver (pure Python)
-                   → budget constraints (pure Python)
-                   → OpponentThreatAnalyzer (pure Python)
-                   → single Sonnet call (400 tokens)
-                   → WebSocket broadcast to React UI
+  nomination/your_turn event → DB query + pure-Python decision
+                             → BROADCAST deterministic recommendation (instant)
+                             → async Sonnet explain call (retried, usage-logged)
+                             → BROADCAST enriched reasoning (same pick/number)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -39,122 +44,119 @@ logger = logging.getLogger(__name__)
 
 _MAX_TOKENS = 400
 
-_SYSTEM_PROMPT = """You are a fantasy football auction draft advisor.
-Given pre-computed analytics about a nominated player, output a single JSON recommendation.
+# Draft-day burst resilience: the shared client has max_retries=0 (BaseAgent does
+# its own backoff); the live-draft path has no backoff of its own, so give ITS
+# client SDK retries. Scoped via with_options — the shared client is untouched.
+_DRAFT_CLIENT_RETRIES = 2
 
-Output ONLY a valid JSON object. No explanation, no preamble, no markdown fences.
-Your entire response must be parseable by json.loads().
+# ---------------------------------------------------------------------------
+# Round-phase guardrails — HARD RULES IN CODE, not prompt guidance. (Sonnet
+# violated its own prompt's QB-round framework twice in recon; constraints that
+# can be computed live here.) Expressed as rounds-from-the-END for K/DEF so any
+# roster size works, and a fixed earliest round for QB.
+# ---------------------------------------------------------------------------
+KDEF_FINAL_ROUNDS = 3     # K/DEF only in the last 3 rounds (unless nothing else fills a need)
+QB_MIN_ROUND = 7          # never recommend a QB before round 7
+# Need-vs-BPA rank window (the "don't reach absurdly far" guard). A BPA that
+# still adds STARTER value is itself a need pick and always wins; when the BPA
+# is bench-only, the best need-position player wins UNLESS he trails the BPA by
+# more than this many ADP ranks. Tuned against the recon scenarios: the last
+# startable TE trailed the bench-only BPA by 40 ranks and must still win (S5),
+# so the window sits well above that while still refusing triple-digit reaches.
+NEED_RANK_WINDOW = 75
+
+_SYSTEM_PROMPT = """You are a fantasy football auction draft analyst.
+
+THE RECOMMENDATION ENGINE HAS ALREADY DECIDED — the action and bid ceiling are
+final and were computed deterministically (value, dependency flags, budget
+feasibility, roster needs, block values). Your ONLY job is to EXPLAIN the
+decision and add nuance: player trend, situation, opponent context. You never
+change the action, never change the number, never do arithmetic.
+
+Output ONLY a valid JSON object. No preamble, no markdown fences.
 
 Output schema:
 {
-  "action": "buy|bid_to|block|pass",
-  "bid_ceiling": integer,
-  "reasoning": "one sentence max",
+  "reasoning": "1-2 sentences explaining the engine's decision, with any trend/situation nuance",
   "confidence": "high|medium|low"
 }
 
-Rules:
-- "buy" = aggressively pursue up to bid_ceiling
-- "bid_to" = monitor but drop at bid_ceiling
-- "block" = bid to prevent opponent combo, even above personal value
-- "pass" = do not bid
-- bid_ceiling must never exceed spendable_budget
-- If active_flags include "displaced", factor the value reduction into ceiling
-- If block_value > personal_value AND budget allows, recommend "block"
-- manager_styles shows opponent draft tendencies (hero_rb = will overpay for RBs, zero_rb = avoids RBs)
-- If an aggressive/hero_rb opponent is likely bidding, set ceiling higher to compete
+FORBIDDEN: never mention specific injury diagnoses, body parts, or "chronic"
+language.
 """
 
 
-_SNAKE_SYSTEM_PROMPT = """You are an expert fantasy football snake draft advisor.
+_SNAKE_SYSTEM_PROMPT = """You are an expert fantasy football snake draft analyst.
 
-Your job: given a player available NOW and the user's current roster, recommend
-whether to DRAFT this player or WAIT.
-
-CRITICAL DIFFERENCES FROM AUCTION:
-- No bidding — you either draft this player with your current pick or pass.
-- If you pass, this player may be gone by your next pick.
-- Opportunity cost matters — using an early pick on a QB means missing elite RB/WR value.
-- Roster construction matters — don't stack positions you've already filled.
-
-DRAFT or WAIT decision framework:
-DRAFT when:
-  - The player's adp_ai is at or near the current pick number (good value).
-  - The player fills a roster need.
-  - The player is a tier above what will be available at your next pick.
-WAIT when:
-  - The player's adp_ai is much later than the current pick (a reach).
-  - You already have your starters at that position.
-  - Better value exists at a position of greater need.
-
-POSITION DRAFT ORDER (PPR):
-  Round 1-3:   Elite RB/WR only
-  Round 4-6:   RB/WR/TE (Kelce tier)
-  Round 7-9:   Best available RB/WR/TE
-  Round 10-12: QB (unless an elite one is available)
-  Round 13-15: K and DEF last
-
-QB note: In PPR snake, QBs go rounds 8-12. Never use a top-5 pick on a QB unless
-Lamar Jackson tier — and even then consider waiting; QB is the deepest position.
-
-FORBIDDEN:
-- Never mention specific injury diagnoses.
-- Never reference body parts.
-- No "chronic condition" language.
-
-OUTPUT FORMAT (JSON only, no markdown fences):
-{
-  "action": "draft" | "wait",
-  "reasoning": "1-2 sentences max",
-  "adp_ai": <number or null>,
-  "adp_fp": <number or null>,
-  "adp_diff": <adp_fp - adp_ai, positive = we like them more than consensus>,
-  "position_need": "high" | "medium" | "low",
-  "confidence": "high" | "medium" | "low",
-  "tier": <tier number or null>
-}
-"""
-
-
-_SNAKE_YOUR_TURN_PROMPT = """You are an expert fantasy football snake draft advisor.
-
-The user is ON THE CLOCK. Recommend which player to draft from the available
-options — the single best pick given their roster and the board.
-
-KEY PRINCIPLE — Value vs Consensus (use adp_diff):
-  Positive adp_diff = we rate them earlier than FP consensus. You CAN wait on
-  these — the market won't take them for ~adp_diff more picks, so you may grab a
-  higher-consensus player now and still get them on the way back.
-  Negative adp_diff = consensus values them above us. Take them now or lose them.
-
-ROSTER CONSTRUCTION PRIORITY (PPR):
-  Rounds 1-3:   Elite RB/WR only
-  Rounds 4-6:   RB/WR/TE (Kelce tier)
-  Rounds 7-9:   Best available RB/WR/TE
-  Rounds 10-12: QB (unless an elite one is available)
-  Rounds 13+:   K, DEF, depth
-
-SCARCITY: if a position pool is draining, adjust up — don't wait on a position
-that's disappearing.
+THE RECOMMENDATION ENGINE HAS ALREADY DECIDED whether to DRAFT or WAIT on this
+player — the decision was computed deterministically (ADP value, roster needs,
+round-phase rules). Your ONLY job is to EXPLAIN it and add nuance: player trend,
+situation, what the roster gains. You never change the decision.
 
 FORBIDDEN: never mention specific injury diagnoses, body parts, or "chronic"
 language.
 
 OUTPUT FORMAT (JSON only, no markdown fences):
 {
-  "action": "draft",
-  "player_name": "<recommended player>",
-  "position": "<pos>",
-  "reasoning": "1-2 sentences",
-  "adp_rank": <number>,
-  "adp_fp": <fp consensus rank>,
-  "adp_diff": <diff>,
-  "can_wait": <true if adp_diff > 10>,
-  "wait_until_pick": <estimated pick they'll still be available, or null>,
-  "confidence": "high|medium|low",
-  "position_need": "high|medium|low"
+  "reasoning": "1-2 sentences explaining the engine's decision, with trend/situation nuance",
+  "confidence": "high" | "medium" | "low"
 }
 """
+
+
+_SNAKE_YOUR_TURN_PROMPT = """You are an expert fantasy football snake draft analyst.
+
+THE RECOMMENDATION ENGINE HAS ALREADY PICKED the player to draft — chosen
+deterministically from roster needs, ADP value, urgency (adp_diff), and
+round-phase rules. Your ONLY job is to EXPLAIN the pick and add nuance: the
+player's situation, trend, why he fits this roster now. You never change the
+pick and never recommend a different player.
+
+FORBIDDEN: never mention specific injury diagnoses, body parts, or "chronic"
+language.
+
+OUTPUT FORMAT (JSON only, no markdown fences):
+{
+  "reasoning": "1-2 sentences explaining the engine's pick, with trend/situation nuance",
+  "confidence": "high|medium|low"
+}
+"""
+
+
+async def _log_draft_usage(response) -> None:
+    """Log a live-draft Sonnet call to api_usage_log. Draft calls previously
+    bypassed usage logging entirely — draft day (the biggest spend day) was
+    invisible in the cost dashboard. Never raises: a logging failure must not
+    break a live draft."""
+    try:
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        from backend.agents.base_agent import (
+            SONNET_INPUT_PER_MTK, SONNET_OUTPUT_PER_MTK,
+        )
+        from backend.database import AsyncSessionLocal
+        from backend.models.api_usage_log import ApiUsageLog
+
+        usage = response.usage
+        cost = Decimal(str(
+            usage.input_tokens * SONNET_INPUT_PER_MTK / 1_000_000
+            + usage.output_tokens * SONNET_OUTPUT_PER_MTK / 1_000_000
+        ))
+        async with AsyncSessionLocal() as session:
+            session.add(ApiUsageLog(
+                agent_name="live_draft",
+                model=SONNET,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                estimated_cost_usd=cost,
+                cache_hit=False,
+                entity_id="draft",
+                called_at=datetime.now(timezone.utc),
+            ))
+            await session.commit()
+    except Exception as exc:  # pragma: no cover — never let logging break a draft
+        logger.warning("draft usage logging failed: %s", exc)
 
 
 class LiveDraftEngine:
@@ -178,8 +180,84 @@ class LiveDraftEngine:
         self.threat_analyzer = threat_analyzer
         self._db_session_factory = db_session_factory
         self.ws_manager = ws_manager
-        self._client = get_client()
+        # Draft-scoped client WITH SDK retries (the shared client is
+        # max_retries=0 for BaseAgent's own backoff; this path has none).
+        self._client = get_client().with_options(max_retries=_DRAFT_CLIENT_RETRIES)
         self.last_recommendation: dict | None = None
+        # In-flight async Sonnet enrichment tasks (fire-and-forget with a handle
+        # so tests/verifiers can await completion via wait_for_ai()).
+        self._ai_tasks: set[asyncio.Task] = set()
+
+    # ------------------------------------------------------------------
+    # Async AI enrichment plumbing (deterministic-first)
+    # ------------------------------------------------------------------
+
+    def _spawn_ai_task(self, coro) -> None:
+        """Fire-and-forget the Sonnet enrichment. Failures are logged, never
+        raised — the deterministic rec is already on screen."""
+        task = asyncio.create_task(coro)
+        self._ai_tasks.add(task)
+        task.add_done_callback(self._ai_tasks.discard)
+
+    async def wait_for_ai(self) -> None:
+        """Await all in-flight enrichment tasks (tests / graceful shutdown)."""
+        if self._ai_tasks:
+            await asyncio.gather(*list(self._ai_tasks), return_exceptions=True)
+
+    async def _call_sonnet_explain(
+        self, system: str, user: str, max_tokens: int = 300,
+    ) -> dict:
+        """One retried Sonnet call, usage-logged to api_usage_log. Returns the
+        parsed {reasoning, confidence} dict; raises on unrecoverable API failure
+        (caller decides what a failure means — usually: keep the deterministic
+        text)."""
+        response = await self._client.messages.create(
+            model=SONNET,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        await _log_draft_usage(response)
+        data = parse_json_output(response.content[0].text)
+        if not isinstance(data, dict):
+            raise ValueError("explain output was not a JSON object")
+        return data
+
+    async def _broadcast_enrichment(
+        self, base_rec: dict, system: str, user: str,
+    ) -> None:
+        """Call Sonnet to EXPLAIN the already-broadcast deterministic rec, then
+        re-broadcast the SAME recommendation with enriched reasoning. The player
+        and every number are locked — only reasoning/confidence change. Skipped
+        (with a log line, never an error) if the model fails or a newer
+        recommendation has superseded this one."""
+        try:
+            data = await self._call_sonnet_explain(system, user)
+        except Exception as exc:
+            logger.warning(
+                "AI enrichment failed for %s (%s) — deterministic rec stands",
+                base_rec.get("player_name"), exc,
+            )
+            return
+
+        # Staleness guard: if a newer rec was broadcast while Sonnet was
+        # thinking, do not clobber it with stale nuance.
+        current = self.last_recommendation or {}
+        if current.get("player_name") != base_rec.get("player_name"):
+            logger.info(
+                "AI enrichment for %s superseded by a newer rec — dropped",
+                base_rec.get("player_name"),
+            )
+            return
+
+        enriched = {
+            **base_rec,
+            "reasoning": str(data.get("reasoning") or base_rec.get("reasoning", "")),
+            "confidence": data.get("confidence", base_rec.get("confidence", "medium")),
+            "ai_enriched": True,
+        }
+        self.last_recommendation = enriched
+        await self.ws_manager.broadcast(enriched)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -254,7 +332,13 @@ class LiveDraftEngine:
             if tendency.get("style"):
                 manager_styles[team_id] = tendency["style"]
 
-        # Step 7: Single Sonnet call
+        # Step 7: DETERMINISTIC decision — the engine decides action + number
+        # (roster-aware). Sonnet never does; it only explains, async, below.
+        budget_allows_block = spendable >= max_block_value > 0
+        action, bid_ceiling, det_reasoning = self._deterministic_auction_action(
+            record, live_ceiling, spendable, max_block_value, budget_allows_block,
+        )
+
         context = {
             "player_name": record["name"],
             "position": record["position"],
@@ -263,6 +347,9 @@ class LiveDraftEngine:
             "system_value": record.get("system_value", 0),
             "market_value": record.get("market_value", 0),
             "pre_computed_ceiling": live_ceiling,
+            "engine_decision": {"action": action, "bid_ceiling": bid_ceiling,
+                                "basis": det_reasoning},
+            "roster_needs": sorted(self.state.need_positions(self._your_roster_dicts())),
             "active_flags": [
                 {
                     "flag_type": f.get("flag_type"),
@@ -275,7 +362,7 @@ class LiveDraftEngine:
             "flag_modifier": flag_modifier,
             "spendable_budget": spendable,
             "max_block_value": max_block_value,
-            "budget_allows_block": spendable >= max_block_value > 0,
+            "budget_allows_block": budget_allows_block,
             "opponent_alerts": opponent_alerts,
             "notes": record.get("notes", ""),
             "pay_up_flag": record.get("pay_up_flag", False),
@@ -283,24 +370,107 @@ class LiveDraftEngine:
             "manager_styles": manager_styles,
         }
 
-        recommendation = await self._get_recommendation(context, record)
-
+        # Step 8: BROADCAST THE DETERMINISTIC REC IMMEDIATELY (no model wait).
         elapsed = (time.monotonic() - start) * 1000
-        logger.info(
-            "Recommendation for %s in %.0fms: %s $%s",
-            record["name"], elapsed,
-            recommendation.get("action"),
-            recommendation.get("bid_ceiling"),
-        )
-
-        # Step 8: Broadcast to React UI
         message = {
             "type": "recommendation",
-            **recommendation,
+            "action": action,
+            "bid_ceiling": bid_ceiling,
+            "reasoning": det_reasoning,
+            "confidence": "high",       # deterministic constraints — not a guess
+            "ai_enriched": False,
+            "player_name": record["name"],
+            "position": record.get("position", ""),
+            "injury_status": record.get("injury_status"),
+            "system_value": record.get("system_value", 0),
+            "market_value": record.get("market_value", 0),
+            "pre_computed_ceiling": live_ceiling,
+            "active_flags": context["active_flags"],
+            "opponent_alerts": opponent_alerts,
+            "block_value": max_block_value,
+            "budget_allows_block": budget_allows_block,
+            "budget_summary": {
+                "your_remaining": self.state.get_your_remaining_budget(),
+                "spendable_on_this_player": spendable,
+                "minimum_completion_budget": self.state.get_minimum_completion_budget(),
+                "roster_slots_remaining": self.state.get_roster_slots_remaining(),
+            },
             "elapsed_ms": round(elapsed),
         }
         self.last_recommendation = message
         await self.ws_manager.broadcast(message)
+        logger.info(
+            "Deterministic rec for %s in %.0fms: %s $%s (AI nuance async)",
+            record["name"], elapsed, action, bid_ceiling,
+        )
+
+        # Step 9: async Sonnet ENRICHMENT — explains the decision, never alters it.
+        self._spawn_ai_task(self._broadcast_enrichment(
+            message, _SYSTEM_PROMPT, json.dumps(context, default=str),
+        ))
+
+    def _your_roster_dicts(self) -> list[dict]:
+        """Your auction roster as the [{'position': ...}] shape the needs
+        primitives consume (snake uses get_my_roster(), which already is)."""
+        return [{"position": p.position} for p in self.state.your_roster]
+
+    def _deterministic_auction_action(
+        self,
+        record: dict,
+        live_ceiling: int,
+        spendable: int,
+        max_block_value: float,
+        budget_allows_block: bool,
+    ) -> tuple[str, int, str]:
+        """THE ENGINE'S auction decision — (action, bid_ceiling, reasoning).
+
+        Pure Python: budget feasibility (live_ceiling already embeds spendable),
+        ROSTER NEEDS (the '$60 on three RBs' fix — a position with no open
+        starter slot and no free bench room is a pass, however good the value),
+        block opportunities, and the pre-computed value signals.
+        """
+        pos = record.get("position", "")
+        roster = self._your_roster_dicts()
+        needs = self.state.need_positions(roster)
+        open_need_slots = sum(self.state.get_unfilled_needs(roster).values())
+        slots_remaining = self.state.get_roster_slots_remaining()
+        free_bench = slots_remaining - open_need_slots
+
+        # 1. Feasibility — cannot bid at all.
+        if live_ceiling <= 0 or spendable <= 0:
+            return ("pass", 0,
+                    "Cannot bid — any bid would leave you unable to fill your "
+                    "remaining roster slots at $1 each.")
+
+        # 2. Roster fit — position already filled and every remaining slot is
+        #    reserved for unfilled needs: stacking it would strand a need.
+        if pos and pos not in needs and free_bench <= 0:
+            return ("pass", 0,
+                    f"{pos} is already filled and your {slots_remaining} remaining "
+                    f"slot(s) are reserved for unfilled needs "
+                    f"({', '.join(sorted(needs)) or 'none'}).")
+
+        # 3. Block — denying an opponent combo is worth more than personal value.
+        if budget_allows_block and max_block_value > live_ceiling:
+            ceiling = max(1, min(int(round(max_block_value)), spendable))
+            return ("block", ceiling,
+                    f"Block bid — denying the opponent combo is worth ${ceiling}, "
+                    f"above his ${live_ceiling} value to your roster.")
+
+        # 4. Value action — buy (pursue) vs bid_to (monitor with a drop point).
+        depth_note = (
+            "" if pos in needs
+            else " (depth add — position starters are filled)"
+        )
+        system_v = float(record.get("system_value") or 0)
+        market_v = float(record.get("market_value") or 0)
+        if record.get("pay_up_flag") or (system_v > market_v and pos in needs):
+            return ("buy", live_ceiling,
+                    f"Strong value at a roster need — pursue up to the "
+                    f"${live_ceiling} ceiling{depth_note}.")
+        return ("bid_to", live_ceiling,
+                f"Fair target — bid up to ${live_ceiling}, drop out "
+                f"above it{depth_note}.")
 
     async def on_pick_confirmed(self, event: dict) -> None:
         """Update state after every confirmed pick."""
@@ -342,7 +512,20 @@ class LiveDraftEngine:
         """
         Single DB query with eager loads for Player + profile + injury + dependencies.
         Converts ORM objects to a plain dict for pure Python processing.
+
+        LOOKUP-SAFE (two real failure modes, both previously a silent no-rec):
+          * a None/empty id renders as ``yahoo_player_id IS NULL`` in SQLAlchemy
+            and matched ~2,758 rows -> MultipleResultsFound. Guarded: empty id
+            returns None (unknown player) immediately.
+          * genuinely duplicated ids: prefer the ranked (adp_rank) / valued row,
+            loud-warn, never crash (scripts/dedupe_yahoo_player_ids.py cleans).
         """
+        if not yahoo_player_id:
+            logger.warning(
+                "player lookup with empty yahoo_player_id — treating as unknown "
+                "player (no IS NULL scan)",
+            )
+            return None
         async with self._db_session_factory() as session:
             stmt = (
                 select(Player)
@@ -356,10 +539,25 @@ class LiveDraftEngine:
                 .where(Player.yahoo_player_id == yahoo_player_id)
             )
             result = await session.execute(stmt)
-            player = result.scalar_one_or_none()
+            players = result.scalars().all()
 
-        if not player:
+        if not players:
             return None
+        if len(players) > 1:
+            logger.warning(
+                "DUPLICATE yahoo_player_id %s: %d rows (%s) — using the ranked/"
+                "valued one; run scripts/dedupe_yahoo_player_ids.py",
+                yahoo_player_id, len(players), [p.name for p in players],
+            )
+            players = sorted(
+                players,
+                key=lambda p: (
+                    p.adp_rank is None,                    # ranked rows first
+                    p.baseline_value is None,              # then valued rows
+                    -(float(p.baseline_value or 0)),
+                ),
+            )
+        player = players[0]
 
         risk_level = "low"
         availability_risk = None
@@ -452,63 +650,14 @@ class LiveDraftEngine:
         pos = record.get("position", "")
         max_bid = MAX_REALISTIC_BID.get(pos, 80)
 
-        # Budget constraint
+        # Budget constraint. FEASIBILITY FIX: when spendable is 0 (any bid would
+        # strand the roster), the ceiling is 0 — "cannot bid", not a floored $1
+        # infeasible bid (the old max(1, …) recommended $1 with $0 spendable in
+        # end-game states; Sonnet was papering over it).
+        if spendable <= 0:
+            return 0
         ceiling = min(adjusted, spendable, max_bid)
-        return max(1, int(round(ceiling)))
-
-    # ------------------------------------------------------------------
-    # AI recommendation
-    # ------------------------------------------------------------------
-
-    async def _get_recommendation(
-        self, context: dict, record: dict
-    ) -> dict[str, Any]:
-        """
-        Single Sonnet call. 400 tokens max. JSON-only output.
-        Merges AI output with pre-computed context.
-        """
-        response = await self._client.messages.create(
-            model=SONNET,
-            max_tokens=_MAX_TOKENS,
-            system=_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": json.dumps(context, default=str),
-            }],
-        )
-
-        raw_text = response.content[0].text
-        try:
-            ai_output = parse_json_output(raw_text)
-        except Exception:
-            logger.warning("Failed to parse recommendation JSON: %s", raw_text[:200])
-            ai_output = {
-                "action": "pass",
-                "bid_ceiling": context.get("pre_computed_ceiling", 1),
-                "reasoning": "AI response parse error — defaulting to pass",
-                "confidence": "low",
-            }
-
-        # Merge AI output with pre-computed context
-        return {
-            **ai_output,
-            "player_name": record["name"],
-            "position": record.get("position", ""),
-            "injury_status": record.get("injury_status"),
-            "system_value": record.get("system_value", 0),
-            "market_value": record.get("market_value", 0),
-            "pre_computed_ceiling": context["pre_computed_ceiling"],
-            "active_flags": context["active_flags"],
-            "opponent_alerts": context["opponent_alerts"],
-            "block_value": context["max_block_value"],
-            "budget_allows_block": context["budget_allows_block"],
-            "budget_summary": {
-                "your_remaining": self.state.get_your_remaining_budget(),
-                "spendable_on_this_player": context["spendable_budget"],
-                "minimum_completion_budget": self.state.get_minimum_completion_budget(),
-                "roster_slots_remaining": self.state.get_roster_slots_remaining(),
-            },
-        }
+        return max(1, min(int(round(ceiling)), spendable))
 
     async def _emit_unknown_player(
         self, player_id: str, event: dict
@@ -544,13 +693,10 @@ class LiveDraftEngine:
     # ------------------------------------------------------------------
 
     async def _on_nomination_snake(self, event: dict) -> None:
-        """Snake draft recommendation via Sonnet.
-
-        Unlike auction, there's no bid ceiling or price negotiation — the
-        question is "should I spend my current pick on this player, given my
-        roster and what's left?" The adp_ai number (AI-generated by
-        valuation_agent) anchors the value; Sonnet adds the DRAFT/WAIT call.
-        """
+        """Snake nomination: THE ENGINE DECIDES DRAFT/WAIT deterministically
+        (ADP value vs current pick, roster needs, round-phase guardrails) and
+        broadcasts instantly; Sonnet explains async. (Defensive path — snake
+        pollers emit your_turn, not nomination.)"""
         start = time.monotonic()
         player_id = event.get("player_id", "")
 
@@ -559,39 +705,71 @@ class LiveDraftEngine:
             await self._emit_unknown_player(player_id, event)
             return
 
-        context = {
+        current_pick = event.get("current_pick")
+        roster = self.state.get_my_roster()
+        needs = self.state.need_positions(roster)
+        pos = record.get("position") or ""
+        adp_ai = record.get("adp_ai")
+        adp_fp = record.get("adp_fantasypros")
+        team_count = self.state.league_config.team_count or 12
+        round_num = ((int(current_pick) - 1) // team_count + 1) if current_pick else None
+        total_rounds = self.state.league_config.total_roster_size
+
+        # DETERMINISTIC DRAFT/WAIT — guardrails first, then need + value.
+        action, why = "wait", "Better value or a more urgent need is likely available."
+        if round_num is not None and pos in ("K", "DEF") and round_num <= total_rounds - KDEF_FINAL_ROUNDS:
+            why = f"Round-phase rule: {pos} only in the final {KDEF_FINAL_ROUNDS} rounds."
+        elif round_num is not None and pos == "QB" and round_num < QB_MIN_ROUND:
+            why = f"Round-phase rule: no QB before round {QB_MIN_ROUND} — the position is deep."
+        elif pos in needs and (adp_ai is None or current_pick is None
+                               or float(adp_ai) <= float(current_pick) + 6):
+            action = "draft"
+            why = f"Fills your open {pos} slot at fair ADP value."
+        elif adp_ai is not None and current_pick is not None and float(adp_ai) < float(current_pick) - 6:
+            action = "draft"
+            why = "Well below his AI ADP — value outweighs the filled position."
+        elif pos not in needs:
+            why = f"{pos} starters are already filled — hold for an open need."
+
+        adp_diff = None
+        if adp_ai is not None and adp_fp is not None:
+            adp_diff = round(float(adp_fp) - float(adp_ai), 1)
+
+        rec = {
+            "type": "recommendation",
+            "action": action,
+            "reasoning": why,
             "player_name": record["name"],
-            "position": record.get("position"),
-            "team": record.get("team_abbr"),
+            "position": pos,
+            "injury_status": record.get("injury_status"),
+            "adp_ai": adp_ai,
+            "adp_fp": adp_fp,
+            "adp_diff": adp_diff,
+            "position_need": "high" if pos in needs else "low",
+            "confidence": "high",
+            "ai_enriched": False,
             "tier": record.get("tier"),
-            "adp_ai": record.get("adp_ai"),
-            "adp_fantasypros": record.get("adp_fantasypros"),
-            "current_pick": event.get("current_pick"),
+            "elapsed_ms": round((time.monotonic() - start) * 1000),
+        }
+        self.last_recommendation = rec
+        await self.ws_manager.broadcast(rec)
+        logger.info("Deterministic snake rec for %s in %dms: %s (AI nuance async)",
+                    record["name"], rec["elapsed_ms"], action)
+
+        context = {
+            "engine_decision": {"action": action, "basis": why},
+            "player_name": record["name"], "position": pos,
+            "team": record.get("team_abbr"), "tier": record.get("tier"),
+            "adp_ai": adp_ai, "adp_fantasypros": adp_fp,
+            "current_pick": current_pick,
             "scoring_format": self.state.scoring_format,
             "my_roster": self.state.get_roster_summary(),
             "availability_risk": record.get("availability_risk"),
             "projected_ppr": record.get("projected_ppr"),
         }
-
-        prompt = self._build_snake_prompt(context)
-        response = await self._client.messages.create(
-            model=SONNET,
-            max_tokens=600,
-            system=_SNAKE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        rec = self._parse_snake_recommendation(
-            response.content[0].text, record, context
-        )
-        elapsed = (time.monotonic() - start) * 1000
-        rec["elapsed_ms"] = round(elapsed)
-        self.last_recommendation = rec
-        logger.info(
-            "Snake rec for %s in %.0fms: %s",
-            record["name"], elapsed, rec.get("action"),
-        )
-        await self.ws_manager.broadcast(rec)
+        self._spawn_ai_task(self._broadcast_enrichment(
+            rec, _SNAKE_SYSTEM_PROMPT, self._build_snake_prompt(context),
+        ))
 
     def _build_snake_prompt(self, context: dict) -> str:
         roster = context["my_roster"]
@@ -615,7 +793,8 @@ class LiveDraftEngine:
             f"Availability: {context['availability_risk'] or 'unknown'}\n"
             f"Projected PPR: {_show(context['projected_ppr'])}\n\n"
             f"My roster so far:\n{self._format_roster(positions_filled)}\n\n"
-            f"Should I draft {context['player_name']} with my current pick?"
+            f"ENGINE DECISION (final): {json.dumps(context.get('engine_decision', {}))}\n"
+            f"Explain this decision in 1-2 sentences with trend/situation nuance."
         )
 
     def _format_roster(self, positions_filled: dict) -> str:
@@ -628,43 +807,6 @@ class LiveDraftEngine:
         ]
         return "\n".join(lines)
 
-    def _parse_snake_recommendation(
-        self, text: str, player: dict, context: dict
-    ) -> dict:
-        try:
-            data = parse_json_output(text)
-            if not isinstance(data, dict):
-                raise ValueError("snake recommendation was not a JSON object")
-        except Exception:
-            logger.warning("Failed to parse snake recommendation JSON: %s", text[:200])
-            data = {"action": "wait", "reasoning": text[:200], "confidence": "low"}
-
-        adp_ai = data.get("adp_ai")
-        if adp_ai is None:
-            adp_ai = context.get("adp_ai")
-        adp_fp = data.get("adp_fp")
-        if adp_fp is None:
-            adp_fp = context.get("adp_fantasypros")
-        adp_diff = data.get("adp_diff")
-        if adp_diff is None and adp_ai is not None and adp_fp is not None:
-            adp_diff = round(float(adp_fp) - float(adp_ai), 1)
-
-        return {
-            "type": "recommendation",
-            "action": data.get("action", "wait"),
-            "reasoning": data.get("reasoning", ""),
-            "player_name": context["player_name"],
-            "position": context["position"],
-            "injury_status": player.get("injury_status"),
-            "adp_ai": adp_ai,
-            "adp_fp": adp_fp,
-            "adp_diff": adp_diff,
-            "position_need": data.get("position_need", "medium"),
-            "confidence": data.get("confidence", "medium"),
-            "tier": data.get("tier") if data.get("tier") is not None else player.get("tier"),
-            "elapsed_ms": 0,
-        }
-
     # ------------------------------------------------------------------
     # Snake — user on the clock (best-available recommendation)
     # ------------------------------------------------------------------
@@ -672,9 +814,11 @@ class LiveDraftEngine:
     async def on_your_turn(self, event: dict) -> None:
         """User is on the clock in a snake draft.
 
-        Unlike a nomination (one specific player), the user picks from the whole
-        pool — so recommend the BEST AVAILABLE by roster need + ADP value. Uses
-        adp_diff to flag players we can wait on (consensus won't take them yet).
+        DETERMINISTIC-FIRST: the ENGINE picks the player (roster needs + ADP
+        value + urgency + round-phase guardrails — pure Python, instant) and
+        broadcasts immediately. Sonnet is then called async purely to explain
+        the pick; it never changes it. A model failure = the deterministic rec
+        simply keeps its deterministic reasoning text.
         """
         start = time.monotonic()
         round_num = event.get("round")
@@ -695,62 +839,122 @@ class LiveDraftEngine:
             await self.ws_manager.broadcast(message)
             return
 
+        pick, why, position_need = self._deterministic_your_turn_pick(
+            available, round_num,
+        )
+        adp_diff = pick.get("adp_diff")
+        can_wait = adp_diff is not None and float(adp_diff) > 10
+
+        elapsed = (time.monotonic() - start) * 1000
+        rec = {
+            "type": "recommendation",
+            "action": "draft",
+            "player_name": pick.get("name"),
+            "reasoning": why,
+            "adp_rank": pick.get("adp_rank"),
+            "adp_fp": pick.get("adp_fp"),
+            "adp_diff": adp_diff,
+            "can_wait": bool(can_wait),
+            "wait_until_pick": None,
+            "confidence": "high",
+            "ai_enriched": False,
+            "position": pick.get("position"),
+            "position_need": position_need,
+            "round": round_num,
+            "pick": pick_num,
+            "elapsed_ms": round(elapsed),
+        }
+        self.last_recommendation = rec
+        await self.ws_manager.broadcast(rec)
+        logger.info(
+            "Deterministic your-turn rec (R%s P%s) in %.0fms: %s (AI nuance async)",
+            round_num, pick_num, elapsed, pick.get("name"),
+        )
+
+        # Async Sonnet ENRICHMENT — explain the engine's pick, never change it.
         context = {
             "round": round_num,
             "pick": pick_num,
-            # YOUR picks (tracked via the snake_pick is_yours flag) — get_roster_
-            # summary() reads your_roster, which snake picks never populate.
             "my_roster": self.state.get_my_roster(),
             "top_available": available[:15],
+            "engine_pick": {"player_name": pick.get("name"),
+                            "position": pick.get("position"), "basis": why},
         }
+        self._spawn_ai_task(self._broadcast_enrichment(
+            rec, _SNAKE_YOUR_TURN_PROMPT, self._build_your_turn_prompt(context),
+        ))
 
-        prompt = self._build_your_turn_prompt(context)
-        response = await self._client.messages.create(
-            model=SONNET,
-            max_tokens=600,
-            system=_SNAKE_YOUR_TURN_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    def _deterministic_your_turn_pick(
+        self, available: list[dict], round_num,
+    ) -> tuple[dict, str, str]:
+        """THE ENGINE'S snake pick — (player, reasoning, position_need).
 
-        rec = self._parse_your_turn_recommendation(
-            response.content[0].text, available[0], context
-        )
-        elapsed = (time.monotonic() - start) * 1000
-        rec["elapsed_ms"] = round(elapsed)
-        self.last_recommendation = rec
-        logger.info(
-            "Your-turn rec built (R%s P%s) in %.0fms: player=%s action=%s",
-            round_num, pick_num, elapsed,
-            rec.get("player_name"), rec.get("action"),
-        )
+        Rules (each previously outsourced to the prompt; now hard code):
+          1. ROUND-PHASE GUARDRAILS: no K/DEF outside the final KDEF_FINAL_ROUNDS
+             rounds; no QB before QB_MIN_ROUND. (Sonnet violated its own QB
+             framework twice in recon — constraints live in code.)
+          2. NEED-AWARE SELECTION: reuse get_unfilled_needs()/need_positions()
+             (the same single needs implementation the prompt already used).
+             A BPA that still adds STARTER value is by definition a need pick —
+             take it. A bench-only BPA never beats a real need unless the need
+             reach is absurd (> NEED_RANK_WINDOW ranks).
+          3. URGENCY TIEBREAK: among near-equal need candidates, prefer one who
+             will NOT last (adp_diff <= 10) over one we can wait on.
+        """
+        roster = self.state.get_my_roster()
+        needs = self.state.need_positions(roster)
+        total_rounds = self.state.league_config.total_roster_size
+        rnd = int(round_num) if round_num else 1
 
-        # Broadcast an EXPLICIT payload rather than spreading rec — guarantees
-        # the UI always receives the full recommendation shape, and surfaces a
-        # loud error if the recommendation ever came back empty.
-        if rec and rec.get("player_name"):
-            await self.ws_manager.broadcast({
-                "type": "recommendation",
-                "action": rec.get("action"),
-                "player_name": rec.get("player_name"),
-                "reasoning": rec.get("reasoning"),
-                "adp_rank": rec.get("adp_rank"),
-                "adp_fp": rec.get("adp_fp"),
-                "adp_diff": rec.get("adp_diff"),
-                "can_wait": rec.get("can_wait"),
-                "wait_until_pick": rec.get("wait_until_pick"),
-                "confidence": rec.get("confidence"),
-                "position": rec.get("position"),
-                "position_need": rec.get("position_need"),
-                "round": rec.get("round"),
-                "pick": rec.get("pick"),
-                "elapsed_ms": rec.get("elapsed_ms"),
-            })
-        else:
-            logger.error(
-                "on_your_turn: recommendation is empty (R%s P%s) — the Sonnet "
-                "call or parse may have failed",
-                round_num, pick_num,
-            )
+        kdef_ok = rnd > total_rounds - KDEF_FINAL_ROUNDS
+        qb_ok = rnd >= QB_MIN_ROUND
+
+        def _eligible(p: dict) -> bool:
+            pos = p.get("position")
+            if pos in ("K", "DEF") and not kdef_ok:
+                return False
+            if pos == "QB" and not qb_ok:
+                return False
+            return True
+
+        eligible = [p for p in available if _eligible(p)] or list(available)
+        bpa = eligible[0]
+
+        need_candidates = [p for p in eligible if p.get("position") in needs]
+
+        # BPA at a need position IS the need pick.
+        if bpa.get("position") in needs:
+            return (bpa,
+                    f"Best available (AI rank {bpa.get('adp_rank')}) and fills "
+                    f"your open {bpa.get('position')} slot.",
+                    "high")
+
+        if not need_candidates:
+            return (bpa,
+                    "All starter needs filled — best available by ADP for depth.",
+                    "low")
+
+        best_need = need_candidates[0]
+        # Urgency tiebreak: within a small band of the best need candidate,
+        # prefer the one the market will take first (not can_wait).
+        band = [p for p in need_candidates
+                if (p.get("adp_rank") or 0) - (best_need.get("adp_rank") or 0) <= 12]
+        if (best_need.get("adp_diff") or 0) > 10:
+            urgent = [p for p in band if (p.get("adp_diff") or 0) <= 10]
+            if urgent:
+                best_need = urgent[0]
+
+        gap = (best_need.get("adp_rank") or 0) - (bpa.get("adp_rank") or 0)
+        if gap > NEED_RANK_WINDOW:
+            return (bpa,
+                    f"Best need option is {gap} ranks below the board's best — "
+                    f"too far a reach; take value now.",
+                    "medium")
+
+        return (best_need,
+                f"Fills your open {best_need.get('position')} slot — the board's "
+                f"best ({bpa.get('name')}) adds no starter value to this roster.",
+                "high")
 
     async def _get_top_available(self) -> list[dict]:
         """Top available players by adp_rank, excluding drafted players.
@@ -835,58 +1039,7 @@ class LiveDraftEngine:
             f"YOUR ROSTER ({len(my_roster)} picks):\n{roster_str}\n\n"
             f"POSITIONS STILL NEEDED:\n{needs_str}\n\n"
             f"TOP AVAILABLE (by AI ADP):\n{avail_str}\n\n"
-            f"Recommend who to draft at pick {context['pick']}. Prioritize "
-            f"filling urgent roster needs. If a player has a high adp_diff (we "
-            f"rate them well above consensus), they may last another round — fill "
-            f"a more urgent need now instead."
+            f"ENGINE PICK (final): {json.dumps(context.get('engine_pick', {}))}\n"
+            f"Explain this pick in 1-2 sentences with trend/situation nuance. "
+            f"Do not recommend a different player."
         )
-
-    def _parse_your_turn_recommendation(
-        self, text: str, top: dict, context: dict
-    ) -> dict:
-        try:
-            data = parse_json_output(text)
-            if not isinstance(data, dict):
-                raise ValueError("your-turn recommendation was not a JSON object")
-        except Exception:
-            logger.warning("Failed to parse your-turn recommendation: %s", text[:200])
-            data = {
-                "action": "draft",
-                "player_name": top.get("name"),
-                "position": top.get("position"),
-                "reasoning": text[:200],
-                "confidence": "low",
-            }
-
-        # Fall back to the top-ranked available player's ADP fields when the
-        # model omits them, so the UI always has value context to show.
-        adp_rank = data.get("adp_rank")
-        if adp_rank is None:
-            adp_rank = top.get("adp_rank")
-        adp_fp = data.get("adp_fp")
-        if adp_fp is None:
-            adp_fp = top.get("adp_fp")
-        adp_diff = data.get("adp_diff")
-        if adp_diff is None:
-            adp_diff = top.get("adp_diff")
-        can_wait = data.get("can_wait")
-        if can_wait is None:
-            can_wait = adp_diff is not None and float(adp_diff) > 10
-
-        return {
-            "type": "recommendation",
-            "action": data.get("action", "draft"),
-            "player_name": data.get("player_name") or top.get("name"),
-            "position": data.get("position") or top.get("position"),
-            "reasoning": data.get("reasoning", ""),
-            "adp_rank": adp_rank,
-            "adp_fp": adp_fp,
-            "adp_diff": adp_diff,
-            "can_wait": bool(can_wait),
-            "wait_until_pick": data.get("wait_until_pick"),
-            "position_need": data.get("position_need", "medium"),
-            "confidence": data.get("confidence", "medium"),
-            "round": context.get("round"),
-            "pick": context.get("pick"),
-            "elapsed_ms": 0,
-        }
