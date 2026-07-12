@@ -31,7 +31,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.exceptions import UnauthorizedError
+from backend.core.exceptions import ForbiddenError, UnauthorizedError
 from backend.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -277,6 +277,22 @@ async def get_league_service(
 
 
 # ── Guard dependencies ───────────────────────────────────
+
+async def require_admin(user=Depends(get_current_user)):
+    """Gate for operator-only routers (pipeline + admin — paid-compute triggers).
+
+    Reuses Clerk auth (get_current_user resolves the JWT → User with a real email),
+    then requires that email be in the ADMIN_EMAILS allowlist. A regular
+    authenticated user is NOT enough — these routes can start a ~$10 pipeline run.
+    Rejects (401 unauth via get_current_user, else 403) BEFORE the endpoint body,
+    so no pipeline stage or LLM call is reached. Fail-closed: empty allowlist = no
+    admins.
+    """
+    from backend.config import settings
+    if not settings.is_admin_email(getattr(user, "email", None)):
+        raise ForbiddenError("Admin access required")
+    return user
+
 
 def require_feature(feature: str):
     """
