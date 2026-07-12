@@ -190,13 +190,16 @@ class DraftStateManager:
         """Your snake picks in draft order (player_name/position/pick_number/round)."""
         return self._my_picks.copy()
 
-    def format_roster_needs(self, roster: list[dict]) -> str:
-        """Human-readable list of starter positions still unfilled.
+    def get_unfilled_needs(self, roster: list[dict]) -> dict[str, int]:
+        """STRUCTURED unfilled starter slots — {pos_or_slot: count} (the single
+        needs implementation; format_roster_needs renders it, the deterministic
+        pick logic consumes it).
 
         Driven by the league's real roster_slots (T3): a no-DEF league never wants
         a DEF, a superflex league wants a QB-eligible flex, the bench count is the
         league's own. FLEX is filled by surplus RB/WR/TE beyond their fixed slots;
         SUPER_FLEX additionally admits QB. BENCH/IR/UNSUPPORTED are depth, not needs.
+        Keys are positions ("RB") plus flex slot types ("FLEX", "SUPER_FLEX").
         """
         from backend.services.roster_slots import FLEX_ELIGIBLE
 
@@ -206,13 +209,13 @@ class DraftStateManager:
             pos = (pick.get("position") or "BN").upper()
             filled[pos] = filled.get(pos, 0) + 1
 
-        needs: list[str] = []
+        needs: dict[str, int] = {}
         # Fixed starter slots — only those the league actually has.
         for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
             req = int(slots.get(pos, 0) or 0)
             have = filled.get(pos, 0)
             if have < req:
-                needs.append(f"{pos}: need {req - have} more")
+                needs[pos] = req - have
 
         # Surplus beyond the fixed requirements feeds the flex slots.
         surplus = {p: max(0, filled.get(p, 0) - int(slots.get(p, 0) or 0))
@@ -220,15 +223,40 @@ class DraftStateManager:
         for slot_type in ("FLEX", "SUPER_FLEX"):
             n = int(slots.get(slot_type, 0) or 0)
             elig = FLEX_ELIGIBLE.get(slot_type, ())
-            label = "/".join(elig)
             for _ in range(n):
                 if sum(surplus.get(p, 0) for p in elig) >= 1:
                     take = max(elig, key=lambda p: surplus.get(p, 0))
                     surplus[take] -= 1
                 else:
-                    needs.append(f"{slot_type}: 1 more ({label})")
+                    needs[slot_type] = needs.get(slot_type, 0) + 1
+        return needs
 
-        return "\n".join(needs) if needs else "All starters filled — draft for depth/upside"
+    def need_positions(self, roster: list[dict]) -> set[str]:
+        """Concrete positions that still fill a starter slot (flex expanded to
+        its eligible positions)."""
+        from backend.services.roster_slots import FLEX_ELIGIBLE
+
+        out: set[str] = set()
+        for key in self.get_unfilled_needs(roster):
+            if key in FLEX_ELIGIBLE:
+                out.update(FLEX_ELIGIBLE[key])
+            else:
+                out.add(key)
+        return out
+
+    def format_roster_needs(self, roster: list[dict]) -> str:
+        """Human-readable rendering of get_unfilled_needs() (single source)."""
+        from backend.services.roster_slots import FLEX_ELIGIBLE
+
+        needs = self.get_unfilled_needs(roster)
+        lines: list[str] = []
+        for key, n in needs.items():
+            if key in FLEX_ELIGIBLE:
+                label = "/".join(FLEX_ELIGIBLE[key])
+                lines.extend([f"{key}: 1 more ({label})"] * n)
+            else:
+                lines.append(f"{key}: need {n} more")
+        return "\n".join(lines) if lines else "All starters filled — draft for depth/upside"
 
     def is_drafted(self, player_name: str) -> bool:
         """True if this player has already been drafted.
