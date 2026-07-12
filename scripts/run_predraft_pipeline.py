@@ -112,6 +112,51 @@ AGENT_SPECS: dict[str, dict] = {
         "status": "built",
         "description": "AI ceiling calibration (confidence ranges, auction notes, flags)",
     },
+    "kicker_baseline": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # pure data step — no API calls
+        "status": "built",
+        "description": "Dedicated preseason kicker prior (clean_season_baseline for K rows)",
+    },
+    "defense_baseline": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # pure data step — no API calls
+        "status": "built",
+        "description": "Dedicated preseason DST prior (crude historical, team-keyed)",
+    },
+    "team_metrics": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # deterministic Teams-page fields — no API calls
+        "status": "built",
+        "description": "Deterministic Teams-page fields (scheme, pass-pro, qb_tier)",
+    },
+    "team_notes": {
+        "model": "haiku",
+        "model_id": "claude-haiku-4-5-20251001",
+        "max_tokens": 180,
+        "est_input_tokens": 400,
+        "api_calls": 32,
+        "status": "built",
+        "description": "Regenerate Teams-page system-notes prose from stored stats (Haiku)",
+    },
+    "availability": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # deterministic games-missed discount — no API calls
+        "status": "built",
+        "description": "Deterministic games-missed availability discount (runs last)",
+    },
 }
 
 PIPELINE_ORDER = [
