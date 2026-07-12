@@ -13,7 +13,6 @@ import TeamDetail from './pages/TeamDetail'
 import News from './pages/News'
 import DraftBoard from './pages/DraftBoard'
 import DraftRoom from './pages/DraftRoom'
-import PipelineAdmin from './pages/PipelineAdmin'
 import SignInPage from './pages/SignIn'
 import SignUpPage from './pages/SignUp'
 import AccountPage from './pages/Account'
@@ -73,7 +72,6 @@ function App() {
       <Route path="/news" element={<ProtectedRoute><News /></ProtectedRoute>} />
       <Route path="/draftboard" element={<ProtectedRoute><DraftBoard /></ProtectedRoute>} />
       <Route path="/draft-room" element={<ProtectedRoute><DraftRoom /></ProtectedRoute>} />
-      <Route path="/admin" element={<ProtectedRoute><PipelineAdmin /></ProtectedRoute>} />
       <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/trade" element={<ProtectedRoute><Trade /></ProtectedRoute>} />
       <Route path="/waiver" element={<ProtectedRoute><Waiver /></ProtectedRoute>} />
