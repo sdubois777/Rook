@@ -6,15 +6,10 @@ metadata marker (Products) before creating, so re-running is safe and never
 duplicates. Prints the resulting price ids in .env format for pasting into your
 local env.
 
-Creates (amounts/credits from the design doc's tier + credit-pack tables):
-  Subscriptions (recurring monthly):
-    Rook Intro     $5/mo    -> STRIPE_PRICE_INTRO_MONTHLY
-    Rook Standard  $9/mo    -> STRIPE_PRICE_STANDARD_MONTHLY
-    Rook Pro       $18/mo   -> STRIPE_PRICE_PRO_MONTHLY
-  Credit packs (one-time):
-    Small   $5  -> 75 credits   -> STRIPE_PRICE_PACK_SMALL
-    Medium  $10 -> 175 credits  -> STRIPE_PRICE_PACK_MEDIUM
-    Large   $25 -> 500 credits  -> STRIPE_PRICE_PACK_LARGE
+SINGLE SOURCE OF TRUTH: every dollar amount and credit count is DERIVED from
+backend/models/user.py (TIER_LIMITS / CREDIT_PACKS) at run time — nothing is
+re-declared here. Creates, per paid tier: a recurring MONTHLY price and a
+one-time SEASON price; plus one price per credit pack.
 
 Run (PowerShell), with your TEST secret key in the env:
     $env:STRIPE_SECRET_KEY = "sk_test_..."; uv run python scripts/stripe_seed_test.py
@@ -25,31 +20,55 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import stripe
 
-# lookup_key -> (product name, unit_amount cents, recurring?, metadata)
-_SUBSCRIPTIONS = [
-    ("rook_intro_monthly",    "Rook Intro",    500,  {"tier": "intro"}),
-    ("rook_standard_monthly", "Rook Standard", 900,  {"tier": "standard"}),
-    ("rook_pro_monthly",      "Rook Pro",      1800, {"tier": "pro"}),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# lookup_key -> (product name, unit_amount cents, credits)
-_PACKS = [
-    ("rook_pack_small",  "Rook Credit Pack — Small",  500,  75),
-    ("rook_pack_medium", "Rook Credit Pack — Medium", 1000, 175),
-    ("rook_pack_large",  "Rook Credit Pack — Large",  2500, 500),
-]
+from backend.models.user import CREDIT_PACKS, TIER_LIMITS, TIER_ORDER  # noqa: E402
 
-_ENV_VAR = {
-    "rook_intro_monthly": "STRIPE_PRICE_INTRO_MONTHLY",
-    "rook_standard_monthly": "STRIPE_PRICE_STANDARD_MONTHLY",
-    "rook_pro_monthly": "STRIPE_PRICE_PRO_MONTHLY",
-    "rook_pack_small": "STRIPE_PRICE_PACK_SMALL",
-    "rook_pack_medium": "STRIPE_PRICE_PACK_MEDIUM",
-    "rook_pack_large": "STRIPE_PRICE_PACK_LARGE",
-}
+
+def _paid_tiers() -> list[str]:
+    return [t for t in TIER_ORDER if TIER_LIMITS[t]["price_monthly_usd"] > 0]
+
+
+def _catalog() -> tuple[list, list]:
+    """(subscriptions, one_time) derived from user.py.
+
+    subscriptions: (lookup_key, product name, cents, metadata)
+    one_time:      (lookup_key, product name, cents, metadata)
+    """
+    subs, once = [], []
+    for tier in _paid_tiers():
+        cfg = TIER_LIMITS[tier]
+        label = cfg["label"]
+        subs.append((
+            f"rook_{tier}_monthly", f"Rook {label} (Monthly)",
+            cfg["price_monthly_usd"] * 100, {"tier": tier, "interval": "monthly"},
+        ))
+        once.append((
+            f"rook_{tier}_season", f"Rook {label} (Season Pass)",
+            cfg["price_season_usd"] * 100, {"tier": tier, "interval": "season"},
+        ))
+    for pack, cfg in CREDIT_PACKS.items():
+        once.append((
+            f"rook_pack_{cfg['credits']}",
+            f"Rook Credit Pack — {cfg['credits']} credits",
+            cfg["price_usd"] * 100, {"credits": str(cfg["credits"]), "pack": pack},
+        ))
+    return subs, once
+
+
+def _env_var(lookup_key: str) -> str:
+    mapping = {
+        "rook_standard_monthly": "STRIPE_PRICE_STANDARD_MONTHLY",
+        "rook_standard_season": "STRIPE_PRICE_STANDARD_SEASON",
+        "rook_pro_monthly": "STRIPE_PRICE_PRO_MONTHLY",
+        "rook_pro_season": "STRIPE_PRICE_PRO_SEASON",
+        "rook_pack_100": "STRIPE_PRICE_PACK_100",
+    }
+    return mapping.get(lookup_key, lookup_key.upper())
 
 
 def _find_price(lookup_key: str):
@@ -58,9 +77,10 @@ def _find_price(lookup_key: str):
 
 
 def _find_product(marker: str):
-    # Products carry a rook_key marker in metadata; search by it.
     for product in stripe.Product.list(limit=100, active=True).auto_paging_iter():
-        if product.metadata.get("rook_key") == marker:
+        # StripeObject exposes keys as attributes (no dict .get in this SDK).
+        metadata = getattr(product, "metadata", None)
+        if metadata is not None and getattr(metadata, "rook_key", None) == marker:
             return product
     return None
 
@@ -107,27 +127,25 @@ def main() -> int:
 
     stripe.api_key = key
     results: dict[str, str] = {}
+    subs, once = _catalog()
 
-    for lookup_key, name, amount, meta in _SUBSCRIPTIONS:
+    for lookup_key, name, amount, meta in subs:
         product = _ensure_product(lookup_key, name, meta)
-        price_id = _ensure_price(
-            lookup_key, product.id, amount, recurring=True, metadata=meta
-        )
+        price_id = _ensure_price(lookup_key, product.id, amount, True, meta)
         results[lookup_key] = price_id
-        print(f"  {name:<30} {lookup_key:<24} -> {price_id}", file=sys.stderr)
+        print(f"  {name:<34} {lookup_key:<24} ${amount/100:<7.2f} -> {price_id}",
+              file=sys.stderr)
 
-    for lookup_key, name, amount, credits in _PACKS:
-        meta = {"credits": str(credits)}
+    for lookup_key, name, amount, meta in once:
         product = _ensure_product(lookup_key, name, meta)
-        price_id = _ensure_price(
-            lookup_key, product.id, amount, recurring=False, metadata=meta
-        )
+        price_id = _ensure_price(lookup_key, product.id, amount, False, meta)
         results[lookup_key] = price_id
-        print(f"  {name:<30} {lookup_key:<24} -> {price_id}", file=sys.stderr)
+        print(f"  {name:<34} {lookup_key:<24} ${amount/100:<7.2f} -> {price_id}",
+              file=sys.stderr)
 
     print("\n# ---- paste into your local .env ----")
-    for lookup_key, env_var in _ENV_VAR.items():
-        print(f"{env_var}={results[lookup_key]}")
+    for lookup_key, price_id in results.items():
+        print(f"{_env_var(lookup_key)}={price_id}")
     return 0
 
 

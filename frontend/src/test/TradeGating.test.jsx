@@ -2,14 +2,15 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { pricingHookValue } from './pricingMock'
 
 vi.mock('../api/trade', () => ({
   fetchTradeLeague: vi.fn(),
   analyzeTrade: vi.fn(),
   fetchTradeIdeas: vi.fn(),
 }))
-const h = vi.hoisted(() => ({ limits: null }))
-vi.mock('../hooks/useMe', () => ({ useMe: () => ({ tierLimits: h.limits }) }))
+vi.mock('../hooks/useMe', () => ({ useMe: () => ({ tierLimits: null }) }))
+vi.mock('../hooks/usePricing', () => ({ usePricing: () => pricingHookValue() }))
 
 import Trade from '../pages/Trade'
 import { fetchTradeLeague } from '../api/trade'
@@ -37,59 +38,45 @@ function renderTrade() {
   )
 }
 
-describe('Trade page gating + credit labels', () => {
+/**
+ * Gate-semantics flip: metered features are NEVER tier-locked in the UI.
+ * Every tier sees the button; the credit cost renders from /billing/pricing
+ * (never hardcoded); paid tiers run unlimited (the server no-ops the charge).
+ * Insufficient credits surface as the 402 BillingNotice, not a lock.
+ */
+describe('Trade page credit labels (never tier-locked)', () => {
   beforeEach(() => {
     fetchTradeLeague.mockReset()
-    h.limits = null
   })
 
-  it('demo: shows "no charge" label and never locks (bypasses the gate)', async () => {
-    h.limits = { trade_analyzer: false, trade_finder: false }
+  it('demo: shows "no charge" label', async () => {
     fetchTradeLeague.mockResolvedValue(league(true))
     renderTrade()
     expect(await screen.findByText(/demo · no charge/i)).toBeInTheDocument()
     expect(screen.queryByText(/needs Standard/i)).not.toBeInTheDocument()
   })
 
-  it('non-demo intro: analyze is locked behind Standard', async () => {
-    h.limits = { trade_analyzer: false, trade_finder: false }
+  it('non-demo: analyze shows the fetched credit cost and is never locked', async () => {
     fetchTradeLeague.mockResolvedValue(league(false))
     renderTrade()
-    expect(await screen.findByText(/Trade analyzer needs Standard/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Analyze my trade · 1 cr/i)).toBeInTheDocument()
+    expect(screen.queryByText(/needs Standard/i)).not.toBeInTheDocument()
   })
 
-  it('non-demo standard: analyze shows 10 cr; the finder tab is locked behind Pro', async () => {
-    h.limits = { trade_analyzer: true, trade_finder: false }
+  it('non-demo: the finder shows its fetched cost and is never Pro-locked', async () => {
     fetchTradeLeague.mockResolvedValue(league(false))
     renderTrade()
-    expect(await screen.findByText(/Analyze my trade · 10 cr/i)).toBeInTheDocument()
-
+    await screen.findByText(/Analyze my trade · 1 cr/i)
     fireEvent.click(screen.getByRole('button', { name: /Trade ideas/i }))
-    expect(await screen.findByText(/Trade finder needs Pro/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Give me trade ideas · 5 cr/i)).toBeInTheDocument()
+    expect(screen.queryByText(/needs Pro/i)).not.toBeInTheDocument()
   })
 
-  it('non-demo pro: the finder shows its 20 cr cost', async () => {
-    h.limits = { trade_analyzer: true, trade_finder: true }
-    fetchTradeLeague.mockResolvedValue(league(false))
-    renderTrade()
-    await screen.findByText(/Analyze my trade · 10 cr/i)
-    fireEvent.click(screen.getByRole('button', { name: /Trade ideas/i }))
-    expect(await screen.findByText(/Give me trade ideas · 20 cr/i)).toBeInTheDocument()
-  })
-
-  it('demo WITH enforcement: charges shown + gate applies (intro locked)', async () => {
-    h.limits = { trade_analyzer: false, trade_finder: false }
-    fetchTradeLeague.mockResolvedValue(league(true, true)) // demo + enforced
-    renderTrade()
-    // Not "no charge" anymore, and the gate locks like real.
-    expect(await screen.findByText(/Trade analyzer needs Standard/i)).toBeInTheDocument()
-    expect(screen.queryByText(/no charge/i)).not.toBeInTheDocument()
-  })
-
-  it('demo WITH enforcement: standard sees the 10 cr cost (not "no charge")', async () => {
-    h.limits = { trade_analyzer: true, trade_finder: false }
+  it('demo WITH enforcement: real cost labels, still no tier lock', async () => {
     fetchTradeLeague.mockResolvedValue(league(true, true))
     renderTrade()
-    expect(await screen.findByText(/Analyze my trade · 10 cr/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Analyze my trade · 1 cr/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no charge/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/needs Standard/i)).not.toBeInTheDocument()
   })
 })

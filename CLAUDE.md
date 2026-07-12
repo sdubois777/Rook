@@ -574,7 +574,7 @@ design locked (not implemented).**
   - Extension orphaned-context recovery: a reload/auto-update orphans the content
     script ("Extension context invalidated") → it reloads the tab once (capped) to
     re-inject a fresh poller, so a live draft survives an extension update (#138).
-- [x] Stripe billing — DESIGN PASS complete (NOT implemented), June 2026
+- [x] Stripe billing — BUILT (test mode; prod go-live bank-blocked), July 2026
   docs/stripe_billing_design.md. Decisions LOCKED: entitlement SoT = DB users.tier
   (Stripe syncs via webhook, read on hot path); monthly recurring subs only
   (/season deferred); cancel → downgrade to intro at period_end, credits persist;
@@ -1014,23 +1014,26 @@ responsive work never changes logic, stores, data fetching, WS, or contracts.
 
 ## SaaS Pricing (Stages 25-30)
 
-```
-Intro    $5/mo or $15/season:  25cr signup, 0cr/mo, 1 league, no live draft
-Standard $9/mo or $29/season:  75cr signup, 20cr/mo, 2 leagues, live draft
-Pro     $18/mo or $49/season: 200cr signup, 50cr/mo, unlimited, live draft + trade finder
+**THE ONLY definition of tiers, prices, credit costs, grants, and packs is
+`backend/models/user.py`** (`TIER_LIMITS` / `CREDIT_COSTS` / `CREDIT_PACKS` /
+`TIER_ORDER`). Do NOT restate the numbers here or anywhere else — restated
+numbers are exactly how the old four-way pricing drift happened. Consumers
+derive: the Stripe seeder (`scripts/stripe_seed_test.py`), the billing catalog,
+the public `GET /billing/pricing` endpoint (which the frontend — PricingTable,
+credit labels, pack cards — renders from via `usePricing`), and the docs.
 
-Credit costs: trade=10cr, trade finder=20cr (Pro), waiver=8cr/week
-Credit packs: $5=75cr, $10=175cr, $25=500cr
-Credits carry over month to month (never reset)
-No free tier, no battle passes, no stash tab monetization
-```
+Model shape (semantics, not numbers): FREE tier = metered (every AI feature
+costs credits; one-time signup grant); PAID tiers (standard/pro, monthly sub or
+one-time SEASON pass with `users.tier_expires_at`) = unlimited, no credits.
+Live draft is a tier ENTITLEMENT (standard+), never credit-metered. Always free
+for everyone: player values, teams, player detail, waiver wire browse,
+start/sit, injury revaluation (pipeline-shared — gating it would serve stale
+values). Credits carry over; no monthly credit grants exist.
 
-**Source of truth:** `backend/models/user.py` (`TIER_LIMITS` / `CREDIT_COSTS` /
-`CREDIT_PACKS`) — the prose above mirrors it. The stale `stage-25` tier block
-(`free|starter|pro|league`) is superseded; remove it in a cleanup PR.
-
-**Stripe billing design:** `docs/stripe_billing_design.md` (decisions LOCKED).
-Entitlement layer (tier store + `FeatureService` + `require_feature`/`require_credits`
-+ `upgrade_tier`/`apply_signup_bonus`) is already built and waiting on the Stripe
-webhook. Billing code (Checkout, `/webhooks/stripe`, gate-attach, frontend CTAs) is
-the next implementation pass — not yet started. `/season` deferred (monthly only v1).
+**Stripe billing: BUILT** (test mode; go-live blocked only on the business bank
+account). Checkout (tier monthly/season + credit pack), change-plan w/ proration
+(monthly<->monthly; season passes are purchases, not plan changes), portal,
+signature-verified webhook entitlements (incl. season expiry + monthly-sub
+cancel-at-period-end on season purchase), league-cap reconciliation, test-mode
+seeder deriving all amounts from user.py. Design doc: `docs/stripe_billing_design.md`
+(decision #3 UPDATED — seasonal is IN as a one-time entitlement).

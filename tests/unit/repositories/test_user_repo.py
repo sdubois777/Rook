@@ -105,18 +105,3 @@ async def test_get_by_email():
     assert found is user
 
 
-@pytest.mark.asyncio
-async def test_add_monthly_credits():
-    session = _make_session()
-
-    # Simulate 3 users updated
-    result_mock = MagicMock()
-    result_mock.fetchall.return_value = [
-        (uuid.uuid4(),), (uuid.uuid4(),), (uuid.uuid4(),)
-    ]
-    session.execute.return_value = result_mock
-
-    repo = UserRepository(session)
-    count = await repo.add_monthly_credits(tier="standard", monthly_amount=20)
-
-    assert count == 3

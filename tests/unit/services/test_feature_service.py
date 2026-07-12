@@ -9,24 +9,55 @@ class _FakeUser:
     """Minimal user object for testing."""
     def __init__(self, tier: str):
         self.tier = tier
+        self.tier_expires_at = None
 
 
-def test_intro_cannot_access_trade_analyzer():
-    user = _FakeUser("intro")
-    with pytest.raises(FeatureNotAvailableError) as exc_info:
-        FeatureService.check_feature_access(user, "trade_analyzer")
-    assert exc_info.value.detail["required_tier"] == "standard"
+def test_free_cannot_access_live_draft():
+    """Entitlement gates remain binary: live draft is standard+."""
+    user = _FakeUser("free")
+    with pytest.raises(FeatureNotAvailableError):
+        FeatureService.check_feature_access(user, "live_draft")
 
 
-def test_standard_can_access_trade_analyzer():
+def test_metered_features_are_not_tier_gated():
+    """Gate-semantics flip: trade/waiver/finder are NOT features in TIER_LIMITS
+    anymore — every tier can use them (free pays credits via charge_metered)."""
+    from backend.models.user import TIER_LIMITS
+    for tier in TIER_LIMITS:
+        for old_feature in ("trade_analyzer", "trade_finder", "waiver_wire"):
+            assert old_feature not in TIER_LIMITS[tier]
+
+
+def test_standard_can_access_live_draft():
     user = _FakeUser("standard")
-    # Should not raise
-    FeatureService.check_feature_access(user, "trade_analyzer")
+    FeatureService.check_feature_access(user, "live_draft")  # no raise
 
 
-def test_pro_can_access_trade_finder():
+def test_pro_can_access_cross_league_view():
     user = _FakeUser("pro")
-    FeatureService.check_feature_access(user, "trade_finder")
+    FeatureService.check_feature_access(user, "cross_league_view")  # no raise
+
+
+def test_standard_cannot_access_cross_league_view():
+    user = _FakeUser("standard")
+    with pytest.raises(FeatureNotAvailableError):
+        FeatureService.check_feature_access(user, "cross_league_view")
+
+
+def test_expired_season_entitlement_gates_as_free():
+    """A season purchase past tier_expires_at loses the entitlement."""
+    from datetime import datetime, timedelta, timezone
+    user = _FakeUser("standard")
+    user.tier_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+    with pytest.raises(FeatureNotAvailableError):
+        FeatureService.check_feature_access(user, "live_draft")
+
+
+def test_unexpired_season_entitlement_holds():
+    from datetime import datetime, timedelta, timezone
+    user = _FakeUser("standard")
+    user.tier_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    FeatureService.check_feature_access(user, "live_draft")  # no raise
 
 
 def test_standard_cannot_access_trade_finder():
@@ -37,13 +68,13 @@ def test_standard_cannot_access_trade_finder():
 
 
 def test_all_tiers_can_access_injury_monitoring():
-    for tier in ("intro", "standard", "pro"):
+    for tier in ("free", "standard", "pro"):
         user = _FakeUser(tier)
         FeatureService.check_feature_access(user, "injury_monitoring")
 
 
 def test_intro_cannot_access_live_draft():
-    user = _FakeUser("intro")
+    user = _FakeUser("free")
     with pytest.raises(FeatureNotAvailableError):
         FeatureService.check_feature_access(user, "live_draft")
 
@@ -55,8 +86,8 @@ def test_standard_can_access_live_draft():
 
 def test_can_add_league_within_limit():
     user = _FakeUser("standard")
-    # Standard: max 2 leagues. Currently 1 — should pass.
-    FeatureService.can_add_league(user, current_count=1)
+    # Standard: max 1 league. Currently 0 — should pass.
+    FeatureService.can_add_league(user, current_count=0)
 
 
 def test_can_add_league_at_limit_raises():
@@ -72,7 +103,7 @@ def test_pro_unlimited_leagues():
 
 
 def test_intro_max_1_league():
-    user = _FakeUser("intro")
+    user = _FakeUser("free")
     with pytest.raises(LeagueLimitError):
         FeatureService.can_add_league(user, current_count=1)
 
@@ -80,7 +111,7 @@ def test_intro_max_1_league():
 def test_get_limits_returns_copy():
     user = _FakeUser("standard")
     limits = FeatureService.get_limits(user)
-    assert limits["credits_monthly"] == 20
+    assert limits["price_monthly_usd"] == 8
     # Ensure it's a copy, not the original
-    limits["credits_monthly"] = 999
-    assert FeatureService.get_limits(user)["credits_monthly"] == 20
+    limits["price_monthly_usd"] = 999
+    assert FeatureService.get_limits(user)["price_monthly_usd"] == 8

@@ -30,12 +30,13 @@ async def _post(path, json):
         return await ac.post(path, json=json)
 
 
-def _make_user(customer_id="cus_1", tier="intro", subscription_id=None):
+def _make_user(customer_id="cus_1", tier="free", subscription_id=None):
     user = MagicMock(spec=User)
     user.id = uuid.uuid4()
     user.external_id = "user_abc"
     user.email = "u@example.com"
     user.tier = tier
+    user.tier_expires_at = None
     user.credits_remaining = 25
     user.stripe_customer_id = customer_id
     user.stripe_subscription_id = subscription_id
@@ -48,11 +49,11 @@ def stripe_configured(monkeypatch):
     from backend.config import settings
     monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_x", raising=False)
     monkeypatch.setattr(settings, "app_url", "http://localhost:8000", raising=False)
-    monkeypatch.setattr(settings, "stripe_price_intro_monthly", "price_intro", raising=False)
     monkeypatch.setattr(settings, "stripe_price_standard_monthly", "price_standard", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_standard_season", "price_standard_s", raising=False)
     monkeypatch.setattr(settings, "stripe_price_pro_monthly", "price_pro", raising=False)
-    monkeypatch.setattr(settings, "stripe_price_pack_small", "price_small", raising=False)
-    monkeypatch.setattr(settings, "stripe_price_pack_medium", "price_medium", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_pro_season", "price_pro_s", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_pack_100", "price_pack", raising=False)
 
 
 def _override_auth(user):
@@ -123,14 +124,14 @@ async def test_checkout_pack_uses_payment_mode(stripe_configured, monkeypatch):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.post("/api/billing/checkout", json={"pack": "medium"})
+            resp = await ac.post("/api/billing/checkout", json={"pack": "credits_100"})
     finally:
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
     assert captured["mode"] == "payment"
-    assert captured["price_id"] == "price_medium"
-    assert captured["metadata"]["credits"] == "175"
+    assert captured["price_id"] == "price_pack"
+    assert captured["metadata"]["credits"] == "100"
 
 
 @pytest.mark.asyncio
@@ -223,14 +224,14 @@ async def test_checkout_pack_creates_payment_session(stripe_configured, monkeypa
     user = _make_user(customer_id="cus_1")
     _override_auth(user)
     try:
-        resp = await _post("/api/billing/checkout-pack", {"pack": "small"})
+        resp = await _post("/api/billing/checkout-pack", {"pack": "credits_100"})
     finally:
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
     assert captured["mode"] == "payment"
-    assert captured["price_id"] == "price_small"
-    assert captured["metadata"]["credits"] == "75"
+    assert captured["price_id"] == "price_pack"
+    assert captured["metadata"]["credits"] == "100"
 
 
 @pytest.mark.asyncio
@@ -246,8 +247,8 @@ async def test_checkout_pack_uses_fresh_idempotency_key_each_attempt(stripe_conf
     user = _make_user(customer_id="cus_1")
     _override_auth(user)
     try:
-        await _post("/api/billing/checkout-pack", {"pack": "small"})
-        await _post("/api/billing/checkout-pack", {"pack": "small"})
+        await _post("/api/billing/checkout-pack", {"pack": "credits_100"})
+        await _post("/api/billing/checkout-pack", {"pack": "credits_100"})
     finally:
         app.dependency_overrides.clear()
 
@@ -310,8 +311,8 @@ async def test_change_plan_preview_downgrade(stripe_configured, monkeypatch):
     assert data["amount_due_today"] == 0
     assert data["proration_date"] is None
     assert data["effective"].startswith("20")  # ISO period-end date
-    assert data["active_leagues"] == 3          # over the standard cap of 2
-    assert data["max_active_leagues"] == 2
+    assert data["active_leagues"] == 3          # over the standard cap of 1
+    assert data["max_active_leagues"] == 1
 
 
 @pytest.mark.asyncio

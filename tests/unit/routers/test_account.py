@@ -24,6 +24,7 @@ def _make_user(
     user.email = email
     user.display_name = "Test User"
     user.tier = tier
+    user.tier_expires_at = None
     user.credits_remaining = credits
     user.subscription_status = None
     user.deleted_at = None
@@ -100,7 +101,7 @@ async def test_get_credits_returns_balance():
     assert resp.status_code == 200
     data = resp.json()
     assert data["balance"] == 42
-    assert data["monthly_allowance"] == 20  # standard tier
+    assert data["monthly_allowance"] == 0  # monthly grants are deleted
 
 
 @pytest.mark.asyncio
@@ -144,12 +145,12 @@ async def test_add_league_succeeds_within_limit():
 
 @pytest.mark.asyncio
 async def test_add_league_respects_tier_limit():
-    user = _make_user(tier="intro", credits=0)
+    user = _make_user(tier="free", credits=0)
 
     from backend.core.dependencies import get_current_user, get_league_service
 
     mock_service = AsyncMock()
-    mock_service.count_active_leagues.return_value = 1  # 1 active, intro limit is 1
+    mock_service.count_active_leagues.return_value = 1  # 1 active, free limit is 1
 
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_league_service] = lambda: mock_service

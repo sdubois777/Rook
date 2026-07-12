@@ -7,30 +7,18 @@
  * removes it; the opponent selector and the rest of the page are permanent.
  */
 import { useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, Lock, X,
+  ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, X,
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import { useMe } from '../hooks/useMe'
-import { CREDIT_COSTS } from '../lib/constants'
+import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
 import VerdictPanel from '../components/trade/VerdictPanel'
 import SilenceExplainer from '../components/trade/SilenceExplainer'
 
-// Proactive locked affordance — the tier lacks this feature (and demo is off).
-// Display only; the backend gate is the boundary.
-function UpgradeInline({ label, tier }) {
-  return (
-    <Link
-      to="/account"
-      className="inline-flex items-center gap-2 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 text-sm font-medium text-brand-accent transition-colors hover:bg-brand/20"
-    >
-      <Lock size={14} /> {`${label} needs ${tier} — Upgrade`}
-    </Link>
-  )
-}
 
 const TREND = {
   rising: { Icon: TrendingUp, cls: 'text-emerald-400' },
@@ -129,7 +117,8 @@ export default function Trade() {
   const opponent = useMemo(() => otherTeams.find((t) => t.team_id === effOppId), [otherTeams, effOppId])
 
   const qc = useQueryClient()
-  const { tierLimits } = useMe()
+  useMe()  // keeps /account/me warm for the balance shown after debits
+  const { creditCost } = usePricing()
   // Refresh the shared credit balance (sidebar) after a spend.
   const refreshCredits = () => qc.invalidateQueries({ queryKey: ['me'] })
 
@@ -177,9 +166,6 @@ export default function Trade() {
   // Show a proactive locked CTA whenever the gate is live and the tier lacks it.
   const demo = !!league.demo_mode
   const enforced = !!league.enforced
-  const gateLive = !demo || enforced
-  const analyzeLocked = gateLive && tierLimits && tierLimits.trade_analyzer === false
-  const ideasLocked = gateLive && tierLimits && tierLimits.trade_finder === false
   const costLabel = (n) => (demo && !enforced ? 'demo · no charge' : `${n} cr`)
 
   return (
@@ -267,20 +253,19 @@ export default function Trade() {
                 <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You get</div>
                 <Chips ids={getIds} team={opponent} accent="get" onRemove={toggle(setGetIds)} />
               </div>
-              {analyzeLocked ? (
-                <UpgradeInline label="Trade analyzer" tier="Standard" />
-              ) : (
-                <button
-                  type="button"
-                  disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
-                  onClick={() => analyzeMut.mutate()}
-                  className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {analyzeMut.isPending
-                    ? 'Analyzing…'
-                    : `Analyze my trade · ${costLabel(CREDIT_COSTS.trade_analysis)}`}
-                </button>
-              )}
+              {/* Gate-semantics flip: metered features are never tier-locked —
+                  free spends credits (402 handles an empty balance), paid runs
+                  unlimited. */}
+              <button
+                type="button"
+                disabled={give.length === 0 || getIds.length === 0 || analyzeMut.isPending}
+                onClick={() => analyzeMut.mutate()}
+                className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {analyzeMut.isPending
+                  ? 'Analyzing…'
+                  : `Analyze my trade · ${costLabel(creditCost('trade_analysis'))}`}
+              </button>
             </div>
           </div>
 
@@ -295,20 +280,16 @@ export default function Trade() {
 
       {tab === 'ideas' && (
         <div className="space-y-3">
-          {ideasLocked ? (
-            <UpgradeInline label="Trade finder" tier="Pro" />
-          ) : (
-            <button
-              type="button"
-              disabled={ideasMut.isPending}
-              onClick={() => ideasMut.mutate()}
-              className="min-h-11 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
-            >
-              {ideasMut.isPending
-                ? 'Finding trades…'
-                : `Give me trade ideas · ${costLabel(CREDIT_COSTS.trade_finder)}`}
-            </button>
-          )}
+          <button
+            type="button"
+            disabled={ideasMut.isPending}
+            onClick={() => ideasMut.mutate()}
+            className="min-h-11 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 font-medium text-brand-accent transition-colors hover:bg-brand/20 disabled:opacity-40"
+          >
+            {ideasMut.isPending
+              ? 'Finding trades…'
+              : `Give me trade ideas · ${costLabel(creditCost('trade_finder'))}`}
+          </button>
 
           {ideasMut.isError && (
             <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-300">

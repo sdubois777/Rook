@@ -313,10 +313,8 @@ async def recommendations(
     demo = waiver_demo_enabled()
     enforce = (not demo) or waiver_demo_enforce_gates()
 
-    # 1. FEATURE GATE (403) — before anything else.
-    if enforce:
-        from backend.services.feature_service import FeatureService
-        FeatureService.check_feature_access(user, "waiver_wire")
+    # 1. (Gate-semantics flip) NO tier gate — every tier can run recommendations;
+    #    the free tier pays credits at step 4, paid tiers are unlimited.
 
     # 2. Resolve the source (demo, or the real RealWaiverSource — 404 if the user has
     #    no synced league — still before any charge).
@@ -339,9 +337,10 @@ async def recommendations(
                    "pass my_team_id to act as a specific team.",
         )
 
-    # 4. CREDIT DEDUCT (402) — only now, the recommendation is about to run.
+    # 4. METERED CHARGE (402) — only now, the recommendation is about to run.
+    #    Paid: no-op; free: debit CREDIT_COSTS["waiver_wire"] or 402 BEFORE compute.
     if enforce:
-        await credit_service.deduct(user, "waiver_wire", agent_name="waiver_wire")
+        await credit_service.charge_metered(user, "waiver_wire", agent_name="waiver_wire")
 
     # 5. News tie-in (depth-chart backbone + CONTINGENT enrichment), then rank on the
     #    league's REAL shape + size (real path); demo keeps DEFAULT (unchanged).

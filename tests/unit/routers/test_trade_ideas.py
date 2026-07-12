@@ -46,6 +46,7 @@ def _make_user(tier="pro", credits=50):
     u = MagicMock(spec=User)
     u.id = uuid.uuid4()
     u.tier = tier
+    u.tier_expires_at = None
     u.credits_remaining = credits
     return u
 
@@ -61,6 +62,14 @@ class _FakeCredit:
         user.credits_remaining -= cost
         self.deducts.append((action, cost))
         return user.credits_remaining
+
+    async def charge_metered(self, user, action, agent_name=None):
+        # Mirrors CreditService.charge_metered: paid tiers run free; the free
+        # tier debits (or raises) via deduct.
+        from backend.models.user import effective_tier, is_unlimited
+        if is_unlimited(effective_tier(user)):
+            return user.credits_remaining
+        return await self.deduct(user, action, agent_name=agent_name)
 
 
 def _iv(pid, pos, fv):
@@ -110,9 +119,10 @@ _CLEARING = [Candidate(("rm4",), ("wt5",), "opp")]
 
 
 # ---------------------------------------------------------------------------
-# GATE ORDER (pro-only) — fires before generation, so surfacing is irrelevant
+# GATE-SEMANTICS FLIP — no pro-only gate; paid unlimited, free metered
 # ---------------------------------------------------------------------------
-async def test_standard_user_403_zero_deduct(monkeypatch):
+async def test_standard_user_runs_unlimited_no_deduct(monkeypatch):
+    """trade_finder is no longer pro-only; paid tiers run it with no debit."""
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
     user = _make_user(tier="standard", credits=100)
     credit = _FakeCredit()
@@ -122,14 +132,14 @@ async def test_standard_user_403_zero_deduct(monkeypatch):
         resp = await _post("/api/trade/ideas", {})
     finally:
         app.dependency_overrides.clear()
-    assert resp.status_code == 403          # trade_finder is pro-only
+    assert resp.status_code == 200
     assert credit.deducts == []
     assert user.credits_remaining == 100
 
 
-async def test_pro_insufficient_402_no_deduct(monkeypatch):
+async def test_free_insufficient_402_no_deduct(monkeypatch):
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
-    user = _make_user(tier="pro", credits=5)   # cost 20
+    user = _make_user(tier="free", credits=2)   # cost 5
     credit = _FakeCredit()
     _patch_loader(monkeypatch, _fixture(ME, THEM))
     _wire(user, _CLEARING, credit)
@@ -139,12 +149,12 @@ async def test_pro_insufficient_402_no_deduct(monkeypatch):
         app.dependency_overrides.clear()
     assert resp.status_code == 402
     assert credit.deducts == []
-    assert user.credits_remaining == 5
+    assert user.credits_remaining == 2
 
 
-async def test_pro_with_credits_runs_and_deducts_twenty_once(monkeypatch):
+async def test_free_with_credits_runs_and_debits_five_once(monkeypatch):
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
-    user = _make_user(tier="pro", credits=50)
+    user = _make_user(tier="free", credits=50)
     credit = _FakeCredit()
     _patch_loader(monkeypatch, _fixture(ME, THEM))
     _wire(user, _CLEARING, credit)
@@ -153,8 +163,8 @@ async def test_pro_with_credits_runs_and_deducts_twenty_once(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 200
-    assert credit.deducts == [("trade_finder", 20)]
-    assert user.credits_remaining == 30
+    assert credit.deducts == [("trade_finder", 5)]
+    assert user.credits_remaining == 45
     data = resp.json()
     assert len(data["proposals"]) == 1
     edge = data["proposals"][0]["edge"]            # the new edge payload is surfaced
@@ -167,7 +177,7 @@ async def test_pro_with_credits_runs_and_deducts_twenty_once(monkeypatch):
 # ---------------------------------------------------------------------------
 async def test_demo_bypass_runs_without_gate(monkeypatch):
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
-    user = _make_user(tier="intro", credits=0)   # would 403 in prod
+    user = _make_user(tier="free", credits=0)   # would 402 in prod
     credit = _FakeCredit()
     _patch_loader(monkeypatch, _fixture(ME, THEM))
     _wire(user, _CLEARING, credit)
@@ -180,22 +190,23 @@ async def test_demo_bypass_runs_without_gate(monkeypatch):
     assert resp.json()["demo_mode"] is True
 
 
-async def test_demo_enforce_gates_pro_only_and_charges(monkeypatch):
+async def test_demo_enforce_charges_free_and_paid_runs_unlimited(monkeypatch):
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
     monkeypatch.setenv("TRADE_DEMO_ENFORCE_GATES", "true")
-    # standard is blocked (trade_finder is pro-only) even on the demo league
-    blocked = _make_user(tier="standard", credits=50)
+    # free is charged 5 on the demo league (no pro-only gate anymore)
+    free = _make_user(tier="free", credits=50)
     credit = _FakeCredit()
     _patch_loader(monkeypatch, _fixture(ME, THEM))
-    _wire(blocked, _CLEARING, credit)
+    _wire(free, _CLEARING, credit)
     try:
         resp = await _post("/api/trade/ideas", {})
     finally:
         app.dependency_overrides.clear()
-    assert resp.status_code == 403
-    assert credit.deducts == []
+    assert resp.status_code == 200
+    assert credit.deducts == [("trade_finder", 5)]
+    assert free.credits_remaining == 45
 
-    # pro runs and is charged 20 on the demo league
+    # paid runs unlimited — zero deducts even with enforcement on
     pro = _make_user(tier="pro", credits=50)
     credit2 = _FakeCredit()
     _patch_loader(monkeypatch, _fixture(ME, THEM))
@@ -205,12 +216,8 @@ async def test_demo_enforce_gates_pro_only_and_charges(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 200
-    assert credit2.deducts == [("trade_finder", 20)]
-
-
-# ---------------------------------------------------------------------------
-# NEVER-PAD through the route
-# ---------------------------------------------------------------------------
+    assert credit2.deducts == []
+    assert pro.credits_remaining == 50
 async def test_route_caps_proposals_at_five(monkeypatch):
     """The agent proposes five candidates (my surplus RB for each of their WRs).
     Under the asymmetric gate this rich mutual-benefit matchup clears several

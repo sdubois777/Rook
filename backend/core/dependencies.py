@@ -312,20 +312,8 @@ def require_credits(action: str):
         user=Depends(get_current_user),
         service=Depends(get_credit_service),
     ):
-        from backend.services.feature_service import FeatureService
-        from backend.models.user import CREDIT_COSTS
-
-        # Infer feature from action
-        feature_map = {
-            "trade_analysis": "trade_analyzer",
-            "trade_finder": "trade_finder",
-            "waiver_wire": "waiver_wire",
-        }
-        feature = feature_map.get(action)
-        if feature:
-            FeatureService.check_feature_access(user, feature)
-
-        cost = CREDIT_COSTS.get(action, 0)
-        if cost > 0:
-            await service.deduct(user, action)
+        # Gate-semantics flip: metered actions carry NO tier gate. Paid tiers
+        # run free (unlimited); the free tier debits CREDIT_COSTS[action] or
+        # 402s. Entitlement features (live_draft) use require_feature instead.
+        await service.charge_metered(user, action)
     return _check

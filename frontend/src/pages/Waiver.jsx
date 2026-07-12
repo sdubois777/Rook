@@ -8,14 +8,13 @@
  * (WAIVER_DEMO_MODE / fetchWaiverLeague) — teardown removes it with the trade demo.
  */
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Waves, TrendingUp, TrendingDown, Minus, Lock, ArrowRight, Newspaper, Target, Shield,
+  Waves, TrendingUp, TrendingDown, Minus, ArrowRight, Newspaper, Target, Shield,
 } from 'lucide-react'
 import { fetchWaiverLeague, fetchWaiverRecommendations, fetchWaiverWire } from '../api/waiver'
 import { useMe } from '../hooks/useMe'
-import { CREDIT_COSTS } from '../lib/constants'
+import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
 
 const TREND = {
@@ -26,16 +25,6 @@ const TREND = {
 const CONF_CLS = { high: 'text-emerald-400', medium: 'text-amber-400', low: 'text-slate-500',
   full: 'text-slate-400', limited: 'text-amber-400', insufficient: 'text-slate-600' }
 
-function UpgradeInline({ label, tier }) {
-  return (
-    <Link
-      to="/account"
-      className="inline-flex items-center gap-2 rounded-md border border-brand-accent/40 bg-brand/10 px-4 py-2.5 text-sm font-medium text-brand-accent transition-colors hover:bg-brand/20"
-    >
-      <Lock size={14} /> {`${label} needs ${tier} — Upgrade`}
-    </Link>
-  )
-}
 
 function NewsBadge({ news }) {
   const conf = news.confidence ? <span className={CONF_CLS[news.confidence]}>{news.confidence}</span> : null
@@ -258,7 +247,8 @@ export default function Waiver() {
   })
 
   const qc = useQueryClient()
-  const { tierLimits } = useMe()
+  useMe()  // keeps /account/me warm for the balance shown after debits
+  const { creditCost } = usePricing()
   const recMut = useMutation({
     mutationFn: () => fetchWaiverRecommendations({ myTeamId: effMyId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['me'] }),
@@ -285,9 +275,7 @@ export default function Waiver() {
 
   const demo = !!league.demo_mode
   const enforced = !!league.enforced
-  const gateLive = !demo || enforced
-  const locked = gateLive && tierLimits && tierLimits.waiver_wire === false
-  const costLabel = demo && !enforced ? 'demo · no charge' : `${CREDIT_COSTS.waiver_wire} cr`
+  const costLabel = demo && !enforced ? 'demo · no charge' : `${creditCost('waiver_wire')} cr`
   const remaining = myTeam?.faab_remaining ?? league.faab_budget
   const data = recMut.data
 
@@ -334,18 +322,16 @@ export default function Waiver() {
 
           {/* Run */}
           <div className="flex flex-wrap items-center gap-3">
-            {locked ? (
-              <UpgradeInline label="Waiver wire" tier="Standard" />
-            ) : (
-              <button
-                type="button"
-                disabled={recMut.isPending}
-                onClick={() => recMut.mutate()}
-                className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets · ${costLabel}`}
-              </button>
-            )}
+            {/* Gate-semantics flip: never tier-locked — free spends credits,
+                paid runs unlimited (402 handles an empty balance). */}
+            <button
+              type="button"
+              disabled={recMut.isPending}
+              onClick={() => recMut.mutate()}
+              className="min-h-11 rounded-md bg-brand px-4 py-2 font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {recMut.isPending ? 'Scanning waivers…' : `Find waiver targets · ${costLabel}`}
+            </button>
             {data?.needs?.length > 0 && (
               <span className="text-xs text-slate-500">
                 Roster needs: {data.needs.map((n) => <span key={n} className="mr-1 rounded bg-surface-2 px-1.5 py-0.5 text-brand-accent">{n}</span>)}

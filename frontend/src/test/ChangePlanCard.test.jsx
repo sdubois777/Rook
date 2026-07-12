@@ -6,6 +6,9 @@ vi.mock('../api/billing', () => ({
   confirmChangePlan: vi.fn(),
 }))
 
+vi.mock('../../src/hooks/usePricing', () => ({ usePricing: () => pricingHookValue() }))
+
+import { pricingHookValue } from './pricingMock'
 import ChangePlanCard from '../components/billing/ChangePlanCard'
 import { previewChangePlan, confirmChangePlan } from '../api/billing'
 
@@ -84,10 +87,11 @@ describe('ChangePlanCard', () => {
     expect(screen.queryByText(/choose which stay active/i)).not.toBeInTheDocument()
   })
 
-  it('offers only the tiers other than the current one', () => {
+  it('offers only the PAID tiers other than the current one (free is not a plan-change target)', () => {
     render(<ChangePlanCard currentTier="pro" onApplied={() => {}} />)
-    expect(screen.getByRole('button', { name: /Change to.*Intro/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Change to.*Standard/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Change to.*Pro/i })).not.toBeInTheDocument()
+    // Free is not purchasable/changeable-to — cancel via the portal instead.
+    expect(screen.queryByRole('button', { name: /Change to.*Free/i })).not.toBeInTheDocument()
   })
 })

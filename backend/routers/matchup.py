@@ -170,7 +170,10 @@ async def league(
     # so every number is consistent across pages. This path touches ONLY pure
     # primitives — no agent, no credit deduction.
     from backend.routers.trade import load_league_for_analysis
-    state, values, _ = await load_league_for_analysis(db, user, demo)
+    # (Fix: the trade arc widened this to a 4-tuple — the rigid 3-value unpack
+    # crashed this endpoint with ValueError. Star-unpack tolerates the shape;
+    # behavior otherwise unchanged — only state + values are consumed here.)
+    state, values, *_extra = await load_league_for_analysis(db, user, demo)
 
     # The league's real starting-slot shape drives the optimal lineup — read the
     # league's roster_slots through the canonical bridge (the demo seeds a 2-WR config;

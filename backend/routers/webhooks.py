@@ -92,8 +92,8 @@ async def clerk_webhook(request: Request):
                     external_id=data["id"],
                     email=email,
                     display_name=display_name or None,
-                    tier="intro",
-                    credits_remaining=TIER_LIMITS["intro"]["credits_signup_bonus"],
+                    tier="free",
+                    credits_remaining=TIER_LIMITS["free"]["credits_signup_bonus"],
                 )
                 .on_conflict_do_nothing(index_elements=["external_id"])
             )

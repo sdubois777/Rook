@@ -46,13 +46,12 @@ class Settings(BaseSettings):
     stripe_secret_key: Optional[str] = None
     stripe_webhook_secret: Optional[str] = None
     # Subscription price ids (recurring monthly, one per tier)
-    stripe_price_intro_monthly: Optional[str] = None
     stripe_price_standard_monthly: Optional[str] = None
+    stripe_price_standard_season: Optional[str] = None
     stripe_price_pro_monthly: Optional[str] = None
+    stripe_price_pro_season: Optional[str] = None
     # Credit-pack price ids (one-time payments)
-    stripe_price_pack_small: Optional[str] = None
-    stripe_price_pack_medium: Optional[str] = None
-    stripe_price_pack_large: Optional[str] = None
+    stripe_price_pack_100: Optional[str] = None
 
     # Rate limits — requests per minute, per client IP
     rate_limit_api_rpm: int = 120        # general API endpoints
