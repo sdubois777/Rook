@@ -36,6 +36,7 @@ class UserResponse(BaseModel):
     credits_remaining: int
     tier_limits: dict
     subscription_status: Optional[str] = None  # billing state (read-only)
+    tier_expires_at: str | None = None
 
 
 class CreditUsageItem(BaseModel):
@@ -98,16 +99,36 @@ class ResolveLimitRequest(BaseModel):
 @router.get("/me", response_model=UserResponse)
 async def get_me(
     user: User = Depends(get_current_user),
+    db=Depends(get_db),
 ):
-    """Current user profile and tier info."""
+    """Current user profile and tier info (EFFECTIVE tier — a season purchase
+    past its expiry reads as free, with a lazy write-back so the row converges
+    without a cron)."""
+    from backend.models.user import effective_tier
+
+    eff = effective_tier(user)
+    if eff != user.tier:
+        # Season entitlement expired — persist the downgrade (credits persist).
+        from backend.repositories.user_repo import UserRepository
+        repo = UserRepository(db)
+        await repo.update_tier(user.id, tier=eff, credits_bonus=0)
+        await repo.set_tier_expiry(user.id, None)
+        await repo.commit()
+        user.tier = eff
+        user.tier_expires_at = None
+
     return UserResponse(
         id=str(user.id),
         email=user.email,
         display_name=user.display_name,
-        tier=user.tier,
+        tier=eff,
         credits_remaining=user.credits_remaining,
-        tier_limits=TIER_LIMITS.get(user.tier, {}),
+        tier_limits=TIER_LIMITS.get(eff, {}),
         subscription_status=getattr(user, "subscription_status", None),
+        tier_expires_at=(
+            user.tier_expires_at.isoformat()
+            if getattr(user, "tier_expires_at", None) else None
+        ),
     )
 
 
@@ -119,9 +140,9 @@ async def get_credits(
     """Credit balance and usage history."""
     history = await service.get_usage_history(user)
     used = sum(h.credits_used for h in history)
-    monthly = TIER_LIMITS.get(
-        user.tier, {}
-    ).get("credits_monthly", 0)
+    # Monthly credit grants no longer exist (paid tiers are unlimited);
+    # the field is kept at 0 for response-shape compatibility.
+    monthly = 0
 
     return CreditResponse(
         balance=user.credits_remaining,

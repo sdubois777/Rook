@@ -1,3 +1,4 @@
+import { usePricing } from '../../hooks/usePricing'
 const FEATURES = [
   { name: 'AI causal reasoning', us: true, fp: false, ud: false },
   { name: 'League-specific history', us: true, fp: false, ud: false },
@@ -25,6 +26,11 @@ function Cross() {
 }
 
 export default function FeatureComparison() {
+  const { tiers } = usePricing()
+  const paid = tiers.filter((t) => t.price_monthly_usd > 0)
+  const priceRange = paid.length
+    ? `$${Math.min(...paid.map((t) => t.price_monthly_usd))}–$${Math.max(...paid.map((t) => t.price_monthly_usd))}/mo`
+    : ''
   return (
     <section className="py-20 px-4 sm:px-6">
       <div className="max-w-4xl mx-auto">
@@ -75,7 +81,7 @@ export default function FeatureComparison() {
               <tr className="border-b border-gray-800/50">
                 <td className="py-3 px-4 text-gray-300">Price</td>
                 <td className="py-3 px-4 text-center text-white font-medium">
-                  $5–18/mo
+                  {priceRange}
                 </td>
                 <td className="py-3 px-4 text-center text-gray-400">
                   $8–10/mo

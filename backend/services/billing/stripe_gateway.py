@@ -194,6 +194,18 @@ def schedule_downgrade(
     return {"schedule_id": updated["id"], "effective": current["end_date"]}
 
 
+def cancel_at_period_end(*, sub_id: str, idempotency_key: str) -> None:
+    """Flag a monthly subscription to end at the paid-through date. Used when a
+    SEASON purchase supersedes an active monthly sub — the user keeps what they
+    paid for, then the season entitlement carries them (no double-billing)."""
+    stripe.Subscription.modify(
+        sub_id,
+        api_key=_api_key(),
+        cancel_at_period_end=True,
+        idempotency_key=idempotency_key,
+    )
+
+
 def construct_event(payload: bytes, sig_header: str, secret: str) -> dict:
     """Verify a webhook signature and return the parsed event.
 

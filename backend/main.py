@@ -88,6 +88,7 @@ for _router in (
     teams.router,
     account.router,
     billing.router,
+    billing.public_router,   # unauthenticated GET /billing/pricing
     league_connect.router,
     trade.router,
     waiver.router,
@@ -134,16 +135,8 @@ async def startup_checks():
     from backend.agents.beat_reporter import setup_scheduler
     _scheduler = setup_scheduler()
 
-    # Monthly credit reset — 1st of each month at midnight
-    _scheduler.add_job(
-        _monthly_credit_reset,
-        "cron",
-        day=1,
-        hour=0,
-        minute=0,
-        id="monthly_credit_reset",
-        replace_existing=True,
-    )
+    # (Monthly credit grants DELETED with the tier/credit spec: paid tiers are
+    # unlimited — credits exist only as the free tier's meter + top-up packs.)
 
     # Evict idle warm draft sessions (memory reaper). The durable DB snapshot is
     # left intact, so an evicted-then-resumed draft still rehydrates.
@@ -157,7 +150,6 @@ async def startup_checks():
 
     _scheduler.start()
     logger.info("Beat Reporter scheduler started (daily at 7am)")
-    logger.info("Monthly credit reset job registered (1st of month)")
     logger.info("Stale draft-session reaper registered (every 30 min)")
 
 
@@ -189,31 +181,6 @@ async def _evict_stale_draft_sessions():
             "Reaper: evicted %d warm session(s), deactivated %d DB row(s)",
             evicted, deactivated,
         )
-
-
-async def _monthly_credit_reset():
-    """
-    Add monthly credits for Standard and Pro users.
-    Credits ADD to balance — never reset to cap.
-    Intro users: no monthly credits, skipped.
-    """
-    from backend.database import AsyncSessionLocal
-    from backend.repositories.user_repo import UserRepository
-    from backend.models.user import TIER_LIMITS
-
-    async with AsyncSessionLocal() as db:
-        repo = UserRepository(db)
-        for tier in ("standard", "pro"):
-            monthly = TIER_LIMITS[tier]["credits_monthly"]
-            count = await repo.add_monthly_credits(
-                tier=tier,
-                monthly_amount=monthly,
-            )
-            logger.info(
-                "Monthly credits: +%d to %d %s users",
-                monthly, count, tier,
-            )
-        await db.commit()
 
 
 @app.get("/health")

@@ -1,41 +1,47 @@
 """
-Price catalog — the ONLY place price ids are mapped to tiers / pack credits.
+Price catalog — the ONLY place price ids are mapped to tiers / intervals / packs.
 
 Server-authoritative by design (§0.B): the checkout endpoint accepts a *tier
-name* or *pack name*, never a client-supplied price id or amount, and the webhook
-resolves a subscription's price id back to a tier here. Nothing is hardcoded in the
-handlers — it all reads from `settings` (env-populated, test/live agnostic).
+name* (+ interval) or *pack name*, never a client-supplied price id or amount,
+and the webhook resolves a subscription's price id back to a tier here. Nothing
+is hardcoded in the handlers — it all reads from `settings` (env-populated,
+test/live agnostic).
 
-Credit-pack amounts come from `CREDIT_PACKS` (the source of truth in models/user.py),
-never re-declared here.
+Dollar amounts, credit amounts, and tier ordering are NEVER re-declared here —
+they come from backend/models/user.py (THE source of truth).
+
+INTERVALS: "monthly" = recurring Stripe subscription. "season" = ONE-TIME
+payment granting the tier until the season end (users.tier_expires_at) — not a
+subscription, so proration/change-plan don't apply to it (see billing router).
 """
 from __future__ import annotations
 
 from typing import Optional
 
 from backend.config import Settings, settings
-from backend.models.user import CREDIT_PACKS
+from backend.models.user import CREDIT_PACKS, TIER_ORDER
 
-# Tier <-> monthly Price. Order matters only for readability.
+INTERVALS = ("monthly", "season")
+
+# (tier, interval) <-> Price env attr. The free tier has no price by definition.
 _TIER_PRICE_ATTR = {
-    "intro": "stripe_price_intro_monthly",
-    "standard": "stripe_price_standard_monthly",
-    "pro": "stripe_price_pro_monthly",
+    ("standard", "monthly"): "stripe_price_standard_monthly",
+    ("standard", "season"):  "stripe_price_standard_season",
+    ("pro", "monthly"):      "stripe_price_pro_monthly",
+    ("pro", "season"):       "stripe_price_pro_season",
 }
 
-# Pack <-> one-time Price.
+# Pack <-> one-time Price. Pack names come from CREDIT_PACKS (single source).
 _PACK_PRICE_ATTR = {
-    "small": "stripe_price_pack_small",
-    "medium": "stripe_price_pack_medium",
-    "large": "stripe_price_pack_large",
+    "credits_100": "stripe_price_pack_100",
 }
 
-# Tier ordering — lets change-plan decide upgrade vs downgrade server-side.
-_TIER_RANK = {"intro": 0, "standard": 1, "pro": 2}
+# Tier ordering derives from user.py's TIER_ORDER — never re-declared.
+_TIER_RANK = {tier: i for i, tier in enumerate(TIER_ORDER)}
 
 
 def tier_rank(tier: str) -> Optional[int]:
-    """Ordinal rank of a tier (intro < standard < pro), or None if unknown."""
+    """Ordinal rank of a tier (free < standard < pro), or None if unknown."""
     return _TIER_RANK.get(tier)
 
 
@@ -48,21 +54,25 @@ def is_upgrade(current_tier: str, target_tier: str) -> Optional[bool]:
     return b > a
 
 
-def tier_to_price(tier: str, s: Settings = settings) -> Optional[str]:
-    """Server-configured monthly price id for a tier, or None if unconfigured."""
-    attr = _TIER_PRICE_ATTR.get(tier)
+def tier_to_price(
+    tier: str, interval: str = "monthly", s: Settings = settings,
+) -> Optional[str]:
+    """Server-configured price id for a (tier, interval), or None."""
+    attr = _TIER_PRICE_ATTR.get((tier, interval))
     return getattr(s, attr, None) if attr else None
 
 
 def price_to_tier(price_id: str, s: Settings = settings) -> Optional[str]:
-    """Map a subscription's price id back to its tier (webhook path).
+    """Map a price id back to its tier (webhook path). Interval-agnostic —
+    subscription events only ever carry monthly prices (season is a one-time
+    payment, never a subscription), but resolving either is harmless.
 
-    Returns None for an unknown/unconfigured price id — the caller treats that as
-    'no tier change' rather than guessing.
+    Returns None for an unknown/unconfigured price id — the caller treats that
+    as 'no tier change' rather than guessing.
     """
     if not price_id:
         return None
-    for tier, attr in _TIER_PRICE_ATTR.items():
+    for (tier, _interval), attr in _TIER_PRICE_ATTR.items():
         configured = getattr(s, attr, None)
         if configured and configured == price_id:
             return tier

@@ -26,6 +26,7 @@ def _user():
     u = MagicMock(spec=User)
     u.id = uuid.uuid4()
     u.tier = "pro"
+    u.tier_expires_at = None
     u.credits_remaining = 100
     return u
 

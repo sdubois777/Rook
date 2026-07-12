@@ -18,11 +18,16 @@ class FeatureService:
         Raises FeatureNotAvailableError if user's tier
         doesn't include this feature.
 
-        Features: live_draft, trade_analyzer,
-                  trade_finder, waiver_wire
-        injury_monitoring is always True (all tiers).
+        ENTITLEMENT features ONLY (binary 403 gates): live_draft,
+        cross_league_view. Metered features (trade/waiver/finder) are NOT
+        tier-gated -- everyone can use them; the free tier pays credits via
+        CreditService.charge_metered. injury_monitoring is True on all tiers.
+
+        Uses the EFFECTIVE tier -- an expired season entitlement gates as free.
         """
-        limits = TIER_LIMITS.get(user.tier, {})
+        from backend.models.user import effective_tier
+
+        limits = TIER_LIMITS.get(effective_tier(user), {})
         has_access = limits.get(feature, False)
 
         if not has_access:
@@ -55,7 +60,8 @@ class FeatureService:
 
 def _find_min_tier(feature: str) -> str:
     """Find minimum tier that includes a feature."""
-    tier_order = ["intro", "standard", "pro"]
+    from backend.models.user import TIER_ORDER
+    tier_order = list(TIER_ORDER)
     for tier in tier_order:
         limits = TIER_LIMITS.get(tier, {})
         if limits.get(feature, False):

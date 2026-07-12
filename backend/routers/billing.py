@@ -38,12 +38,50 @@ router = APIRouter(
     dependencies=[Depends(rate_limit_auth)],  # §0.E — blunt abuse of session creation
 )
 
+# Public, unauthenticated, read-only: the pricing sheet the frontend renders
+# (landing page + account). Serves ONLY backend/models/user.py — the single
+# source of truth — so no dollar amount, credit cost, grant, or pack size is
+# ever hardcoded client-side again.
+public_router = APIRouter(prefix="/billing", tags=["billing"])
+
+
+@public_router.get("/pricing")
+async def get_pricing():
+    from backend.models.user import (
+        CREDIT_COSTS, CREDIT_PACKS, TIER_LIMITS, TIER_ORDER,
+    )
+
+    return {
+        "tiers": [
+            {
+                "id": tier,
+                "label": TIER_LIMITS[tier]["label"],
+                "price_monthly_usd": TIER_LIMITS[tier]["price_monthly_usd"],
+                "price_season_usd": TIER_LIMITS[tier]["price_season_usd"],
+                "max_leagues": TIER_LIMITS[tier]["max_leagues"],
+                "unlimited_features": TIER_LIMITS[tier]["unlimited_features"],
+                "live_draft": TIER_LIMITS[tier]["live_draft"],
+                "cross_league_view": TIER_LIMITS[tier]["cross_league_view"],
+                "credits_signup_bonus": TIER_LIMITS[tier]["credits_signup_bonus"],
+            }
+            for tier in TIER_ORDER
+        ],
+        "credit_costs": dict(CREDIT_COSTS),
+        "packs": [
+            {"id": name, "price_usd": p["price_usd"], "credits": p["credits"]}
+            for name, p in CREDIT_PACKS.items()
+        ],
+    }
+
 
 class CheckoutRequest(BaseModel):
     """Exactly one of tier / pack. Both are server-mapped to a price id — the
-    client can NEVER supply a price id or amount."""
-    tier: Optional[Literal["intro", "standard", "pro"]] = None
-    pack: Optional[Literal["small", "medium", "large"]] = None
+    client can NEVER supply a price id or amount. The free tier is not
+    purchasable (it's the signup default). interval applies to tiers only:
+    monthly = recurring subscription; season = one-time fixed-term entitlement."""
+    tier: Optional[Literal["standard", "pro"]] = None
+    interval: Literal["monthly", "season"] = "monthly"
+    pack: Optional[Literal["credits_100"]] = None
 
     @model_validator(mode="after")
     def _exactly_one(self):
@@ -126,28 +164,36 @@ async def create_checkout(
     if body.pack:
         return CheckoutResponse(url=_create_pack_session(user, customer_id, body.pack))
 
-    price_id = catalog.tier_to_price(body.tier)
+    price_id = catalog.tier_to_price(body.tier, body.interval)
     if not price_id:
         raise HTTPException(
             status_code=400,
-            detail=f"No price configured for tier '{body.tier}'",
+            detail=f"No price configured for tier '{body.tier}' ({body.interval})",
         )
+    # SEASON = one-time payment (mode=payment) granting the tier until the
+    # season entitlement end; MONTHLY = recurring subscription. Proration/
+    # change-plan applies only to subscriptions — season purchases go through
+    # here in both directions (see change-plan notes).
+    mode = "payment" if body.interval == "season" else "subscription"
     url = stripe_gateway.create_checkout_session(
         customer_id=customer_id,
-        mode="subscription",
+        mode=mode,
         price_id=price_id,
         # These pages grant NOTHING (§0.B) — the webhook is the only grantor.
         success_url=f"{settings.app_url}/account?billing=success",
         cancel_url=f"{settings.app_url}/pricing?billing=cancel",
-        metadata={"tier": body.tier, "user_id": str(user.id)},
+        metadata={
+            "tier": body.tier, "interval": body.interval,
+            "user_id": str(user.id),
+        },
         # Fresh session per attempt (see _create_pack_session).
-        idempotency_key=f"co_{user.id}_tier_{body.tier}_{uuid.uuid4()}",
+        idempotency_key=f"co_{user.id}_tier_{body.tier}_{body.interval}_{uuid.uuid4()}",
     )
     return CheckoutResponse(url=url)
 
 
 class CheckoutPackRequest(BaseModel):
-    pack: Literal["small", "medium", "large"]
+    pack: Literal["credits_100"]
 
 
 @router.post("/checkout-pack", response_model=CheckoutResponse)
@@ -166,11 +212,11 @@ async def checkout_pack(
 # ── Change plan (preview + confirm) ─────────────────────────────────────
 
 class ChangePlanRequest(BaseModel):
-    target_tier: Literal["intro", "standard", "pro"]
+    target_tier: Literal["standard", "pro"]
 
 
 class ChangePlanConfirmRequest(BaseModel):
-    target_tier: Literal["intro", "standard", "pro"]
+    target_tier: Literal["standard", "pro"]
     proration_date: Optional[int] = None  # from preview; required for upgrades
 
 
@@ -195,7 +241,15 @@ def _change_plan_context(user: User, target_tier: str):
     """Shared guards for preview/confirm: active sub, real direction, target price,
     subscription snapshot. Returns (is_upgrade, target_price_id, snapshot)."""
     if not user.stripe_subscription_id:
-        raise ValidationError("No active subscription to change — subscribe first")
+        # Season purchasers have an ENTITLEMENT, not a subscription — proration
+        # cannot express season<->monthly, so plan changes for/to season go
+        # through /billing/checkout (a fresh purchase; the webhook reconciles:
+        # a season purchase cancels an active monthly at period end, a monthly
+        # purchase clears the season expiry). This endpoint is monthly<->monthly.
+        raise ValidationError(
+            "No active monthly subscription to change — use checkout "
+            "(season passes and new subscriptions are purchases, not plan changes)"
+        )
     direction = catalog.is_upgrade(user.tier, target_tier)
     if direction is None:
         raise HTTPException(

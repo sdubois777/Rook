@@ -38,6 +38,7 @@ def _make_user(tier="standard", credits=50):
     u = MagicMock(spec=User)
     u.id = uuid.uuid4()
     u.tier = tier
+    u.tier_expires_at = None
     u.credits_remaining = credits
     return u
 
@@ -53,6 +54,14 @@ class _FakeCredit:
         user.credits_remaining -= cost
         self.deducts.append((action, cost))
         return user.credits_remaining
+
+    async def charge_metered(self, user, action, agent_name=None):
+        # Mirrors CreditService.charge_metered: paid tiers run free; the free
+        # tier debits (or raises) via deduct.
+        from backend.models.user import effective_tier, is_unlimited
+        if is_unlimited(effective_tier(user)):
+            return user.credits_remaining
+        return await self.deduct(user, action, agent_name=agent_name)
 
 
 def _iv(pid, name, fv):
@@ -113,9 +122,11 @@ _BODY = {"my_team_id": "me", "give": ["g"], "get": ["x"]}
 # ---------------------------------------------------------------------------
 # GATE ORDER
 # ---------------------------------------------------------------------------
-async def test_intro_user_gets_403_and_loses_zero_credits(monkeypatch):
+async def test_free_user_with_credits_runs_and_debits(monkeypatch):
+    """Gate-semantics flip: NO tier gate — the free tier uses the feature by
+    spending credits."""
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
-    user = _make_user(tier="intro", credits=100)
+    user = _make_user(tier="free", credits=100)
     credit = _FakeCredit()
     _patch_loader(monkeypatch)
     _wire(user, credit)
@@ -123,14 +134,14 @@ async def test_intro_user_gets_403_and_loses_zero_credits(monkeypatch):
         resp = await _post(_BODY)
     finally:
         app.dependency_overrides.clear()
-    assert resp.status_code == 403
-    assert credit.deducts == []           # feature check fired BEFORE any deduct
-    assert user.credits_remaining == 100  # zero credits lost
+    assert resp.status_code == 200
+    assert credit.deducts == [("trade_analysis", 1)]
+    assert user.credits_remaining == 99
 
 
-async def test_standard_insufficient_credits_402_no_deduction(monkeypatch):
+async def test_free_insufficient_credits_402_no_deduction(monkeypatch):
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
-    user = _make_user(tier="standard", credits=5)   # cost is 10
+    user = _make_user(tier="free", credits=0)   # cost is 1
     credit = _FakeCredit()
     _patch_loader(monkeypatch)
     _wire(user, credit)
@@ -140,10 +151,11 @@ async def test_standard_insufficient_credits_402_no_deduction(monkeypatch):
         app.dependency_overrides.clear()
     assert resp.status_code == 402
     assert credit.deducts == []
-    assert user.credits_remaining == 5
+    assert user.credits_remaining == 0
 
 
-async def test_standard_with_credits_runs_and_deducts_ten_once(monkeypatch):
+async def test_paid_tier_runs_unlimited_no_debit(monkeypatch):
+    """Paid tiers never debit — unlimited metered features."""
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
     user = _make_user(tier="standard", credits=50)
     credit = _FakeCredit()
@@ -154,8 +166,8 @@ async def test_standard_with_credits_runs_and_deducts_ten_once(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 200
-    assert credit.deducts == [("trade_analysis", 10)]
-    assert user.credits_remaining == 40
+    assert credit.deducts == []              # NO debit for paid tiers
+    assert user.credits_remaining == 50
     data = resp.json()
     assert data["winner"] == "you" and data["fairness"] == "lopsided you"
     assert data["rationale"] == "grounded rationale"
@@ -165,9 +177,9 @@ async def test_standard_with_credits_runs_and_deducts_ten_once(monkeypatch):
 # ---------------------------------------------------------------------------
 # DEMO BYPASS
 # ---------------------------------------------------------------------------
-async def test_demo_mode_bypasses_gate_for_intro_user(monkeypatch):
+async def test_demo_mode_bypasses_charge_for_free_user(monkeypatch):
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
-    user = _make_user(tier="intro", credits=100)   # would 403 in prod
+    user = _make_user(tier="free", credits=100)   # would be charged in prod
     credit = _FakeCredit()
     _patch_loader(monkeypatch)
     _wire(user, credit)
@@ -184,10 +196,10 @@ async def test_demo_mode_bypasses_gate_for_intro_user(monkeypatch):
 # ---------------------------------------------------------------------------
 # DEMO WITH ENFORCEMENT — gate + charge apply on the demo league (test toggle)
 # ---------------------------------------------------------------------------
-async def test_demo_enforce_gates_403_for_intro(monkeypatch):
+async def test_demo_enforce_charges_free_user(monkeypatch):
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
     monkeypatch.setenv("TRADE_DEMO_ENFORCE_GATES", "true")
-    user = _make_user(tier="intro", credits=100)
+    user = _make_user(tier="free", credits=100)
     credit = _FakeCredit()
     _patch_loader(monkeypatch)
     _wire(user, credit)
@@ -195,9 +207,9 @@ async def test_demo_enforce_gates_403_for_intro(monkeypatch):
         resp = await _post(_BODY)
     finally:
         app.dependency_overrides.clear()
-    assert resp.status_code == 403          # gate applies even in demo
-    assert credit.deducts == []
-    assert user.credits_remaining == 100
+    assert resp.status_code == 200          # no tier gate; charge applies
+    assert credit.deducts == [("trade_analysis", 1)]
+    assert user.credits_remaining == 99
 
 
 async def test_demo_enforce_gates_charges_standard(monkeypatch):
@@ -212,8 +224,8 @@ async def test_demo_enforce_gates_charges_standard(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 200
-    assert credit.deducts == [("trade_analysis", 10)]   # charged on the demo league
-    assert user.credits_remaining == 40
+    assert credit.deducts == []              # paid tier: unlimited, even enforced
+    assert user.credits_remaining == 50
 
 
 # ---------------------------------------------------------------------------

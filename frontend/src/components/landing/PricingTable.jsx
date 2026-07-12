@@ -2,71 +2,77 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import { createCheckout, redirectTo } from '../../api/billing'
+import { usePricing } from '../../hooks/usePricing'
 
-const TIERS = [
-  {
-    name: 'Intro',
-    id: 'intro',
-    monthly: 5,
-    season: 15,
+/**
+ * Pricing table — every dollar amount, credit cost, grant, and pack size is
+ * FETCHED from /billing/pricing (served from backend/models/user.py, the single
+ * source of truth). Only the marketing feature COPY lives here; never numbers.
+ */
+
+// Marketing copy per tier — text only, no prices/credits (those render from
+// the fetched pricing sheet).
+const TIER_COPY = {
+  free: {
     features: [
-      'All player projections + draft board',
+      'All player values + draft board',
+      'Waiver wire browse + start/sit',
       '1 league sync',
       'Injury monitoring',
-      'Manager tendencies',
-      '25 credits at signup',
+      'AI features metered by credits',
     ],
     cta: 'Get Started',
     highlight: false,
   },
-  {
-    name: 'Standard',
-    id: 'standard',
-    monthly: 9,
-    season: 29,
+  standard: {
     features: [
-      'Everything in Intro',
-      '2 league syncs',
-      'Live draft agent',
-      'Trade analyzer',
-      'Waiver wire agent',
-      '75 credits at signup + 20/mo',
+      'Everything in Free — unlimited, no credits',
+      'Unlimited trade analyzer + trade finder',
+      'Unlimited waiver recommendations',
+      'Live draft assistant',
+      '1 league sync',
     ],
-    cta: 'Start Trial',
+    cta: 'Start Standard',
     highlight: true,
   },
-  {
-    name: 'Pro',
-    id: 'pro',
-    monthly: 18,
-    season: 49,
+  pro: {
     features: [
       'Everything in Standard',
       'Unlimited leagues',
-      'Live draft agent (all leagues)',
-      'Trade finder',
-      '200 credits at signup + 50/mo',
+      'Cross-league view',
+      'Live draft assistant (all leagues)',
     ],
-    cta: 'Start Trial',
+    cta: 'Start Pro',
     highlight: false,
   },
-]
+}
 
 export default function PricingTable({ showHeader = true }) {
   const { isSignedIn } = useAuth()
-  const [busyTier, setBusyTier] = useState(null)
+  const { tiers, packs, creditCost, isLoading } = usePricing()
+  const [busy, setBusy] = useState(null)
   const [error, setError] = useState('')
 
-  const startCheckout = async (tierId) => {
-    setBusyTier(tierId)
+  const startCheckout = async (tierId, interval) => {
+    setBusy(`${tierId}:${interval}`)
     setError('')
     try {
-      redirectTo(await createCheckout(tierId))
+      redirectTo(await createCheckout(tierId, interval))
     } catch {
       setError('Could not start checkout. Please try again.')
-      setBusyTier(null)
+      setBusy(null)
     }
   }
+
+  if (isLoading) {
+    return (
+      <section id="pricing" className="py-20 px-4 sm:px-6">
+        <p className="text-center text-gray-500">Loading pricing…</p>
+      </section>
+    )
+  }
+
+  const pack = packs[0]
 
   return (
     <section id="pricing" className="py-20 px-4 sm:px-6">
@@ -77,97 +83,120 @@ export default function PricingTable({ showHeader = true }) {
               Simple, Transparent Pricing
             </h2>
             <p className="text-gray-400 text-center mb-12 max-w-xl mx-auto">
-              All plans include a 7-day free trial. No credit card required to
-              start.
+              Start free. Paid plans are unlimited — one price, no credits.
             </p>
           </>
         )}
 
         <div className="grid md:grid-cols-3 gap-6">
-          {TIERS.map((tier) => (
-            <div
-              key={tier.name}
-              className={`relative rounded-xl p-8 border transition-colors ${
-                tier.highlight
-                  ? 'border-brand bg-brand/10 shadow-lg shadow-brand/10'
-                  : 'border-gray-800 bg-gray-900/40 hover:border-gray-700'
-              }`}
-            >
-              {tier.highlight && (
-                <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand text-white text-xs font-bold px-3 py-1 rounded-full">
-                  Most Popular
-                </span>
-              )}
+          {tiers.map((tier) => {
+            const copy = TIER_COPY[tier.id] || { features: [], cta: 'Start' }
+            const isFree = tier.price_monthly_usd === 0
+            return (
+              <div
+                key={tier.id}
+                className={`relative rounded-xl p-8 border transition-colors ${
+                  copy.highlight
+                    ? 'border-brand bg-brand/10 shadow-lg shadow-brand/10'
+                    : 'border-gray-800 bg-gray-900/40 hover:border-gray-700'
+                }`}
+              >
+                {copy.highlight && (
+                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand text-white text-xs font-bold px-3 py-1 rounded-full">
+                    Most Popular
+                  </span>
+                )}
 
-              <h3 className="text-lg font-semibold text-white">{tier.name}</h3>
+                <h3 className="text-lg font-semibold text-white">{tier.label}</h3>
 
-              <div className="mt-4 flex items-baseline gap-1">
-                <span className="text-4xl font-extrabold text-white">
-                  ${tier.monthly}
-                </span>
-                <span className="text-gray-400 text-sm">/month</span>
+                <div className="mt-4 flex items-baseline gap-1">
+                  <span className="text-4xl font-extrabold text-white">
+                    ${tier.price_monthly_usd}
+                  </span>
+                  <span className="text-gray-400 text-sm">/month</span>
+                </div>
+                <p className="text-sm text-gray-500 mt-1">
+                  {isFree
+                    ? `${tier.credits_signup_bonus} credits at signup`
+                    : `or $${tier.price_season_usd}/season`}
+                </p>
+
+                <ul className="mt-6 space-y-3">
+                  {copy.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2 text-sm text-gray-300">
+                      <svg className="w-4 h-4 text-green-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+
+                {isFree || !isSignedIn ? (
+                  <Link
+                    to="/sign-up"
+                    className={`mt-8 block text-center py-3 rounded-lg font-semibold text-sm transition-colors ${
+                      copy.highlight
+                        ? 'bg-brand hover:bg-brand-hover text-white'
+                        : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                    }`}
+                  >
+                    {copy.cta}
+                  </Link>
+                ) : (
+                  <div className="mt-8 space-y-2">
+                    <button
+                      onClick={() => startCheckout(tier.id, 'monthly')}
+                      disabled={busy !== null}
+                      className={`block w-full text-center py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 ${
+                        copy.highlight
+                          ? 'bg-brand hover:bg-brand-hover text-white'
+                          : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                      }`}
+                    >
+                      {busy === `${tier.id}:monthly`
+                        ? 'Redirecting…'
+                        : `Monthly — $${tier.price_monthly_usd}/mo`}
+                    </button>
+                    <button
+                      onClick={() => startCheckout(tier.id, 'season')}
+                      disabled={busy !== null}
+                      className="block w-full text-center py-2.5 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 border border-gray-700 text-gray-200 hover:border-gray-500"
+                    >
+                      {busy === `${tier.id}:season`
+                        ? 'Redirecting…'
+                        : `Season pass — $${tier.price_season_usd}`}
+                    </button>
+                  </div>
+                )}
               </div>
-              <p className="text-sm text-gray-500 mt-1">
-                or ${tier.season}/season
-              </p>
-
-              <ul className="mt-6 space-y-3">
-                {tier.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-sm text-gray-300">
-                    <svg className="w-4 h-4 text-green-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    {f}
-                  </li>
-                ))}
-              </ul>
-
-              {isSignedIn ? (
-                <button
-                  onClick={() => startCheckout(tier.id)}
-                  disabled={busyTier !== null}
-                  className={`mt-8 block w-full text-center py-3 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 ${
-                    tier.highlight
-                      ? 'bg-brand hover:bg-brand-hover text-white'
-                      : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
-                  }`}
-                >
-                  {busyTier === tier.id ? 'Redirecting…' : tier.cta}
-                </button>
-              ) : (
-                <Link
-                  to="/sign-up"
-                  className={`mt-8 block text-center py-3 rounded-lg font-semibold text-sm transition-colors ${
-                    tier.highlight
-                      ? 'bg-brand hover:bg-brand-hover text-white'
-                      : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
-                  }`}
-                >
-                  {tier.cta}
-                </Link>
-              )}
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {error && (
           <p className="mt-6 text-center text-sm text-red-400">{error}</p>
         )}
 
-        {/* Credit info */}
+        {/* Credit info — rendered from the fetched sheet, never hardcoded */}
         <div className="mt-12 text-center text-sm text-gray-500 max-w-2xl mx-auto space-y-2">
           <p>
-            <span className="text-gray-400">Free always:</span> browsing
-            projections, draft board, news, injury monitoring.
+            <span className="text-gray-400">Always free, every plan:</span>{' '}
+            player values, teams, waiver wire browse, start/sit, injury
+            monitoring.
           </p>
           <p>
-            <span className="text-gray-400">Credit costs:</span> Trade analysis
-            10cr &middot; Waiver wire 8cr/week &middot; Trade finder 20cr (Pro).
+            <span className="text-gray-400">Free-plan credit costs:</span>{' '}
+            Trade analysis {creditCost('trade_analysis')}cr &middot; Waiver
+            recommendations {creditCost('waiver_wire')}cr &middot; Trade finder{' '}
+            {creditCost('trade_finder')}cr.
           </p>
-          <p>
-            <span className="text-gray-400">Need more?</span> $5 = 75cr
-            &middot; $10 = 175cr &middot; $25 = 500cr. Credits never expire.
-          </p>
+          {pack && (
+            <p>
+              <span className="text-gray-400">Need more?</span> ${pack.price_usd}{' '}
+              = {pack.credits}cr. Credits never expire.
+            </p>
+          )}
         </div>
       </div>
     </section>

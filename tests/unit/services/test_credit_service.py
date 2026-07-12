@@ -27,26 +27,26 @@ def _make_service():
 async def test_deduct_reduces_balance():
     service, user_repo, credit_repo = _make_service()
     user = _make_user(credits=50)
-    user_repo.update_credits.return_value = 40  # 50 - 10
+    user_repo.update_credits.return_value = 49  # 50 - 1 (trade_analysis costs 1)
     credit_repo.log_usage.return_value = MagicMock()
 
     new_balance = await service.deduct(user, "trade_analysis")
 
-    assert new_balance == 40
-    user_repo.update_credits.assert_awaited_once_with(user.id, delta=-10)
+    assert new_balance == 49
+    user_repo.update_credits.assert_awaited_once_with(user.id, delta=-1)
     credit_repo.log_usage.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_deduct_raises_on_insufficient_credits():
     service, user_repo, credit_repo = _make_service()
-    user = _make_user(credits=5)
+    user = _make_user(credits=2)  # trade_finder costs 5
 
     with pytest.raises(InsufficientCreditsError) as exc_info:
-        await service.deduct(user, "trade_analysis")  # costs 10
+        await service.deduct(user, "trade_finder")
 
-    assert exc_info.value.detail["required"] == 10
-    assert exc_info.value.detail["available"] == 5
+    assert exc_info.value.detail["required"] == 5
+    assert exc_info.value.detail["available"] == 2
     user_repo.update_credits.assert_not_awaited()
 
 
@@ -74,7 +74,7 @@ async def test_usage_logged_after_deduction():
     credit_repo.log_usage.assert_awaited_once_with(
         user_id=user.id,
         action="waiver_wire",
-        credits_used=8,
+        credits_used=2,
         agent_name="waiver_agent",
         cost_usd=None,
     )
