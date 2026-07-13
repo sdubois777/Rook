@@ -20,6 +20,16 @@ from backend.repositories.base import BaseRepository
 class CredentialRepository(BaseRepository[PlatformCredential]):
     model = PlatformCredential
 
+    async def list_platforms(self, user_id: uuid.UUID) -> list[str]:
+        """Platforms this user has stored credentials for — powers the
+        'Connected platforms' disconnect UI (so a user can delete their ESPN
+        cookies even after removing the league)."""
+        result = await self._session.execute(
+            select(PlatformCredential.platform)
+            .where(PlatformCredential.user_id == user_id)
+        )
+        return sorted({p for (p,) in result.all()})
+
     async def get_for_user(
         self,
         user_id: uuid.UUID,

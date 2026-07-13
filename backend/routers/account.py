@@ -169,6 +169,19 @@ async def get_leagues(
     return [_league_response(league) for league in leagues]
 
 
+@router.get("/credentials")
+async def get_connected_platforms(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Platforms this user has stored credentials for — drives the account page's
+    per-platform Disconnect controls (Yahoo OAuth tokens / ESPN cookies). Returns
+    only platform names, never token/cookie values."""
+    from backend.repositories.credential_repo import CredentialRepository
+    platforms = await CredentialRepository(db).list_platforms(user.id)
+    return {"platforms": platforms}
+
+
 @router.post(
     "/leagues",
     response_model=LeagueResponse,
