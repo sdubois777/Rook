@@ -27,6 +27,10 @@ export default function LandingFooter() {
           <span>&copy; {new Date().getFullYear()} Rook. All rights reserved.</span>
           <div className="flex gap-6">
             <Link to="/pricing" className="hover:text-gray-400 transition-colors">Pricing</Link>
+            {/* Plain <a> (full navigation): /privacy is a server-rendered static page,
+                not an SPA route — a <Link> would client-route into the catch-all.
+                Room for a /terms link here once it exists. */}
+            <a href="/privacy" className="hover:text-gray-400 transition-colors">Privacy</a>
             <a href="mailto:support@rookff.com" className="hover:text-gray-400 transition-colors">Contact</a>
           </div>
         </div>
