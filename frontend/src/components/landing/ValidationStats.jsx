@@ -41,10 +41,10 @@ export default function ValidationStats() {
     <section id="results" className="py-20 px-4 sm:px-6 bg-gray-900/20">
       <div className="max-w-5xl mx-auto">
         <h2 className="text-3xl sm:text-4xl font-bold text-white text-center mb-2">
-          Proven Results
+          2025 Backtest
         </h2>
         <p className="text-gray-400 text-center mb-12">
-          2025 NFL Season — real backtest, real outcomes.
+          Pre-2025 data only, scored against actual 2025 outcomes — no hindsight.
         </p>
 
         {/* Stat cards */}

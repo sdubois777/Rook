@@ -1,64 +1,172 @@
 import { Link } from 'react-router-dom'
+import { TrendingUp, Minus, ArrowRight } from 'lucide-react'
+import { usePricing } from '../../hooks/usePricing'
 
-const PROOF_POINTS = [
-  '74.1% signal accuracy in 2025 backtesting',
-  '93% buy signal accuracy',
-  'Works with Yahoo, ESPN, and Sleeper',
+/**
+ * Hero — leads with the PRODUCT, not a mascot. The signature element is a
+ * faithful, static render of the app's real trade VerdictPanel showing a real
+ * engine result (The Lord ↔ Joe Shiesty, 2025-season data — see
+ * docs/trade_output_review.md, a reproducible network-free dump). Same chrome,
+ * type, and mono/tabular numbers as the in-app panel, so the landing page and
+ * the app read as the same product. Numbers are NOT fabricated.
+ */
+
+// --- real verdict data (verbatim trade values from the engine dump) ----------
+const GIVE = [{ name: 'Tyler Warren', pos: 'TE', value: 32, trend: 'stable' }]
+const GET = [
+  { name: 'Zay Flowers', pos: 'WR', value: 49, trend: 'rising', buyLow: true },
+  { name: 'Terry McLaurin', pos: 'WR', value: 42, trend: 'stable' },
 ]
 
-export default function Hero() {
+function ValueRow({ p }) {
+  const Trend = p.trend === 'rising' ? TrendingUp : Minus
+  const trendCls = p.trend === 'rising' ? 'text-emerald-400' : 'text-slate-500'
   return (
-    <section className="relative pt-32 pb-20 px-4 sm:px-6 overflow-hidden">
-      {/* Background gradient */}
-      <div className="absolute inset-0 bg-gradient-to-b from-blue-950/20 via-surface-0 to-surface-0" />
-
-      <div className="relative max-w-4xl mx-auto text-center">
-        <img
-          src="/rook-mascot.png"
-          alt="Rook — the AI fantasy draft rookie mascot"
-          width="160"
-          height="160"
-          className="mx-auto mb-8 w-28 sm:w-32 lg:w-36 h-auto drop-shadow-[0_10px_28px_rgba(42,61,143,0.5)]"
-        />
-        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight tracking-tight">
-          Win Your Fantasy League{' '}
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-300">
-            With AI
+    <div className="flex items-center justify-between gap-3 rounded-md bg-surface-2 px-3 py-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+          {p.pos}
+        </span>
+        <span className="truncate text-sm font-medium text-white">{p.name}</span>
+        {p.buyLow && (
+          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400">
+            BUY-LOW
           </span>
-        </h1>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="font-mono tabular-nums text-sm font-semibold text-white">
+          {p.value}
+        </span>
+        <Trend size={14} className={trendCls} />
+      </div>
+    </div>
+  )
+}
 
-        <p className="mt-6 text-lg sm:text-xl text-gray-400 max-w-2xl mx-auto leading-relaxed">
-          The only fantasy tool that reasons about{' '}
-          <span className="text-gray-200 font-medium">why</span> players are
-          undervalued — not just what the consensus says.
-        </p>
-
-        <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Link
-            to="/sign-up"
-            className="w-full sm:w-auto px-8 py-3.5 bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg transition-colors text-center"
-          >
-            Start Free &rarr;
-          </Link>
-          <a
-            href="#how-it-works"
-            className="w-full sm:w-auto px-8 py-3.5 border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white rounded-lg transition-colors text-center"
-          >
-            See How It Works
-          </a>
-        </div>
-
-        <div className="mt-12 flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-8 text-sm text-gray-400">
-          {PROOF_POINTS.map((point) => (
-            <div key={point} className="flex items-center gap-2">
-              <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              <span>{point}</span>
+/** A static replica of the in-app VerdictPanel — the hero's one bold element. */
+function VerdictCard() {
+  return (
+    <div className="w-full max-w-md rounded-xl border border-border bg-surface-1 shadow-2xl shadow-brand/20">
+      {/* Verdict header — brand-accent, exactly like a confident in-app verdict */}
+      <div className="rounded-t-xl border-b border-brand-accent/40 bg-brand/10 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-base font-semibold text-white">You win</span>
+            <span className="text-sm text-brand-accent">· fair trade</span>
+          </div>
+          <div className="text-right text-xs text-slate-400">
+            <div className="font-mono tabular-nums">
+              your lineup <span className="text-emerald-400">+7.8 pts/wk</span>
             </div>
-          ))}
+          </div>
+        </div>
+        <div className="mt-1 text-[11px] text-slate-500">
+          confidence: <span className="text-slate-300">full</span>
         </div>
       </div>
+
+      <div className="space-y-3 p-4">
+        <p className="text-sm text-slate-300">
+          One tight end for two starting receivers. Zay Flowers grades{' '}
+          <span className="text-emerald-400">buy-low</span> — Rook sets his trade
+          value from in-season usage, not preseason rank.
+        </p>
+
+        {/* Give/get stacked (not two narrow columns) so player names read in
+            full at hero width — no truncation on the showpiece. */}
+        <div className="space-y-3">
+          <div>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              You give
+            </div>
+            <div className="space-y-1.5">
+              {GIVE.map((p) => <ValueRow key={p.name} p={p} />)}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              You get
+            </div>
+            <div className="space-y-1.5">
+              {GET.map((p) => <ValueRow key={p.name} p={p} />)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function Hero() {
+  const { tierById } = usePricing()
+  // Credits derived from the pricing sheet (user.py) — never hardcoded.
+  const freeCredits = tierById?.free?.credits_signup_bonus
+
+  return (
+    <section className="relative overflow-hidden px-4 pt-28 pb-16 sm:px-6 lg:pt-36 lg:pb-24">
+      {/* Soft navy glow behind the product — atmosphere, not a flat wash */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-24 right-0 h-[36rem] w-[36rem] rounded-full bg-brand/20 blur-[120px] lg:right-10"
+      />
+
+      <div className="relative mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-[1.05fr_1fr] lg:gap-8">
+        {/* LEFT — the thesis, tight vertical rhythm */}
+        <div className="motion-safe:animate-[fadeUp_0.5s_ease-out]">
+          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-surface-1 px-3 py-1 text-xs font-medium text-brand-accent">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            In-season trade &amp; draft engine
+          </span>
+
+          <h1 className="mt-5 text-4xl font-bold leading-[1.1] tracking-tight text-slate-100 sm:text-5xl">
+            Fantasy values that reason about{' '}
+            <span className="text-brand-accent">why</span>.
+          </h1>
+
+          <p className="mt-4 max-w-lg text-lg leading-relaxed text-slate-400">
+            Rook builds every player&apos;s value from in-season usage and the
+            causes behind it — then shows you the trades, waivers, and draft picks
+            your league is mispricing.
+          </p>
+
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <Link
+              to="/sign-up"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-brand px-7 py-3 font-semibold text-white transition-colors hover:bg-brand-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-0"
+            >
+              Start free <ArrowRight size={18} />
+            </Link>
+            <a
+              href="#how-it-works"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-7 py-3 font-medium text-slate-300 transition-colors hover:border-slate-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent"
+            >
+              See how it works
+            </a>
+          </div>
+
+          <p className="mt-5 text-sm text-slate-500">
+            Free forever{freeCredits ? ` · ${freeCredits} credits to start` : ''} ·
+            no card required. Works with Yahoo, ESPN, and Sleeper.
+          </p>
+        </div>
+
+        {/* RIGHT — the product being right (the one bold element) */}
+        <div className="flex flex-col items-center gap-3 lg:items-end motion-safe:animate-[fadeUp_0.6s_ease-out]">
+          <VerdictCard />
+          <p className="max-w-md text-center text-xs text-slate-600 lg:text-right">
+            A real verdict from Rook&apos;s value engine — 2025 season data.
+          </p>
+        </div>
+      </div>
+
+      {/* Page-load reveal; respects reduced-motion (motion-safe only) */}
+      <style>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(12px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </section>
   )
 }

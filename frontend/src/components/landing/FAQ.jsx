@@ -2,8 +2,8 @@ import { useState } from 'react'
 
 const ITEMS = [
   {
-    q: 'How is this different from FantasyPros Premium?',
-    a: 'FantasyPros aggregates expert consensus rankings. Rook uses AI agents that reason about cause-and-effect — role changes, scheme fits, injury risk, and schedule difficulty — to find players the consensus is mispricing. It\'s the difference between "experts say he\'s ranked 12th" and "here\'s why he\'s undervalued in YOUR league."',
+    q: 'How is this different from other fantasy tools?',
+    a: 'Most tools aggregate expert consensus into a single ranked list — the same list for every league. Rook uses AI agents that reason about cause-and-effect — role changes, scheme fits, injury risk, and schedule difficulty — to find players the consensus is mispricing, and it grounds every call in YOUR league\'s history, scoring, and opponents. It\'s the difference between "he\'s ranked 12th" and "here\'s why he\'s undervalued in your league."',
   },
   {
     q: 'Does it work for snake drafts?',
