@@ -19,15 +19,21 @@ describe('billing api module', () => {
   it('createCheckout posts a tier NAME (no price) and returns the url', async () => {
     apiClient.post.mockResolvedValue({ data: { url: 'https://checkout.stripe.com/x' } })
     const url = await createCheckout('standard')
-    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', { tier: 'standard' })
+    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', { tier: 'standard', interval: 'monthly' })
     expect(url).toBe('https://checkout.stripe.com/x')
   })
 
   it('createPackCheckout posts a pack NAME to checkout-pack and returns the url', async () => {
     apiClient.post.mockResolvedValue({ data: { url: 'https://checkout.stripe.com/pack' } })
-    const url = await createPackCheckout('small')
-    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout-pack', { pack: 'small' })
+    const url = await createPackCheckout('credits_100')
+    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout-pack', { pack: 'credits_100' })
     expect(url).toBe('https://checkout.stripe.com/pack')
+  })
+
+  it('createCheckout posts a season interval for season passes', async () => {
+    apiClient.post.mockResolvedValue({ data: { url: 'https://checkout.stripe.com/s' } })
+    await createCheckout('pro', 'season')
+    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', { tier: 'pro', interval: 'season' })
   })
 
   it('createPortal posts to the portal endpoint and returns the url', async () => {

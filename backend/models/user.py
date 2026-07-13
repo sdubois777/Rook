@@ -19,62 +19,108 @@ from backend.database import Base
 
 
 # ---------------------------------------------------------------------------
-# Subscription configuration — single source of truth
+# Subscription configuration — THE SINGLE SOURCE OF TRUTH
+#
+# Every price, credit cost, grant size, pack size, and entitlement is defined
+# HERE and ONLY here. The Stripe seeder, the billing catalog, the public
+# /billing/pricing endpoint (which the frontend renders from), and the docs all
+# DERIVE from these dicts. Defining any of these numbers anywhere else is the
+# four-way pricing drift this file exists to prevent.
+#
+# MODEL (the gate-semantics flip):
+#   * FREE  — metered: every metered feature is usable by SPENDING CREDITS
+#             (CREDIT_COSTS). One-time 30-credit signup grant. No live draft.
+#   * PAID  — unlimited_features=True: metered features run with NO debit and
+#             no credit check. Live draft included.
+#   * Tier-ENTITLEMENT features (live_draft, cross_league_view) stay binary
+#     403 gates — never routed through credits (stranding a user at zero
+#     credits mid-draft is a product catastrophe for pennies).
+#   * ALWAYS FREE for everyone, never metered: player values, teams, player
+#     detail, waiver WIRE BROWSE, start/sit, injury revaluation (pipeline-
+#     shared — gating it would serve stale values, i.e. a WRONG product).
 # ---------------------------------------------------------------------------
 
+# Ordered lowest → highest; drives rank comparisons everywhere.
+TIER_ORDER: tuple[str, ...] = ("free", "standard", "pro")
+
 TIER_LIMITS: dict[str, dict] = {
-    "intro": {
-        # $5/month or $15/season
-        "credits_monthly": 0,         # no monthly reset
-        "credits_signup_bonus": 25,   # one-time only
+    "free": {
+        "label": "Free",
+        "price_monthly_usd": 0,
+        "price_season_usd": 0,
+        "credits_signup_bonus": 30,     # one-time, granted at signup
         "max_leagues": 1,
+        "unlimited_features": False,    # metered — features cost credits
         "live_draft": False,
-        "trade_analyzer": False,
-        "trade_finder": False,
-        "waiver_wire": False,
-        "injury_monitoring": True,    # free for all tiers
+        "cross_league_view": False,
+        "injury_monitoring": True,      # always free, all tiers
     },
     "standard": {
-        # $9/month or $29/season
-        "credits_monthly": 20,
-        "credits_signup_bonus": 75,
-        "max_leagues": 2,
+        "label": "Standard",
+        "price_monthly_usd": 8,
+        "price_season_usd": 29,
+        "credits_signup_bonus": 0,      # unlimited — credits irrelevant
+        "max_leagues": 1,
+        "unlimited_features": True,
         "live_draft": True,
-        "trade_analyzer": True,
-        "trade_finder": False,        # Pro only
-        "waiver_wire": True,
+        "cross_league_view": False,
         "injury_monitoring": True,
     },
     "pro": {
-        # $18/month or $49/season
-        "credits_monthly": 50,
-        "credits_signup_bonus": 200,
-        "max_leagues": None,          # unlimited
+        "label": "Pro",
+        "price_monthly_usd": 18,
+        "price_season_usd": 59,
+        "credits_signup_bonus": 0,
+        "max_leagues": None,            # unlimited leagues
+        "unlimited_features": True,
         "live_draft": True,
-        "trade_analyzer": True,
-        "trade_finder": True,
-        "waiver_wire": True,
+        "cross_league_view": True,
         "injury_monitoring": True,
     },
 }
 
-# Credit costs per action.
-# Feature access (tier) is checked BEFORE credits.
-# Credits only deducted if feature is unlocked.
+# Credit costs per metered action — FREE TIER ONLY (paid tiers never debit).
+# START/SIT IS DELIBERATELY ABSENT: it auto-fires inside GET /matchup/league on
+# page mount, is pure Python ($0), and metering it would mean a silent debit on
+# NAVIGATION. It stays free (decided).
 CREDIT_COSTS: dict[str, int] = {
-    "trade_analysis": 10,   # ~$0.15 AI cost
-    "trade_finder":   20,   # ~$0.50 AI cost (Pro only)
-    "waiver_wire":     8,   # ~$0.05 AI cost
-    # Live draft: tier entitlement — NOT a credit cost
-    # Projections, draft board, news: always 0 (free)
+    "trade_analysis": 1,
+    "waiver_wire":    2,   # waiver RECOMMENDATIONS (the browse list is free)
+    "trade_finder":   5,
+    # Live draft: tier entitlement — NOT a credit cost, never metered.
 }
 
-# Credit purchase packs
+# Credit top-up packs. Add a pack here and everything else derives — config env
+# field (stripe_price_pack_<credits>), catalog attr map, seeder price, checkout
+# validation, public /pricing sheet, and the frontend BuyCreditsCard all read this.
 CREDIT_PACKS: dict[str, dict] = {
-    "small":  {"price_usd": 5,  "credits": 75},
-    "medium": {"price_usd": 10, "credits": 175},
-    "large":  {"price_usd": 25, "credits": 500},
+    "credits_100": {"price_usd": 5,  "credits": 100},
+    "credits_200": {"price_usd": 9,  "credits": 200},
+    "credits_500": {"price_usd": 25, "credits": 500},
 }
+
+
+def is_unlimited(tier: str) -> bool:
+    """True for paid tiers — metered features run with no debit at all."""
+    return bool(TIER_LIMITS.get(tier, {}).get("unlimited_features", False))
+
+
+def effective_tier(user: "User") -> str:
+    """The tier that ACTUALLY applies right now.
+
+    Season purchases are one-time entitlements with an expiry
+    (``tier_expires_at``); past it, the user is effectively free until the
+    lazy write-back (or the next purchase) lands. Monthly subscriptions have
+    no expiry (NULL) — Stripe's subscription.deleted webhook downgrades them.
+    """
+    from datetime import datetime, timezone
+
+    tier = user.tier
+    expires = getattr(user, "tier_expires_at", None)
+    if tier in ("standard", "pro") and expires is not None:
+        if datetime.now(timezone.utc) >= expires:
+            return "free"
+    return tier
 
 
 # ---------------------------------------------------------------------------
@@ -101,15 +147,23 @@ class User(Base):
 
     # Subscription
     tier: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="intro"
+        String(20), nullable=False, default="free"
     )
-    # "intro" | "standard" | "pro"
+    # "free" | "standard" | "pro"
+
+    # Season-purchase expiry: set ONLY for one-time season entitlements
+    # (tier holds until this instant, then effectively free). NULL for monthly
+    # subscriptions (Stripe's subscription.deleted is their downgrade) and for
+    # the free tier. Read via effective_tier().
+    tier_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Credits
     credits_remaining: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
     )
-    # Accumulate — never reset. Monthly credits ADD to balance.
+    # Accumulate — never reset. Spent only by the FREE tier on metered actions.
 
     # Browser extension auth — long-lived UUID token
     draft_token: Mapped[Optional[str]] = mapped_column(

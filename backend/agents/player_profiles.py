@@ -21,6 +21,7 @@ Key outputs per player:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -66,18 +67,30 @@ def profile_needs_refresh(
     team_updated_at: datetime | None = None,
     team_system_updated_at: datetime | None = None,
     stored_prompt_version: str | None = None,
+    stored_fingerprint: str | None = None,
+    current_fingerprint: str | None = None,
 ) -> bool:
     """Check if a player's profile needs regeneration.
 
-    Returns True when:
+    THE DIRTY TEST IS VALUE-DELTA, NOT TOUCH-TIME. When both fingerprints are
+    available, staleness fires only on a MATERIAL INPUT CHANGE — a sha256 over
+    the inputs the profile actually depends on (injury status value, team,
+    depth-chart order, dependency-flag values, high-conf beat-signal set, the 7
+    team_system fields the prompt uses; see compute_input_fingerprint). A bulk
+    sync that rewrites N rows with unchanged values keeps the fingerprint
+    identical → dirties ~0 players; a real injury flip changes exactly that
+    player's fingerprint. (The old timestamp comparison marked all 134
+    bulk-stamped players stale — defeating incrementality on heavy-news days.)
+
+    Always True (regardless of fingerprints) when:
       - No profile exists
-      - Profile is older than PROFILE_STALENESS_DAYS
-      - Dependency flags updated since last profile
-      - Injury profile updated since last profile
-      - Team changed since last profile (team_updated_at > profile.updated_at)
-      - Team system re-graded since last profile (OLine, QB, scheme changes)
-      - New high-confidence beat signals since last profile
       - Prompt version changed (system prompt was updated)
+      - Profile is older than PROFILE_STALENESS_DAYS (safety-net full refresh)
+
+    Legacy timestamp path: profiles written before the fingerprint existed have
+    no stored_fingerprint — they fall back to the old timestamp comparisons
+    (dep/injury/team/team-system updated_at, beat timestamps) and self-heal on
+    their next write, which stamps a fingerprint.
     """
     if profile_updated_at is None:
         return True
@@ -89,6 +102,11 @@ def profile_needs_refresh(
     if (now - profile_updated_at).days >= PROFILE_STALENESS_DAYS:
         return True
 
+    # Value-delta path — authoritative when a fingerprint was stored.
+    if stored_fingerprint is not None and current_fingerprint is not None:
+        return stored_fingerprint != current_fingerprint
+
+    # Legacy timestamp path (pre-fingerprint profiles only).
     if dep_updated_at and dep_updated_at > profile_updated_at:
         return True
 
@@ -106,6 +124,76 @@ def profile_needs_refresh(
             return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Material-input fingerprint — the value-delta dirty test
+# ---------------------------------------------------------------------------
+
+# The 7 team_system fields the profile prompt actually consumes
+# (_get_team_system) — NOT the whole row: regenerated prose (team notes) or
+# other unused columns must not dirty every player on the team.
+_TS_MATERIAL_FIELDS = (
+    "system_grade", "qb_name", "qb_tier", "rookie_qb_flag",
+    "compound_risk_flag", "oc_scheme", "red_zone_philosophy",
+)
+
+# Dependency-flag fields that carry meaning. `id` is EXCLUDED on purpose:
+# roster_changes deletes + reinserts flags, so identical flag VALUES get new
+# row ids — including ids would false-dirty on every re-run.
+_DEP_MATERIAL_FIELDS = (
+    "flag_type", "trigger_player_name", "trigger_condition",
+    "effect_on_value", "value_impact_pct", "confidence", "season_year",
+)
+
+# Injury-profile fields the profile context consumes (timestamps excluded).
+_INJ_MATERIAL_FIELDS = (
+    "injury_classification", "risk_modifier", "age_risk_multiplier",
+    "pattern_flags", "availability_risk", "return_uncertainty_flag",
+    "games_missed_3yr",
+)
+
+
+def _material_values(obj, fields: tuple[str, ...]) -> dict:
+    """Selected column VALUES of an ORM row, stringified for stable hashing.
+    Missing attributes read as None so model drift can't raise here."""
+    return {f: str(getattr(obj, f, None)) for f in fields}
+
+
+def compute_input_fingerprint(
+    player,
+    injury_profile=None,
+    dependencies=None,
+    beat_signal_ids=None,
+    team_system=None,
+) -> str:
+    """sha256 over the MATERIAL inputs a profile depends on. Deterministic
+    (sorted JSON, sorted collections) so a no-op rewrite hashes identically."""
+    material = {
+        # Player-level: the values that change a profile's meaning
+        "injury_status": player.injury_status,
+        "team": player.team_abbr,
+        "depth_chart_order": player.depth_chart_order,
+        "contract_year": getattr(player, "contract_year", None),
+        # Upstream agent outputs (values, never timestamps/row-ids)
+        "injury_profile": (
+            _material_values(injury_profile, _INJ_MATERIAL_FIELDS)
+            if injury_profile is not None else None
+        ),
+        "dependencies": sorted(
+            json.dumps(_material_values(d, _DEP_MATERIAL_FIELDS), sort_keys=True)
+            for d in (dependencies or [])
+        ),
+        # Beat signals are append-only → the id set IS the value set
+        "beat_signals": sorted(str(i) for i in (beat_signal_ids or [])),
+        "team_system": (
+            _material_values(team_system, _TS_MATERIAL_FIELDS)
+            if team_system is not None else None
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, default=str).encode()
+    ).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +717,7 @@ class PlayerProfilesAgent(BaseAgent):
         entity_id: str,
         input_data: dict,
         max_tokens: int = 800,
+        shared_context: str | None = None,
     ) -> str:
         """Call Sonnet through the shared semaphore (max 2 concurrent)."""
         async with self._sonnet_semaphore:
@@ -639,6 +728,7 @@ class PlayerProfilesAgent(BaseAgent):
                 entity_id=entity_id,
                 model=SONNET,
                 max_tokens=max_tokens,
+                shared_context=shared_context,
             )
 
     # ------------------------------------------------------------------
@@ -1468,21 +1558,24 @@ class PlayerProfilesAgent(BaseAgent):
     # Cache invalidation — skip players whose profiles are current
     # ------------------------------------------------------------------
 
-    async def _get_stale_players(self, team: str, force: bool = False) -> set[str] | None:
-        """Return names of players whose profiles need regeneration.
+    async def _get_stale_players(
+        self, team: str, force: bool = False,
+    ) -> tuple[set[str] | None, dict[str, str]]:
+        """Return (stale_names, fingerprints_by_name) for a team.
 
-        Returns None when force=True (meaning regenerate everyone).
+        stale_names is None when force=True (regenerate everyone). The
+        fingerprints — sha256 over each player's MATERIAL inputs (see
+        compute_input_fingerprint) — are ALWAYS computed: _write_profiles stamps
+        them onto every written profile so the next incremental run can do the
+        value-delta comparison instead of the old timestamp one.
         """
-        if force:
-            return None
-
         async with AsyncSessionLocal() as session:
             players = (
                 await session.execute(select(Player).where(Player.team_abbr == team))
             ).scalars().all()
 
             if not players:
-                return set()
+                return (None if force else set()), {}
 
             player_ids = [p.id for p in players]
 
@@ -1496,14 +1589,17 @@ class PlayerProfilesAgent(BaseAgent):
             for pr in result:
                 profiles[pr.player_id] = pr
 
-            # Latest dependency updated_at per player
+            # Dependency flags per player — VALUES feed the fingerprint;
+            # latest updated_at kept only for the legacy (pre-fingerprint) path.
             dep_latest: dict = {}
+            dep_rows: dict[object, list] = {}
             deps = (
                 await session.execute(
                     select(PlayerDependency).where(PlayerDependency.player_id.in_(player_ids))
                 )
             ).scalars().all()
             for d in deps:
+                dep_rows.setdefault(d.player_id, []).append(d)
                 existing = dep_latest.get(d.player_id)
                 if existing is None or d.updated_at > existing:
                     dep_latest[d.player_id] = d.updated_at
@@ -1520,8 +1616,10 @@ class PlayerProfilesAgent(BaseAgent):
             for i in inj_result:
                 injuries[i.player_id] = i
 
-            # High-confidence beat signals
+            # High-confidence beat signals — ids feed the fingerprint (append-
+            # only, so the id set IS the value set); times keep the legacy path.
             beat_times: dict[object, list[datetime]] = {}
+            beat_ids: dict[object, list] = {}
             bs_result = (
                 await session.execute(
                     select(BeatReporterSignal).where(
@@ -1532,11 +1630,14 @@ class PlayerProfilesAgent(BaseAgent):
             ).scalars().all()
             for s in bs_result:
                 beat_times.setdefault(s.player_id, []).append(s.flagged_at)
+                beat_ids.setdefault(s.player_id, []).append(s.id)
 
-            # Team system updated_at — keyed by team_abbr
+            # Team system — the ROW feeds the fingerprint (its 7 material
+            # fields); updated_at kept only for the legacy path.
             from backend.models.team_system import TeamSystem
             from backend.utils.seasons import get_current_season
             ts_updated: dict[str, datetime] = {}
+            ts_rows: dict[str, object] = {}
             team_abbrs = {p.team_abbr for p in players if p.team_abbr}
             if team_abbrs:
                 ts_result = (
@@ -1549,13 +1650,32 @@ class PlayerProfilesAgent(BaseAgent):
                 ).scalars().all()
                 for ts in ts_result:
                     ts_updated[ts.team_abbr] = ts.updated_at
+                    ts_rows[ts.team_abbr] = ts
+
+            # Current material-input fingerprint per player (always computed —
+            # stamped on write even under --force).
+            fingerprints: dict[str, str] = {
+                p.name: compute_input_fingerprint(
+                    p,
+                    injury_profile=injuries.get(p.id),
+                    dependencies=dep_rows.get(p.id, []),
+                    beat_signal_ids=beat_ids.get(p.id, []),
+                    team_system=ts_rows.get(p.team_abbr),
+                )
+                for p in players
+            }
+
+            if force:
+                return None, fingerprints
 
             stale: set[str] = set()
             for p in players:
                 prof = profiles.get(p.id)
                 stored_ver = None
+                stored_fp = None
                 if prof and prof.clean_season_baseline:
                     stored_ver = prof.clean_season_baseline.get("prompt_version")
+                    stored_fp = prof.clean_season_baseline.get("input_fingerprint")
                 if profile_needs_refresh(
                     profile_updated_at=prof.updated_at if prof else None,
                     dep_updated_at=dep_latest.get(p.id),
@@ -1564,10 +1684,12 @@ class PlayerProfilesAgent(BaseAgent):
                     team_updated_at=getattr(p, "team_updated_at", None),
                     team_system_updated_at=ts_updated.get(p.team_abbr),
                     stored_prompt_version=stored_ver,
+                    stored_fingerprint=stored_fp,
+                    current_fingerprint=fingerprints.get(p.name),
                 ):
                     stale.add(p.name)
 
-            return stale
+            return stale, fingerprints
 
     # ------------------------------------------------------------------
     # Per-team runner — two-pass: Haiku batch + Sonnet per-player
@@ -1589,7 +1711,7 @@ class PlayerProfilesAgent(BaseAgent):
         logger.info("Building player profiles context for %s", team)
 
         try:
-            stale_names = await self._get_stale_players(team, force)
+            stale_names, input_fingerprints = await self._get_stale_players(team, force)
 
             context = await self._build_team_context(team)
 
@@ -1659,6 +1781,28 @@ class PlayerProfilesAgent(BaseAgent):
                         )
 
             # Pass 2: Sonnet per-player (complex players)
+            #
+            # PROMPT-CACHE RESTRUCTURE: the team-level context (team, analysis
+            # year, team_system) is IDENTICAL for every Sonnet player of a team,
+            # yet was re-sent inside each per-player user prompt. It now rides in
+            # the Anthropic-cached system prefix (shared_context) so players 2..N
+            # of a team read it at 0.1x. This also pushes the cacheable prefix
+            # past Sonnet 4.6's 2048-token minimum (the 1854-token system prompt
+            # alone is UNDER it and would silently not cache). Byte-stability:
+            # sort_keys=True — a key-order flicker would invalidate the prefix.
+            # The model sees the same semantic content; input_data (and therefore
+            # the Rook agent_cache key) is unchanged.
+            team_shared_context = (
+                "TEAM CONTEXT (shared by all players below):\n"
+                + json.dumps(
+                    {
+                        "team": team,
+                        "analysis_year": context["analysis_year"],
+                        "team_system": context["team_system"],
+                    },
+                    sort_keys=True, default=str,
+                )
+            )
             for player in sonnet_players:
                 is_rookie_player = bool(player.get("is_rookie"))
 
@@ -1728,14 +1872,22 @@ class PlayerProfilesAgent(BaseAgent):
                         "player": player,
                     }
                     try:
+                        # Team context rides in the CACHED system prefix
+                        # (team_shared_context above); the user turn carries only
+                        # the per-player payload. input_data keeps the FULL
+                        # context so the agent_cache key is byte-identical to the
+                        # pre-restructure key (no cache invalidation).
                         raw = await self._call_sonnet_with_limit(
                             system=SONNET_SYSTEM_PROMPT,
                             user=(
-                                f"Project PPR for {player['name']} ({team}):\n\n"
-                                f"{json.dumps(player_context, default=str)}"
+                                f"Project PPR for {player['name']} ({team}) "
+                                f"using the shared TEAM CONTEXT above and this "
+                                f"player data:\n\n"
+                                f"{json.dumps({'player': player}, default=str)}"
                             ),
                             input_data=player_context,
                             entity_id=f"{team}_{player['name']}",
+                            shared_context=team_shared_context,
                         )
                         if raw:
                             prof = parse_json_output(raw)
@@ -1753,6 +1905,7 @@ class PlayerProfilesAgent(BaseAgent):
                 all_profiles, context, team,
                 stale_names=stale_names,
                 depth_players=context.get("depth_players", []),
+                input_fingerprints=input_fingerprints,
             )
             logger.info("%s: %d profiles written", team, written)
             return written
@@ -1866,12 +2019,18 @@ async def _write_profiles(
     profiles: list[dict], context: dict, team: str,
     stale_names: set[str] | None = None,
     depth_players: list[dict] | None = None,
+    input_fingerprints: dict[str, str] | None = None,
 ) -> int:
     """Write player_profiles for one team.
 
     When stale_names is provided, only deletes profiles for those players (selective refresh).
     When stale_names is None, deletes all team profiles before re-inserting (force/first run).
+
+    input_fingerprints ({player_name: sha256}) — the material-input fingerprint
+    computed at staleness-check time — is stamped into clean_season_baseline so
+    the NEXT run's dirty test is value-delta, not touch-time.
     """
+    input_fingerprints = input_fingerprints or {}
     if not profiles and not depth_players:
         return 0
 
@@ -2058,6 +2217,8 @@ async def _write_profiles(
             if clean_baseline is None:
                 clean_baseline = {}
             clean_baseline["prompt_version"] = PLAYER_PROFILES_PROMPT_VERSION
+            if pname in input_fingerprints:
+                clean_baseline["input_fingerprint"] = input_fingerprints[pname]
             record.clean_season_baseline      = clean_baseline
             record.anomalous_seasons_excluded = effective.get("anomalous_seasons_excluded") or []
             record.breakout_flag              = bool(effective.get("breakout_flag", False))
@@ -2124,6 +2285,8 @@ async def _write_profiles(
             session.add(record)
             record.role_classification = _derive_qb_role(clean_baseline)
             clean_baseline["prompt_version"] = PLAYER_PROFILES_PROMPT_VERSION
+            if pname in input_fingerprints:
+                clean_baseline["input_fingerprint"] = input_fingerprints[pname]
             record.clean_season_baseline = clean_baseline
             record.anomalous_seasons_excluded = []
             record.is_rookie = bool(ctx_player.get("is_rookie", False))
@@ -2153,7 +2316,13 @@ async def _write_profiles(
             record = PlayerProfile(player_id=player_id, season_year=analysis_year)
             session.add(record)
             record.role_classification = depth["role_classification"]
-            record.clean_season_baseline = {"prompt_version": PLAYER_PROFILES_PROMPT_VERSION}
+            record.clean_season_baseline = {
+                "prompt_version": PLAYER_PROFILES_PROMPT_VERSION,
+                **(
+                    {"input_fingerprint": input_fingerprints[pname]}
+                    if pname in input_fingerprints else {}
+                ),
+            }
             record.anomalous_seasons_excluded = []
             record.is_rookie = False
             record.profile_source = "nfl_history"

@@ -355,10 +355,9 @@ async def analyze(
     # (so we can test tier gating + credit spend against the demo league).
     enforce = (not demo) or trade_demo_enforce_gates()
 
-    # 1. FEATURE GATE (403) — before anything else.
-    if enforce:
-        from backend.services.feature_service import FeatureService
-        FeatureService.check_feature_access(user, "trade_analyzer")
+    # 1. (Gate-semantics flip) NO tier gate — metered features are open to every
+    #    tier; the free tier pays credits, paid tiers are unlimited. The charge
+    #    happens at step 4, always BEFORE any compute.
 
     # 2. Resolve the league + per-player engine values (501 if real not ready —
     #    still before any credit deduction).
@@ -370,9 +369,11 @@ async def analyze(
     except TradeValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # 4. CREDIT DEDUCT (402) — only now, the analysis is about to run.
+    # 4. METERED CHARGE (402) — only now, the analysis is about to run. Paid
+    #    tiers: no-op. Free tier: debits CREDIT_COSTS["trade_analysis"], or 402s
+    #    BEFORE any compute/LLM work.
     if enforce:
-        await credit_service.deduct(user, "trade_analysis", agent_name="trade_analyzer")
+        await credit_service.charge_metered(user, "trade_analysis", agent_name="trade_analyzer")
 
     # 5. Deterministic verdict + Sonnet rationale. Thread the league's REAL lineup
     #    shape (from synced roster_slots) so a non-3-WR/superflex league evaluates on
@@ -414,10 +415,8 @@ async def ideas(
     demo = trade_demo_enabled()
     enforce = (not demo) or trade_demo_enforce_gates()
 
-    # 1. FEATURE GATE (403, trade_finder = pro-only) — before anything.
-    if enforce:
-        from backend.services.feature_service import FeatureService
-        FeatureService.check_feature_access(user, "trade_finder")
+    # 1. (Gate-semantics flip) trade_finder is no longer pro-only — every tier
+    #    can run it; free pays CREDIT_COSTS["trade_finder"] at step 3.
 
     # 2. League + per-player values (501 if real not ready — before any deduct).
     state, values, roster_limit, _wire = await load_league_for_analysis(db, user, demo)
@@ -428,9 +427,10 @@ async def ideas(
 
     injury_by_id = _build_injury_map(state)
 
-    # 3. CREDIT DEDUCT (402, 20cr) — only now, generation is about to run.
+    # 3. METERED CHARGE (402) — only now, generation is about to run. Paid: no-op;
+    #    free: debit or 402 BEFORE any compute/LLM.
     if enforce:
-        await credit_service.deduct(user, "trade_finder", agent_name="trade_proposals")
+        await credit_service.charge_metered(user, "trade_finder", agent_name="trade_proposals")
 
     # 4. Generate candidates (LLM, deterministic fallback) → filter through the
     #    four-condition EDGE BAND (slice 4) → rank by your_net → cap (never-pad).
@@ -504,13 +504,10 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
     ``trade_value`` (the SAME value_engine function the verdict chips read) so picker
     values match verdict values exactly — one scale, no split-brain. Demo-only: with
     TRADE_DEMO_MODE off it 404s (no real-league exposure here). Adds NO trade logic."""
+    # Un-gated: demo ON serves the seeded demo league; demo OFF serves the user's real
+    # synced league via the same seam (which raises UndraftedLeagueError → 409 before
+    # the value path when the league hasn't drafted, and 404 when none is synced).
     demo = trade_demo_enabled()
-    if not demo:
-        raise HTTPException(
-            status_code=404,
-            detail="trade demo league is only available under TRADE_DEMO_MODE",
-        )
-
     state, values, _, wire = await load_league_for_analysis(db, user, demo)
     # ONE replacement per league (waiver-aware), passed into the shared trade_value —
     # exactly what analyze_trade does, so a player reads identically in both sections.

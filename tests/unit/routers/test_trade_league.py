@@ -24,6 +24,7 @@ def _user():
     u = MagicMock(spec=User)
     u.id = uuid.uuid4()
     u.tier = "intro"
+    u.tier_expires_at = None
     u.credits_remaining = 0
     return u
 
@@ -57,8 +58,16 @@ async def _get():
         return await ac.get("/api/trade/league")
 
 
-async def test_league_404_when_demo_off(monkeypatch):
+async def test_league_404_when_no_synced_league(monkeypatch):
+    """Un-gated: demo off + no synced league → 404 (real seam returns None), NOT a
+    'demo only' gate."""
     monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _none(db, u):
+        return None
+    monkeypatch.setattr(
+        "backend.services.trade.real_league_source.build_real_league_source", _none
+    )
     app.dependency_overrides[get_current_user] = lambda: _user()
     app.dependency_overrides[get_db] = lambda: None
     try:
@@ -66,6 +75,27 @@ async def test_league_404_when_demo_off(monkeypatch):
     finally:
         app.dependency_overrides.clear()
     assert resp.status_code == 404
+
+
+async def test_league_409_undrafted(monkeypatch):
+    """Un-gated: demo off + undrafted league → 409 error=undrafted_league (the guard
+    short-circuits before the value path)."""
+    from backend.core.exceptions import UndraftedLeagueError
+    monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _undrafted(db, u):
+        raise UndraftedLeagueError("draft_date")
+    monkeypatch.setattr(
+        "backend.services.trade.real_league_source.build_real_league_source", _undrafted
+    )
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "undrafted_league"
 
 
 async def test_league_returns_teams_rosters_and_values(monkeypatch):

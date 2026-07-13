@@ -7,16 +7,24 @@ import { apiClient } from './client'
  * NAME — never a price id or amount (the server maps + binds the customer).
  */
 
-// Subscription checkout for a tier. Returns the Checkout URL.
-export async function createCheckout(tier) {
-  const { data } = await apiClient.post('/billing/checkout', { tier })
+// Tier checkout. interval: 'monthly' (recurring sub) | 'season' (one-time
+// season pass). Returns the Checkout URL.
+export async function createCheckout(tier, interval = 'monthly') {
+  const { data } = await apiClient.post('/billing/checkout', { tier, interval })
   return data.url
 }
 
-// One-time credit-pack checkout (small|medium|large). Returns the Checkout URL.
+// One-time credit-pack checkout. Returns the Checkout URL.
 export async function createPackCheckout(pack) {
   const { data } = await apiClient.post('/billing/checkout-pack', { pack })
   return data.url
+}
+
+// PUBLIC pricing sheet — tiers/prices/credit costs/packs, served straight from
+// backend/models/user.py (the single source of truth). Never hardcode these.
+export async function fetchPricing() {
+  const { data } = await apiClient.get('/billing/pricing')
+  return data
 }
 
 // Customer Portal session (manage/cancel/update card). Returns the portal URL.

@@ -370,7 +370,7 @@ async def test_breakout_flag_year2_wr():
         }],
     )
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -435,7 +435,7 @@ async def test_breakout_flag_depth_chart_departure():
         }],
     )
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -479,7 +479,7 @@ async def test_role_classification_wr1_alpha():
         }],
     )
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -522,7 +522,7 @@ async def test_role_classification_committee_back():
         }],
     )
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", new_callable=AsyncMock, return_value=model_output), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -542,8 +542,10 @@ async def test_system_grade_inherited_from_team_systems():
 
     captured_user_message: list[str] = []
 
-    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None):
-        captured_user_message.append(user)
+    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None, shared_context=None):
+        # Team context now rides in the CACHED system prefix (shared_context);
+        # capture the full model-visible content, not just the user turn.
+        captured_user_message.append(user + "\n" + (shared_context or ""))
         return json.dumps([_make_profile("Tyreek Hill", "wr1_alpha")])
 
     context_system = {
@@ -556,7 +558,7 @@ async def test_system_grade_inherited_from_team_systems():
         "red_zone_philosophy": "wr1",
     }
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", side_effect=_capture_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock,
                       return_value=_mock_context("MIA", team_system=context_system,
@@ -597,7 +599,7 @@ async def test_dependency_flags_attached_to_profile():
 
     captured_input_data: list[dict] = []
 
-    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None):
+    async def _capture_call(system, user, input_data, entity_id, model=None, max_tokens=None, shared_context=None):
         captured_input_data.append(input_data)
         # Sonnet per-player returns a single object; Haiku returns array
         if model:
@@ -624,7 +626,7 @@ async def test_dependency_flags_attached_to_profile():
         ],
     }
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", side_effect=_capture_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock,
                       return_value=_mock_context("LAC", players=[lac_player])), \
@@ -674,7 +676,7 @@ async def test_single_api_call_per_team():
     agent = PlayerProfilesAgent()
     call_count = 0
 
-    async def _mock_call(system, user, input_data, entity_id, model=None, max_tokens=None):
+    async def _mock_call(system, user, input_data, entity_id, model=None, max_tokens=None, shared_context=None):
         nonlocal call_count
         call_count += 1
         return json.dumps([_make_profile("CeeDee Lamb", "wr1_alpha")])
@@ -695,7 +697,7 @@ async def test_single_api_call_per_team():
         }],
     )
 
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "call_once", side_effect=_mock_call), \
          patch.object(agent, "_build_team_context", new_callable=AsyncMock, return_value=context), \
          patch("backend.agents.player_profiles._write_profiles", new_callable=AsyncMock, return_value=1):
@@ -1288,7 +1290,7 @@ async def test_run_for_team_empty_players_returns_zero():
         "team": "LAC", "analysis_year": 2026,
         "team_system": {}, "players": [],
     }
-    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=None), \
+    with patch.object(agent, "_get_stale_players", new_callable=AsyncMock, return_value=(None, {})), \
          patch.object(agent, "_build_team_context",
                       new_callable=AsyncMock, return_value=empty_context):
         result = await agent.run_for_team("LAC")

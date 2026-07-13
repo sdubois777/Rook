@@ -20,6 +20,7 @@ def _make_user(uid=None):
     user.external_id = "clerk-test"
     user.email = "test@test.com"
     user.tier = "standard"
+    user.tier_expires_at = None
     return user
 
 

@@ -9,6 +9,9 @@ vi.mock('../api/billing', () => ({
   redirectTo: vi.fn(),
 }))
 
+vi.mock('../hooks/usePricing', () => ({ usePricing: () => pricingHookValue() }))
+
+import { pricingHookValue } from './pricingMock'
 import BillingNotice from '../components/BillingNotice'
 import { createCheckout, createPackCheckout, redirectTo } from '../api/billing'
 

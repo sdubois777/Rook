@@ -46,7 +46,7 @@ class UserService:
             await self._repo.commit()
             return existing, False
 
-        initial_tier = "intro"
+        initial_tier = "free"
         signup_bonus = TIER_LIMITS[initial_tier].get(
             "credits_signup_bonus", 0
         )

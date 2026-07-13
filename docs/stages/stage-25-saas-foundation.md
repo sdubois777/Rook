@@ -259,9 +259,9 @@ CREATE TABLE users (
   email         VARCHAR(255) UNIQUE NOT NULL,
   display_name  VARCHAR(100),
   tier          VARCHAR(20) DEFAULT 'free',
-  -- free | starter | pro | league
-  credits_remaining INTEGER DEFAULT 50,
-  credits_monthly_limit INTEGER DEFAULT 50,
+  -- Tier names/limits: see backend/models/user.py (TIER_LIMITS) — the single
+  -- source of truth. (A stale free|starter|pro|league list lived here; deleted.)
+  credits_remaining INTEGER DEFAULT 0,
   created_at    TIMESTAMP DEFAULT NOW(),
   updated_at    TIMESTAMP DEFAULT NOW()
 );
@@ -383,6 +383,11 @@ class ScopedDB:
 ## Part 5 — Credit deduction middleware
 
 Before any expensive operation, check and deduct credits:
+
+> **SUPERSEDED:** the tier/credit/pack numbers below are a HISTORICAL
+> snapshot from this stage's build. The live definition is
+> `backend/models/user.py` (TIER_LIMITS / CREDIT_COSTS / CREDIT_PACKS) —
+> the single source of truth. Do not copy values from here.
 
 ```python
 # backend/middleware/credits.py

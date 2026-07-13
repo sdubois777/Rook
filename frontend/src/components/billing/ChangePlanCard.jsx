@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { previewChangePlan, confirmChangePlan } from '../../api/billing'
-import { TIER_LABELS } from '../../lib/constants'
+import { usePricing } from '../../hooks/usePricing'
 
-const TIER_ORDER = ['intro', 'standard', 'pro']
 
 function formatUsd(cents) {
   return `$${(cents / 100).toFixed(2)}`
@@ -26,6 +25,12 @@ function formatDate(iso) {
  * parent can poll /account/me for the flipped tier.
  */
 export default function ChangePlanCard({ currentTier, onApplied }) {
+  const { tiers, tierLabel } = usePricing()
+  // Plan-change targets: every tier except the current one. Free is a valid
+  // DOWNGRADE target — confirming it cancels the subscription at period end and
+  // the webhook drops the tier to free. (Season passes are purchases via
+  // checkout, not plan changes, so they never appear here.)
+  const TIER_ORDER = tiers.map((t) => t.id)
   const [target, setTarget] = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult] = useState(null)
@@ -77,8 +82,8 @@ export default function ChangePlanCard({ currentTier, onApplied }) {
       {result && (
         <p className="text-sm text-green-400 mb-3">
           {result.status === 'applied'
-            ? `Upgraded to ${TIER_LABELS[result.target_tier] || result.target_tier}.`
-            : `Scheduled: ${TIER_LABELS[result.target_tier] || result.target_tier} on ${formatDate(result.effective)}.`}
+            ? `Upgraded to ${tierLabel(result.target_tier)}.`
+            : `Scheduled: ${tierLabel(result.target_tier)} on ${formatDate(result.effective)}.`}
         </p>
       )}
 
@@ -91,7 +96,7 @@ export default function ChangePlanCard({ currentTier, onApplied }) {
               disabled={busy}
               className="text-sm border border-gray-700 hover:border-brand text-gray-200 px-3 py-2 rounded-lg disabled:opacity-50 transition-colors"
             >
-              Change to {TIER_LABELS[t] || t}
+              Change to {tierLabel(t)}
             </button>
           ))}
         </div>
@@ -105,25 +110,25 @@ export default function ChangePlanCard({ currentTier, onApplied }) {
               <span className="font-semibold">{formatUsd(preview.amount_due_today)}</span>{' '}
               today and move to{' '}
               <span className="font-semibold">
-                {TIER_LABELS[preview.target_tier] || preview.target_tier}
+                {tierLabel(preview.target_tier)}
               </span>{' '}
               now.
             </p>
           ) : (
             <>
               <p className="text-sm text-gray-200">
-                You'll keep {TIER_LABELS[currentTier] || currentTier} until{' '}
+                You'll keep {tierLabel(currentTier)} until{' '}
                 <span className="font-semibold">{formatDate(preview.effective)}</span>, then
                 move to{' '}
                 <span className="font-semibold">
-                  {TIER_LABELS[preview.target_tier] || preview.target_tier}
+                  {tierLabel(preview.target_tier)}
                 </span>
                 . No charge today.
               </p>
               {preview.max_active_leagues != null &&
                 preview.active_leagues > preview.max_active_leagues && (
                   <p className="mt-2 text-sm text-yellow-500">
-                    {TIER_LABELS[preview.target_tier] || preview.target_tier} allows{' '}
+                    {tierLabel(preview.target_tier)} allows{' '}
                     {preview.max_active_leagues} active leagues; you have{' '}
                     {preview.active_leagues}. You'll choose which stay active when this
                     takes effect on {formatDate(preview.effective)}.
