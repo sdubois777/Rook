@@ -393,6 +393,31 @@ async def test_yahoo_disconnect_removes_credentials():
             app.dependency_overrides.clear()
 
 
+@pytest.mark.asyncio
+async def test_espn_disconnect_removes_credentials():
+    """ESPN disconnect mirrors Yahoo — same canonical repo.disconnect, platform='espn'."""
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    with patch("backend.routers.auth.CredentialRepository") as MockRepo:
+        mock_repo = AsyncMock()
+        MockRepo.return_value = mock_repo
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test",
+            ) as ac:
+                resp = await ac.delete("/api/auth/espn/disconnect")
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "disconnected", "platform": "espn"}
+            mock_repo.disconnect.assert_called_once_with(user.id, "espn")
+        finally:
+            app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 tests — UUID cast + FK race condition
 # ---------------------------------------------------------------------------

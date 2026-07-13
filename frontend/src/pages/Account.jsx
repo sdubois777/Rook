@@ -44,18 +44,75 @@ function ManageSubscriptionButton() {
 }
 
 async function fetchAccountData() {
-  const [me, credits, leagues, tokenResp] = await Promise.all([
+  const [me, credits, leagues, tokenResp, creds] = await Promise.all([
     apiClient.get('/account/me'),
     apiClient.get('/account/credits'),
     apiClient.get('/account/leagues'),
     apiClient.get('/account/draft-token').catch(() => ({ data: {} })),
+    apiClient.get('/account/credentials').catch(() => ({ data: { platforms: [] } })),
   ])
   return {
     user: me.data,
     credits: credits.data,
     leagues: leagues.data,
     draftToken: tokenResp.data.draft_token || null,
+    connectedPlatforms: creds.data.platforms || [],
   }
+}
+
+const PLATFORM_LABELS = { yahoo: 'Yahoo', espn: 'ESPN', sleeper: 'Sleeper' }
+
+// Per-platform credential disconnect (delete stored OAuth tokens / ESPN cookies).
+// Mirrors the Yahoo disconnect, parameterized by platform. Sleeper stores no secret
+// (public API), so it's shown as connected with nothing to revoke.
+function ConnectedPlatforms({ platforms, onChange }) {
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState('')
+
+  const disconnect = async (platform) => {
+    if (!window.confirm(
+      `Disconnect ${PLATFORM_LABELS[platform] || platform}?\n\n` +
+      `This deletes the stored credentials Rook uses to sync this platform. Your ` +
+      `already-synced leagues stay, but can't re-sync until you reconnect.`
+    )) return
+    setBusy(platform)
+    setError('')
+    try {
+      await apiClient.delete(`/auth/${platform}/disconnect`)
+      onChange()
+    } catch (err) {
+      setError(err.response?.data?.message || 'Disconnect failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const revocable = platforms.filter((p) => p === 'yahoo' || p === 'espn')
+  if (revocable.length === 0) return null
+
+  return (
+    <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+      <h2 className="text-lg font-semibold mb-2">Connected platforms</h2>
+      <p className="text-sm text-gray-400 mb-4">
+        Credentials Rook stores to sync your leagues. Disconnect to delete them.
+      </p>
+      <div className="space-y-2">
+        {revocable.map((p) => (
+          <div key={p} className="flex items-center justify-between">
+            <span className="text-sm text-gray-200">{PLATFORM_LABELS[p] || p}</span>
+            <button
+              onClick={() => disconnect(p)}
+              disabled={busy !== null}
+              className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50 transition-colors"
+            >
+              {busy === p ? 'Disconnecting…' : 'Disconnect'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+    </section>
+  )
 }
 
 const TIER_COLORS = {
@@ -277,7 +334,7 @@ export default function AccountPage() {
     )
   }
 
-  const { user, credits, leagues, draftToken } = data
+  const { user, credits, leagues, draftToken, connectedPlatforms } = data
 
   const handleRevokeToken = async () => {
     await apiClient.post('/account/draft-token/revoke')
@@ -407,6 +464,12 @@ export default function AccountPage() {
         {draftToken && (
           <DraftTokenSection token={draftToken} onRevoke={handleRevokeToken} />
         )}
+
+        {/* Connected platforms — per-platform credential disconnect */}
+        <ConnectedPlatforms
+          platforms={connectedPlatforms || []}
+          onChange={() => queryClient.invalidateQueries({ queryKey: ['account'] })}
+        />
 
         {/* Leagues */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">

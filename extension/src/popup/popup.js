@@ -68,7 +68,7 @@ async function showMainView() {
       ${platformRows(platforms)}
     </div>
 
-    <div class="debug">
+    ${__DEV__ ? `<div class="debug">
       <div class="debug-row">
         <span>Capture mode</span>
         <label class="toggle">
@@ -79,7 +79,7 @@ async function showMainView() {
       <button class="btn-link" id="export-btn" style="margin-top:8px">
         Export captured frames
       </button>
-    </div>
+    </div>` : ''}
   `
 
   document.getElementById('disconnect-btn').addEventListener('click', async () => {
@@ -87,24 +87,27 @@ async function showMainView() {
     showTokenEntry()
   })
 
-  document.getElementById('capture-toggle').addEventListener('change', async (e) => {
-    await browser.storage.local.set({ [STORAGE_KEYS.CAPTURE_MODE]: e.target.checked })
-  })
+  // Debug capture — DEV build only (tree-shaken out of the store build).
+  if (__DEV__) {
+    document.getElementById('capture-toggle').addEventListener('change', async (e) => {
+      await browser.storage.local.set({ [STORAGE_KEYS.CAPTURE_MODE]: e.target.checked })
+    })
 
-  document.getElementById('export-btn').addEventListener('click', async () => {
-    const { captured_frames } = await browser.storage.local.get(STORAGE_KEYS.CAPTURED_FRAMES)
-    if (!captured_frames || captured_frames.length === 0) {
-      alert('No captured frames yet. Enable capture mode and open a draft room.')
-      return
-    }
-    const blob = new Blob([JSON.stringify(captured_frames, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `rook-frames-${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
-  })
+    document.getElementById('export-btn').addEventListener('click', async () => {
+      const { captured_frames } = await browser.storage.local.get(STORAGE_KEYS.CAPTURED_FRAMES)
+      if (!captured_frames || captured_frames.length === 0) {
+        alert('No captured frames yet. Enable capture mode and open a draft room.')
+        return
+      }
+      const blob = new Blob([JSON.stringify(captured_frames, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `rook-frames-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    })
+  }
 }
 
 /* ── Platform status ── */

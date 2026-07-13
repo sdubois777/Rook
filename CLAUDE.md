@@ -786,10 +786,16 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
   re-verify against a real round-turn capture to lock.
   Fixtures: extension/test/fixtures/auction/snake-
   {onclock,waiting,postpick}.html.
-- Yahoo passive sync removed — Yahoo CSP
-  blocks content script injection in both
-  Chrome and Firefox. window.__rook__
-  detection still works for LeagueSetup.
+- Passive sync runs for BOTH Yahoo AND ESPN
+  (shipped behavior). yahoo_auth.js calls
+  triggerPassiveSync('yahoo') on every Yahoo
+  fantasy page visit; espn_auth.js calls
+  triggerPassiveSync('espn'); the backend
+  /leagues/sync-platform/{platform} accepts
+  yahoo+espn (30-min debounce). window.__rook__
+  detection also works for LeagueSetup. (The
+  isolated content script injects fine; page CSP
+  only blocks the MAIN-world WS interceptor.)
 - my_nomination/my_bid console.error events
   relayed to UI but not yet folded into
   engine DraftStateManager budget/roster
