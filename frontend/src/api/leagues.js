@@ -19,3 +19,15 @@ export async function resolveLeagueLimit(keepIds) {
   })
   return data
 }
+
+/**
+ * Manual team selection — recovery when exact-identity auto-detect fails.
+ * PATCHes the canonical user_leagues.my_team_id with a MANUAL origin the binder
+ * won't clobber. Returns the updated binding.
+ */
+export async function setMyTeam(leagueId, teamId) {
+  const { data } = await apiClient.patch(`/leagues/${leagueId}/my-team`, {
+    team_id: teamId,
+  })
+  return data
+}

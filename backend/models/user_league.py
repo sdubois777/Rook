@@ -76,6 +76,12 @@ class UserLeague(Base):
     # league (fail-loud: downstream surfaces "couldn't identify your team", never guesses).
     my_team_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # How my_team_id was set: 'auto' (the exact-identity binder), 'manual' (the user
+    # picked their team after auto-detect failed), or NULL (never bound). A MANUAL pick
+    # is authoritative — a later sync's auto-bind NEVER clobbers it (recovery must not
+    # silently undo itself); a disagreeing auto-bind is surfaced, not applied.
+    my_team_id_source: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
     # Draft schedule — the real synced draft date/time (NOT hardcoded). Pulled per
     # platform (Sleeper draft.start_time / ESPN draftSettings.date / Yahoo draft_time).
     draft_date: Mapped[Optional[datetime]] = mapped_column(

@@ -163,7 +163,23 @@ class LeagueSyncService:
                     user_league.id, user_league.platform,
                     bool(identity) or any(r.is_me for r in rosters), len(rosters),
                 )
-            user_league.my_team_id = bound
+            # CLOBBER PROTECTION + PRECEDENCE: a MANUAL pick is authoritative. A later
+            # sync's auto-bind never overwrites it (else the recovery silently undoes
+            # itself and the user is stuck again). If a SUCCESSFUL auto-bind DISAGREES
+            # with the manual pick, we surface it loudly but KEEP the manual pick — the
+            # user is the authority on their own identity (and the exact-match binder can
+            # still land on a co-owner / shared identity). Auto/unset leagues bind normally.
+            if user_league.my_team_id_source == "manual":
+                if bound is not None and str(bound) != str(user_league.my_team_id):
+                    logger.warning(
+                        "league %s (%s): auto-bind resolved team %s but the user's MANUAL "
+                        "pick is %s — KEEPING the manual pick (user is authoritative).",
+                        user_league.id, user_league.platform, bound, user_league.my_team_id,
+                    )
+                # manual my_team_id + source unchanged
+            else:
+                user_league.my_team_id = bound
+                user_league.my_team_id_source = "auto" if bound is not None else None
         except Exception as exc:
             logger.warning(
                 "league %s (%s): is_me binding failed (%s) — left unbound",

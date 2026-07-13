@@ -36,7 +36,7 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import select
 
-from backend.core.exceptions import UndraftedLeagueError
+from backend.core.exceptions import UnboundTeamError, UndraftedLeagueError
 from backend.integrations.platform_models import TeamRoster
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
@@ -320,6 +320,20 @@ async def build_real_league_source(
             league.id, league.platform,
         )
         raise UndraftedLeagueError("inferred")
+
+    # UNBOUND-TEAM GUARD: the league is drafted but exact-identity binding matched no
+    # team (league.my_team_id is null and the caller gave no override). We must NOT
+    # guess — instead hand the UI the team list so the USER picks their team (persisted
+    # manually via PATCH /leagues/{id}/my-team). Keyed purely on my_team_id (which every
+    # caller controls), so it's not gated on ``injected`` — an injected caller that wants
+    # a bound team passes my_team_id.
+    if my_team_id is None and teams:
+        logger.info("real league %s (%s): identity unbound — offering team picker (%d teams)",
+                    league.id, league.platform, len(teams))
+        raise UnboundTeamError(
+            league.id,
+            [{"team_id": t.team_id, "name": t.team_name} for t in teams],
+        )
 
     roster_slots = league.roster_slots
     roster_limit = _roster_limit_from_slots(roster_slots)

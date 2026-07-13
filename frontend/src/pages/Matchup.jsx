@@ -15,7 +15,8 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Swords, ArrowLeftRight, Trophy, Scale, ClipboardList, ArrowRightLeft, Stethoscope, AlertTriangle, Waves } from 'lucide-react'
 import { fetchMatchupLeague } from '../api/matchup'
-import { leagueLoadMessage } from '../lib/leagueError'
+import { leagueLoadMessage, isUnboundTeam, unboundInfo } from '../lib/leagueError'
+import TeamPicker from '../components/TeamPicker'
 import PositionBadge from '../components/shared/PositionBadge'
 import PlayerName from '../components/shared/PlayerName'
 
@@ -299,7 +300,7 @@ export default function Matchup() {
   const navigate = useNavigate()
   const [myTeamId, setMyTeamId] = useState(null)
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['matchup-league', myTeamId],
     queryFn: () => fetchMatchupLeague({ myTeamId }),
     retry: false,
@@ -313,6 +314,12 @@ export default function Matchup() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading matchup…</div>
   if (error) {
+    if (isUnboundTeam(error)) {
+      const info = unboundInfo(error)
+      return (
+        <TeamPicker leagueId={info.leagueId} teams={info.teams} onPicked={() => refetch()} />
+      )
+    }
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">

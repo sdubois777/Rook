@@ -516,3 +516,53 @@ async def test_espn_extension_connect_requires_draft_token_header():
             json={"league_id": "999", "espn_s2": "x", "swid": "{SWID}"},
         )
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# PATCH /leagues/{id}/my-team — manual team selection (bind-failure recovery)
+# ---------------------------------------------------------------------------
+
+async def _patch_my_team(user, league, team_id):
+    from backend.core.dependencies import get_current_user, get_db
+    mock_db = AsyncMock()
+    repo = MagicMock()
+    repo.get_user_league = AsyncMock(return_value=league)
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("backend.routers.league_connect.LeagueRepository", return_value=repo):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                return await ac.patch(f"/api/leagues/{league.id}/my-team", json={"team_id": team_id})
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_set_my_team_writes_manual_origin():
+    """A valid pick writes my_team_id via the CANONICAL column with source='manual'."""
+    user = _make_user()
+    league = _make_league(user.id, platform="sleeper")
+    league.manager_map = {"2": "Alice", "5": "Bob"}
+    league.my_team_id = None
+    league.my_team_id_source = None
+
+    resp = await _patch_my_team(user, league, "5")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["my_team_id"] == "5"
+    assert body["my_team_id_source"] == "manual"
+    # written to the SAME column the auto-binder uses (one identity write path)
+    assert league.my_team_id == "5"
+    assert league.my_team_id_source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_set_my_team_rejects_team_not_in_league():
+    """The pick is validated against the league's real teams — never a free-form guess."""
+    user = _make_user()
+    league = _make_league(user.id, platform="sleeper")
+    league.manager_map = {"2": "Alice", "5": "Bob"}
+
+    resp = await _patch_my_team(user, league, "99")
+    assert resp.status_code == 422
+    assert league.my_team_id != "99"
