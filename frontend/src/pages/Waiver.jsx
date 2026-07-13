@@ -13,7 +13,8 @@ import {
   Waves, TrendingUp, TrendingDown, Minus, ArrowRight, Newspaper, Target, Shield,
 } from 'lucide-react'
 import { fetchWaiverLeague, fetchWaiverRecommendations, fetchWaiverWire } from '../api/waiver'
-import { leagueLoadMessage } from '../lib/leagueError'
+import { leagueLoadMessage, isUnboundTeam, unboundInfo } from '../lib/leagueError'
+import TeamPicker from '../components/TeamPicker'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
@@ -260,6 +261,16 @@ export default function Waiver() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading waiver wire…</div>
   if (error) {
+    if (isUnboundTeam(error)) {
+      const info = unboundInfo(error)
+      return (
+        <TeamPicker
+          leagueId={info.leagueId}
+          teams={info.teams}
+          onPicked={() => qc.invalidateQueries({ queryKey: ['waiver-league'] })}
+        />
+      )
+    }
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">

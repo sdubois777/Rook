@@ -34,6 +34,22 @@ class ConflictError(AppError):
     error_code = "conflict"
 
 
+class UnboundTeamError(AppError):
+    """Exact-identity binding matched NO team (auto-detect failed) — we must NOT guess.
+    Instead of a dead-end 409, this carries the league id + the full team list so the
+    UI can let the USER pick their team (the answer the system can't infer). Raised
+    before the value path; a manual pick then persists via PATCH /leagues/{id}/my-team.
+    """
+    status_code = 409
+    error_code = "unbound_team"
+
+    def __init__(self, league_id: str, teams: list[dict[str, Any]]):
+        super().__init__(
+            "We couldn't identify your team in this league. Pick your team to continue.",
+            {"league_id": str(league_id), "teams": teams},
+        )
+
+
 class UndraftedLeagueError(AppError):
     """The synced league hasn't drafted yet — trade/waiver/matchup can't run over
     empty rosters. Raised BEFORE the value path so no compute/charge happens.
