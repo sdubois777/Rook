@@ -1,6 +1,12 @@
 import { Link } from 'react-router-dom'
+import { usePricing } from '../../hooks/usePricing'
 
 export default function LandingFooter() {
+  const { tierById } = usePricing()
+  // Credits derived from the pricing sheet (user.py) — never hardcoded. Rook has
+  // a permanent free tier (nothing expires), so the CTA never implies a clock.
+  const freeCredits = tierById?.free?.credits_signup_bonus
+
   return (
     <footer className="border-t border-gray-800">
       {/* Final CTA */}
@@ -9,9 +15,8 @@ export default function LandingFooter() {
           Ready to stop guessing?
         </h2>
         <p className="text-gray-400 mb-8 max-w-lg mx-auto">
-          Start your free trial — no credit card required. 25 free credits.
-          Browse every player projection. Connect your league when you&apos;re
-          ready.
+          Free forever — no credit card{freeCredits ? `, ${freeCredits} credits to start` : ''}.
+          Browse every player value. Connect your league when you&apos;re ready.
         </p>
         <Link
           to="/sign-up"
