@@ -30,7 +30,7 @@ export default function TeamDetail() {
   }
 
   return (
-    <div className="max-w-5xl">
+    <div>
       {/* Back button */}
       <button
         onClick={() => navigate('/teams')}

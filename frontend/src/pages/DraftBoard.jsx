@@ -477,7 +477,7 @@ export default function DraftBoard() {
   const groupLabel = isRoundGroup ? 'Round' : 'Tier'
 
   return (
-    <div className="max-w-6xl">
+    <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
         <div className="flex items-center gap-3 no-print">
