@@ -447,6 +447,42 @@ async def resync_league(
     }
 
 
+class SetMyTeamRequest(BaseModel):
+    team_id: str
+
+
+@router.patch("/{league_id}/my-team")
+async def set_my_team(
+    league_id: uuid.UUID,
+    body: SetMyTeamRequest,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Manual team selection — the recovery when exact-identity auto-detect fails.
+
+    Writes the user's pick to the EXISTING ``my_team_id`` column (ONE identity write
+    path) with a MANUAL origin the binder respects: a later sync's auto-bind never
+    clobbers it. This is NOT a free switcher — the team_id must be a real team in the
+    synced league (validated against the persisted team list); the system still never
+    guesses, it just records the answer the USER gave."""
+    league = await _get_user_league(league_id, user, db)  # verify ownership
+    known = {str(k) for k in (league.manager_map or {})}
+    if known and str(body.team_id) not in known:
+        raise ValidationError(f"team {body.team_id!r} is not a team in this league")
+
+    league.my_team_id = str(body.team_id)
+    league.my_team_id_source = "manual"
+    await db.commit()
+    await db.refresh(league)
+    return {
+        "status": "ok",
+        "league_id": str(league.id),
+        "my_team_id": league.my_team_id,
+        "my_team_id_source": league.my_team_id_source,
+        "team_name": (league.manager_map or {}).get(league.my_team_id),
+    }
+
+
 @router.get("/{league_id}/status")
 async def get_league_status(
     league_id: uuid.UUID,

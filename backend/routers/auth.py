@@ -226,3 +226,18 @@ async def yahoo_disconnect(
     repo = CredentialRepository(db)
     await repo.disconnect(user.id, "yahoo")
     return {"status": "disconnected", "platform": "yahoo"}
+
+
+@router.delete("/espn/disconnect", summary="Remove ESPN credentials")
+async def espn_disconnect(
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Remove the user's stored ESPN cookies (espn_s2 + SWID). Mirrors the Yahoo
+    disconnect and delegates to the SAME canonical CredentialRepository.disconnect —
+    one revocation mechanism, parameterized by platform. Any ESPN leagues the user
+    synced REMAIN (least-destructive, same as Yahoo) but become unsyncable until they
+    reconnect (the next sync has no cookies). Idempotent: a no-op if none are stored."""
+    repo = CredentialRepository(db)
+    await repo.disconnect(user.id, "espn")
+    return {"status": "disconnected", "platform": "espn"}
