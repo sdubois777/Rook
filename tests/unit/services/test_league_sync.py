@@ -744,3 +744,71 @@ async def test_sync_no_match_leaves_my_team_id_unbound():
         await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
 
     assert league.my_team_id is None           # unbound, not positional
+
+
+def _sync_with_identity(league, rosters, identity):
+    """Run a real sync_league with a mocked platform + identity. Returns nothing;
+    mutates `league` in place (the tests assert on league.my_team_id[_source])."""
+    mock_db = _make_mock_db(league)
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = []
+    mock_platform.get_rosters.return_value = rosters
+    mock_platform.get_free_agents.return_value = []
+    mock_platform.get_roster_slots.return_value = None
+    mock_platform.get_league_metadata.return_value = LeagueMetadata()
+
+    async def _fake_identity(self, platform):
+        return identity
+
+    return patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), patch.object(
+        LeagueSyncService, "_platform_identity", new=_fake_identity,
+    ), _patch_league_repo(league), mock_db
+
+
+@pytest.mark.asyncio
+async def test_sync_sets_source_auto_on_successful_bind():
+    """A successful auto-bind stamps my_team_id_source='auto'."""
+    league = _make_league(platform="sleeper")
+    league.my_team_id = None
+    league.my_team_id_source = None
+    rosters = [_tr(1, owner_ids=["stranger"]), _tr(8, owner_ids=["me-777"])]
+    p1, p2, p3, repo, mock_db = _sync_with_identity(league, rosters, "me-777")
+    with p1, p2, p3, repo:
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+    assert league.my_team_id == "8"
+    assert league.my_team_id_source == "auto"
+
+
+@pytest.mark.asyncio
+async def test_sync_manual_pick_survives_failed_autobind():
+    """THE CLOBBER TEST: after a MANUAL pick, a sync whose auto-bind FAILS (no match)
+    must NOT overwrite it — the recovery cannot silently undo itself."""
+    league = _make_league(platform="sleeper")
+    league.my_team_id = "8"                     # the user's manual pick
+    league.my_team_id_source = "manual"
+    rosters = [_tr(1, owner_ids=["stranger"]), _tr(2, owner_ids=["other"])]  # identity matches NOBODY
+    p1, p2, p3, repo, mock_db = _sync_with_identity(league, rosters, "me-not-in-league")
+    with p1, p2, p3, repo:
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+    assert league.my_team_id == "8"             # UNCHANGED — manual survives the failed auto-bind
+    assert league.my_team_id_source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_sync_manual_pick_wins_over_disagreeing_autobind():
+    """PRECEDENCE: a MANUAL pick beats a SUCCESSFUL-but-disagreeing auto-bind (the user
+    is the authority on their own identity); the disagreement is surfaced, not applied."""
+    league = _make_league(platform="sleeper")
+    league.my_team_id = "1"                     # manual pick = team 1
+    league.my_team_id_source = "manual"
+    rosters = [_tr(1, owner_ids=["stranger"]), _tr(8, owner_ids=["me-777"])]  # auto would bind 8
+    p1, p2, p3, repo, mock_db = _sync_with_identity(league, rosters, "me-777")
+    with p1, p2, p3, repo:
+        await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
+    assert league.my_team_id == "1"             # manual WINS over the disagreeing auto-bind
+    assert league.my_team_id_source == "manual"

@@ -22,3 +22,18 @@ export function leagueLoadMessage(error, fallback) {
 export function isUndrafted(error) {
   return error?.response?.data?.error === 'undrafted_league'
 }
+
+/**
+ * True when auto-detect of the user's team failed (409 error=unbound_team). NOT a
+ * dead end — the payload carries { league_id, teams } so the UI shows a team picker.
+ */
+export function isUnboundTeam(error) {
+  return error?.response?.data?.error === 'unbound_team'
+}
+
+/** { leagueId, teams:[{team_id,name}] } from an unbound_team error, or null. */
+export function unboundInfo(error) {
+  const data = error?.response?.data
+  if (data?.error !== 'unbound_team') return null
+  return { leagueId: data.league_id, teams: data.teams || [] }
+}

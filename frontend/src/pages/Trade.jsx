@@ -13,7 +13,8 @@ import {
   ArrowLeftRight, TrendingUp, TrendingDown, Minus, Lightbulb, Scale, X,
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
-import { leagueLoadMessage } from '../lib/leagueError'
+import { leagueLoadMessage, isUnboundTeam, unboundInfo } from '../lib/leagueError'
+import TeamPicker from '../components/TeamPicker'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
 import { PlayerBadges } from '../components/shared/PlayerName'
@@ -147,6 +148,16 @@ export default function Trade() {
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading trade league…</div>
   if (error) {
+    if (isUnboundTeam(error)) {
+      const info = unboundInfo(error)
+      return (
+        <TeamPicker
+          leagueId={info.leagueId}
+          teams={info.teams}
+          onPicked={() => qc.invalidateQueries({ queryKey: ['trade-league'] })}
+        />
+      )
+    }
     return (
       <div className="mx-auto max-w-2xl p-6">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">

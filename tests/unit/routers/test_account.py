@@ -303,3 +303,27 @@ async def test_resolve_limit_keeps_parks_and_commits():
     fake_recon.resolve_keep.assert_awaited_once()
     fake_repo.commit.assert_awaited_once()
     assert resp.json()["over_limit"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_connected_platforms():
+    """GET /account/credentials returns the platforms with stored credentials."""
+    from unittest.mock import AsyncMock, patch
+    user = _make_user()
+    from backend.core.dependencies import get_current_user, get_db
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    with patch("backend.repositories.credential_repo.CredentialRepository") as MockRepo:
+        repo = AsyncMock()
+        repo.list_platforms = AsyncMock(return_value=["espn", "yahoo"])
+        MockRepo.return_value = repo
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                resp = await ac.get("/api/account/credentials")
+        finally:
+            app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    assert resp.json() == {"platforms": ["espn", "yahoo"]}
