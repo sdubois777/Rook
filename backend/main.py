@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
@@ -200,6 +200,75 @@ async def news_websocket(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         news_ws_manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Public privacy policy (/privacy) — STATIC, server-rendered, crawler-safe.
+# ---------------------------------------------------------------------------
+# The Chrome Web Store review bot CRAWLS this URL; it must return 200 with the
+# full content for a logged-out visitor with NO JS. So it is rendered SERVER-SIDE
+# here (the content is in the raw HTML response), NOT a client-only SPA route —
+# and registered BEFORE the SPA catch-all below so /privacy never falls through to
+# the /dashboard redirect. Source of truth is the version-controlled markdown at
+# docs/business/rook-privacy-policy.md (rendered once at startup; tables/headings
+# preserved). NO auth dependency — fully public.
+_PRIVACY_MD = (
+    Path(__file__).resolve().parent.parent / "docs" / "business" / "rook-privacy-policy.md"
+)
+
+_PRIVACY_CSS = """
+:root { color-scheme: light dark; }
+body { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem;
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #1a1d29; background: #fff; }
+h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.35rem; margin: 2rem 0 .5rem; border-top: 1px solid #e5e7eb; padding-top: 1.5rem; }
+h3 { font-size: 1.1rem; margin: 1.25rem 0 .4rem; }
+a { color: #2563eb; }
+code { background: #f1f3f5; padding: .1em .35em; border-radius: 4px; font-size: .9em; }
+hr { border: none; border-top: 1px solid #e5e7eb; margin: 2rem 0; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
+th, td { border: 1px solid #d1d5db; padding: .5rem .65rem; text-align: left; vertical-align: top; }
+th { background: #f8fafc; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e6e8ef; background: #0f1117; }
+  h2, h3, hr, th, td { border-color: #2d3148; }
+  th { background: #161822; } code { background: #1c1f2e; } a { color: #7aa2ff; }
+}
+"""
+
+
+def _render_privacy_html() -> str:
+    """Render the policy markdown to a self-contained HTML page. Defensive: a
+    missing/unreadable file yields a minimal valid page rather than crashing boot."""
+    try:
+        import markdown
+        body = markdown.markdown(
+            _PRIVACY_MD.read_text(encoding="utf-8"),
+            extensions=["tables", "fenced_code", "sane_lists"],
+        )
+    except Exception as exc:  # never let the policy page take down startup
+        logger.error("Privacy policy render failed: %s", exc)
+        body = "<h1>Rook Privacy Policy</h1><p>Contact rookadmin@rookff.com.</p>"
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>Rook Privacy Policy</title>"
+        f"<style>{_PRIVACY_CSS}</style></head><body><main>{body}</main></body></html>"
+    )
+
+
+_PRIVACY_HTML = _render_privacy_html()
+
+
+@app.get("/privacy", include_in_schema=False)
+@app.get("/privacy.html", include_in_schema=False)
+async def privacy_policy():
+    """Public privacy policy — no auth, full content server-rendered."""
+    return HTMLResponse(
+        _PRIVACY_HTML,
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 # ---------------------------------------------------------------------------
