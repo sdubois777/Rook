@@ -149,9 +149,26 @@ async def startup_checks():
         replace_existing=True,
     )
 
+    # Weekly full sweep — keeps season-long metrics current. Tuesday ~09:00 UTC
+    # (≈4-5am ET): post-MNF, post-Tuesday injury reports, BEFORE Tue/Wed waiver
+    # processing. Draft-window-gated + run OFF the event loop (subprocess), per the
+    # load-test lesson (heavy work must never compete with the serving event loop).
+    _scheduler.add_job(
+        _weekly_full_sweep,
+        "cron",
+        day_of_week=settings.weekly_sweep_day_of_week,
+        hour=settings.weekly_sweep_hour_utc,
+        id="weekly_full_sweep",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Beat Reporter scheduler started (daily at 7am)")
     logger.info("Stale draft-session reaper registered (every 30 min)")
+    logger.info(
+        "Weekly full sweep registered (%s %02d:00 UTC, draft-window-gated)",
+        settings.weekly_sweep_day_of_week, settings.weekly_sweep_hour_utc,
+    )
 
     # Cross-process WebSocket bus (Postgres LISTEN/NOTIFY). One dedicated LISTEN
     # connection per process; the loop reconnects if Railway drops it. Harmless in
@@ -174,26 +191,72 @@ async def shutdown_checks():
     logger.info("WebSocket pub/sub bus stopped")
 
 
-# Warm draft sessions idle longer than this are evicted from memory (the DB
-# snapshot survives, so they rehydrate on the next event). 6h comfortably covers
-# a long auction plus breaks.
-_DRAFT_SESSION_TTL_SECONDS = 6 * 60 * 60
+# Abandoned-draft safety TTL. Set to comfortably EXCEED a real draft's wall-clock
+# (a 12-team/15-round snake at a 90s clock is ~4.5h, auctions longer, plus pauses),
+# so the reaper never cold-starts a live-but-paused draft mid-draft. The load-test
+# follow-up showed the resident-engine pile-up is mostly FINISHED drafts — those are
+# now evicted immediately (see evict_finished_and_stale), so a LONGER abandon TTL
+# costs little memory while removing all risk of evicting a live draft.
+_DRAFT_SESSION_TTL_SECONDS = int(
+    os.environ.get("DRAFT_SESSION_SAFETY_TTL_SECONDS", str(8 * 60 * 60))
+)
 
 
 async def _evict_stale_draft_sessions():
-    """Reap idle draft sessions: evict warm memory AND durably deactivate the DB
-    rows (incl. cold rows never held warm here), so an abandoned draft can't stay
-    is_active=True forever. The recency read-gate already shows the board for
-    stale drafts; this is the durable cleanup backstop."""
+    """Reap draft sessions: evict FINISHED (board-full) warm engines immediately
+    plus ABANDONED (idle beyond the safety TTL) ones, and durably deactivate the DB
+    rows (incl. cold rows never held warm here). Distinguishing finished from
+    merely-idle-live is the fix for the warm-engine pile-up the load test found;
+    live/paused drafts stay warm until the long safety TTL."""
     from backend.routers.draft import session_manager
 
-    evicted = session_manager.evict_stale(_DRAFT_SESSION_TTL_SECONDS)
+    reaped = await session_manager.evict_finished_and_stale(_DRAFT_SESSION_TTL_SECONDS)
     deactivated = await session_manager.deactivate_stale_rows(_DRAFT_SESSION_TTL_SECONDS)
-    if evicted or deactivated:
+    if reaped["finished"] or reaped["abandoned"] or deactivated:
         logger.info(
-            "Reaper: evicted %d warm session(s), deactivated %d DB row(s)",
-            evicted, deactivated,
+            "Reaper: evicted %d finished + %d abandoned warm session(s), "
+            "deactivated %d idle DB row(s)",
+            reaped["finished"], reaped["abandoned"], deactivated,
         )
+
+
+async def _weekly_full_sweep():
+    """Scheduled full-board DIRTY refresh (keeps availability/schedule/valuation and
+    materially-changed profiles current). DRAFT-WINDOW-GATED: if a draft is live or
+    imminent it defers and retries in an hour rather than compete for the pool/CPU
+    (the load test's single biggest self-inflicted risk). Runs as a SUBPROCESS so
+    the heavy pass never blocks the serving event loop."""
+    import asyncio
+    import sys
+    from datetime import datetime, timedelta, timezone
+
+    from backend.database import AsyncSessionLocal
+    from backend.services.pipeline_triggers import is_draft_window_active
+
+    async with AsyncSessionLocal() as db:
+        active, reason = await is_draft_window_active(db)
+    if active:
+        retry_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        logger.warning(
+            "Weekly full sweep DEFERRED — draft window active: %s. Retrying at %s.",
+            reason, retry_at.isoformat(),
+        )
+        if _scheduler is not None:
+            _scheduler.add_job(
+                _weekly_full_sweep, "date", run_date=retry_at,
+                id="weekly_sweep_retry", replace_existing=True,
+            )
+        return
+
+    logger.info("Weekly full sweep starting (dirty-only, off-process subprocess)")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "scripts/run_predraft_pipeline.py", "--skip-seed",
+        )
+        await proc.wait()
+        logger.info("Weekly full sweep finished (exit %s)", proc.returncode)
+    except Exception:
+        logger.exception("Weekly full sweep failed to run")
 
 
 @app.get("/health")

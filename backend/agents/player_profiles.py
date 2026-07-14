@@ -1695,7 +1695,12 @@ class PlayerProfilesAgent(BaseAgent):
     # Per-team runner — two-pass: Haiku batch + Sonnet per-player
     # ------------------------------------------------------------------
 
-    async def run_for_team(self, team_abbr: str, force: bool = False) -> int:
+    async def run_for_team(
+        self,
+        team_abbr: str,
+        force: bool = False,
+        only_players: set[str] | None = None,
+    ) -> int:
         """Run for one team. Returns number of profile records written.
 
         Two-pass architecture:
@@ -1703,6 +1708,14 @@ class PlayerProfilesAgent(BaseAgent):
           2. Sonnet per-player — rookies, flagged, contract year, high injury, etc.
 
         When force=False, only regenerates profiles where upstream data has changed.
+
+        ``only_players`` (a set of exact player names) scopes a TARGETED refresh to
+        an explicitly-derived affected set and recomputes EXACTLY those players on
+        this team, bypassing the material-input fingerprint gate. That bypass is the
+        point: an event on player A (e.g. an injury) changes teammate B's *value*
+        without changing B's own stored inputs, so the per-player gate would not
+        flag B — but the affected-set deriver already established B belongs, so we
+        recompute it unconditionally.
         """
         if self._warehouse is None:
             from backend.integrations.nfl_data import NflDataWarehouse
@@ -1711,7 +1724,14 @@ class PlayerProfilesAgent(BaseAgent):
         logger.info("Building player profiles context for %s", team)
 
         try:
-            stale_names, input_fingerprints = await self._get_stale_players(team, force)
+            if only_players is not None:
+                # Targeted set is forced; still fetch fingerprints (force=True returns
+                # them for ALL players + stale_names=None) so written profiles get
+                # stamped and the NEXT incremental run can value-delta them.
+                _, input_fingerprints = await self._get_stale_players(team, force=True)
+                stale_names = None  # skip the gate; only_players is authoritative
+            else:
+                stale_names, input_fingerprints = await self._get_stale_players(team, force)
 
             context = await self._build_team_context(team)
 
@@ -1719,7 +1739,21 @@ class PlayerProfilesAgent(BaseAgent):
                 logger.info("%s: no skill-position players with data, skipping", team)
                 return 0
 
-            # Filter to only stale players (unless force mode)
+            # Targeted refresh: recompute EXACTLY the derived affected set on this team.
+            if only_players is not None:
+                context["players"] = [
+                    p for p in context["players"] if p["name"] in only_players
+                ]
+                if not context["players"]:
+                    logger.info("%s: no targeted players on this team, skipping", team)
+                    return 0
+                logger.info(
+                    "%s: targeted refresh of %d player(s): %s",
+                    team, len(context["players"]),
+                    ", ".join(p["name"] for p in context["players"]),
+                )
+
+            # Filter to only stale players (unless force / targeted mode)
             if stale_names is not None:
                 original_count = len(context["players"])
                 context["players"] = [

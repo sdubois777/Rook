@@ -418,6 +418,72 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
 
 
 # ---------------------------------------------------------------------------
+# Targeted refresh (PART 1/2) — scoped, event-driven
+# ---------------------------------------------------------------------------
+
+async def run_targeted_cli(args) -> None:
+    """Resolve names → players, optionally DERIVE the affected set from an event,
+    then run a scoped targeted refresh (dry-run aware)."""
+    from backend.database import AsyncSessionLocal
+    from backend.repositories.player_repo import PlayerRepository
+    from backend.services.pipeline_triggers import (
+        derive_affected_set, run_targeted_refresh,
+    )
+
+    async with AsyncSessionLocal() as db:
+        repo = PlayerRepository(db)
+        player_ids: set = set()
+        event_type = "manual"
+
+        if args.player:
+            trigger = await repo.find_by_name_fuzzy(args.player)
+            if trigger is None:
+                print(f"Player not found: {args.player}")
+                sys.exit(1)
+            event_type = args.event or "injury"
+            derived = await derive_affected_set(
+                db, trigger, event_type, new_team=args.new_team
+            )
+            print(f"\n=== Affected set for {trigger.name} ({event_type}) — DERIVED ===")
+            for entry in derived["affected"]:
+                p = entry["player"]
+                print(f"  • {p.name} ({p.team_abbr or 'FA'} {p.position or '?'})")
+                for r in entry["reasons"]:
+                    print(f"      - {r}")
+            player_ids = {e["player"].id for e in derived["affected"]}
+        else:
+            for name in [n.strip() for n in args.players.split(",") if n.strip()]:
+                p = await repo.find_by_name_fuzzy(name)
+                if p is None:
+                    print(f"  (skip) player not found: {name}")
+                    continue
+                player_ids.add(p.id)
+
+    if not player_ids:
+        print("No players resolved — nothing to refresh.")
+        return
+
+    report = await run_targeted_refresh(
+        player_ids,
+        event_type=event_type,
+        dry_run=args.dry_run,
+        respect_draft_window=not args.ignore_draft_window,
+    )
+
+    print(f"\n=== Targeted refresh {'(DRY RUN)' if args.dry_run else ''} ===")
+    print(f"  Players touched : {report['n_players']}  ({', '.join(report['players_touched'])})")
+    print(f"  Teams           : {', '.join(report['teams']) or '(none)'}")
+    print(f"  Est. cost       : ${report['estimated_cost_usd']}  "
+          f"vs full sweep ${report['full_sweep_cost_usd']}")
+    if report.get("deferred"):
+        print(f"  DEFERRED        : {report['reason']}  (draft window active)")
+    elif not args.dry_run:
+        print(f"  Profiles written: {report.get('profiles_written')}, "
+              f"values: {report.get('values_updated')}, "
+              f"ceilings: {report.get('ceilings_processed')}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -452,7 +518,43 @@ async def main() -> None:
         help="FULL SWEEP (pre-draft): regenerate all profiles, bypassing the "
              "value-delta dirty test. Default runs are dirty-only (in-season).",
     )
+    parser.add_argument(
+        "--players",
+        default=None,
+        metavar="NAMES",
+        help="TARGETED REFRESH: comma-separated player names to recompute (scoped, "
+             "not the whole board). Reuses the dirty/cache machinery.",
+    )
+    parser.add_argument(
+        "--player",
+        default=None,
+        metavar="NAME",
+        help="TARGETED REFRESH from an EVENT: derive the affected set for one player "
+             "+ --event, then refresh that set.",
+    )
+    parser.add_argument(
+        "--event",
+        default=None,
+        metavar="TYPE",
+        help="Event type for --player: injury | suspension | trade | drop_release | signing",
+    )
+    parser.add_argument(
+        "--new-team",
+        default=None,
+        metavar="ABBR",
+        help="Destination team for a --event trade/signing (crowds that position room).",
+    )
+    parser.add_argument(
+        "--ignore-draft-window",
+        action="store_true",
+        help="Run the targeted refresh even if a draft window is active (operator override).",
+    )
     args = parser.parse_args()
+
+    # --- TARGETED REFRESH mode (PART 1/2) — distinct from the full/team pipeline ---
+    if args.players or args.player:
+        await run_targeted_cli(args)
+        return
 
     agents = PIPELINE_ORDER if args.agent == "all" else [args.agent]
     if args.agent != "all" and args.agent not in AGENT_SPECS:
