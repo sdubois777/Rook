@@ -429,6 +429,26 @@ class DraftStateManager:
             counts[pick.position] = counts.get(pick.position, 0) + 1
         return counts
 
+    def is_draft_complete(self) -> bool:
+        """True when the WHOLE draft board is filled — the unambiguous 'this draft
+        is over, nobody needs the warm engine' signal used by the reaper to evict
+        finished drafts promptly (vs. merely-idle live ones).
+
+        Board-full = total picks recorded >= team_count * total_roster_size. Auction
+        records every pick in ``picks``; snake tracks every drafted name in
+        ``_drafted_names`` (pick objects aren't always built for opponents), so we
+        take the larger of the two counts. Deliberately CONSERVATIVE: if picks were
+        missed (poller gap) the board never reads full and the draft falls back to
+        the long abandon-TTL — we would rather keep a maybe-live draft warm than
+        cold-start a live one mid-draft.
+        """
+        cfg = self.league_config
+        total_slots = (cfg.team_count or 0) * cfg.total_roster_size
+        if total_slots <= 0:
+            return False
+        picks_made = max(len(self.picks), len(self._drafted_names))
+        return picks_made >= total_slots
+
     # --- Serialization (durability: snapshot to / rehydrate from the DB) ---
 
     def to_dict(self) -> dict:
