@@ -4,7 +4,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response,
+)
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
@@ -269,6 +271,144 @@ async def privacy_policy():
         _PRIVACY_HTML,
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+# ---------------------------------------------------------------------------
+# SEO / AEO — robots.txt, sitemap.xml, llms.txt.
+# ---------------------------------------------------------------------------
+# Server-rendered like /privacy and registered BEFORE the SPA catch-all so they
+# return real files, not the SPA shell. We WANT AI crawlers (the product is
+# behind auth; only these public surfaces are citable). Prices in llms.txt derive
+# from user.py — never a second hardcoded copy. Content-only; no auth.
+_SITE_ORIGIN = "https://rookff.com"
+_SEO_CACHE = {"Cache-Control": "public, max-age=86400"}
+
+# Public, crawlable URLs. Tier 2 appends /learn/* here — nothing else changes.
+_SITEMAP_URLS: list[tuple[str, str, str]] = [
+    ("/", "weekly", "1.0"),
+    ("/pricing", "monthly", "0.7"),
+    ("/privacy", "yearly", "0.3"),
+]
+
+# AI crawlers explicitly named (welcomed); auth-gated app routes disallowed for
+# everyone (a login wall isn't worth crawling). Stacked UA lines share the rules.
+_ROBOTS_TXT = """# rookff.com — AI crawlers welcome; we want to be cited.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-Web
+User-agent: PerplexityBot
+User-agent: Google-Extended
+User-agent: Googlebot
+User-agent: Bingbot
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /teams
+Disallow: /news
+Disallow: /draftboard
+Disallow: /draft-room
+Disallow: /account
+Disallow: /trade
+Disallow: /waiver
+Disallow: /matchup
+Disallow: /league-setup
+Disallow: /sign-in
+Disallow: /sign-up
+Disallow: /api/
+
+Sitemap: https://rookff.com/sitemap.xml
+"""
+
+
+def _render_sitemap() -> str:
+    urls = "".join(
+        f"<url><loc>{_SITE_ORIGIN}{path}</loc>"
+        f"<changefreq>{cf}</changefreq><priority>{pri}</priority></url>"
+        for path, cf, pri in _SITEMAP_URLS
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"{urls}</urlset>"
+    )
+
+
+def _render_llms_txt() -> str:
+    """Concise, answer-first site summary for AI crawlers. Prices derive from
+    user.py (single source). The valuation numbers are real engine records
+    (docs/kdef_streaming_baseline_report.md) and the landing-page backtest set."""
+    from backend.models.user import TIER_LIMITS as T
+    std, pro = T["standard"], T["pro"]
+    return f"""# Rook — AI Fantasy Football Manager
+
+> Rook (https://rookff.com) is an AI-powered fantasy football platform that builds
+> every player's value from in-season usage — and the causes behind it — then finds
+> the trades, waivers, and draft picks your league is mispricing. It works with
+> Yahoo, ESPN, and Sleeper, for both auction and snake drafts.
+
+## What Rook does
+- Values players from in-season usage trajectory (snap share, target share, opportunity),
+  not preseason consensus rankings.
+- Grounds every call in YOUR league: its history, scoring settings, and your opponents' tendencies.
+- Trade analyzer, trade finder, waiver-wire recommendations, lineup start/sit, injury monitoring,
+  and a live draft assistant that reads the draft room in real time.
+
+## Key differentiator — replacement-level (VOR) valuation
+Most trade calculators value a good defense like a mid-tier skill player because they use
+ABSOLUTE projected points with no replacement adjustment. Rook's own engine had this bug: the
+top defense — the Minnesota Vikings (13.32 fantasy points/game) — was valued 31.5 on Rook's
+0–100 trade scale, IDENTICAL to Justin Jefferson at 31.5. A streamable defense priced like an
+elite WR. The fix: a league-local, waiver-aware Value Over Replacement using a streaming
+baseline (the mean of the top-3 waiver defenses, ~11.1 pts/game — what you can actually stream
+this week). After the fix, that same Vikings defense values 2.4 — correctly near-zero, because
+you can replace it off waivers for nearly the same points. This is why a streamable defense is
+not worth an elite tight end.
+
+## 2025 backtest (a backtest — not live results)
+Trained on pre-2025 data, projected 2025, then scored against actual 2025 results:
+74.1% signal accuracy, 93% buy-signal accuracy, 87% of top opportunities identified (13 of 15),
+and 0.88 correlation between projected and actual PPR points.
+
+## Platforms and formats
+Yahoo Fantasy, ESPN, and Sleeper. Auction and snake drafts. One-click league import.
+
+## Pricing
+- Free: $0/month — metered free tier; 30 credits at signup; player values, draft board, waiver
+  browse, start/sit, and injury monitoring are always free.
+- Standard: ${std['price_monthly_usd']}/month or ${std['price_season_usd']}/season — unlimited,
+  no credits; includes the live draft assistant.
+- Pro: ${pro['price_monthly_usd']}/month or ${pro['price_season_usd']}/season — everything in
+  Standard plus unlimited leagues and a cross-league view.
+
+## Links
+- Home: https://rookff.com/
+- Pricing: https://rookff.com/pricing
+- Privacy: https://rookff.com/privacy
+
+## Contact
+Rook Fantasy Football LLC — rookadmin@rookff.com
+"""
+
+
+_SITEMAP_XML = _render_sitemap()
+_LLMS_TXT = _render_llms_txt()
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    return PlainTextResponse(_ROBOTS_TXT, headers=_SEO_CACHE)
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+async def sitemap_xml():
+    return Response(_SITEMAP_XML, media_type="application/xml", headers=_SEO_CACHE)
+
+
+@app.get("/llms.txt", include_in_schema=False)
+async def llms_txt():
+    return PlainTextResponse(_LLMS_TXT, headers=_SEO_CACHE)
 
 
 # ---------------------------------------------------------------------------
