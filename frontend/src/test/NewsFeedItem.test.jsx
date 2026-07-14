@@ -5,7 +5,7 @@ import NewsFeedItem from '../components/shared/NewsFeedItem'
 const mockSignal = {
   id: '1',
   signal_type: 'injury_update',
-  source: 'ESPN',
+  source: 'https://www.espn.com/espn/rss/nfl/news',
   raw_text: 'Player X suffered a knee injury in practice.',
   confidence: 'high',
   flagged_at: '2026-05-10T14:00:00Z',
@@ -25,11 +25,14 @@ describe('NewsFeedItem', () => {
     expect(screen.getByText('Player X')).toBeInTheDocument()
   })
 
-  it('expands on click to show raw text', () => {
+  it('shows the headline excerpt without needing a click', () => {
     render(<NewsFeedItem signal={mockSignal} />)
-    expect(screen.queryByText(/knee injury/)).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('injury update'))
     expect(screen.getByText(/knee injury/)).toBeInTheDocument()
+  })
+
+  it('shows the source publisher derived from the feed URL', () => {
+    render(<NewsFeedItem signal={mockSignal} />)
+    expect(screen.getByText(/via ESPN/)).toBeInTheDocument()
   })
 
   it('calls onPlayerClick when player name is clicked', () => {
