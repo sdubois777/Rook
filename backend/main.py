@@ -392,6 +392,16 @@ Rook Fantasy Football LLC — rookadmin@rookff.com
 """
 
 
+# Content engine (/learn) — docs/content/*.md → server-rendered crawlable pages,
+# built once at startup. Loaded BEFORE the sitemap so its URLs are included (the
+# Tier-1 sitemap was built list-based for exactly this — we extend, not rewrite).
+from backend.content import load_content
+
+_LEARN_PAGES, _LEARN_INDEX_HTML, _LEARN_ARTICLES = load_content()
+_SITEMAP_URLS.append(("/learn", "weekly", "0.6"))
+for _article in _LEARN_ARTICLES:
+    _SITEMAP_URLS.append((f"/learn/{_article.slug}", "monthly", "0.8"))
+
 _SITEMAP_XML = _render_sitemap()
 _LLMS_TXT = _render_llms_txt()
 
@@ -409,6 +419,21 @@ async def sitemap_xml():
 @app.get("/llms.txt", include_in_schema=False)
 async def llms_txt():
     return PlainTextResponse(_LLMS_TXT, headers=_SEO_CACHE)
+
+
+# Content engine routes — registered BEFORE the SPA catch-all so /learn* returns
+# real server-rendered HTML, not the SPA shell.
+@app.get("/learn", include_in_schema=False)
+async def learn_index():
+    return HTMLResponse(_LEARN_INDEX_HTML, headers=_SEO_CACHE)
+
+
+@app.get("/learn/{slug}", include_in_schema=False)
+async def learn_article(slug: str):
+    page = _LEARN_PAGES.get(slug)
+    if page is None:
+        raise HTTPException(status_code=404)
+    return HTMLResponse(page, headers=_SEO_CACHE)
 
 
 # ---------------------------------------------------------------------------

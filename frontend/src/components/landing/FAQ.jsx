@@ -23,7 +23,7 @@ const ITEMS = [
   },
   {
     q: 'What happens after my credits run out?',
-    a: 'You can still browse projections, the draft board, news, and injury monitoring for free. Credits are only consumed by trade analysis, waiver wire, and trade finder features. You can buy credit packs anytime or wait for your monthly refill.',
+    a: 'You can still browse projections, the draft board, news, and injury monitoring for free. Credits are only consumed by trade analysis, waiver wire, and trade finder features. Your signup credits are a one-time grant — buy a credit pack anytime, or upgrade to a paid plan for unlimited access.',
   },
   {
     q: 'Can I cancel anytime?',
