@@ -82,11 +82,24 @@ export default function NewsFeedItem({ signal, onPlayerClick }) {
             {time && <span className="shrink-0 text-[10px] text-slate-500">{time}</span>}
           </div>
 
-          {/* Headline — the actual news, now always visible (was hidden behind a
-              click). Clamped to two lines so long titles don't break the row. */}
-          {signal.raw_text && (
-            <p className="mt-1 line-clamp-2 text-sm text-slate-200">{signal.raw_text}</p>
-          )}
+          {/* Headline — always visible and WRAPS fully (never CSS-clipped). Links
+              out to the source article when we have a permalink; plain text
+              otherwise (legacy rows carry no url and degrade gracefully). Note:
+              some feeds (e.g. ESPN) truncate their OWN titles with a trailing
+              "…" — that's source data, so the link is the path to the full story. */}
+          {signal.raw_text &&
+            (signal.article_url ? (
+              <a
+                href={signal.article_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 block text-sm text-slate-200 hover:text-white hover:underline focus-visible:underline focus-visible:outline-none"
+              >
+                {signal.raw_text}
+              </a>
+            ) : (
+              <p className="mt-1 text-sm text-slate-200">{signal.raw_text}</p>
+            ))}
 
           {/* Player + source attribution */}
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-slate-400">

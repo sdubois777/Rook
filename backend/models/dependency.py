@@ -58,8 +58,12 @@ class BeatReporterSignal(Base):
     signal_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # practice_limited / depth_chart_change / injury_flag / camp_standout / transaction
 
-    source: Mapped[Optional[str]] = mapped_column(String(100))
+    source: Mapped[Optional[str]] = mapped_column(String(100))  # RSS FEED url (not the article)
     raw_text: Mapped[Optional[str]] = mapped_column(Text)
+    # Per-article permalink from the source feed (entry.link) — used to link each
+    # feed item out to the original story. NULL for legacy rows ingested before
+    # this column existed (they degrade to non-clickable).
+    article_url: Mapped[Optional[str]] = mapped_column(Text)
     confidence: Mapped[Optional[str]] = mapped_column(String(20))  # high / medium / low
     flagged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -36,6 +36,7 @@ def mock_signal():
     sig.signal_type = "injury_update"
     sig.source = "ESPN"
     sig.raw_text = "Mahomes limited in practice"
+    sig.article_url = "https://www.espn.com/nfl/story/_/id/1/mahomes"
     sig.confidence = "high"
     sig.flagged_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
     sig.player_id = uuid.uuid4()
@@ -66,6 +67,7 @@ async def test_get_news_feed(mock_signal):
     assert data["total"] == 1
     assert data["signals"][0]["signal_type"] == "injury_update"
     assert data["signals"][0]["player_name"] == "Patrick Mahomes"
+    assert data["signals"][0]["article_url"] == "https://www.espn.com/nfl/story/_/id/1/mahomes"
 
 
 @pytest.mark.asyncio
