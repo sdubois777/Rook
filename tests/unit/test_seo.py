@@ -19,7 +19,9 @@ from httpx import ASGITransport, AsyncClient
 from backend.main import app
 from backend.models.user import TIER_LIMITS
 
-_INDEX_HTML = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+_REPO = Path(__file__).resolve().parents[2]
+_INDEX_HTML = _REPO / "frontend" / "index.html"
+_FAQ_JSX = _REPO / "frontend" / "src" / "components" / "landing" / "FAQ.jsx"
 
 
 def _json_ld_blocks() -> list[dict]:
@@ -120,3 +122,67 @@ async def test_llms_txt_served_with_prices_from_user_py():
     # The defensible defense/VOR figure — Vikings, not Broncos.
     assert "Vikings" in body and "31.5" in body and "2.4" in body
     assert "Broncos" not in body
+
+
+# ---------------------------------------------------------------------------
+# FAQ correctness — the false "monthly refill" claim must be gone from BOTH the
+# visible page and the FAQPage schema, and they must stay in sync.
+# ---------------------------------------------------------------------------
+
+def test_faq_no_false_monthly_refill_claim_in_page_or_schema():
+    faq_src = _FAQ_JSX.read_text(encoding="utf-8")
+    index_src = _INDEX_HTML.read_text(encoding="utf-8")
+    assert "monthly refill" not in faq_src, "visible FAQ still claims a monthly refill"
+    assert "monthly refill" not in index_src, "FAQPage JSON-LD still claims a monthly refill"
+    # The corrected, true statement is present in both (page ↔ schema parity).
+    assert "one-time grant" in faq_src
+    assert "one-time grant" in index_src
+
+
+# ---------------------------------------------------------------------------
+# Content engine — /learn (index) and /learn/{slug} (server-rendered pages).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_learn_article_is_server_rendered():
+    resp = await _get("/learn/hello-rook")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    body = resp.text
+    assert "<div id=\"root\">" not in body                    # NOT the SPA shell
+    assert "placeholder" in body.lower()                       # real body content
+    # Per-page canonical — the article's own URL, NOT the homepage's.
+    assert '<link rel="canonical" href="https://rookff.com/learn/hello-rook">' in body
+    assert '<link rel="canonical" href="https://rookff.com/">' not in body
+    assert "<title>How Rook Learn works — Rook</title>" in body
+    assert 'name="description"' in body
+    # Article JSON-LD present + valid.
+    m = re.search(r'<script type="application/ld\+json">(.*?)</script>', body, re.DOTALL)
+    ld = json.loads(m.group(1))
+    assert ld["@type"] == "Article"
+    assert ld["headline"] == "How Rook Learn works"
+    assert ld["author"]["name"] == "Rook Fantasy Football LLC"
+    assert ld["datePublished"] == "2026-07-13"
+
+
+@pytest.mark.asyncio
+async def test_learn_index_lists_articles():
+    resp = await _get("/learn")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<div id=\"root\">" not in body
+    assert "Rook Learn" in body
+    assert 'href="/learn/hello-rook"' in body
+
+
+@pytest.mark.asyncio
+async def test_learn_unknown_slug_404s():
+    resp = await _get("/learn/does-not-exist")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sitemap_includes_learn_pages():
+    resp = await _get("/sitemap.xml")
+    assert "https://rookff.com/learn" in resp.text
+    assert "https://rookff.com/learn/hello-rook" in resp.text
