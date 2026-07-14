@@ -284,6 +284,34 @@ async def _update_player_notes(player_id: str, signal: dict) -> None:
         await session.commit()
 
 
+async def _fire_targeted_refreshes(
+    triggered: list[tuple[str, str, str | None]],
+) -> None:
+    """For each value-moving signal, derive the affected set and enqueue ONE
+    debounced targeted refresh (the debouncer coalesces the whole run into a single
+    scoped pipeline pass that itself defers if a draft window is active)."""
+    import uuid as _uuid
+
+    from backend.database import AsyncSessionLocal
+    from backend.models.player import Player
+    from backend.services.pipeline_triggers import enqueue_event_refresh
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        for player_id, signal_type, player_team in triggered:
+            try:
+                pid = _uuid.UUID(str(player_id))
+            except (ValueError, TypeError):
+                continue
+            player = (
+                await db.execute(select(Player).where(Player.id == pid))
+            ).scalar_one_or_none()
+            if player is None:
+                continue
+            new_team = player_team.upper() if player_team else None
+            await enqueue_event_refresh(db, player, signal_type, new_team=new_team)
+
+
 async def _update_player_team(player_id: str, new_team: str) -> None:
     """Update a player's team_abbr when a transaction signal confirms a team change."""
     if not player_id or not new_team:
@@ -362,6 +390,9 @@ class BeatReporterAgent(BaseAgent):
         player_map = await _load_player_map()
 
         written = 0
+        # (player_id, signal_type, player_team) for value-moving signals — used
+        # after the loop to fire ONE debounced targeted refresh of the affected set.
+        triggered: list[tuple[str, str, str | None]] = []
         for article in articles:
             if not article.get("title"):
                 continue
@@ -408,6 +439,18 @@ class BeatReporterAgent(BaseAgent):
                     # Update team_abbr on transaction signals
                     if signal.get("signal_type") == "transaction" and signal.get("player_team"):
                         await _update_player_team(player_id, signal["player_team"])
+                    triggered.append(
+                        (player_id, signal["signal_type"], signal.get("player_team"))
+                    )
+
+        # EVENT-TRIGGERED targeted refresh (debounced): derive each triggered
+        # player's affected set and enqueue ONE coalesced refresh. Best-effort —
+        # a failure here must never break news ingestion.
+        if triggered:
+            try:
+                await _fire_targeted_refreshes(triggered)
+            except Exception:
+                logger.exception("Beat Reporter: targeted-refresh enqueue failed")
 
         logger.info("Beat Reporter: %d new signal(s) written", written)
         return written

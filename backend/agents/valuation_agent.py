@@ -275,11 +275,18 @@ class ValuationAgent(BaseAgent):
     AGENT_MODEL = SONNET
     AGENT_MAX_TOKENS = 600
 
-    async def run_all(self) -> dict:
-        """Run valuation agent for all valued players, batched by tier."""
-        # 1. Load all valued players in one query
+    async def run_all(self, only_player_ids: set | None = None) -> dict:
+        """Run valuation agent for valued players, batched by tier.
+
+        ``only_player_ids`` scopes a TARGETED refresh to an explicit affected set
+        (the rest are untouched). Tier batching still runs, but only over the
+        restricted set — so an event-driven refresh recomputes a handful of ceilings
+        instead of the whole board. (Unchanged players would hit agent_cache at zero
+        tokens anyway, but scoping also skips their DB load + context build.)
+        """
+        # 1. Load valued players in one query (optionally restricted to the set)
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
+            stmt = (
                 select(Player)
                 .where(Player.recommended_bid_ceiling.isnot(None))
                 .options(
@@ -291,7 +298,9 @@ class ValuationAgent(BaseAgent):
                 )
                 .order_by(Player.tier.asc().nulls_last(), Player.recommended_bid_ceiling.desc())
             )
-            players = result.scalars().all()
+            if only_player_ids:
+                stmt = stmt.where(Player.id.in_(only_player_ids))
+            players = (await session.execute(stmt)).scalars().all()
 
         if not players:
             logger.warning("No valued players found — skipping valuation agent")
