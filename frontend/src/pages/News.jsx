@@ -1,22 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchNews } from '../api/news'
+import { X } from 'lucide-react'
+import { fetchNews, fetchNewsTypes } from '../api/news'
 import { useUIStore } from '../stores/ui'
 import FilterBar, { FilterSelect } from '../components/shared/FilterBar'
 import NewsFeedItem from '../components/shared/NewsFeedItem'
 import Pagination from '../components/shared/Pagination'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
-
-const SIGNAL_TYPE_OPTIONS = [
-  { value: '', label: 'All Types' },
-  { value: 'injury_update', label: 'Injury Update' },
-  { value: 'practice_status', label: 'Practice Status' },
-  { value: 'depth_chart_move', label: 'Depth Chart' },
-  { value: 'trade', label: 'Trade' },
-  { value: 'release', label: 'Release' },
-  { value: 'contract', label: 'Contract' },
-  { value: 'coaching_change', label: 'Coaching Change' },
-]
 
 const DAYS_OPTIONS = [
   { value: '7', label: 'Last 7 days' },
@@ -25,11 +15,34 @@ const DAYS_OPTIONS = [
   { value: '90', label: 'Last 90 days' },
 ]
 
+const DEFAULT_DAYS = '30'
+
 export default function News() {
   const [signalType, setSignalType] = useState('')
   const [team, setTeam] = useState('')
-  const [days, setDays] = useState('30')
+  const [days, setDays] = useState(DEFAULT_DAYS)
   const [page, setPage] = useState(1)
+
+  // Type options are DERIVED from the data (real signal_type values the agent
+  // writes) — the previous hardcoded list matched none of them, so every Type
+  // selection returned nothing.
+  const { data: typeFacets } = useQuery({
+    queryKey: ['news-types'],
+    queryFn: fetchNewsTypes,
+    staleTime: 5 * 60 * 1000,
+  })
+  const typeOptions = [
+    { value: '', label: 'All Types' },
+    ...(typeFacets || []).map((t) => ({ value: t.value, label: t.label })),
+  ]
+
+  const filtersActive = signalType !== '' || team !== '' || days !== DEFAULT_DAYS
+  const clearFilters = () => {
+    setSignalType('')
+    setTeam('')
+    setDays(DEFAULT_DAYS)
+    setPage(1)
+  }
   const [wsConnected, setWsConnected] = useState(false)
   const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
@@ -84,13 +97,15 @@ export default function News() {
   const pages = data?.pages || 1
 
   return (
-    <div className="max-w-4xl">
+    <div className="mx-auto max-w-4xl">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold text-slate-100">News Feed</h1>
           <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} title={wsConnected ? 'Live updates active' : 'Polling every 60s'} />
         </div>
-        <span className="text-sm text-slate-500">{total} signals</span>
+        <span className="text-sm text-slate-500">
+          {total} {filtersActive ? 'matching' : 'signals'}
+        </span>
       </div>
 
       <FilterBar>
@@ -98,7 +113,7 @@ export default function News() {
           label="Type"
           value={signalType}
           onChange={(v) => { setSignalType(v); setPage(1) }}
-          options={SIGNAL_TYPE_OPTIONS}
+          options={typeOptions}
         />
         <FilterSelect
           label="Period"
@@ -117,6 +132,15 @@ export default function News() {
             className="w-16 bg-surface-2 text-sm text-slate-300 border border-border rounded px-2 py-1 focus:outline-none focus:border-brand-accent/60 placeholder-slate-600 uppercase"
           />
         </div>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="ml-auto inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-slate-400 hover:border-slate-500 hover:text-slate-200 focus:outline-none focus:border-brand-accent/60"
+          >
+            <X size={12} /> Clear
+          </button>
+        )}
       </FilterBar>
 
       <div className="bg-surface-1 rounded-lg border border-border overflow-hidden">
@@ -124,7 +148,20 @@ export default function News() {
           <div className="py-12 text-center text-slate-500 text-sm">Loading signals...</div>
         ) : signals.length === 0 ? (
           <div className="py-12 text-center text-slate-500 text-sm">
-            No signals found for the selected filters.
+            {filtersActive ? (
+              <>
+                No signals match these filters.{' '}
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="text-brand-accent hover:underline"
+                >
+                  Clear filters
+                </button>
+              </>
+            ) : (
+              'No signals yet.'
+            )}
           </div>
         ) : (
           signals.map((signal) => (

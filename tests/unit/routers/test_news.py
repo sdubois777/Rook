@@ -36,6 +36,7 @@ def mock_signal():
     sig.signal_type = "injury_update"
     sig.source = "ESPN"
     sig.raw_text = "Mahomes limited in practice"
+    sig.article_url = "https://www.espn.com/nfl/story/_/id/1/mahomes"
     sig.confidence = "high"
     sig.flagged_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
     sig.player_id = uuid.uuid4()
@@ -66,6 +67,7 @@ async def test_get_news_feed(mock_signal):
     assert data["total"] == 1
     assert data["signals"][0]["signal_type"] == "injury_update"
     assert data["signals"][0]["player_name"] == "Patrick Mahomes"
+    assert data["signals"][0]["article_url"] == "https://www.espn.com/nfl/story/_/id/1/mahomes"
 
 
 @pytest.mark.asyncio
@@ -109,3 +111,22 @@ async def test_get_news_empty():
     assert data["total"] == 0
     assert data["signals"] == []
     assert data["pages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_signal_types_derived_from_data():
+    """GET /news/types returns the distinct signal_types with display labels,
+    so the Type filter is built from real data (not a hardcoded list)."""
+    session = AsyncMock()
+    types_result = MagicMock()
+    types_result.all.return_value = [("injury_flag", 47), ("transaction", 67)]
+    session.execute = AsyncMock(return_value=types_result)
+
+    resp = await _request(session, "/api/news/types")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == [
+        {"value": "injury_flag", "label": "Injury Flag", "count": 47},
+        {"value": "transaction", "label": "Transaction", "count": 67},
+    ]

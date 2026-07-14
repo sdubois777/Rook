@@ -146,7 +146,7 @@ export default function Trade() {
   const toggle = (setter) => (id) =>
     setter((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
 
-  if (isLoading) return <div className="p-6 text-slate-400">Loading trade league…</div>
+  if (isLoading) return <div className="text-slate-400">Loading trade league…</div>
   if (error) {
     if (isUnboundTeam(error)) {
       const info = unboundInfo(error)
@@ -159,7 +159,7 @@ export default function Trade() {
       )
     }
     return (
-      <div className="mx-auto max-w-2xl p-6">
+      <div className="mx-auto max-w-2xl">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">
           <h1 className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
             <ArrowLeftRight size={20} /> Trade
@@ -188,7 +188,7 @@ export default function Trade() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4 lg:p-6">
+    <div className="mx-auto max-w-6xl space-y-4">
       {/* Header + demo perspective switch */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

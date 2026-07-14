@@ -1,97 +1,60 @@
-import { usePricing } from '../../hooks/usePricing'
-const FEATURES = [
-  { name: 'AI causal reasoning', us: true, fp: false, ud: false },
-  { name: 'League-specific history', us: true, fp: false, ud: false },
-  { name: 'Opponent tendency analysis', us: true, fp: false, ud: false },
-  { name: 'Live draft agent', us: true, fp: false, ud: false },
-  { name: 'Yahoo / ESPN / Sleeper', us: true, fp: true, ud: true },
-  { name: 'Auction support', us: true, fp: true, ud: true },
-  { name: 'Snake draft support', us: true, fp: true, ud: true },
+import { Brain, History, Users, Radio } from 'lucide-react'
+
+/**
+ * "What consensus tools can't do" — makes the differentiation point WITHOUT
+ * naming any competitor (a named competitor mostly teaches visitors it exists).
+ * These are structural capabilities, not a feature-checkbox race: a tool built
+ * on aggregated rankings cannot reason about cause, cannot know YOUR league, and
+ * cannot sit in your draft.
+ */
+const POINTS = [
+  {
+    Icon: Brain,
+    title: 'Reasons about why, not just where',
+    body: 'Consensus rankings tell you a player is 14th. Rook reasons through the cause — a role change, a scheme shift, an injury upstream, a soft schedule — to find who the market is mispricing, and explains the why in plain English.',
+  },
+  {
+    Icon: History,
+    title: 'Knows your league, not the average one',
+    body: 'It reads your actual league history and scoring: who your managers systematically overpay for, which positions they punt, what a win is worth in your format. Generic rankings are the same for everyone; your edge is not.',
+  },
+  {
+    Icon: Users,
+    title: 'Models your opponents',
+    body: 'Rook tracks each opponent\'s tendencies and roster needs, so a trade or nomination is judged by how the people in your league will actually react — not by a league-agnostic average.',
+  },
+  {
+    Icon: Radio,
+    title: 'Sits in your draft with you',
+    body: 'A live draft agent reads the room as it happens and gives real-time recommendations — a bid ceiling and the reasoning behind it — while the pick is still on the clock.',
+  },
 ]
 
-function Check() {
-  return (
-    <svg className="w-5 h-5 text-green-400 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-    </svg>
-  )
-}
-
-function Cross() {
-  return (
-    <svg className="w-5 h-5 text-gray-600 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-    </svg>
-  )
-}
-
 export default function FeatureComparison() {
-  const { tiers } = usePricing()
-  const paid = tiers.filter((t) => t.price_monthly_usd > 0)
-  const priceRange = paid.length
-    ? `$${Math.min(...paid.map((t) => t.price_monthly_usd))}–$${Math.max(...paid.map((t) => t.price_monthly_usd))}/mo`
-    : ''
   return (
     <section className="py-20 px-4 sm:px-6">
       <div className="max-w-4xl mx-auto">
         <h2 className="text-3xl sm:text-4xl font-bold text-white text-center mb-4">
-          Why Rook?
+          What consensus tools can&apos;t do
         </h2>
         <p className="text-gray-400 text-center mb-12 max-w-xl mx-auto">
-          Every tool shows you the same consensus. Rook shows you what the
-          consensus is missing.
+          Every tool shows you the same rankings. Four things a tool built on
+          aggregated consensus structurally cannot give you:
         </p>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-800">
-                <th className="text-left py-3 px-4 text-gray-400 font-medium" />
-                <th className="py-3 px-4 text-center text-white font-semibold">
-                  Rook
-                </th>
-                <th className="py-3 px-4 text-center text-gray-400 font-medium">
-                  FantasyPros
-                </th>
-                <th className="py-3 px-4 text-center text-gray-400 font-medium">
-                  Underdog
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {FEATURES.map((f, i) => (
-                <tr
-                  key={f.name}
-                  className={`border-b border-gray-800/50 ${
-                    i < 4 ? 'bg-blue-950/10' : ''
-                  }`}
-                >
-                  <td className="py-3 px-4 text-gray-300">{f.name}</td>
-                  <td className="py-3 px-4 text-center">
-                    {f.us ? <Check /> : <Cross />}
-                  </td>
-                  <td className="py-3 px-4 text-center">
-                    {f.fp ? <Check /> : <Cross />}
-                  </td>
-                  <td className="py-3 px-4 text-center">
-                    {f.ud ? <Check /> : <Cross />}
-                  </td>
-                </tr>
-              ))}
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 px-4 text-gray-300">Price</td>
-                <td className="py-3 px-4 text-center text-white font-medium">
-                  {priceRange}
-                </td>
-                <td className="py-3 px-4 text-center text-gray-400">
-                  $8–10/mo
-                </td>
-                <td className="py-3 px-4 text-center text-gray-400">
-                  $15/mo
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <div className="grid gap-5 sm:grid-cols-2">
+          {POINTS.map((p) => (
+            <div
+              key={p.title}
+              className="rounded-xl border border-gray-800 bg-gray-900/40 p-6"
+            >
+              <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-lg border border-brand-accent/20 bg-brand/10 text-brand-accent">
+                <p.Icon size={22} strokeWidth={1.75} />
+              </div>
+              <h3 className="mb-2 text-lg font-semibold text-white">{p.title}</h3>
+              <p className="text-sm leading-relaxed text-gray-400">{p.body}</p>
+            </div>
+          ))}
         </div>
       </div>
     </section>

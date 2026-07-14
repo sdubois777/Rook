@@ -34,6 +34,7 @@ class SignalFeedItem(PlayerBadgeFields):
     signal_type: str
     source: Optional[str] = None
     raw_text: Optional[str] = None
+    article_url: Optional[str] = None
     confidence: Optional[str] = None
     flagged_at: Optional[str] = None
     player_id: Optional[str] = None
@@ -50,9 +51,26 @@ class NewsFeedResponse(BaseModel):
     pages: int
 
 
+class SignalTypeFacet(BaseModel):
+    value: str        # the raw signal_type (the query param)
+    label: str        # display label, e.g. "Injury Flag"
+    count: int
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/types", response_model=list[SignalTypeFacet])
+async def get_signal_types(db=Depends(get_db)) -> list[SignalTypeFacet]:
+    """Distinct signal_type values present in the feed, so the Type filter is
+    built from real data instead of a hardcoded (and historically wrong) list."""
+    rows = await NewsRepository(db).distinct_signal_types()
+    return [
+        SignalTypeFacet(value=t, label=t.replace("_", " ").title(), count=n)
+        for t, n in rows
+    ]
 
 @router.get("", response_model=NewsFeedResponse)
 async def get_news(
@@ -89,6 +107,7 @@ async def get_news(
             signal_type=sig.signal_type,
             source=sig.source,
             raw_text=sig.raw_text,
+            article_url=sig.article_url,
             confidence=sig.confidence,
             flagged_at=sig.flagged_at.isoformat() if sig.flagged_at else None,
             player_id=str(sig.player_id) if sig.player_id else None,

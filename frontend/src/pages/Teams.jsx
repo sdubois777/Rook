@@ -30,7 +30,7 @@ export default function Teams() {
   }
 
   return (
-    <div className="max-w-5xl">
+    <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100">NFL Teams</h1>
         <select

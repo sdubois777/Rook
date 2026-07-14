@@ -12,17 +12,128 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rook — AI-Powered Fantasy Football Draft Tool</title>
     <meta name="description" content="Win your fantasy league with AI reasoning. 74.1% signal accuracy in 2025 backtesting. Works with Yahoo, ESPN, Sleeper. Auction and snake draft support." />
+    <link rel="canonical" href="https://rookff.com/" />
+    <meta property="og:url" content="https://rookff.com/" />
+    <meta property="og:site_name" content="Rook" />
     <meta property="og:title" content="Rook — Win Your Fantasy League With AI" />
     <meta property="og:description" content="The only tool that reasons about WHY players are undervalued in your specific league." />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image" content="https://rookff.com/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Rook — win your fantasy league with AI" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Rook — AI-Powered Fantasy Football" />
     <meta name="twitter:description" content="74.1% signal accuracy. 93% buy accuracy. AI that reasons, not just ranks." />
-    <meta name="twitter:image" content="/og-image.png" />
+    <meta name="twitter:image" content="https://rookff.com/og-image.png" />
+
+    <!-- ============================================================
+         AEO / SEO structured data (static, inert to React — present in
+         the raw served HTML so AI crawlers can cite it without JS).
+         Facts must stay true: the SoftwareApplication offer prices are
+         asserted equal to backend/models/user.py TIER_LIMITS by
+         tests/unit/test_seo.py (drift fails CI). The FAQPage mirrors the
+         visible FAQ in src/components/landing/FAQ.jsx verbatim.
+         ============================================================ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "Rook Fantasy Football LLC",
+      "alternateName": "Rook",
+      "url": "https://rookff.com",
+      "logo": "https://rookff.com/rook-lockup.png",
+      "email": "rookadmin@rookff.com",
+      "description": "AI-powered fantasy football platform that builds player values from in-season usage and finds the trades, waivers, and draft picks your league is mispricing.",
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "email": "rookadmin@rookff.com",
+        "contactType": "customer support"
+      }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Rook",
+      "applicationCategory": "SportsApplication",
+      "operatingSystem": "Web",
+      "url": "https://rookff.com",
+      "description": "AI fantasy football manager for Yahoo, ESPN, and Sleeper. Builds player values from in-season usage with replacement-level adjustment, then finds mispriced trades, waivers, and draft picks. Auction and snake drafts, plus a live draft assistant.",
+      "offers": [
+        { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD", "description": "Metered free tier — 30 credits at signup." },
+        { "@type": "Offer", "name": "Standard — monthly", "price": "8", "priceCurrency": "USD", "description": "Unlimited features, billed monthly." },
+        { "@type": "Offer", "name": "Standard — season", "price": "29", "priceCurrency": "USD", "description": "Unlimited features, one season pass." },
+        { "@type": "Offer", "name": "Pro — monthly", "price": "18", "priceCurrency": "USD", "description": "Unlimited leagues + cross-league, billed monthly." },
+        { "@type": "Offer", "name": "Pro — season", "price": "59", "priceCurrency": "USD", "description": "Unlimited leagues + cross-league, one season pass." }
+      ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "How is this different from other fantasy tools?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Most tools aggregate expert consensus into a single ranked list — the same list for every league. Rook uses AI agents that reason about cause-and-effect — role changes, scheme fits, injury risk, and schedule difficulty — to find players the consensus is mispricing, and it grounds every call in YOUR league's history, scoring, and opponents. It's the difference between \"he's ranked 12th\" and \"here's why he's undervalued in your league.\""
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work for snake drafts?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Rook supports both auction and snake draft formats. The valuation engine adapts pick values and recommendations to your draft type."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What leagues and platforms are supported?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yahoo Fantasy, ESPN, and Sleeper. Import your league in one click — the system pulls your league history, opponent tendencies, and scoring settings automatically."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How accurate are the projections?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "In 2025 season backtesting, Rook achieved 74.1% signal accuracy, 93% buy signal accuracy, and a 0.88 correlation between projected and actual PPR points. Real results, not hand-picked examples."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is my league data private?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Absolutely. Your league data is stored securely and never shared with other users. We don't sell data, and your analysis is visible only to you."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What happens after my credits run out?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You can still browse projections, the draft board, news, and injury monitoring for free. Credits are only consumed by trade analysis, waiver wire, and trade finder features. Your signup credits are a one-time grant — buy a credit pack anytime, or upgrade to a paid plan for unlimited access."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I cancel anytime?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Cancel anytime from your account page. No contracts, no cancellation fees. Your credits remain available until they're used."
+          }
+        }
+      ]
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>
