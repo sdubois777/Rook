@@ -157,13 +157,13 @@ async def test_learn_article_is_server_rendered():
     # Per-page canonical — the article's own URL, NOT the homepage's.
     assert f'<link rel="canonical" href="https://rookff.com/learn/{_FLAGSHIP_SLUG}">' in body
     assert '<link rel="canonical" href="https://rookff.com/">' not in body
-    assert "<title>Why Your Best Trades Look Unfair (And How To Tell) — Rook</title>" in body
+    assert "<title>56 Out Of 60 " in body and " Trades Are Ones Nobody Will Accept — Rook</title>" in body
     assert 'name="description"' in body
     # Article JSON-LD present + valid.
     m = re.search(r'<script type="application/ld\+json">(.*?)</script>', body, re.DOTALL)
     ld = json.loads(m.group(1))
     assert ld["@type"] == "Article"
-    assert ld["headline"] == "Why Your Best Trades Look Unfair (And How To Tell)"
+    assert ld["headline"] == "56 Out Of 60 'Perfect' Trades Are Ones Nobody Will Accept"
     assert ld["author"]["name"] == "Rook Fantasy Football LLC"
     assert ld["publisher"]["name"] == "Rook Fantasy Football LLC"
     assert ld["datePublished"] == "2026-07-13"

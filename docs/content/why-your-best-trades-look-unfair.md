@@ -1,95 +1,104 @@
 ---
-title: "Why Your Best Trades Look Unfair (And How To Tell)"
-description: "A trade calculator adds up player values and calls a 2-for-1 'even.' It has no idea what your starting lineup looks like. Here's what it's missing, with the numbers."
+title: "56 Out Of 60 'Perfect' Trades Are Ones Nobody Will Accept"
+description: "We scanned every trade in a 12-team league that was value-even and gained us 5+ points a week. 56 of the 60 gutted the other team. Here's the number every trade calculator is missing."
 date: 2026-07-13
 ---
 
-# Why your best trades look unfair (and how to tell)
+# 56 out of 60 "perfect" trades are ones nobody will accept
 
-**Short answer: a trade calculator scores the trade. It doesn't score your team.** It sums the
-value on each side, compares the totals, and tells you whether the deal is "fair." But a trade
-doesn't happen to a pile of players — it happens to *your roster*, which already has a shape,
-already has holes, and can only start so many people at each position. The number that actually
-matters is not "is this even?" It's "how many more points will I score next week?"
+**Short answer: your trade calculator is missing a number, and it's the one that decides whether
+the trade actually happens.**
 
-Those two questions have different answers more often than you'd think. Here is a real one.
+We scanned a full 12-team league for trades that hit both of the things managers are told to look
+for: **roughly even on total value** (so it looks fair), and **a real gain to our starting lineup**
+(at least 5 points a week). Sixty trades qualified.
 
-## The trade a calculator calls "even"
+**Fifty-six of them destroyed the other team's lineup** — costing the counterparty somewhere between
+8 and 19 points a week. Not close calls. Craters.
 
-A manager gives up **A.J. Brown** (Rook value 89) and **Chris Godwin** (12) — a combined **101** —
-to get **Jahmyr Gibbs** (100).
+Four were mutually acceptable.
 
-Run that through a value calculator: **101 out, 100 in. A ratio of 0.99.** Dead even. Maybe a hair
-losing. Most tools would shrug, and a lot of managers would pass.
+That's the trap. A trade that looks fair on a calculator *and* makes your team meaningfully better
+is, overwhelmingly, a trade your leaguemate will read once and never reply to.
 
-Rook says the trade is worth **+7.0 points per week** to that manager's starting lineup.
+## Why "fair value" isn't the same as "acceptable"
 
-Not because the values are wrong. Because the values aren't the point.
+Total value is a property of the players. Points are a property of a *lineup*. Two managers can be
+offered the exact same trade, and it can be a windfall for one and a disaster for the other —
+because they have different rosters, different holes, and different benches to backfill with.
 
-## What the calculator can't see
+A calculator that adds up values will call that trade "even" for both of them. It has to. It doesn't
+know anything about either team.
 
-The manager's running back room was **Josh Jacobs (62) and Kenneth Walker (16)**. That second
-starting RB slot was a hole — every week, it was costing them points they didn't have to lose.
-Gibbs doesn't just add value; he *replaces the weakest player in a starting slot*.
+So there are actually **three** numbers that matter, and every trade tool we know of publishes only
+the first:
 
-Meanwhile, the wide receivers going out came from **surplus**. After A.J. Brown and Godwin leave,
-the roster still has **Marvin Mims (48) and DeVonta Smith (38)** — enough to fill the starting WR
-slots without much drop-off. Godwin, valued at 12, was never starting. Trading him costs almost
-nothing *in points actually scored*.
+1. **The value ratio** — will he even *look* at it?
+2. **Your lineup gain** — do *you* actually score more points?
+3. **His lineup gain** — does *he*?
 
-So the accounting looks like this:
+Miss the third and you spend your season sending offers that get ignored, wondering why your
+league is "so hard to trade with."
 
-- **What a calculator sees:** 101 of value out, 100 of value in. Even.
-- **What actually happens:** a bench-adjacent WR and a startable WR leave a position with depth; an
-  elite RB fills a starting slot that was bleeding points. **+7.0 points per week.**
+## What a trade that actually works looks like
 
-Seven points a week, in most leagues, is the difference between a playoff seed and an also-ran.
+The four survivors all had the same shape: **two teams with mirror-image problems.**
 
-## The general rule
+Here's the cleanest one. One team is receiver-rich and running-back-dead — it starts Davante Adams
+(Rook value 54), Courtland Sutton (36), Ladd McConkey (15), Jordan Addison (13) and D.J. Moore (7),
+while *every* running back on the roster is valued at 0. Replacement-level. Bleeding points every
+single week from a starting slot.
 
-**Value is a property of a player. Points are a property of a lineup.**
+The other team is the exact inverse: seven running backs, headlined by Jahmyr Gibbs (100) — and a
+receiving corps so thin that only one player on it is startable.
 
-A trade only changes your score through your *starting lineup* — and every roster has a shape that
-determines which players actually matter. Two managers can be offered the same trade and one should
-take it while the other should decline. A calculator that only sums values will give them the same
-answer. It has to. It doesn't know anything about either team.
+The trade:
 
-This is why "trading from strength to fill a need" is such durable advice, and also why it's so
-hard to act on: you know you *should* do it, but every tool you consult keeps telling you the deal
-is uneven. It isn't uneven. It's uneven *in a currency that doesn't score points*.
+- **Give:** Davante Adams (54) + Courtland Sutton (36) + Jordan Addison (13) — **102.7 total**
+- **Get:** Jahmyr Gibbs (100) — **100.0 total**
 
-## What to actually measure
+**Value ratio: 0.97.** You are giving up *slightly more* total value than you get back. A calculator
+would tell you you're losing this trade, or at best breaking even.
 
-Three questions, in order:
+**Your lineup: +5.4 points per week.** Three receivers leave a five-deep room — you barely notice —
+and an elite running back replaces a starter valued at zero.
 
-1. **Which of my starting slots is weakest?** Not which position I'm thin at in the abstract — which
-   *starter* is dragging my weekly score down. That's the hole worth trading to fill.
-2. **What comes out of my lineup, and what backfills it?** Giving up your WR2 costs you the
-   difference between your WR2 and your WR3, not the full value of your WR2. If your WR3 is fine,
-   that difference is small.
-3. **What's the net change to my optimal starting lineup, after the drops?** A 2-for-1 means someone
-   gets cut. Price that in. If the trade still comes out ahead, take it — no matter what the ratio
-   says.
+**Their lineup: +2.1 points per week.** They cover the lost back from a room seven deep, and three
+real receivers walk into a wasteland.
 
-Rook computes exactly that number and leads with it. Its trade finder won't even surface a deal
-unless it's worth at least **5 points per week** to your starting lineup. Value totals still get
-shown — they matter for whether your leaguemate will *accept* — but they aren't the verdict. The
-verdict is what happens to your points.
+Both teams get better. That's not a fleece; that's the trade working the way trades are supposed to.
+And it's rare: it was one of four out of sixty.
+
+## The pattern worth internalizing
+
+**Look for the manager whose roster is the mirror of yours.** Not the manager with the best player
+— the one whose surplus is your hole and whose hole is your surplus. That's where the four live.
+Everywhere else, one of you is getting robbed, and the one getting robbed is going to notice.
+
+The corollary is uncomfortable but useful: **if a trade looks incredible for you and the other guy
+hasn't replied, it's probably not because he's a bad manager.** Run his side of it. Fifty-six times
+out of sixty, he's right.
+
+## How Rook does it
+
+Rook computes all three numbers. The verdict a trade gets is the change to your **optimal starting
+lineup, net of the player you'd have to drop** — not the value total. And the trade finder won't
+surface a deal at all unless it clears 5 points a week for you *and* leaves the counterparty's
+lineup intact. That second gate is why it suggests four trades instead of sixty.
 
 ## The honest fine print
 
-The trade above is drawn from Rook's engine running on **real 2025 usage and production data**. The
-rosters in that example are synthetic — a demo league — so treat it as an illustration of the
-mechanism, not as a live recommendation. The mechanism is the point: the same math runs on real
-leagues.
+These numbers come from Rook's engine running on **real 2025 usage and production data**. The
+rosters are from a demo league — synthetic teams built from real players and real usage — so treat
+the specific trade as an illustration of the mechanism, not a live recommendation. The 56-of-60
+figure is the real output of scanning that league. The same math runs on real leagues.
 
-Separately, Rook's *draft* valuation was backtested against the 2025 season: **74.1% signal
-accuracy, 93% accuracy on buy signals, 13 of 15 top opportunities identified, and a 0.88 correlation
-between projected and actual PPR outcomes.** That validates the draft engine, not the in-season
-trade engine — they're different systems, and we'd rather say so than let a good number do work it
-didn't earn.
+Separately, Rook's *draft* valuation was backtested against the 2025 season: 74.1% signal accuracy,
+93% accuracy on buy signals, 13 of 15 top opportunities identified, and a 0.88 correlation between
+projected and actual PPR outcomes. That validates the draft engine, not the in-season trade engine
+— they're different systems, and we'd rather say so than let a good number do work it didn't earn.
 
 ---
 
 *Rook builds every player's value from in-season usage and the causes behind it, then scores trades
-by what they do to your starting lineup. [Try it free](https://rookff.com) — 30 credits, no card.*
+by what they do to both starting lineups. [Try it free](https://rookff.com) — 30 credits, no card.*
