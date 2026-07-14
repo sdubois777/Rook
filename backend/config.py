@@ -69,6 +69,25 @@ class Settings(BaseSettings):
     # How many seasons of draft history a league sync imports
     league_sync_history_seasons: int = 4
 
+    # --- Pipeline-trigger draft-window safety ---------------------------------
+    # Heavy pipeline passes must NEVER run during peak draft windows: the load test
+    # showed 40 concurrent heavy reads took a healthy 100-draft load from 0% to 50%
+    # errors. A window is "active" when EITHER a live draft session has been active
+    # within `draft_window_live_recent_minutes`, OR a synced league's scheduled
+    # draft_date falls between `draft_window_before_hours` before now and
+    # `draft_window_after_hours` after (a draft spans several hours).
+    draft_window_live_recent_minutes: int = 15
+    draft_window_before_hours: int = 1
+    draft_window_after_hours: int = 6
+    # Weekly full-sweep schedule (UTC). Tuesday ~09:00 UTC ≈ 4-5am ET: post-MNF,
+    # post-Tuesday-morning injury reports, and BEFORE Tue/Wed-night waiver processing
+    # (when users actually look) — and a dead hour with zero draft traffic.
+    weekly_sweep_day_of_week: str = "tue"
+    weekly_sweep_hour_utc: int = 9
+    # Debounce window for event-triggered targeted refreshes (a burst of news about
+    # one player coalesces into ONE refresh).
+    event_refresh_debounce_seconds: int = 60
+
     @property
     def clerk_enabled(self) -> bool:
         """True when Clerk is configured."""

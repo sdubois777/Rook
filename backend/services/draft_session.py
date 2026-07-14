@@ -319,6 +319,54 @@ class DraftSessionManager:
             logger.info("Evicted %d stale warm draft session(s)", len(stale))
         return len(stale)
 
+    async def evict_finished_and_stale(self, safety_ttl_seconds: int) -> dict:
+        """Smarter memory reaper (the load-test follow-up): distinguish a FINISHED
+        draft from a merely IDLE-but-LIVE one instead of one blunt idle TTL.
+
+        - FINISHED (board full): evict warm memory IMMEDIATELY and durably mark the
+          snapshot inactive — nobody needs the engine once the draft is over, and
+          this is where the resident-engine pile-up actually comes from.
+        - ABANDONED (idle beyond ``safety_ttl_seconds``): evict warm memory. The TTL
+          is set to comfortably EXCEED a real draft's wall-clock (a 12-team/15-round
+          snake at a 90s clock is ~4.5h, plus pauses), so a live-but-paused draft is
+          never cold-started mid-draft.
+        - LIVE (incomplete + active within the TTL): kept warm however long it runs.
+
+        Eviction is safe — state lives in draft_sessions and get_or_rehydrate()
+        rebuilds it; the only cost is a cold-start, which is exactly what we refuse
+        to inflict on a live draft. Returns counts for the reaper log.
+        """
+        cutoff = _now() - timedelta(seconds=safety_ttl_seconds)
+        finished: list[str] = []
+        abandoned: list[str] = []
+        for key, sess in list(self._sessions.items()):
+            try:
+                done = sess.state.is_draft_complete()
+            except Exception:  # a malformed state must never wedge the reaper
+                done = False
+            if done:
+                finished.append(key)
+            elif sess.last_activity < cutoff:
+                abandoned.append(key)
+
+        for key in finished + abandoned:
+            self._sessions.pop(key, None)
+        # Finished drafts: also retire the durable row so a stray refresh can't
+        # resurrect a completed draft. Abandoned rows are left to the DB backstop
+        # (deactivate_stale_rows) so a wrongly-idle live draft can still resume.
+        for key in finished:
+            try:
+                await self._store.delete(uuid.UUID(key))  # soft-delete: mark inactive
+            except Exception:
+                logger.warning("Finished-draft DB deactivate failed for %s", key)
+
+        if finished or abandoned:
+            logger.info(
+                "Reaper: evicted %d finished + %d abandoned warm draft session(s)",
+                len(finished), len(abandoned),
+            )
+        return {"finished": len(finished), "abandoned": len(abandoned)}
+
     @property
     def active_count(self) -> int:
         return len(self._sessions)

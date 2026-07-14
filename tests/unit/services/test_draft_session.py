@@ -140,6 +140,89 @@ async def test_evict_stale_drops_idle_warm_sessions_keeps_snapshot():
     assert await mgr.get_or_rehydrate(uid) is not None
 
 
+# --- smarter reaper: finished vs abandoned vs live (load-test follow-up) ---
+
+
+def _tiny_config() -> LeagueConfig:
+    """A 2-team, 1-slot league so a full board is exactly 2 picks."""
+    return LeagueConfig(team_count=2, roster_slots={"QB": 1}, draft_type="snake")
+
+
+def _complete_state() -> DraftStateManager:
+    """A snake state whose board is FULL (2 teams x 1 slot = 2 drafted)."""
+    s = DraftStateManager(_tiny_config(), "me")
+    s.record_snake_pick("Josh Allen", is_yours=True)
+    s.record_snake_pick("Jalen Hurts", is_yours=False)
+    return s
+
+
+def _live_incomplete_state() -> DraftStateManager:
+    """A snake state mid-draft: board not yet full (1 of 2)."""
+    s = DraftStateManager(_tiny_config(), "me")
+    s.record_snake_pick("Josh Allen", is_yours=True)
+    return s
+
+
+def test_is_draft_complete_true_only_when_board_full():
+    assert _complete_state().is_draft_complete() is True
+    assert _live_incomplete_state().is_draft_complete() is False
+
+
+@pytest.mark.asyncio
+async def test_reaper_evicts_finished_immediately_and_deactivates_db():
+    """A FINISHED (board-full) draft is evicted from memory at once AND its durable
+    row is marked inactive — even though it was just active (not idle)."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _complete_state())
+
+    reaped = await mgr.evict_finished_and_stale(safety_ttl_seconds=8 * 3600)
+
+    assert reaped == {"finished": 1, "abandoned": 0}
+    assert mgr.get_warm(uid) is None            # warm engine reclaimed
+    assert store._records[uid]["active"] is False  # durable row retired
+
+
+@pytest.mark.asyncio
+async def test_reaper_keeps_live_draft_warm_even_when_paused():
+    """A LIVE (incomplete) draft is NOT evicted, even paused well beyond a normal
+    between-picks gap — as long as it's within the safety TTL. Proves we never
+    cold-start a live draft mid-draft."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _live_incomplete_state())
+    # Simulate a 3h pause (dinner break) — longer than the OLD 6h? no: under 8h TTL.
+    sess = mgr.get_warm(uid)
+    sess.last_activity = sess.last_activity - __import__("datetime").timedelta(hours=3)
+
+    reaped = await mgr.evict_finished_and_stale(safety_ttl_seconds=8 * 3600)
+
+    assert reaped == {"finished": 0, "abandoned": 0}
+    assert mgr.get_warm(uid) is not None         # still warm mid-draft
+
+
+@pytest.mark.asyncio
+async def test_reaper_evicts_abandoned_incomplete_after_safety_ttl():
+    """An incomplete draft idle BEYOND the safety TTL is treated as abandoned and
+    evicted from memory (snapshot left for the DB backstop, so a stray resume still
+    works)."""
+    store = InMemorySessionStore()
+    mgr = DraftSessionManager(store, _factory)
+    uid = uuid.uuid4()
+    await mgr.create(uid, _live_incomplete_state())
+    sess = mgr.get_warm(uid)
+    sess.last_activity = sess.last_activity.replace(year=2000)  # long abandoned
+
+    reaped = await mgr.evict_finished_and_stale(safety_ttl_seconds=8 * 3600)
+
+    assert reaped == {"finished": 0, "abandoned": 1}
+    assert mgr.get_warm(uid) is None
+    # Incomplete + abandoned: snapshot NOT force-retired here (DB backstop handles it)
+    assert store._records[uid]["active"] is True
+
+
 @pytest.mark.asyncio
 async def test_create_for_second_user_does_not_attach_to_first():
     """B starting a draft while A drafts creates B's OWN session, not A's."""
