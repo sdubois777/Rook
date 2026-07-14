@@ -51,9 +51,26 @@ class NewsFeedResponse(BaseModel):
     pages: int
 
 
+class SignalTypeFacet(BaseModel):
+    value: str        # the raw signal_type (the query param)
+    label: str        # display label, e.g. "Injury Flag"
+    count: int
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get("/types", response_model=list[SignalTypeFacet])
+async def get_signal_types(db=Depends(get_db)) -> list[SignalTypeFacet]:
+    """Distinct signal_type values present in the feed, so the Type filter is
+    built from real data instead of a hardcoded (and historically wrong) list."""
+    rows = await NewsRepository(db).distinct_signal_types()
+    return [
+        SignalTypeFacet(value=t, label=t.replace("_", " ").title(), count=n)
+        for t, n in rows
+    ]
 
 @router.get("", response_model=NewsFeedResponse)
 async def get_news(
