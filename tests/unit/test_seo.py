@@ -143,25 +143,29 @@ def test_faq_no_false_monthly_refill_claim_in_page_or_schema():
 # Content engine — /learn (index) and /learn/{slug} (server-rendered pages).
 # ---------------------------------------------------------------------------
 
+_FLAGSHIP_SLUG = "why-your-best-trades-look-unfair"
+
+
 @pytest.mark.asyncio
 async def test_learn_article_is_server_rendered():
-    resp = await _get("/learn/hello-rook")
+    resp = await _get(f"/learn/{_FLAGSHIP_SLUG}")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     body = resp.text
     assert "<div id=\"root\">" not in body                    # NOT the SPA shell
-    assert "placeholder" in body.lower()                       # real body content
+    assert "points per week" in body                           # real body content
     # Per-page canonical — the article's own URL, NOT the homepage's.
-    assert '<link rel="canonical" href="https://rookff.com/learn/hello-rook">' in body
+    assert f'<link rel="canonical" href="https://rookff.com/learn/{_FLAGSHIP_SLUG}">' in body
     assert '<link rel="canonical" href="https://rookff.com/">' not in body
-    assert "<title>How Rook Learn works — Rook</title>" in body
+    assert "<title>Why Your Best Trades Look Unfair (And How To Tell) — Rook</title>" in body
     assert 'name="description"' in body
     # Article JSON-LD present + valid.
     m = re.search(r'<script type="application/ld\+json">(.*?)</script>', body, re.DOTALL)
     ld = json.loads(m.group(1))
     assert ld["@type"] == "Article"
-    assert ld["headline"] == "How Rook Learn works"
+    assert ld["headline"] == "Why Your Best Trades Look Unfair (And How To Tell)"
     assert ld["author"]["name"] == "Rook Fantasy Football LLC"
+    assert ld["publisher"]["name"] == "Rook Fantasy Football LLC"
     assert ld["datePublished"] == "2026-07-13"
 
 
@@ -172,7 +176,7 @@ async def test_learn_index_lists_articles():
     body = resp.text
     assert "<div id=\"root\">" not in body
     assert "Rook Learn" in body
-    assert 'href="/learn/hello-rook"' in body
+    assert f'href="/learn/{_FLAGSHIP_SLUG}"' in body
 
 
 @pytest.mark.asyncio
@@ -185,4 +189,4 @@ async def test_learn_unknown_slug_404s():
 async def test_sitemap_includes_learn_pages():
     resp = await _get("/sitemap.xml")
     assert "https://rookff.com/learn" in resp.text
-    assert "https://rookff.com/learn/hello-rook" in resp.text
+    assert f"https://rookff.com/learn/{_FLAGSHIP_SLUG}" in resp.text
