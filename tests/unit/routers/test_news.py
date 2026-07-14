@@ -111,3 +111,22 @@ async def test_get_news_empty():
     assert data["total"] == 0
     assert data["signals"] == []
     assert data["pages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_signal_types_derived_from_data():
+    """GET /news/types returns the distinct signal_types with display labels,
+    so the Type filter is built from real data (not a hardcoded list)."""
+    session = AsyncMock()
+    types_result = MagicMock()
+    types_result.all.return_value = [("injury_flag", 47), ("transaction", 67)]
+    session.execute = AsyncMock(return_value=types_result)
+
+    resp = await _request(session, "/api/news/types")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == [
+        {"value": "injury_flag", "label": "Injury Flag", "count": 47},
+        {"value": "transaction", "label": "Transaction", "count": 67},
+    ]

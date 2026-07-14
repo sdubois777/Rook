@@ -70,3 +70,14 @@ class NewsRepository(BaseRepository[BeatReporterSignal]):
         )
         result = await self._session.execute(query)
         return list(result.all()), total
+
+    async def distinct_signal_types(self) -> list[tuple[str, int]]:
+        """The signal_type values actually present in the feed, most-common
+        first. Powers the Type filter so its options are DERIVED from the data
+        and can never drift from what the ingestion agent writes."""
+        result = await self._session.execute(
+            select(BeatReporterSignal.signal_type, func.count())
+            .group_by(BeatReporterSignal.signal_type)
+            .order_by(func.count().desc())
+        )
+        return [(row[0], row[1]) for row in result.all()]
