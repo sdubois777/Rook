@@ -2,8 +2,16 @@
 Simple in-memory rate limiter.
 Per-user limits on expensive endpoints.
 
-For production scale, replace with Redis-backed limiter.
-The interface is identical — swap the store only.
+MULTI-PROCESS BEHAVIOR (read before enabling --workers / replicas):
+    `_buckets` is PER-PROCESS. With N app processes behind one load balancer, a
+    client's requests spread across processes, so the EFFECTIVE limit becomes up
+    to N × the configured rpm (each process counts only the requests it saw).
+    This fails OPEN (permissive) — it under-limits, it never wrongly locks a user
+    out — so it is ACCEPTED AS-IS while the deploy is single-process. It is NOT a
+    silent gap: when workers/replicas are turned on, move the store to a shared
+    backend (Postgres — a `hits(key, ts)` table with a windowed COUNT, or the
+    LISTEN/NOTIFY DB we already run; or Redis if one is ever provisioned). The
+    interface below is deliberately store-agnostic — swap `_buckets` only.
 """
 from __future__ import annotations
 

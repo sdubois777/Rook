@@ -153,6 +153,14 @@ async def startup_checks():
     logger.info("Beat Reporter scheduler started (daily at 7am)")
     logger.info("Stale draft-session reaper registered (every 30 min)")
 
+    # Cross-process WebSocket bus (Postgres LISTEN/NOTIFY). One dedicated LISTEN
+    # connection per process; the loop reconnects if Railway drops it. Harmless in
+    # the single-process deploy today (a process ignores its own publications) and
+    # already correct the moment a second process is added.
+    from backend.websocket.manager import pubsub
+    await pubsub.start()
+    logger.info("WebSocket pub/sub bus started (Postgres LISTEN/NOTIFY)")
+
 
 @app.on_event("shutdown")
 async def shutdown_checks():
@@ -160,6 +168,10 @@ async def shutdown_checks():
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Beat Reporter scheduler stopped")
+
+    from backend.websocket.manager import pubsub
+    await pubsub.stop()
+    logger.info("WebSocket pub/sub bus stopped")
 
 
 # Warm draft sessions idle longer than this are evicted from memory (the DB
