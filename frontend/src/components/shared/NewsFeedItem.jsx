@@ -2,31 +2,29 @@ import {
   Activity,
   AlertTriangle,
   TrendingUp,
-  UserPlus,
-  UserMinus,
+  Star,
+  ArrowLeftRight,
 } from 'lucide-react'
 import { PlayerBadges } from './PlayerName'
 
+// Keys are the ACTUAL signal_type values the beat-reporter agent emits
+// (backend/agents/beat_reporter.py SIGNAL_TYPES) — anything else falls back to
+// the neutral default below. (Earlier maps keyed off types the agent never
+// produces, so every item rendered gray.)
 const signalIcons = {
-  injury_update: AlertTriangle,
-  practice_status: Activity,
-  depth_chart_move: TrendingUp,
-  trade: UserPlus,
-  release: UserMinus,
-  suspension: AlertTriangle,
-  contract: TrendingUp,
-  coaching_change: Activity,
+  injury_flag: AlertTriangle,
+  practice_limited: Activity,
+  depth_chart_change: TrendingUp,
+  camp_standout: Star,
+  transaction: ArrowLeftRight,
 }
 
 const signalColors = {
-  injury_update: 'text-red-400',
-  practice_status: 'text-amber-400',
-  depth_chart_move: 'text-blue-400',
-  trade: 'text-emerald-400',
-  release: 'text-orange-400',
-  suspension: 'text-red-400',
-  contract: 'text-teal-400',
-  coaching_change: 'text-purple-400',
+  injury_flag: 'text-red-400',
+  practice_limited: 'text-amber-400',
+  depth_chart_change: 'text-blue-400',
+  camp_standout: 'text-emerald-400',
+  transaction: 'text-purple-400',
 }
 
 // Known RSS hosts → a clean publisher label. `source` is the FEED url (not the
