@@ -242,6 +242,7 @@ async def _write_signal(
             signal_type = signal_type,
             source      = article.get("source", ""),
             raw_text    = article.get("title", ""),
+            article_url = article.get("url"),   # per-article permalink (entry.link)
             confidence  = signal.get("confidence"),
         )
         session.add(rec)
@@ -257,6 +258,7 @@ async def _write_signal(
                     "signal_type": signal_type,
                     "source": article.get("source", ""),
                     "raw_text": article.get("title", ""),
+                    "article_url": article.get("url"),
                     "confidence": signal.get("confidence"),
                     "flagged_at": rec.flagged_at.isoformat() if rec.flagged_at else None,
                     "player_id": str(player_id) if player_id else None,

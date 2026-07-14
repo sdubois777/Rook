@@ -259,7 +259,7 @@ export default function Waiver() {
 
   function switchActingAs(id) { setMyTeamId(id); recMut.reset() }
 
-  if (isLoading) return <div className="p-6 text-slate-400">Loading waiver wire…</div>
+  if (isLoading) return <div className="text-slate-400">Loading waiver wire…</div>
   if (error) {
     if (isUnboundTeam(error)) {
       const info = unboundInfo(error)
@@ -272,7 +272,7 @@ export default function Waiver() {
       )
     }
     return (
-      <div className="mx-auto max-w-2xl p-6">
+      <div className="mx-auto max-w-2xl">
         <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-300">
           <h1 className="mb-2 flex items-center gap-2 text-lg font-semibold text-white">
             <Waves size={20} /> Waiver Wire
@@ -294,7 +294,7 @@ export default function Waiver() {
   const data = recMut.data
 
   return (
-    <div className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6">
+    <div className="mx-auto max-w-7xl space-y-4">
       {/* Header + demo perspective switch */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

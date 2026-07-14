@@ -41,7 +41,13 @@ export default function Layout({ children }) {
           collapsed ? 'lg:ml-16' : 'lg:ml-56'
         }`}
       >
-        <div className="p-4 lg:p-6">{children}</div>
+        {/* The ONE shared content container: centered + capped so pages don't pin
+            to the top-left on ultrawide monitors. `mx-auto w-full` is a NO-OP below
+            the cap, so mobile/tablet/laptop are unchanged; only >1600px centers.
+            Pages must NOT set their own root width — width lives here. (Named
+            exceptions: News keeps a narrow reading width via its own mx-auto cap;
+            DraftBoard is a dense grid that fills this container.) */}
+        <div className="mx-auto w-full max-w-[1600px] p-4 lg:p-6">{children}</div>
       </main>
     </div>
   )
