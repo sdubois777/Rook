@@ -19,15 +19,32 @@ import { useMe } from '../../hooks/useMe'
 import LeagueSelector from './LeagueSelector'
 import Logo from '../brand/Logo'
 
-const navItems = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/teams', label: 'Teams', icon: Shield },
-  { to: '/news', label: 'News', icon: Newspaper },
-  { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
-  { to: '/trade', label: 'Trade', icon: ArrowLeftRight },
-  { to: '/waiver', label: 'Waiver Wire', icon: Waves },
-  { to: '/matchup', label: 'Matchup', icon: Swords },
-  { to: '/account', label: 'Account', icon: UserCircle },
+// Nav grouped into the three areas of the product. Draft Room keeps its amber
+// accent (live, full-screen). Grouping is structure, not decoration — a quiet
+// section label on the expanded rail, a divider on the collapsed rail.
+const navGroups = [
+  {
+    label: 'Draft',
+    items: [
+      { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { to: '/teams', label: 'Teams', icon: Shield },
+      { to: '/draftboard', label: 'Draft Board', icon: ClipboardList },
+      { to: '/draft-room', label: 'Draft Room', icon: Swords, accent: true },
+    ],
+  },
+  {
+    label: 'In-Season',
+    items: [
+      { to: '/news', label: 'News', icon: Newspaper },
+      { to: '/trade', label: 'Trade', icon: ArrowLeftRight },
+      { to: '/waiver', label: 'Waiver Wire', icon: Waves },
+      { to: '/matchup', label: 'Matchup', icon: Swords },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [{ to: '/account', label: 'Account', icon: UserCircle }],
+  },
 ]
 
 
@@ -75,42 +92,43 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
       {/* League selector — persistent across pages */}
       <LeagueSelector />
 
-      {/* Nav */}
+      {/* Nav — grouped: Draft · In-Season · Account */}
       <nav className="flex-1 py-2">
-        {navItems.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
-            onClick={onClose}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
-                isActive
-                  ? 'text-brand-accent bg-brand/10 border-r-2 border-brand-accent'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-surface-2'
-              }`
-            }
-          >
-            <Icon size={18} />
-            <span className={labelHidden}>{label}</span>
-          </NavLink>
+        {navGroups.map((group, gi) => (
+          <div key={group.label} className={gi > 0 ? 'mt-1' : ''}>
+            {/* Group separator. Expanded rail: a quiet uppercase label. Collapsed
+                rail: a short divider (labels have no room), shown for groups
+                after the first so the icon rail still reads as three sections. */}
+            {gi > 0 && collapsed && (
+              <div className="hidden lg:block mx-3 my-2 border-t border-border" />
+            )}
+            <div
+              className={`px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 ${labelHidden}`}
+            >
+              {group.label}
+            </div>
+            {group.items.map(({ to, label, icon: Icon, accent }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === '/'}
+                onClick={onClose}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
+                    isActive
+                      ? 'text-brand-accent bg-brand/10 border-r-2 border-brand-accent'
+                      : accent
+                        ? 'text-amber-400 hover:text-amber-300 hover:bg-surface-2'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-surface-2'
+                  }`
+                }
+              >
+                <Icon size={18} />
+                <span className={labelHidden}>{label}</span>
+              </NavLink>
+            ))}
+          </div>
         ))}
-
-        {/* Draft Room — full-screen live draft */}
-        <NavLink
-          to="/draft-room"
-          onClick={onClose}
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors min-h-11 lg:min-h-0 ${
-              isActive
-                ? 'text-brand-accent bg-brand/10 border-r-2 border-brand-accent'
-                : 'text-amber-400 hover:text-amber-300 hover:bg-surface-2'
-            }`
-          }
-        >
-          <Swords size={18} />
-          <span className={labelHidden}>Draft Room</span>
-        </NavLink>
       </nav>
 
       {/* Footer — credits + user */}
