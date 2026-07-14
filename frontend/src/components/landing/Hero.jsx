@@ -1,99 +1,107 @@
 import { Link } from 'react-router-dom'
-import { TrendingUp, Minus, ArrowRight } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { usePricing } from '../../hooks/usePricing'
 
 /**
  * Hero — leads with the PRODUCT, not a mascot. The signature element is a
- * faithful, static render of the app's real trade VerdictPanel showing a real
- * engine result (The Lord ↔ Joe Shiesty, 2025-season data — see
- * docs/trade_output_review.md, a reproducible network-free dump). Same chrome,
- * type, and mono/tabular numbers as the in-app panel, so the landing page and
- * the app read as the same product. Numbers are NOT fabricated.
+ * faithful, static render of a real player card from the app's in-season value
+ * engine. A single player + the engine's OWN reasoning PROVES the "reason about
+ * why" headline (and, being an explanation rather than a trade recommendation,
+ * there's no "that's a robbery" reaction to have).
+ *
+ * EVERY number and the `why` sentence below are verbatim engine output for
+ * Ashton Jeanty at 2025 season week 14 (evaluate_league over the demo league;
+ * the value engine consumes REAL 2025 per-week usage from PBP). Cross-checkable:
+ * a visitor can verify Jeanty's real 2025 usage/production. Nothing is invented.
  */
 
-// --- real verdict data (verbatim trade values from the engine dump) ----------
-const GIVE = [{ name: 'Tyler Warren', pos: 'TE', value: 32, trend: 'stable' }]
-const GET = [
-  { name: 'Zay Flowers', pos: 'WR', value: 49, trend: 'rising', buyLow: true },
-  { name: 'Terry McLaurin', pos: 'WR', value: 42, trend: 'stable' },
-]
+// --- real engine output (Ashton Jeanty, 2025 wk14 — see commit message) ------
+const CARD = {
+  name: 'Ashton Jeanty',
+  pos: 'RB',
+  team: 'Las Vegas Raiders',
+  games: 13,
+  value: '55.7', // forward_value (0-100, position-relative)
+  confidence: 'full',
+  // verbatim InSeasonValue.why
+  why: 'producing below volume (11 vs ~17 expected) — buy-low',
+  usagePrior: '50%', // usage_prior
+  usageRecent: '54%', // usage_recent
+  scoring: '11.5', // recency_ppg
+  expected: '17.0', // expected_ppg
+}
 
-function ValueRow({ p }) {
-  const Trend = p.trend === 'rising' ? TrendingUp : Minus
-  const trendCls = p.trend === 'rising' ? 'text-emerald-400' : 'text-slate-500'
+/** A static player card in the app's own chrome — the hero's one bold element. */
+function PlayerCard() {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-surface-2 px-3 py-2">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
-          {p.pos}
-        </span>
-        <span className="truncate text-sm font-medium text-white">{p.name}</span>
-        {p.buyLow && (
-          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400">
-            BUY-LOW
-          </span>
-        )}
+    <div className="w-full max-w-md rounded-xl border border-border bg-surface-1 shadow-2xl shadow-brand/20">
+      {/* Header — player identity left, the headline value right */}
+      <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+              {CARD.pos}
+            </span>
+            <span className="text-base font-semibold text-white">{CARD.name}</span>
+            <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400">
+              BUY-LOW
+            </span>
+          </div>
+          <div className="mt-0.5 text-xs text-slate-500">
+            {CARD.team} · {CARD.games} games
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+            Rook value
+          </div>
+          <div className="font-mono tabular-nums text-2xl font-bold leading-tight text-white">
+            {CARD.value}
+          </div>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="font-mono tabular-nums text-sm font-semibold text-white">
-          {p.value}
-        </span>
-        <Trend size={14} className={trendCls} />
+
+      <div className="space-y-3 p-4">
+        {/* The engine's OWN reasoning — the whole point of the card */}
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Why Rook flags it
+          </div>
+          <p className="text-sm text-slate-300">{CARD.why}</p>
+        </div>
+
+        {/* Real supporting metrics — labels only; every number is engine output */}
+        <div className="grid grid-cols-3 gap-2">
+          <Metric label="Usage">
+            <span className="font-mono tabular-nums">
+              {CARD.usagePrior}
+              <span className="text-slate-500"> → </span>
+              <span className="text-emerald-400">{CARD.usageRecent}</span>
+            </span>
+          </Metric>
+          <Metric label="Scoring">
+            <span className="font-mono tabular-nums">{CARD.scoring}</span>
+            <span className="text-xs text-slate-500"> pg</span>
+          </Metric>
+          <Metric label="Its usage supports">
+            <span className="font-mono tabular-nums">{CARD.expected}</span>
+            <span className="text-xs text-slate-500"> pg</span>
+          </Metric>
+        </div>
+
+        <div className="text-[11px] text-slate-500">
+          confidence: <span className="text-slate-300">{CARD.confidence}</span>
+        </div>
       </div>
     </div>
   )
 }
 
-/** A static replica of the in-app VerdictPanel — the hero's one bold element. */
-function VerdictCard() {
+function Metric({ label, children }) {
   return (
-    <div className="w-full max-w-md rounded-xl border border-border bg-surface-1 shadow-2xl shadow-brand/20">
-      {/* Verdict header — brand-accent, exactly like a confident in-app verdict */}
-      <div className="rounded-t-xl border-b border-brand-accent/40 bg-brand/10 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-base font-semibold text-white">You win</span>
-            <span className="text-sm text-brand-accent">· fair trade</span>
-          </div>
-          <div className="text-right text-xs text-slate-400">
-            <div className="font-mono tabular-nums">
-              your lineup <span className="text-emerald-400">+7.8 pts/wk</span>
-            </div>
-          </div>
-        </div>
-        <div className="mt-1 text-[11px] text-slate-500">
-          confidence: <span className="text-slate-300">full</span>
-        </div>
-      </div>
-
-      <div className="space-y-3 p-4">
-        <p className="text-sm text-slate-300">
-          One tight end for two starting receivers. Zay Flowers grades{' '}
-          <span className="text-emerald-400">buy-low</span> — Rook sets his trade
-          value from in-season usage, not preseason rank.
-        </p>
-
-        {/* Give/get stacked (not two narrow columns) so player names read in
-            full at hero width — no truncation on the showpiece. */}
-        <div className="space-y-3">
-          <div>
-            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              You give
-            </div>
-            <div className="space-y-1.5">
-              {GIVE.map((p) => <ValueRow key={p.name} p={p} />)}
-            </div>
-          </div>
-          <div>
-            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              You get
-            </div>
-            <div className="space-y-1.5">
-              {GET.map((p) => <ValueRow key={p.name} p={p} />)}
-            </div>
-          </div>
-        </div>
-      </div>
+    <div className="rounded-md bg-surface-2 px-2.5 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-0.5 text-sm font-medium text-white">{children}</div>
     </div>
   )
 }
@@ -153,9 +161,9 @@ export default function Hero() {
 
         {/* RIGHT — the product being right (the one bold element) */}
         <div className="flex flex-col items-center gap-3 lg:items-end motion-safe:animate-[fadeUp_0.6s_ease-out]">
-          <VerdictCard />
+          <PlayerCard />
           <p className="max-w-md text-center text-xs text-slate-600 lg:text-right">
-            A real verdict from Rook&apos;s value engine — 2025 season data.
+            A real player card from Rook&apos;s value engine — 2025 season, through Week 14.
           </p>
         </div>
       </div>
