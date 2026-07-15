@@ -2702,9 +2702,10 @@ def test_prompt_version_triggers_regeneration():
     )
 
 
-def test_prompt_version_constant_is_v6():
-    """Sanity: prompt version is v6 after the availability-model update."""
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v6"
+def test_prompt_version_constant_is_v7():
+    """Sanity: prompt version is v7 after adding projected_receptions (per-format
+    reprice basis)."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
 
 
 # ---------------------------------------------------------------------------
@@ -3190,3 +3191,31 @@ class TestRookieSonnetRouting:
         rookie_prof["confidence"] = prof.get("confidence", "low")
         assert rookie_prof["profile_source"] == "sonnet_rookie"
         assert rookie_prof["confidence"] in ("low", "medium")
+
+
+# --- projected_receptions (per-format reprice basis, prompt v7) --------------
+from backend.agents.player_profiles import _projected_receptions  # noqa: E402
+
+
+def test_projected_receptions_receivers_only_and_sanitized():
+    # RB/WR/TE get it
+    assert _projected_receptions({"projected_receptions": 72.4}, "WR") == 72.4
+    assert _projected_receptions({"projected_receptions": 45}, "RB") == 45.0
+    assert _projected_receptions({"projected_receptions": 60.0}, "TE") == 60.0
+    # QB/K/DEF never (format-invariant — no reception scoring)
+    assert _projected_receptions({"projected_receptions": 10}, "QB") is None
+    assert _projected_receptions({"projected_receptions": 5}, "DEF") is None
+    # absent / invalid → None (reprice falls back to baseline receptions, else 0)
+    assert _projected_receptions({}, "RB") is None
+    assert _projected_receptions({"projected_receptions": "x"}, "WR") is None
+    assert _projected_receptions({"projected_receptions": None}, "WR") is None
+    # negative clamped to 0
+    assert _projected_receptions({"projected_receptions": -3}, "RB") == 0.0
+
+
+def test_prompt_v7_asks_for_projected_receptions_in_both_paths():
+    """Both the per-player projection prompt and the rookie prompt must request
+    projected_receptions, or the backfill won't populate the reprice basis."""
+    src = Path("backend/agents/player_profiles.py").read_text(encoding="utf-8")
+    assert src.count('"projected_receptions"') >= 2   # both output schemas
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
