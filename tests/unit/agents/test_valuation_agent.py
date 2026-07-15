@@ -288,3 +288,28 @@ def test_no_league_language_in_auction_notes():
     # Clean notes should pass through unchanged
     clean = "Elite target share in high-volume offense at $40 consensus ADP."
     assert sanitize(clean) == clean
+
+
+# --- per-format prose (G2): prompt parameterization ---------------------------
+from backend.agents.valuation_agent import _system_prompt, SYSTEM_PROMPT  # noqa: E402
+
+
+def test_ppr_system_prompt_is_byte_identical():
+    """PPR must produce today's prompt exactly — 100% of current users are PPR."""
+    assert _system_prompt("ppr") == SYSTEM_PROMPT
+
+
+def test_standard_prompt_drops_ppr_and_forbids_selling_receptions():
+    sp = _system_prompt("standard")
+    assert sp != SYSTEM_PROMPT
+    assert "12-team PPR fantasy football league" not in sp
+    assert "12-team STANDARD" in sp
+    assert "receptions score ZERO" in sp
+    assert "PPR asset" in sp  # the forbid-instruction references it
+
+
+def test_half_ppr_prompt_labels_half_and_tempers():
+    sp = _system_prompt("half_ppr")
+    assert "HALF-PPR" in sp
+    assert "12-team PPR fantasy football league" not in sp
+    assert "0.5 points per reception" in sp

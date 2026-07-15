@@ -24,7 +24,7 @@ import logging
 import re
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import selectinload
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNET
@@ -266,6 +266,56 @@ adp_diff, which depends on your adp_ai and therefore can't be known at inference
 Output ONLY a JSON array. No commentary outside the JSON."""
 
 
+# --- Per-format prose (G2): the prompt reflects the league's scoring format. ---
+# PPR returns SYSTEM_PROMPT VERBATIM (byte-identical for existing users). Half/Standard
+# swap the league label and inject a scoring block that changes how value is justified.
+_FORMAT_LABELS = {
+    "ppr": "PPR",
+    "half_ppr": "HALF-PPR (0.5 points per reception)",
+    "standard": "STANDARD, non-PPR (0 points per reception)",
+}
+
+_FORMAT_SCORING_BLOCK = {
+    "half_ppr": (
+        "\n\nSCORING — HALF-PPR: each reception is worth 0.5 points. Reception volume "
+        "adds MODERATE value (half of full PPR) — temper reception-based praise "
+        "accordingly. Any point figure you quote in auction_note MUST be the HALF-PPR "
+        "projection you are given (`projected_ppr` in the input is ALREADY in this "
+        "league's scoring); never quote a full-PPR total, and IGNORE any PPR-per-game "
+        "figures that appear in projection_reasoning."
+    ),
+    "standard": (
+        "\n\nSCORING — STANDARD (non-PPR): receptions score ZERO. A player's receiving "
+        "VOLUME (targets, catches, reception count) adds little to no standalone fantasy "
+        "value — value comes from YARDS and TOUCHDOWNS. In auction_note you MUST NOT "
+        "justify value via targets/catches/reception volume, MUST NOT call anyone a 'PPR "
+        "asset' or praise an 'elite receiving/PPR floor', and should remember that a "
+        "pass-catching back or high-target possession receiver is worth LESS here than "
+        "in PPR. Any point figure you quote MUST be the STANDARD projection you are given "
+        "(`projected_ppr` in the input is ALREADY in this league's scoring); never quote a "
+        "PPR total, and IGNORE any PPR-per-game figures in projection_reasoning."
+    ),
+}
+
+
+def _system_prompt(scoring_format: str) -> str:
+    """The system prompt for a scoring format. PPR is the unchanged constant."""
+    if scoring_format == "ppr":
+        return SYSTEM_PROMPT
+    label = _FORMAT_LABELS.get(scoring_format, "PPR")
+    prompt = SYSTEM_PROMPT.replace(
+        "You are an auction draft strategist for a 12-team PPR fantasy football league.",
+        f"You are an auction draft strategist for a 12-team {label} fantasy football league.",
+        1,
+    )
+    return prompt.replace(
+        "$185 on 7 starting skill players (QB, 2×RB, 2×WR, TE, FLEX).",
+        "$185 on 7 starting skill players (QB, 2×RB, 2×WR, TE, FLEX)."
+        + _FORMAT_SCORING_BLOCK.get(scoring_format, ""),
+        1,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Agent class
 # ---------------------------------------------------------------------------
@@ -315,10 +365,36 @@ class ValuationAgent(BaseAgent):
                 tier_groups[tier] = []
             tier_groups[tier].append((p, ctx))
 
-        # 3. Process each tier group with appropriate batching
+        # 3. Process each tier group with appropriate batching (shared with the
+        #    per-format prose run — PPR here uses identical prompt/cache keys).
+        batch = await self._run_tier_batches(tier_groups)
+        results_map = batch["results_map"]
+
+        # 4. Write results to DB
+        await self._write_results(players, results_map)
+
+        # 5. Global re-rank by adp_ai (clean 1-N) across ALL players with an ADP.
+        await self._compute_adp_ranks()
+
+        logger.info(
+            "Valuation agent complete: %d processed, %d skipped",
+            batch["processed"], batch["skipped"],
+        )
+        return {"processed": batch["processed"], "skipped": batch["skipped"]}
+
+    async def _run_tier_batches(
+        self, tier_groups: dict, scoring_format: str = "ppr"
+    ) -> dict:
+        """Run the tier-batched LLM calls and return {results_map, processed, skipped}.
+
+        Shared by run_all (PPR → players table) and run_prose_for_format (per-format
+        prose → player_format_values). For PPR the entity_ids and prompt are identical
+        to before (cache hit → byte-identical output); non-PPR suffixes entity_ids so
+        the three formats don't collide in the cache."""
+        results_map: dict[str, dict] = {}
         processed = 0
         skipped = 0
-        results_map: dict[str, dict] = {}  # player_name -> parsed result
+        suffix = "" if scoring_format == "ppr" else f"::{scoring_format}"
 
         for tier, group in sorted(tier_groups.items()):
             if tier == 1:
@@ -326,12 +402,13 @@ class ValuationAgent(BaseAgent):
                 for player, ctx in group:
                     result = await self._process_batch(
                         [ctx],
-                        entity_id=player.name,
+                        entity_id=player.name + suffix,
                         # 800 (was 600): tier-1 players have the longest
                         # auction_notes; headroom so the JSON (now with adp_ai)
                         # never truncates before the last field.
                         model=SONNET,
                         max_tokens=800,
+                        scoring_format=scoring_format,
                     )
                     if result:
                         for r in result:
@@ -344,51 +421,115 @@ class ValuationAgent(BaseAgent):
                 # Batches of 5 for tiers 2-3 (Sonnet)
                 batch_size = 5
                 for i in range(0, len(group), batch_size):
-                    batch = group[i:i + batch_size]
-                    contexts = [ctx for _, ctx in batch]
+                    grp = group[i:i + batch_size]
+                    contexts = [ctx for _, ctx in grp]
                     result = await self._process_batch(
                         contexts,
-                        entity_id=f"tier{tier}_batch_{i // batch_size + 1}",
+                        entity_id=f"tier{tier}_batch_{i // batch_size + 1}" + suffix,
                         model=SONNET,
                         max_tokens=600 * len(contexts),
+                        scoring_format=scoring_format,
                     )
                     if result:
                         for r in result:
                             results_map[r["player_name"]] = r
-                        processed += len(batch)
+                        processed += len(grp)
                     else:
-                        skipped += len(batch)
+                        skipped += len(grp)
 
             else:
                 # Batches of 10 for tiers 4-5 (Haiku)
                 batch_size = 10
                 for i in range(0, len(group), batch_size):
-                    batch = group[i:i + batch_size]
-                    contexts = [ctx for _, ctx in batch]
+                    grp = group[i:i + batch_size]
+                    contexts = [ctx for _, ctx in grp]
                     result = await self._process_batch(
                         contexts,
-                        entity_id=f"tier{tier}_batch_{i // batch_size + 1}",
+                        entity_id=f"tier{tier}_batch_{i // batch_size + 1}" + suffix,
                         model=HAIKU,
                         max_tokens=400 * len(contexts),
+                        scoring_format=scoring_format,
                     )
                     if result:
                         for r in result:
                             results_map[r["player_name"]] = r
-                        processed += len(batch)
+                        processed += len(grp)
                     else:
-                        skipped += len(batch)
+                        skipped += len(grp)
 
-        # 4. Write results to DB
-        await self._write_results(players, results_map)
+        return {"results_map": results_map, "processed": processed, "skipped": skipped}
 
-        # 5. Global re-rank by adp_ai (clean 1-N) across ALL players with an ADP.
-        await self._compute_adp_ranks()
+    async def run_prose_for_format(self, scoring_format: str) -> dict:
+        """Regenerate value_assessment + auction_note for a NON-PPR format and write
+        them to that format's player_format_values rows. Reuses the shared analysis;
+        only the narrative (and the point figures it quotes) is format-specific."""
+        from backend.models.player_format_values import PlayerFormatValues
 
-        logger.info(
-            "Valuation agent complete: %d processed, %d skipped",
-            processed, skipped,
-        )
-        return {"processed": processed, "skipped": skipped}
+        if scoring_format == "ppr":
+            raise ValueError("run_prose_for_format is for non-PPR; PPR copies the players table")
+
+        async with AsyncSessionLocal() as session:
+            players = (await session.execute(
+                select(Player).where(Player.recommended_bid_ceiling.isnot(None)).options(
+                    selectinload(Player.profile), selectinload(Player.injury_profile),
+                    selectinload(Player.schedule), selectinload(Player.dependencies),
+                    selectinload(Player.historic_prices),
+                ).order_by(Player.tier.asc().nulls_last(), Player.recommended_bid_ceiling.desc())
+            )).scalars().all()
+            fmt_rows = (await session.execute(
+                select(PlayerFormatValues.player_id, PlayerFormatValues.projected_points,
+                       PlayerFormatValues.tier).where(PlayerFormatValues.scoring_format == scoring_format)
+            )).all()
+
+        fmt_by_id = {r.player_id: (r.projected_points, r.tier) for r in fmt_rows}
+        name_to_id = {p.name: p.id for p in players}
+
+        # Build contexts with the FORMAT's projected points + tier (a player's tier can
+        # differ by format, e.g. a pass-catcher falls a tier in Standard).
+        tier_groups: dict[int, list] = {}
+        for p in players:
+            pp, ftier = fmt_by_id.get(p.id, (None, p.tier))
+            ctx = self._build_player_context(
+                p, scoring_format, fmt_points=float(pp) if pp is not None else None)
+            ctx["tier"] = ftier or p.tier
+            key = ftier or p.tier or 0
+            tier_groups.setdefault(key, []).append((p, ctx))
+
+        batch = await self._run_tier_batches(tier_groups, scoring_format)
+
+        # Write prose to the format rows.
+        written = 0
+        async with AsyncSessionLocal() as session:
+            for name, r in batch["results_map"].items():
+                pid = name_to_id.get(name)
+                if pid is None:
+                    continue
+                await session.execute(
+                    update(PlayerFormatValues)
+                    .where(PlayerFormatValues.player_id == pid,
+                           PlayerFormatValues.scoring_format == scoring_format)
+                    .values(value_assessment=r.get("value_assessment"),
+                            auction_note=r.get("auction_note"))
+                )
+                written += 1
+            await session.commit()
+
+        logger.info("Per-format prose (%s): %d processed, %d written",
+                    scoring_format, batch["processed"], written)
+        return {"scoring_format": scoring_format, "processed": batch["processed"], "written": written}
+
+    async def copy_ppr_prose_to_format_rows(self) -> int:
+        """PPR format-row prose == the players-table prose (byte-identical for existing
+        users). One UPDATE, no LLM call."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text(
+                "UPDATE player_format_values f "
+                "SET value_assessment = p.value_assessment, auction_note = p.auction_note, "
+                "    updated_at = now() "
+                "FROM players p WHERE p.id = f.player_id AND f.scoring_format = 'ppr'"
+            ))
+            await session.commit()
+            return result.rowcount
 
     async def _compute_adp_ranks(self) -> None:
         """Assign adp_rank (clean 1-N by adp_ai), then derive adp_diff + snake_flag.
@@ -424,8 +565,14 @@ class ValuationAgent(BaseAgent):
             await session.commit()
         logger.info("adp_rank + adp_diff + snake_flag computed for %d players", count)
 
-    def _build_player_context(self, p: Player) -> dict:
-        """Build context dict for a single player from pre-loaded ORM data."""
+    def _build_player_context(
+        self, p: Player, scoring_format: str = "ppr", fmt_points: float | None = None
+    ) -> dict:
+        """Build context dict for a single player from pre-loaded ORM data.
+
+        For a non-PPR run, `projected_ppr` is overridden with the format's projected
+        points (`fmt_points`) and `scoring_format` is added, so the prose quotes the
+        league-format figure — not a PPR total. PPR (the default) is unchanged."""
         ctx: dict = {
             "player_name": p.name,
             "position": p.position,
@@ -510,6 +657,11 @@ class ValuationAgent(BaseAgent):
         if dep_flags:
             ctx["dependency_flags"] = dep_flags
 
+        # Non-PPR: quote the league-format projection, not the PPR total.
+        if scoring_format != "ppr":
+            ctx["scoring_format"] = scoring_format
+            ctx["projected_ppr"] = fmt_points
+
         return ctx
 
     async def _process_batch(
@@ -518,20 +670,26 @@ class ValuationAgent(BaseAgent):
         entity_id: str,
         model: str,
         max_tokens: int,
+        scoring_format: str = "ppr",
     ) -> list[dict] | None:
-        """Process a batch of players through the AI model."""
+        """Process a batch of players through the AI model. `scoring_format` selects
+        the prompt; PPR (default) uses the unchanged prompt + cache key."""
         user_content = json.dumps(contexts, default=str)
+
+        # PPR keeps today's cache key exactly; non-PPR adds scoring_format so the
+        # three formats never collide on the same (entity_id, input_hash).
+        input_data = {
+            "players": [c["player_name"] for c in contexts],
+            "version": VALUATION_AGENT_VERSION,
+        }
+        if scoring_format != "ppr":
+            input_data["scoring_format"] = scoring_format
 
         try:
             raw = await self.call_once(
-                system=SYSTEM_PROMPT,
+                system=_system_prompt(scoring_format),
                 user=user_content,
-                # version is part of the cache key, so a prompt change (version
-                # bump) invalidates cached results without a manual clear.
-                input_data={
-                    "players": [c["player_name"] for c in contexts],
-                    "version": VALUATION_AGENT_VERSION,
-                },
+                input_data=input_data,
                 entity_id=entity_id,
                 model=model,
                 max_tokens=max_tokens,

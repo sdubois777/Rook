@@ -380,6 +380,13 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
         )
+        # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
+        # Half/Standard regenerate format-appropriate prose into player_format_values.
+        copied = await agent.copy_ppr_prose_to_format_rows()
+        print(f"[{name}] PPR prose copied to {copied} format rows.")
+        for _fmt in ("half_ppr", "standard"):
+            pr = await agent.run_prose_for_format(_fmt)
+            print(f"[{name}] {_fmt} prose: {pr['processed']} processed, {pr['written']} written.")
 
     elif name == "team_metrics":
         # Deterministic Teams-page fields (Teams rework slice 1): scheme from real

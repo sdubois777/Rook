@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +43,12 @@ class PlayerFormatValues(Base):
     ceiling_value: Mapped[float | None] = mapped_column(Numeric(5, 2))
     floor_value: Mapped[float | None] = mapped_column(Numeric(5, 2))
     risk_adjusted_value: Mapped[float | None] = mapped_column(Numeric(5, 2))
+
+    # Per-format NARRATIVE (G2). The PPR row copies the players-table prose (byte-
+    # identical for existing users); Half/Standard carry format-appropriate prose
+    # that must not sell reception-dependent players on catches/targets.
+    value_assessment: Mapped[str | None] = mapped_column(String(20))
+    auction_note: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
