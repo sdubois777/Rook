@@ -568,6 +568,56 @@ def sanity_check_valuations(
 
 
 # ---------------------------------------------------------------------------
+# Shared per-player value math — the SINGLE computation used by BOTH the PPR pass
+# (run_valuation_pass, writing the players table) and the per-format writer
+# (write_format_value_sets, writing player_format_values). Keeping it in one place
+# is what prevents PPR and the per-format rows from drifting.
+# ---------------------------------------------------------------------------
+def _value_fields_for(
+    player, raw_ppr: float, adjusted_ppr: float,
+    repl_ppr, total_par: float, pos_budget: float, pos: str,
+    upside_ppr: float, downside_ppr: float,
+) -> dict:
+    """Compute the full value-field set for one player from its (already
+    format-repriced) points + the position's PAR context. Pure — no writes."""
+    par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
+    tier = assign_tier(par_ratio, pos)
+    sv = ppr_to_system_value(adjusted_ppr, repl_ppr, total_par, pos_budget)
+
+    risk_level = "low"
+    if player.injury_profile and player.injury_profile.overall_risk_level:
+        risk_level = player.injury_profile.overall_risk_level
+    rm = _get_risk_modifier(player.injury_profile)
+
+    effective_mv = get_market_context(player)["effective_market_value"]
+    ceiling = compute_bid_ceiling(sv, effective_mv, tier, pos, risk_level)
+    max_bid_dec = Decimal(str(MAX_REALISTIC_BID.get(pos, 80)))
+    if ceiling > max_bid_dec:
+        ceiling = max_bid_dec
+
+    let_go = compute_let_go_threshold(ceiling, risk_level)
+    risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
+    anchor = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
+    scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
+
+    ceiling_val = ppr_to_system_value(upside_ppr, repl_ppr, total_par, pos_budget) if upside_ppr > 0 else None
+    floor_val = ppr_to_system_value(downside_ppr, repl_ppr, total_par, pos_budget) if downside_ppr > 0 else None
+
+    return {
+        "tier": tier,
+        "baseline_value": sv,
+        "ceiling_value": ceiling_val,
+        "floor_value": floor_val,
+        "risk_adjusted_value": _to_dec(max(Decimal("1.00"), risk_adj)),
+        "recommended_bid_ceiling": ceiling,
+        "let_go_threshold": let_go,
+        "elite_anchor_weight": anchor,
+        "positional_scarcity_modifier": scarcity,
+        "replacement_ppr": repl_ppr,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Async valuation pass — loads data, computes, writes back
 # ---------------------------------------------------------------------------
 
@@ -710,74 +760,25 @@ async def run_valuation_pass(
 
         for pos, group in pos_groups.items():
             ctx = par_context[pos]
-            for rank_0, (player, raw_ppr, adjusted_ppr) in enumerate(group):
-                rank = rank_0 + 1
-                repl_ppr = ctx["replacement_ppr"]
-                par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
-                tier = assign_tier(par_ratio, pos)  # PAR-ratio-based, position-specific
-
-                sv = ppr_to_system_value(
-                    ppr_points        = adjusted_ppr,  # dollar value from risk-adjusted PPR
-                    replacement_ppr   = ctx["replacement_ppr"],
-                    total_par         = ctx["total_par"],
-                    position_budget   = ctx["position_budget"],
-                )
-
-                risk_level = "low"
-                if player.injury_profile and player.injury_profile.overall_risk_level:
-                    risk_level = player.injury_profile.overall_risk_level
-
-                rm = _get_risk_modifier(player.injury_profile)
-
-                # Use effective_market_value (league price if available, FP fallback)
-                mctx = get_market_context(player)
-                effective_mv = mctx["effective_market_value"]
-
-                ceiling  = compute_bid_ceiling(sv, effective_mv, tier, pos, risk_level)
-
-                # FIX 5: Hard cap enforcement — cap ceiling to MAX_REALISTIC_BID
-                max_bid = MAX_REALISTIC_BID.get(pos, 80)
-                max_bid_dec = Decimal(str(max_bid))
-                if ceiling > max_bid_dec:
-                    logger.info(
-                        "BID CEILING CAPPED: %s (%s T%d) ceiling=$%s → $%d max. "
-                        "sv=$%s, total_par=%.1f, pool=$%.0f",
-                        player.name, pos, tier, ceiling, max_bid,
-                        sv, ctx["total_par"], ctx["position_budget"],
-                    )
-                    ceiling = max_bid_dec
-
-                let_go   = compute_let_go_threshold(ceiling, risk_level)
-                risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
-                anchor   = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
-                scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
-
+            for player, raw_ppr, adjusted_ppr in group:
                 # Compute ceiling/floor dollar values from upside/downside PPR
                 upside_ppr, downside_ppr = _extract_upside_downside(player.profile)
-                ceiling_val = None
-                floor_val = None
-                if upside_ppr > 0:
-                    ceiling_val = ppr_to_system_value(
-                        upside_ppr, ctx["replacement_ppr"],
-                        ctx["total_par"], ctx["position_budget"],
-                    )
-                if downside_ppr > 0:
-                    floor_val = ppr_to_system_value(
-                        downside_ppr, ctx["replacement_ppr"],
-                        ctx["total_par"], ctx["position_budget"],
-                    )
-
+                vf = _value_fields_for(
+                    player, raw_ppr, adjusted_ppr,
+                    ctx["replacement_ppr"], ctx["total_par"], ctx["position_budget"], pos,
+                    upside_ppr, downside_ppr,
+                )
                 # Update in-session player object — set values BEFORE gap
                 # so compute_value_gap_from_player sees current ceiling
-                player.tier                       = tier
-                player.baseline_value             = sv
-                player.ceiling_value              = ceiling_val
-                player.floor_value                = floor_val
-                player.risk_adjusted_value        = _to_dec(max(Decimal("1.00"), risk_adj))
-                player.recommended_bid_ceiling    = ceiling
-                player.let_go_threshold           = let_go
-                player.elite_anchor_weight        = anchor
-                player.positional_scarcity_modifier = scarcity
+                player.tier                       = vf["tier"]
+                player.baseline_value             = vf["baseline_value"]
+                player.ceiling_value              = vf["ceiling_value"]
+                player.floor_value                = vf["floor_value"]
+                player.risk_adjusted_value        = vf["risk_adjusted_value"]
+                player.recommended_bid_ceiling    = vf["recommended_bid_ceiling"]
+                player.let_go_threshold           = vf["let_go_threshold"]
+                player.elite_anchor_weight        = vf["elite_anchor_weight"]
+                player.positional_scarcity_modifier = vf["positional_scarcity_modifier"]
 
                 # Value gap: uses ai_bid_ceiling > rec_ceiling > baseline
                 gap, sig = compute_value_gap_from_player(player)
@@ -838,30 +839,153 @@ async def run_valuation_pass(
     }
 
 
+async def write_format_value_sets(
+    config: LeagueConfig = DEFAULT_LEAGUE_CONFIG,
+) -> dict:
+    """Reprice the board into ALL scoring formats and write player_format_values.
+
+    Runs AFTER run_valuation_pass (which populates the authoritative PPR values on the
+    players table). For each format it reprices points via _extract_ppr(profile, fmt)
+    and reuses the SAME shared math (_value_fields_for + the identical PAR context) —
+    so the PPR rows equal the players-table values (asserted in tests) and Half/Standard
+    differ only by the reception delta. K/DEF are format-invariant: their rows copy the
+    players-table values. Upsert on (player_id, scoring_format) — re-runnable.
+    """
+    from sqlalchemy import func as _func
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from backend.models.player_format_values import PlayerFormatValues
+    from backend.scoring import SCORING_FORMATS
+
+    total_budget = config.total_skill_pool
+    league_teams = config.team_count
+    pool_sizes = get_draftable_pool_sizes(league_teams)
+    written = 0
+
+    async with AsyncSessionLocal() as session:
+        players = (await session.execute(
+            select(Player).options(
+                selectinload(Player.profile),
+                selectinload(Player.injury_profile),
+                selectinload(Player.dependencies),
+            )
+        )).scalars().all()
+
+        async def _upsert(row: dict) -> None:
+            nonlocal written
+            stmt = pg_insert(PlayerFormatValues).values(**row)
+            update = {k: row[k] for k in row if k not in ("player_id", "scoring_format")}
+            update["updated_at"] = _func.now()
+            await session.execute(stmt.on_conflict_do_update(
+                constraint="uq_player_format", set_=update))
+            written += 1
+
+        for fmt in SCORING_FORMATS:
+            # Group skill positions with per-format points (identical shape to the PPR pass).
+            pos_groups: dict[str, list] = {p: [] for p in DRAFTABLE_POSITIONS}
+            for player in players:
+                pos = player.position
+                if pos not in DRAFTABLE_POSITIONS or not player.team_abbr or player.team_abbr == "FA":
+                    continue
+                raw_ppr = _extract_ppr(player.profile, fmt)
+                if raw_ppr <= 0:
+                    continue
+                adjusted_ppr = _apply_injury_discount(raw_ppr, player.injury_profile, player.profile)
+                if adjusted_ppr > 0:
+                    adjusted_ppr = _apply_dependency_adjustment(adjusted_ppr, player.dependencies)
+                pos_groups[pos].append((player, raw_ppr, max(0.0, adjusted_ppr)))
+            for pos in pos_groups:
+                pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
+
+            for pos, group in pos_groups.items():
+                pool_size = pool_sizes.get(pos, len(group))
+                sorted_pprs = [adj for _, _, adj in group]
+                dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
+                floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
+                max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
+                repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
+                total_par = sum(max(0.0, adj - repl_ppr) for _, _, adj in group)
+                pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
+                for player, raw_ppr, adjusted_ppr in group:
+                    up, down = _extract_upside_downside(player.profile, fmt)
+                    vf = _value_fields_for(
+                        player, raw_ppr, adjusted_ppr, repl_ppr, total_par, pos_budget, pos, up, down)
+                    await _upsert({
+                        "player_id": player.id, "scoring_format": fmt,
+                        "projected_points": round(raw_ppr, 1),
+                        "replacement_ppr": round(repl_ppr, 1),
+                        "tier": vf["tier"], "baseline_value": vf["baseline_value"],
+                        "recommended_bid_ceiling": vf["recommended_bid_ceiling"],
+                        "ceiling_value": vf["ceiling_value"], "floor_value": vf["floor_value"],
+                        "risk_adjusted_value": vf["risk_adjusted_value"],
+                    })
+
+            # K/DEF: format-invariant — copy the players-table (PPR) values verbatim.
+            for player in players:
+                if (player.position in _KDEF_POSITIONS and player.team_abbr
+                        and player.team_abbr != "FA" and player.baseline_value is not None):
+                    await _upsert({
+                        "player_id": player.id, "scoring_format": fmt,
+                        "projected_points": None, "replacement_ppr": None,
+                        "tier": player.tier, "baseline_value": player.baseline_value,
+                        "recommended_bid_ceiling": player.recommended_bid_ceiling,
+                        "ceiling_value": player.ceiling_value, "floor_value": player.floor_value,
+                        "risk_adjusted_value": player.risk_adjusted_value,
+                    })
+
+        await session.commit()
+
+    logger.info("Per-format value sets written: %d rows across %s", written, list(SCORING_FORMATS))
+    return {"written": written, "formats": list(SCORING_FORMATS)}
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
 
-def _extract_ppr(profile: Optional[PlayerProfile]) -> float:
-    """Extract PPR from clean_season_baseline JSONB, or 0.
-
-    Prefers projected_ppr_season (forward-looking Sonnet projection) over
-    ppr_points (historical baseline).  Falls back to ppr_points when no
-    projection exists (Haiku/Python-only profiles).
-    """
-    if not profile or not profile.clean_season_baseline:
-        return 0.0
-    baseline = profile.clean_season_baseline
-    val = baseline.get("projected_ppr_season") or baseline.get("ppr_points", 0)
+def _baseline_receptions(baseline: dict, *, projected: bool) -> float:
+    """The reception count to reprice with. For a forward projection, use
+    projected_receptions (falls back to the historical baseline receptions); for the
+    historical baseline points, use the historical receptions. 0 when unknown → the
+    reprice is a no-op (correct for non-receivers and the honest fallback)."""
+    key = "projected_receptions" if projected else "receptions"
+    val = baseline.get(key)
+    if val is None and projected:
+        val = baseline.get("receptions")   # projection without its own rec count
     try:
         return max(0.0, float(val or 0))
     except (TypeError, ValueError):
         return 0.0
 
 
-def _extract_upside_downside(profile: Optional[PlayerProfile]) -> tuple[float, float]:
-    """Extract upside_ppr and downside_ppr from clean_season_baseline, or (0, 0)."""
+def _extract_ppr(profile: Optional[PlayerProfile], scoring_format: str = "ppr") -> float:
+    """Extract points from clean_season_baseline JSONB, repriced into `scoring_format`.
+
+    Prefers projected_ppr_season (forward Sonnet projection) over ppr_points
+    (historical baseline). The stored total is PPR; `scoring.season_points` backs out
+    the reception delta for Half/Standard (exact — only receptions differ across
+    presets). scoring_format="ppr" is the identity, so the PPR path is unchanged.
+    """
+    if not profile or not profile.clean_season_baseline:
+        return 0.0
+    baseline = profile.clean_season_baseline
+    projected = baseline.get("projected_ppr_season") is not None
+    val = baseline.get("projected_ppr_season") or baseline.get("ppr_points", 0)
+    try:
+        ppr_total = max(0.0, float(val or 0))
+    except (TypeError, ValueError):
+        return 0.0
+    if scoring_format == "ppr":
+        return ppr_total
+    from backend import scoring
+    return scoring.season_points(ppr_total, _baseline_receptions(baseline, projected=projected), scoring_format)
+
+
+def _extract_upside_downside(
+    profile: Optional[PlayerProfile], scoring_format: str = "ppr"
+) -> tuple[float, float]:
+    """Extract upside_ppr and downside_ppr, repriced into `scoring_format`, or (0, 0)."""
     if not profile or not profile.clean_season_baseline:
         return 0.0, 0.0
     baseline = profile.clean_season_baseline
@@ -870,6 +994,11 @@ def _extract_upside_downside(profile: Optional[PlayerProfile]) -> tuple[float, f
         downside = max(0.0, float(baseline.get("downside_ppr", 0) or 0))
     except (TypeError, ValueError):
         return 0.0, 0.0
+    if scoring_format != "ppr" and (upside or downside):
+        from backend import scoring
+        rec = _baseline_receptions(baseline, projected=True)
+        upside = scoring.season_points(upside, rec, scoring_format) if upside else 0.0
+        downside = scoring.season_points(downside, rec, scoring_format) if downside else 0.0
     return upside, downside
 
 

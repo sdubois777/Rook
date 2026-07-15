@@ -359,13 +359,18 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         )
 
     elif name == "valuation":
-        from backend.engines.valuation import run_valuation_pass
+        from backend.engines.valuation import run_valuation_pass, write_format_value_sets
         result = await run_valuation_pass()
         print(
             f"[{name}] {result['updated']} player(s) updated, "
             f"{result['skipped']} skipped "
             f"(analysis_year={result['analysis_year']})."
         )
+        # Per-format (PPR/Half/Standard) value sets — reprices the same board via the
+        # shared math and writes player_format_values (PPR row == the players table).
+        fmt_result = await write_format_value_sets()
+        print(f"[{name}] per-format value sets: {fmt_result['written']} rows "
+              f"across {fmt_result['formats']}.")
 
     elif name == "valuation_agent":
         from backend.agents.valuation_agent import ValuationAgent
