@@ -67,6 +67,52 @@ POSITION_BUDGET_SHARE: dict[str, float] = {
     "TE": 0.10,
 }
 
+# Positions whose per-format budget shifts. QB is FORMAT-INVARIANT (QBs don't catch
+# passes → identical points in every scoring format), like K/DEF — its budget share
+# never moves. Only RB/WR/TE reprice on receptions, so only they reallocate.
+_RECEPTION_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
+
+
+def _format_budget_shares(
+    scoring_format: str,
+    ppr_total_par: dict[str, float],
+    fmt_total_par: dict[str, float],
+) -> dict[str, float]:
+    """Per-position auction-budget shares, made format-aware.
+
+    PPR anchors on POSITION_BUDGET_SHARE verbatim (byte-identical to the players-table
+    pass). For non-PPR, the RB/WR/TE pool reallocates: each reception position's PPR
+    share is scaled by how much its aggregate value (total PAR) changed vs PPR, then
+    renormalized back to that pool's combined share. So in Standard the WR pool's
+    shrunken value hands budget to RB, instead of a fixed share re-inflating a
+    compressed WR pool ($-up-while-tier-down at the *position* level). QB (and, by
+    omission, K/DEF on their separate static path) never move.
+
+    NOTE (ledger): this fixes only the CROSS-POSITION cause. Under Standard compression
+    an elite pass-catcher's PAR *share within* its (shrunken) position can still rise
+    faster than the budget cut, so a tier-falling player's non-PPR $ can exceed its PPR
+    $. Auction $ must not go live on the Phase 2 surface until that within-position
+    divergence is resolved. See run notes.
+    """
+    if scoring_format == "ppr":
+        return dict(POSITION_BUDGET_SHARE)
+
+    shares: dict[str, float] = {"QB": POSITION_BUDGET_SHARE["QB"]}
+    raw: dict[str, float] = {}
+    for pos in _RECEPTION_POSITIONS:
+        base_par = ppr_total_par.get(pos) or 0.0
+        fmt_par = fmt_total_par.get(pos) or 0.0
+        raw[pos] = (
+            POSITION_BUDGET_SHARE[pos] * (fmt_par / base_par)
+            if base_par > 0
+            else POSITION_BUDGET_SHARE[pos]
+        )
+    total_raw = sum(raw.values()) or 1.0
+    target = sum(POSITION_BUDGET_SHARE[p] for p in _RECEPTION_POSITIONS)
+    for pos in _RECEPTION_POSITIONS:
+        shares[pos] = raw[pos] / total_raw * target
+    return shares
+
 # Maximum realistic bid per position — hard cap enforced (not just logged)
 # per LEAGUE_RULES.md Rule #1 and #3
 MAX_REALISTIC_BID: dict[str, int] = {
@@ -880,6 +926,10 @@ async def write_format_value_sets(
                 constraint="uq_player_format", set_=update))
             written += 1
 
+        # PPR's per-position total PAR anchors the format-aware budget shift below.
+        # SCORING_FORMATS puts "ppr" first, so this is populated before it's read.
+        ppr_total_par: dict[str, float] = {}
+
         for fmt in SCORING_FORMATS:
             # Group skill positions with per-format points (identical shape to the PPR pass).
             pos_groups: dict[str, list] = {p: [] for p in DRAFTABLE_POSITIONS}
@@ -897,6 +947,8 @@ async def write_format_value_sets(
             for pos in pos_groups:
                 pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
 
+            # PASS 1 — per-position PAR context (replacement level + total PAR).
+            par_ctx: dict[str, tuple] = {}
             for pos, group in pos_groups.items():
                 pool_size = pool_sizes.get(pos, len(group))
                 sorted_pprs = [adj for _, _, adj in group]
@@ -905,7 +957,19 @@ async def write_format_value_sets(
                 max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
                 repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
                 total_par = sum(max(0.0, adj - repl_ppr) for _, _, adj in group)
-                pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
+                par_ctx[pos] = (group, repl_ppr, total_par)
+
+            # FORMAT-AWARE position budgets (see _format_budget_shares). PPR anchors on
+            # the fixed shares (byte-identical); non-PPR shifts the reception-affected
+            # RB/WR/TE pool by per-format PAR so a shrunken WR pool's budget flows to RB.
+            fmt_total_par = {pos: par_ctx[pos][2] for pos in par_ctx}
+            if fmt == "ppr":
+                ppr_total_par = fmt_total_par
+            budget_share = _format_budget_shares(fmt, ppr_total_par, fmt_total_par)
+
+            # PASS 2 — values, with the format-aware position budget.
+            for pos, (group, repl_ppr, total_par) in par_ctx.items():
+                pos_budget = total_budget * budget_share.get(pos, POSITION_BUDGET_SHARE.get(pos, 0.0))
                 for player, raw_ppr, adjusted_ppr in group:
                     up, down = _extract_upside_downside(player.profile, fmt)
                     vf = _value_fields_for(

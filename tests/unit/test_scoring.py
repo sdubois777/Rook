@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 
 from backend import scoring
-from backend.engines.valuation import calculate_replacement_level, ppr_to_system_value
+from backend.engines.valuation import (
+    POSITION_BUDGET_SHARE,
+    _format_budget_shares,
+    calculate_replacement_level,
+    ppr_to_system_value,
+)
 from backend.models.league_config import LeagueConfig
 
 
@@ -108,3 +113,44 @@ def test_G1_relative_pass_catcher_drops_more_than_rusher():
     pc_drop = ppr_v["PassCatch1"] - std_v["PassCatch1"]
     ru_drop = ppr_v["Rusher1"] - std_v["Rusher1"]
     assert pc_drop > ru_drop, (pc_drop, ru_drop)
+
+
+# --- format-aware position budget (cross-position auction-$ allocation) ------
+# PAR-per-position context: Standard shrinks WR/TE (reception-heavy), holds RB/QB.
+_PPR_PAR = {"QB": 300.0, "RB": 1000.0, "WR": 900.0, "TE": 300.0}
+_STD_PAR = {"QB": 300.0, "RB": 950.0, "WR": 600.0, "TE": 200.0}
+
+
+def test_budget_shares_ppr_is_fixed_anchor_verbatim():
+    """PPR must return POSITION_BUDGET_SHARE unchanged (byte-identical to the players
+    pass) — the PAR args are ignored on the PPR path."""
+    shares = _format_budget_shares("ppr", _PPR_PAR, _STD_PAR)
+    assert shares == POSITION_BUDGET_SHARE
+    assert shares is not POSITION_BUDGET_SHARE  # a copy, not the shared dict
+
+
+def test_budget_shares_qb_is_format_invariant():
+    """QB doesn't catch passes → its share never moves across formats."""
+    for fmt in ("ppr", "half_ppr", "standard"):
+        fmt_par = _PPR_PAR if fmt == "ppr" else _STD_PAR
+        shares = _format_budget_shares(fmt, _PPR_PAR, fmt_par)
+        assert shares["QB"] == POSITION_BUDGET_SHARE["QB"]
+
+
+def test_budget_shares_shift_wr_to_rb_in_standard():
+    """The reception pool reallocates: WR/TE (shrunken) lose budget, RB (held) gains —
+    the fix for the cross-position '$-up-while-tier-down' artifact."""
+    std = _format_budget_shares("standard", _PPR_PAR, _STD_PAR)
+    assert std["WR"] < POSITION_BUDGET_SHARE["WR"]
+    assert std["TE"] < POSITION_BUDGET_SHARE["TE"]
+    assert std["RB"] > POSITION_BUDGET_SHARE["RB"]
+
+
+def test_budget_shares_reception_pool_share_is_conserved():
+    """Reallocation is internal to RB/WR/TE — their combined share (and thus the total
+    skill pool, with QB fixed) is preserved to the fraction across formats."""
+    target = sum(POSITION_BUDGET_SHARE[p] for p in ("RB", "WR", "TE"))
+    for fmt_par in (_PPR_PAR, _STD_PAR):
+        std = _format_budget_shares("standard", _PPR_PAR, fmt_par)
+        assert std["RB"] + std["WR"] + std["TE"] == pytest.approx(target)
+        assert sum(std.values()) == pytest.approx(sum(POSITION_BUDGET_SHARE.values()))
