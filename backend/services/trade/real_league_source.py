@@ -66,6 +66,7 @@ class RealLeagueSource:
     pool: list[RosterPlayer] = field(default_factory=list)
     unresolved: list[dict] = field(default_factory=list)
     my_team_id: Optional[str] = None
+    scoring_format: str = "ppr"   # league's format (in-season re-score basis; PPR default)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -344,9 +345,14 @@ async def build_real_league_source(
     rostered_ids = {rp.canonical_player_id for t in teams for rp in t.roster}
     pool = await _derive_pool(db, weekly_usage, rostered_ids)
 
+    # League scoring format (in-season re-score basis). league.scoring is a stored
+    # preset (league_sync maps custom → nearest_preset); unknown/unsupported → PPR.
+    from backend.scoring import is_supported
+    scoring_format = league.scoring if is_supported(getattr(league, "scoring", None)) else "ppr"
+
     from backend.services.trade.trade_demo_source import _load_priors, build_priors
     all_ids = list(rostered_ids | {rp.canonical_player_id for rp in pool})
-    priors = build_priors(await _load_priors(db, all_ids))
+    priors = build_priors(await _load_priors(db, all_ids, scoring_format))
 
     state = LeagueState(
         season=season, week=week, teams=tuple(teams), roster_slots=roster_slots,
@@ -354,7 +360,7 @@ async def build_real_league_source(
     return RealLeagueSource(
         state=state, weekly_usage=weekly_usage, priors=priors, season=season,
         week=week, roster_limit=roster_limit, pool=pool, unresolved=unresolved,
-        my_team_id=my_team_id,
+        my_team_id=my_team_id, scoring_format=scoring_format,
     )
 
 
