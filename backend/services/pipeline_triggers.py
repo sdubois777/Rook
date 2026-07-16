@@ -236,6 +236,13 @@ async def run_targeted_refresh(
 
     `dry_run` returns the PLAN (players, teams, estimated cost) without any API call
     or DB write — used to prove scope. Returns a report dict either way.
+
+    REFRESH POLICY — NOTE: per-format ADP + auction ingest (the `format_market` stage)
+    is deliberately NOT part of a targeted refresh. ADP/auction are FULL-SHEET scrapes
+    (whole FantasyPros/DraftWizard boards), not per-player pulls, so re-scraping them for
+    a single-player injury event is wasteful and pointless. They re-scrape on FULL and
+    WEEKLY sweeps (any `run_predraft_pipeline.py` pass that runs the pipeline order),
+    which is where board-wide ADP/auction drift is picked up.
     """
     from backend.database import AsyncSessionLocal
     from backend.models.player import Player

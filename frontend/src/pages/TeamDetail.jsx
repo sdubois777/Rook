@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { fetchTeam } from '../api/teams'
 import { useUIStore } from '../stores/ui'
+import { useLeague } from '../context/LeagueContext'
 import SystemGradeBadge from '../components/shared/SystemGradeBadge'
 import PositionBadge from '../components/shared/PositionBadge'
 import InjuryBadge from '../components/shared/InjuryBadge'
@@ -12,13 +13,15 @@ import PlayerDetailPanel from '../components/PlayerDetailPanel'
 export default function TeamDetail() {
   const { abbr } = useParams()
   const navigate = useNavigate()
+  const { scoringFormat } = useLeague()
   const openPlayerDetail = useUIStore((s) => s.openPlayerDetail)
   const selectedPlayerId = useUIStore((s) => s.selectedPlayerId)
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
 
   const { data: team, isLoading } = useQuery({
-    queryKey: ['team', abbr],
-    queryFn: () => fetchTeam(abbr),
+    queryKey: ['team', abbr, scoringFormat],
+    // Per-format player tiers (pre-draft PFV basis); $ figures stay PPR.
+    queryFn: () => fetchTeam(abbr, scoringFormat),
   })
 
   if (isLoading) {

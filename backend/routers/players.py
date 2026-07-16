@@ -187,6 +187,9 @@ class PlayerDetail(PlayerSummary):
     auction_note: Optional[str] = None
     league_bias: Optional[float] = None
     league_bias_signal: Optional[str] = None
+    # Phase 2: format the tier/projection were read in + PPR-default disclosure.
+    scoring_format: str = "ppr"
+    scoring_format_defaulted: bool = False
 
 
 class PositionCounts(BaseModel):
@@ -214,7 +217,7 @@ def _get_prior_season_price(player: Player) -> tuple[float | None, int | None]:
     return None, None
 
 
-def _player_to_summary(player: Player) -> PlayerSummary:
+def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
     """Convert a Player ORM object to PlayerSummary response."""
     flags = []
     for dep in (player.dependencies or []):
@@ -232,13 +235,22 @@ def _player_to_summary(player: Player) -> PlayerSummary:
 
     prior_price, prior_year = _get_prior_season_price(player)
 
+    # PRE-DRAFT surface → per-format TIER from player_format_values (non-$). $ fields
+    # (bid ceilings / market / value_gap) stay PPR (dark). PPR / no row → players-table.
+    eff_tier = overlay.tier if (overlay is not None and overlay.tier is not None) else player.tier
+    eff_adp_fp = (
+        overlay.adp_fantasypros
+        if (overlay is not None and overlay.adp_fantasypros is not None)
+        else (float(player.adp_fantasypros) if player.adp_fantasypros is not None else None)
+    )
+
     return PlayerSummary(
         id=str(player.id),
         name=player.name,
         team_abbr=player.team_abbr,
         position=player.position,
         age=player.age,
-        tier=player.tier,
+        tier=eff_tier,
         recommended_bid_ceiling=float(player.recommended_bid_ceiling) if player.recommended_bid_ceiling else None,
         baseline_value=float(player.baseline_value) if player.baseline_value else None,
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
@@ -261,7 +273,7 @@ def _player_to_summary(player: Player) -> PlayerSummary:
         pay_up_flag=player.pay_up_flag or False,
         nomination_target_flag=player.nomination_target_flag or False,
         adp_rank=player.adp_rank,
-        adp_fantasypros=float(player.adp_fantasypros) if player.adp_fantasypros is not None else None,
+        adp_fantasypros=eff_adp_fp,
         adp_diff=float(player.adp_diff) if player.adp_diff is not None else None,
         snake_flag=player.snake_flag,
     )
@@ -274,12 +286,22 @@ def _player_to_summary(player: Player) -> PlayerSummary:
 @router.get("/search", response_model=list[PlayerSummary])
 async def search_players(
     q: str = Query(..., min_length=2),
+    scoring_format: str = "ppr",
     db=Depends(get_db),
 ) -> list[PlayerSummary]:
-    """Search players by name. Returns top 20 matches by bid ceiling."""
+    """Search players by name. Returns top 20 matches by bid ceiling. Per-format tier
+    overlaid from player_format_values (pre-draft basis); $ stays PPR."""
+    from backend.services.format_display import (
+        load_format_rows, overlay_for, resolve_scoring_format,
+    )
+    scoring_format, _defaulted = resolve_scoring_format(scoring_format)
     repo = PlayerRepository(db)
     players = await repo.search_by_name(q, limit=20)
-    return [_player_to_summary(p) for p in players]
+    fmt_rows = await load_format_rows(db, [p.id for p in players], scoring_format)
+    return [
+        _player_to_summary(p, overlay_for(str(p.id), fmt_rows, scoring_format))
+        for p in players
+    ]
 
 
 @router.get("/summary", response_model=PlayerSummaryResponse)
@@ -309,13 +331,23 @@ async def player_summary(db=Depends(get_db)) -> PlayerSummaryResponse:
 
 
 @router.get("/{player_id}", response_model=PlayerDetail)
-async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
-    """Full player detail with all related data."""
+async def get_player(
+    player_id: uuid.UUID, scoring_format: str = "ppr", db=Depends(get_db),
+) -> PlayerDetail:
+    """Full player detail with all related data. Per-format TIER + projected points from
+    player_format_values (pre-draft basis); $ figures stay PPR (dark)."""
+    from backend.services.format_display import (
+        load_format_rows, overlay_for, resolve_scoring_format,
+    )
+    scoring_format, fmt_defaulted = resolve_scoring_format(scoring_format)
     repo = PlayerRepository(db)
     player = await repo.get_detail(player_id)
 
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
+
+    fmt_rows = await load_format_rows(db, [player.id], scoring_format)
+    overlay = overlay_for(str(player.id), fmt_rows, scoring_format)
 
     # Get team system context
     team_system = None
@@ -334,12 +366,17 @@ async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
                 compound_risk_flag=ts.compound_risk_flag or False,
             )
 
-    summary = _player_to_summary(player)
+    summary = _player_to_summary(player, overlay)
 
-    # Build detail sections
+    # Build detail sections. For a non-PPR league, the displayed SEASON projection reads
+    # the format's projected_points (PFV) — the number the user researches — instead of the
+    # PPR total in clean_season_baseline. $ / usage / role fields are untouched.
     profile = None
     if player.profile:
         p = player.profile
+        _baseline = p.clean_season_baseline
+        if overlay.projected_points is not None and isinstance(_baseline, dict):
+            _baseline = {**_baseline, "projected_ppr_season": overlay.projected_points}
         profile = ProfileDetail(
             role_classification=p.role_classification,
             target_share_3yr_avg=float(p.target_share_3yr_avg) if p.target_share_3yr_avg else None,
@@ -349,7 +386,7 @@ async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
             snap_percentage=float(p.snap_percentage) if p.snap_percentage else None,
             efficiency_signal=p.efficiency_signal,
             age_curve_position=p.age_curve_position,
-            clean_season_baseline=p.clean_season_baseline,
+            clean_season_baseline=_baseline,
             breakout_flag=p.breakout_flag or False,
             breakout_reasoning=p.breakout_reasoning,
             projection_reasoning=p.projection_reasoning,
@@ -426,6 +463,8 @@ async def get_player(player_id: uuid.UUID, db=Depends(get_db)) -> PlayerDetail:
         auction_note=player.auction_note,
         league_bias=float(mctx["league_bias"]) if mctx["league_bias"] is not None else None,
         league_bias_signal=mctx["league_bias_signal"],
+        scoring_format=scoring_format,
+        scoring_format_defaulted=fmt_defaulted,
         # adp_rank/adp_fantasypros/adp_diff/snake_flag come via **summary.model_dump()
     )
 
@@ -440,12 +479,18 @@ async def list_players(
     snake_flag: Optional[str] = None,
     sort: str = "bid_ceiling",
     order: str = "desc",
+    scoring_format: str = "ppr",
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     _user=Depends(get_current_user),
     db=Depends(get_db),
 ) -> PlayerListResponse:
-    """Paginated, filterable player list."""
+    """Paginated, filterable player list. Per-format TIER overlaid from
+    player_format_values (pre-draft basis); $ figures stay PPR (dark)."""
+    from backend.services.format_display import (
+        load_format_rows, overlay_for, resolve_scoring_format,
+    )
+    scoring_format, _defaulted = resolve_scoring_format(scoring_format)
     repo = PlayerRepository(db)
     players, total = await repo.list_filtered(
         position=position,
@@ -460,10 +505,14 @@ async def list_players(
         per_page=per_page,
     )
 
+    fmt_rows = await load_format_rows(db, [p.id for p in players], scoring_format)
     pages = (total + per_page - 1) // per_page if total > 0 else 1
 
     return PlayerListResponse(
-        players=[_player_to_summary(p) for p in players],
+        players=[
+            _player_to_summary(p, overlay_for(str(p.id), fmt_rows, scoring_format))
+            for p in players
+        ],
         total=total,
         page=page,
         per_page=per_page,

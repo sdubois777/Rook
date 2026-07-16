@@ -177,12 +177,17 @@ class WaiverRecommendationsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Seam
 # ---------------------------------------------------------------------------
-async def load_waiver_source(db, demo: bool, user=None):
+async def load_waiver_source(db, demo: bool, user=None, *, scoring_format: str | None = None):
     """Demo rides WAIVER_DEMO_MODE; the real path builds a RealWaiverSource (synced
     rosters resolved via the canonical resolve_player + a derived FA pool). 404 if
-    the user has no synced league (after the feature check, before any deduction)."""
+    the user has no synced league (after the feature check, before any deduction).
+
+    Waiver is IN-SEASON, so ``scoring_format`` re-scores live production (demo override;
+    real path resolves it from the synced league). PPR byte-identical."""
     if demo:
-        return await seed_demo_waiver(db)
+        from backend.scoring import is_supported
+        fmt = scoring_format if is_supported(scoring_format) else "ppr"
+        return await seed_demo_waiver(db, scoring_format=fmt)
     from backend.services.trade.real_league_source import build_real_waiver_source
 
     source = await build_real_waiver_source(db, user)

@@ -50,7 +50,7 @@ def _fixture():
         "g": _iv("g", 20, trend=ValueTrend.FALLING, sell=True),
         "x": _iv("x", 90, conf=Confidence.LIMITED, buy=True),
     }
-    return state, values, 16, {}
+    return state, values, 16, {}, "ppr", False
 
 
 async def _get():
@@ -101,7 +101,7 @@ async def test_league_409_undrafted(monkeypatch):
 async def test_league_returns_teams_rosters_and_values(monkeypatch):
     monkeypatch.setenv("TRADE_DEMO_MODE", "true")
 
-    async def _fake(db, user, demo):
+    async def _fake(db, user, demo, *, scoring_format=None):
         return _fixture()
     monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake)
     app.dependency_overrides[get_current_user] = lambda: _user()

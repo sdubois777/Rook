@@ -13,7 +13,7 @@ class LeagueConfig:
     # Core settings (user-provided)
     team_count: int = 12
     draft_type: Literal["auction", "snake"] = "auction"
-    scoring: Literal["ppr", "half_ppr"] = "ppr"
+    scoring: Literal["ppr", "half_ppr", "standard"] = "ppr"
     budget: int = 200                    # auction only
     pick_position: int | None = None     # snake only (1-N)
     platform: Literal["yahoo", "espn", "sleeper"] = "yahoo"
@@ -81,8 +81,11 @@ class LeagueConfig:
 
     @property
     def rec_points(self) -> float:
-        """Points per reception for scoring calculations"""
-        return {"ppr": 1.0, "half_ppr": 0.5}.get(self.scoring, 1.0)
+        """Points per reception — delegates to THE single scoring definition so
+        this can't drift from the pipeline's reprice (it previously returned 1.0 for
+        Standard, silently treating standard leagues as PPR)."""
+        from backend.scoring import rec_points as _rec_points
+        return _rec_points(self.scoring)
 
     def positional_budget_pct(self, position: str) -> float:
         """Fraction of skill pool allocated to each position"""

@@ -4,6 +4,7 @@ import { readFileSync } from 'fs'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { LeagueContext } from '../context/LeagueContext'
 import DraftBoard from '../pages/DraftBoard'
+import { fetchDraftboard } from '../api/draftboard'
 
 // DraftBoard gates its query on Clerk's isLoaded — mock useAuth as ready.
 vi.mock('@clerk/clerk-react', () => ({
@@ -102,6 +103,38 @@ describe('DraftBoard league toggle', () => {
     renderBoard(true, 16)
     expect(await screen.findByText('Round 1')).toBeInTheDocument()
     expect(screen.queryByText('Round 2')).not.toBeInTheDocument()
+  })
+
+  it('puts K/DEF (no adp_rank) in a bottom "No ADP" section, never a phantom Round 0', async () => {
+    fetchDraftboard.mockResolvedValueOnce({
+      tiers: {
+        1: [{
+          id: 'p1', name: 'Bijan Robinson', position: 'RB', team_abbr: 'ATL', tier: 1,
+          recommended_bid_ceiling: 80, adp_rank: 1, adp_fantasypros: 5, adp_diff: -4,
+          snake_flag: 'TARGET',
+        }],
+        5: [
+          { id: 'k1', name: 'Justin Tucker', position: 'K', team_abbr: 'BAL', tier: 5,
+            recommended_bid_ceiling: 1, adp_rank: null, adp_ai: 130 },
+          { id: 'd1', name: 'San Francisco 49ers', position: 'DEF', team_abbr: 'SF', tier: 5,
+            recommended_bid_ceiling: 1, adp_rank: null, adp_ai: 130 },
+        ],
+      },
+      total_players: 3,
+    })
+    renderBoard(true)
+
+    expect(await screen.findByText('Round 1')).toBeInTheDocument()
+    // No phantom Round 0.
+    expect(screen.queryByText('Round 0')).not.toBeInTheDocument()
+    // Honest bottom bucket for the no-ADP players.
+    expect(screen.getByText(/No ADP/)).toBeInTheDocument()
+    // K and DEF render BELOW the ranked skill player (bottom of the board).
+    const bijan = screen.getByText('Bijan Robinson')
+    const tucker = screen.getByText('Justin Tucker')
+    const niners = screen.getByText('San Francisco 49ers')
+    expect(bijan.compareDocumentPosition(tucker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(bijan.compareDocumentPosition(niners) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('hides the auction budget header for snake leagues', async () => {

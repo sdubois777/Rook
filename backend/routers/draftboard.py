@@ -79,6 +79,12 @@ class DraftBoardResponse(BaseModel):
     tiers: dict[str, list[DraftBoardPlayer]]
     strategy: Optional[str] = None
     total_players: int = 0
+    # Phase 2: the format the tier/points were read in + disclosure when a non-PPR league
+    # is defaulted to PPR (unsupported/custom) or is seeing PPR ADP (per-format ADP not
+    # yet populated). Auction $ figures stay on the PPR path regardless (dark).
+    scoring_format: str = "ppr"
+    scoring_format_defaulted: bool = False
+    adp_format_defaulted: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +140,16 @@ async def get_draftboard(
     _user=Depends(get_current_user),
 ):
     """Ranked players. Auction: grouped by tier, sorted by bid ceiling. Snake:
-    grouped by round, sorted by adp_rank (only players with an ADP rank)."""
+    grouped by round, sorted by adp_rank (only players with an ADP rank).
+
+    PRE-DRAFT surface → per-format TIER + projected POINTS read from player_format_values
+    (PPR byte-identical). Auction $ stays dark; per-format ADP is read where a pipeline run
+    has populated it, else PPR + disclosure."""
+    from backend.services.format_display import (
+        load_format_rows, overlay_for, resolve_scoring_format,
+    )
     is_snake = draft_type == "snake"
+    scoring_format, fmt_defaulted = resolve_scoring_format(scoring_format)
 
     async with AsyncSessionLocal() as session:
         query = (
@@ -171,9 +185,13 @@ async def get_draftboard(
         result = await session.execute(query)
         players = result.scalars().all()
 
+        # Per-format overlay rows (empty for PPR → byte-identical).
+        fmt_rows = await load_format_rows(session, [p.id for p in players], scoring_format)
+
     # Build response grouped by tier
     tiers: dict[str, list[DraftBoardPlayer]] = {}
     total = 0
+    adp_format_defaulted = False
 
     prior_year = get_current_season() - 1
 
@@ -204,12 +222,21 @@ async def get_draftboard(
               and (p.profile.clean_season_baseline.get("projected_ppr_season") is not None
                    or p.profile.clean_season_baseline.get("ppr_points") is not None)) else None
 
+        # Per-format overlay (non-$ only): tier + projected points reprice by format; a
+        # reception-dependent player tier-falls in Standard. $ fields below stay PPR (dark).
+        ov = overlay_for(str(p.id), fmt_rows, scoring_format)
+        eff_tier = ov.tier if ov.tier is not None else p.tier
+        if ov.projected_points is not None:
+            _raw_proj = ov.projected_points   # already the format's SEASON total
+        if scoring_format != "ppr" and ov.adp_defaulted:
+            adp_format_defaulted = True
+
         dbp = DraftBoardPlayer(
             id=str(p.id),
             name=p.name,
             team_abbr=p.team_abbr,
             position=p.position,
-            tier=p.tier,
+            tier=eff_tier,
             recommended_bid_ceiling=round(float(p.recommended_bid_ceiling) * avf, 1) if p.recommended_bid_ceiling else None,
             baseline_value=float(p.baseline_value) if p.baseline_value else None,
             market_value=float(p.market_value_fantasypros) if p.market_value_fantasypros else None,
@@ -230,8 +257,13 @@ async def get_draftboard(
             nomination_target_flag=p.nomination_target_flag or False,
             value_assessment=p.value_assessment,
             adp_ai=float(p.adp_ai) if p.adp_ai is not None else None,
-            adp_fantasypros=float(p.adp_fantasypros) if p.adp_fantasypros is not None else None,
-            adp_scoring=p.adp_scoring,
+            # Per-format market ADP where a pipeline run has populated it; else the
+            # players-table PPR value (adp_format_defaulted flags the fallback).
+            adp_fantasypros=(
+                ov.adp_fantasypros if ov.adp_fantasypros is not None
+                else (float(p.adp_fantasypros) if p.adp_fantasypros is not None else None)
+            ),
+            adp_scoring=scoring_format if ov.adp_fantasypros is not None else p.adp_scoring,
             adp_rank=p.adp_rank,
             adp_diff=float(p.adp_diff) if p.adp_diff is not None else None,
             snake_flag=p.snake_flag,
@@ -244,8 +276,8 @@ async def get_draftboard(
         if not is_snake and strategy in ("hero_rb", "zero_rb", "stars_and_scrubs", "balanced"):
             dbp.strategy_highlight = _apply_strategy(dbp, strategy)
 
-        # Snake groups by round; auction groups by tier.
-        group_key = str(dbp.round_num or 0) if is_snake else str(p.tier or 0)
+        # Snake groups by round; auction groups by the (per-format) tier.
+        group_key = str(dbp.round_num or 0) if is_snake else str(eff_tier or 0)
         if group_key not in tiers:
             tiers[group_key] = []
         tiers[group_key].append(dbp)
@@ -255,4 +287,7 @@ async def get_draftboard(
         tiers=tiers,
         strategy=strategy,
         total_players=total,
+        scoring_format=scoring_format,
+        scoring_format_defaulted=fmt_defaulted,
+        adp_format_defaulted=adp_format_defaulted,
     )
