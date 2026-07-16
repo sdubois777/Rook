@@ -165,8 +165,13 @@ async def list_teams(
 
 
 @router.get("/{abbr}", response_model=TeamDetail)
-async def get_team(abbr: str, db=Depends(get_db)) -> TeamDetail:
-    """Team detail with full system context and skill position players."""
+async def get_team(abbr: str, scoring_format: str = "ppr", db=Depends(get_db)) -> TeamDetail:
+    """Team detail with full system context and skill position players. Per-format TIER
+    overlaid from player_format_values (pre-draft basis); $ figures stay PPR (dark)."""
+    from backend.services.format_display import (
+        load_format_rows, overlay_for, resolve_scoring_format,
+    )
+    scoring_format, _defaulted = resolve_scoring_format(scoring_format)
     team_abbr = abbr.upper()
 
     ts = await TeamSystemRepository(db).get_latest_for_team(team_abbr)
@@ -174,9 +179,11 @@ async def get_team(abbr: str, db=Depends(get_db)) -> TeamDetail:
         raise HTTPException(status_code=404, detail=f"Team not found: {team_abbr}")
 
     players = await PlayerRepository(db).list_skill_players_for_team(team_abbr)
+    fmt_rows = await load_format_rows(db, [p.id for p in players], scoring_format)
 
     team_players = []
     for p in players:
+        _ov = overlay_for(str(p.id), fmt_rows, scoring_format)
         top_flag = None
         if p.dependencies:
             # Pick the highest-impact flag
@@ -192,7 +199,7 @@ async def get_team(abbr: str, db=Depends(get_db)) -> TeamDetail:
             id=str(p.id),
             name=p.name,
             position=p.position,
-            tier=p.tier,
+            tier=_ov.tier if _ov.tier is not None else p.tier,
             recommended_bid_ceiling=float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None,
             market_value=float(p.market_value) if p.market_value else None,
             value_gap=float(p.value_gap) if p.value_gap else None,

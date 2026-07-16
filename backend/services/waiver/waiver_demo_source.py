@@ -85,6 +85,7 @@ class WaiverDemoSource:
     faab_remaining_by_team: dict[str, int] = field(default_factory=dict)
     # {dst_canonical_id: {"opponent", "tilt"}} for the demo week (slice 5a display).
     dst_matchup: dict[str, dict] = field(default_factory=dict)
+    scoring_format: str = "ppr"   # in-season re-score basis (PPR byte-identical)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -101,7 +102,7 @@ def _demo_faab_remaining(team_id: str, idx: int) -> int:
 # /waiver/league, /waiver/wire AND /recommendations call. All inputs are pinned +
 # deterministic; every state dataclass is frozen → one shared instance is safe.
 # Injected ``weekly_usage`` (tests) bypasses. Grep WAIVER_DEMO to tear down.
-_WAIVER_SEED_CACHE: dict[tuple[int, int], WaiverDemoSource] = {}
+_WAIVER_SEED_CACHE: dict[tuple[int, int, str], WaiverDemoSource] = {}
 _WAIVER_SEED_LOCKS: dict[int, asyncio.Lock] = {}   # per-loop locks (see _seed_lock)
 
 
@@ -110,29 +111,35 @@ def clear_waiver_seed_cache() -> None:
     _WAIVER_SEED_CACHE.clear()
 
 
-async def seed_demo_waiver(db, *, weekly_usage: Optional[pd.DataFrame] = None) -> WaiverDemoSource:
-    """Build the waiver demo — cached per process (see _WAIVER_SEED_CACHE).
-    ``weekly_usage`` injection (tests) bypasses the cache."""
+async def seed_demo_waiver(
+    db, *, scoring_format: str = "ppr", weekly_usage: Optional[pd.DataFrame] = None
+) -> WaiverDemoSource:
+    """Build the waiver demo — cached per process (see _WAIVER_SEED_CACHE). Waiver is an
+    IN-SEASON surface, so ``scoring_format`` RE-SCORES live weekly production per format
+    (same basis as the trade engine; PPR byte-identical). ``weekly_usage`` injection
+    (tests) bypasses the cache."""
     from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
 
     if weekly_usage is not None:
-        return await _seed_demo_waiver_uncached(db, weekly_usage)
-    key = (DEMO_SEASON, DEMO_CURRENT_WEEK)
+        return await _seed_demo_waiver_uncached(db, weekly_usage, scoring_format)
+    key = (DEMO_SEASON, DEMO_CURRENT_WEEK, scoring_format)
     if (hit := _WAIVER_SEED_CACHE.get(key)) is not None:
         return hit
     async with _seed_lock(_WAIVER_SEED_LOCKS):
         if (hit := _WAIVER_SEED_CACHE.get(key)) is not None:   # lost the race
             return hit
-        src = await _seed_demo_waiver_uncached(db, None)
+        src = await _seed_demo_waiver_uncached(db, None, scoring_format)
         _WAIVER_SEED_CACHE[key] = src
-        logger.info("waiver demo seed cached (per-process) for season=%d week=%d", *key)
+        logger.info("waiver demo seed cached (per-process) season=%d week=%d format=%s", *key)
         return src
 
 
-async def _seed_demo_waiver_uncached(db, weekly_usage: Optional[pd.DataFrame]) -> WaiverDemoSource:
+async def _seed_demo_waiver_uncached(
+    db, weekly_usage: Optional[pd.DataFrame], scoring_format: str = "ppr",
+) -> WaiverDemoSource:
     """The real build: reuse the trade demo's 12-team state + per-week layer, add
-    the available pool, and value everyone together."""
-    trade_src = await seed_demo_league(db, weekly_usage=weekly_usage)
+    the available pool, and value everyone together — re-scored to ``scoring_format``."""
+    trade_src = await seed_demo_league(db, scoring_format=scoring_format, weekly_usage=weekly_usage)
     state = trade_src.get_league_state()
     weekly = trade_src.weekly_usage
     rostered = state.all_rostered_player_ids()
@@ -145,10 +152,10 @@ async def _seed_demo_waiver_uncached(db, weekly_usage: Optional[pd.DataFrame]) -
     aug = LeagueState(season=state.season, week=state.week, teams=state.teams + (pool_team,))
 
     from backend.services.trade.trade_demo_source import _load_priors  # reuse the prior loader
-    pool_priors_raw = await _load_priors(db, [rp.canonical_player_id for rp in pool])
+    pool_priors_raw = await _load_priors(db, [rp.canonical_player_id for rp in pool], scoring_format)
     priors = {**trade_src.priors, **{k: v for k, v in pool_priors_raw.items() if v is not None}}
 
-    values = evaluate_league(aug, weekly, priors=priors)
+    values = evaluate_league(aug, weekly, scoring_format=scoring_format, priors=priors)
     # K/DEF streaming arc (slice 4): DST-only matchup-weekly tilt (offense + kicker
     # untouched). Pool + rostered DST re-rank by the demo week's opponent matchup.
     from backend.services.kdef_matchup import apply_dst_matchup
@@ -165,6 +172,7 @@ async def _seed_demo_waiver_uncached(db, weekly_usage: Optional[pd.DataFrame]) -
     return WaiverDemoSource(
         state=state, pool=pool, values=values, weekly_usage=weekly, priors=priors,
         faab_remaining_by_team=faab_remaining, dst_matchup=dst_matchup,
+        scoring_format=scoring_format,
     )
 
 

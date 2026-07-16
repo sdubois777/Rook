@@ -5,8 +5,8 @@ export async function fetchPlayers(params = {}) {
   return data
 }
 
-export async function searchPlayers(q) {
-  const { data } = await api.get('/players/search', { params: { q } })
+export async function searchPlayers(q, scoringFormat = 'ppr') {
+  const { data } = await api.get('/players/search', { params: { q, scoring_format: scoringFormat } })
   return data
 }
 
@@ -15,7 +15,7 @@ export async function fetchPlayerSummary() {
   return data
 }
 
-export async function fetchPlayer(id) {
-  const { data } = await api.get(`/players/${id}`)
+export async function fetchPlayer(id, scoringFormat = 'ppr') {
+  const { data } = await api.get(`/players/${id}`, { params: { scoring_format: scoringFormat } })
   return data
 }

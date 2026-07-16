@@ -6,6 +6,7 @@ import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
+import FormatDisclosureBanner from '../components/shared/FormatDisclosureBanner'
 import PositionBadge from '../components/shared/PositionBadge'
 import InjuryBadge from '../components/shared/InjuryBadge'
 import SortableHeader from '../components/shared/SortableHeader'
@@ -166,7 +167,7 @@ const NO_ADP_GROUP = '__no_adp__'
 const NO_ADP_LABEL = 'No ADP · drafted last (K/DEF, undrafted)'
 
 export default function DraftBoard() {
-  const { isSnake, selectedLeague } = useLeague()
+  const { isSnake, selectedLeague, scoringFormat } = useLeague()
   // Floor at 8: a snake league with fewer than 8 teams isn't a real league. The
   // test league has team_count=1, which would otherwise put every player in
   // their own round (round = ceil(adp_rank / teamCount)).
@@ -191,11 +192,13 @@ export default function DraftBoard() {
   const setGlobalStrategy = usePreferencesStore((s) => s.setStrategy)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['draftboard', strategy, position],
+    queryKey: ['draftboard', strategy, position, scoringFormat],
     queryFn: () =>
       fetchDraftboard({
         strategy: strategy || undefined,
         position: position || undefined,
+        // PRE-DRAFT surface: per-format tier/points/ADP from player_format_values.
+        scoring_format: scoringFormat,
       }),
     // Don't fetch until Clerk is ready, or the request goes out tokenless -> 401.
     enabled: isLoaded,
@@ -485,6 +488,11 @@ export default function DraftBoard() {
 
   return (
     <div>
+      <FormatDisclosureBanner
+        scoringFormat={data?.scoring_format || scoringFormat}
+        scoringFormatDefaulted={data?.scoring_format_defaulted}
+        adpFormatDefaulted={isSnake && data?.adp_format_defaulted}
+      />
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
         <div className="flex items-center gap-3 no-print">
