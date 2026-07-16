@@ -50,6 +50,15 @@ class PlayerFormatValues(Base):
     value_assessment: Mapped[str | None] = mapped_column(String(20))
     auction_note: Mapped[str | None] = mapped_column(Text)
 
+    # Per-format MARKET INPUTS (G5), re-scraped every pipeline run. ADP = FantasyPros
+    # overall rank (same integer scale as players.adp_fantasypros). auction_value =
+    # DraftWizard $ for the CANONICAL 12-team/1-flex roster (auction_roster_shape
+    # records that shape so Phase 2 can disclose it to non-canonical leagues).
+    # These are INERT until a Phase 2 read surface threads formats in.
+    adp_fantasypros: Mapped[float | None] = mapped_column(Numeric(5, 1))
+    auction_value: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    auction_roster_shape: Mapped[str | None] = mapped_column(String(40))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
