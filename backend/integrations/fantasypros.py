@@ -1,36 +1,25 @@
 """
-FantasyPros integration — auction values and ADP via Playwright.
+FantasyPros integration — auction values (Playwright) + ADP (JSON API).
 
-FantasyPros uses JavaScript-rendered DataTables so we need a real browser.
-Playwright launches headless Chromium, waits for the table, and parses it.
+AUCTION values are scraped from the DraftWizard calculator endpoint with Playwright
+(the old /auction-values/ppr.php URLs were removed by FantasyPros). Confirmed still
+working and genuinely per-format.
+
+ADP is fetched as JSON from the anonymous consensus-rankings partner API. FantasyPros'
+site redesign turned /nfl/adp/*-overall.php into a bot-gated virtualized table (~5 rows
+to any automation), which broke the old DOM scrape; the partner API is the replacement —
+no browser, no auth. See get_adp for the endpoint-choice details.
 
 Scoring formats: 'ppr' | 'half_ppr' | 'standard'
-
-Auction values are scraped from the DraftWizard calculator endpoint
-(the old /auction-values/ppr.php URLs were removed by FantasyPros).
-ADP is scraped from /nfl/adp/ pages which support ?year= for historical data.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-
-def _position_from_pos_rank(pos_rank: str) -> str:
-    """Extract the bare position from FantasyPros' "POS" cell.
-
-    The ADP table's POS column is a positional rank like "RB1", "WR12",
-    "DST3" — take the leading letters: "RB1" -> "RB".
-    """
-    m = re.match(r"[A-Za-z]+", (pos_rank or "").strip())
-    return m.group(0).upper() if m else ""
-
-FP_BASE = "https://www.fantasypros.com/nfl"
 
 # DraftWizard calculator — serves the actual auction dollar values.
 # Supports ?scoring=PPR|HALF|STD and ?teams=N
@@ -44,10 +33,15 @@ SCORING_PARAMS: dict[str, str] = {
     "standard": "STD",
 }
 
-ADP_URLS: dict[str, str] = {
-    "ppr":      f"{FP_BASE}/adp/ppr-overall.php",
-    "half_ppr": f"{FP_BASE}/adp/half-point-ppr-overall.php",
-    "standard": f"{FP_BASE}/adp/overall.php",
+# FantasyPros consensus-rankings partner API — anonymous JSON ADP (replaces the scrape).
+ADP_API_URL = "https://partners.fantasypros.com/api/v1/consensus-rankings.php"
+_ADP_SCORING: dict[str, str] = {"ppr": "PPR", "half_ppr": "HALF", "standard": "STD"}
+_ADP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
 }
 
 
@@ -55,13 +49,6 @@ def _clean_dollar(value: str) -> Optional[float]:
     try:
         return float(Decimal(value.replace("$", "").replace(",", "").strip()))
     except (InvalidOperation, ValueError):
-        return None
-
-
-def _clean_float(value: str) -> Optional[float]:
-    try:
-        return float(value.strip())
-    except ValueError:
         return None
 
 
@@ -218,96 +205,96 @@ def _parse_player_cell(text: str) -> tuple[str, str, str]:
     return text.strip(), "", ""
 
 
+def _num(value) -> Optional[float]:
+    """Coerce an int/str/None JSON value to a clean float (or None)."""
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except (ValueError, TypeError):
+        return None
+
+
 async def get_adp(
     scoring_format: str = "half_ppr",
     year: int | None = None,
 ) -> list[dict]:
     """
-    Scrape FantasyPros ADP for the given scoring format.
+    Fetch FantasyPros ADP from the anonymous consensus-rankings partner API (JSON).
+
+    Replaces the old DOM scrape of /nfl/adp/*-overall.php, which FantasyPros' site
+    redesign broke (the mcu-table is bot-gated to ~5 rows). This is a plain JSON GET —
+    no Playwright, no auth/cookie — and it repairs BOTH sync_adp (players-table PPR ADP)
+    and format_market (per-format adp_fantasypros).
+
+    ENDPOINT CHOICE (verified): type=adp&position=ALL is the STANDARD 1-QB overall ADP
+    (RBs/WRs at the top — Gibbs 1, Bijan 2, Chase 3 — matching the old *-overall.php
+    pages). NOT type=draft/position=OP, which is the SUPERFLEX/2QB ECR (QBs at the top,
+    Josh Allen #1) and would mis-rank every 1-QB league. The `scoring` param reprices per
+    format (a reception-dependent player drafts later in Standard). position=ALL covers
+    QB/RB/WR/TE/DST; K has no anonymous type=adp feed (returns 0) and is omitted — K ADP
+    was marginal and K/DEF are valued via their own pipeline priors.
 
     Args:
         scoring_format: 'ppr' | 'half_ppr' | 'standard'
-        year: If provided, appends ?year=YYYY to fetch historical data.
-              ADP pages support historical years (verified).
+        year: Season to fetch; defaults to the current season (dynamic — never hardcoded).
 
-    Returns a list of dicts:
+    Returns the SAME dict shape as before (so apply_adp / build_format_market_upserts
+    consume it unchanged):
       {rank, name, team, position, bye, adp, best, worst, scoring_format}
+
+    Non-fatal on any failure (network/HTTP/parse) — returns [] so a bad pull leaves the
+    last-good values in place, exactly as the old scrape did.
     """
-    from playwright.async_api import async_playwright
+    import httpx
 
-    url = ADP_URLS.get(scoring_format)
-    if not url:
-        raise ValueError(f"Unknown scoring format '{scoring_format}'. Use: {list(ADP_URLS)}")
+    from backend.utils.seasons import get_current_season
 
-    if year is not None:
-        url += f"?year={year}"
+    scoring = _ADP_SCORING.get(scoring_format)
+    if not scoring:
+        raise ValueError(f"Unknown scoring format '{scoring_format}'. Use: {list(_ADP_SCORING)}")
 
-    logger.info("Fetching FantasyPros ADP (%s) from %s", scoring_format, url)
+    params = {
+        "sport": "NFL",
+        "year": year or get_current_season(),
+        "type": "adp",          # actual ADP (1-QB standard) — NOT type=draft (superflex ECR)
+        "scoring": scoring,     # PPR | HALF | STD — reprices per format
+        "position": "ALL",      # QB/RB/WR/TE/DST overall (position=OP is superflex ECR)
+        "week": "0",
+    }
+    logger.info("Fetching FantasyPros ADP (%s) from %s", scoring_format, ADP_API_URL)
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, headers=_ADP_HEADERS) as client:
+            resp = await client.get(ADP_API_URL, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:  # noqa: BLE001 — a bad ADP pull must never abort a pipeline run
+        logger.error("FantasyPros ADP API failed (%s): %s", scoring_format, exc)
+        return []
 
     players: list[dict] = []
+    for row in payload.get("players", []):
+        rank = _num(row.get("rank_ecr"))          # overall rank (what adp_fantasypros stores)
+        name = (row.get("player_name") or "").strip()
+        if rank is None or not name:
+            continue
+        position = (row.get("player_position_id") or "").upper()
+        if position == "DST":
+            position = "DEF"                       # our players table uses DEF
+        players.append({
+            "rank":           rank,
+            "name":           name,
+            "team":           (row.get("player_team_id") or "").strip(),
+            "position":       position,
+            "bye":            _num(row.get("player_bye_week")),
+            "adp":            _num(row.get("rank_ave")),   # average draft position
+            "best":           _num(row.get("rank_min")),   # richer than the old scrape (was None)
+            "worst":          _num(row.get("rank_max")),
+            "scoring_format": scoring_format,
+        })
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        page = await browser.new_page()
-
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_selector("table#data", timeout=20_000)
-
-            show_all = page.locator("select[name='data_length'] option[value='-1']")
-            if await show_all.count() > 0:
-                await page.select_option("select[name='data_length']", value="-1")
-                await page.wait_for_timeout(1_500)
-
-            rows = await page.query_selector_all("table#data tbody tr")
-
-            for row in rows:
-                cells = await row.query_selector_all("td")
-                # FantasyPros' 2026 ADP layout has 4 columns:
-                #   RANK | "Player Team (Bye)" | POS | AVG
-                # (the old per-column team/bye/best/worst layout is gone).
-                if len(cells) < 4:
-                    continue
-
-                rank_raw = (await cells[0].inner_text()).strip()
-
-                # Player cell combines name + team + bye:
-                #   <a class="player-name" fp-player-name="Name">Name</a>
-                #   <small>TEAM</small> <small>(BYE)</small>
-                player_cell = cells[1]
-                name_el = await player_cell.query_selector("a")
-                name = ""
-                if name_el:
-                    name = (await name_el.get_attribute("fp-player-name")) or (
-                        await name_el.inner_text()
-                    )
-                if not name:
-                    name = await player_cell.inner_text()
-                name = name.strip()
-
-                smalls = await player_cell.query_selector_all("small")
-                team = (await smalls[0].inner_text()).strip() if smalls else ""
-                bye_raw = (await smalls[1].inner_text()).strip() if len(smalls) > 1 else ""
-
-                position = _position_from_pos_rank((await cells[2].inner_text()).strip())
-                adp_raw = (await cells[3].inner_text()).strip()
-
-                players.append({
-                    "rank":           _clean_float(rank_raw),
-                    "name":           name,
-                    "team":           team,
-                    "position":       position,
-                    "bye":            _clean_float(bye_raw.strip("()")),
-                    "adp":            _clean_float(adp_raw),
-                    "best":           None,  # best/worst columns removed by FP
-                    "worst":          None,
-                    "scoring_format": scoring_format,
-                })
-
-        finally:
-            await browser.close()
-
-    logger.info("Retrieved %d players from FantasyPros ADP", len(players))
+    logger.info("Retrieved %d players from FantasyPros ADP API (%s)", len(players), scoring_format)
     return players
 
 
