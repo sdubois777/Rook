@@ -65,10 +65,31 @@ def _clean_float(value: str) -> Optional[float]:
         return None
 
 
+# Roster slot query params DraftWizard's calculator accepts. The DEFAULT calculator
+# URL omits the FLEX slot, so its $ reflect a rigid QB1/RB2/WR3/TE1 roster and
+# under-price the flex-eligible RB/WR/TE pool. Passing an explicit roster (with
+# flex=1) re-prices for a real 12-team flex league. Order = URL param order.
+_ROSTER_PARAM_ORDER = ("QB", "RB", "WR", "TE", "FLEX", "DST", "K", "BN")
+_ROSTER_PARAM_KEYS = {
+    "QB": "qb", "RB": "rb", "WR": "wr", "TE": "te", "FLEX": "flex",
+    "DST": "dst", "K": "k", "BN": "bench",
+}
+
+
+def _roster_query(roster: dict[str, int]) -> str:
+    """Build the &qb=1&rb=2&...&flex=1&bench=6 roster-slot query fragment."""
+    parts = []
+    for slot in _ROSTER_PARAM_ORDER:
+        if slot in roster:
+            parts.append(f"&{_ROSTER_PARAM_KEYS[slot]}={int(roster[slot])}")
+    return "".join(parts)
+
+
 async def get_auction_values(
     scoring_format: str = "ppr",
     year: int | None = None,
     teams: int = 12,
+    roster: dict[str, int] | None = None,
 ) -> list[dict]:
     """
     Scrape FantasyPros auction values from the DraftWizard calculator.
@@ -79,6 +100,12 @@ async def get_auction_values(
               (always returns current projections). Kept for API
               compatibility and future support.
         teams: Number of teams in league (affects dollar scaling).
+        roster: Optional roster-slot counts (e.g. the canonical flex-fixed shape
+                {"QB":1,"RB":2,"WR":3,"TE":1,"FLEX":1,"DST":1,"K":1,"BN":6}). When
+                provided, roster-slot params (incl. flex) are appended so the $
+                reflect a real flex roster. When None (default), the URL is
+                UNCHANGED from the pre-G5 form — the players-table market_value
+                PPR path must stay byte-identical.
 
     Returns a list of dicts:
       {name, team, position, avg_value, min_value, max_value, scoring_format}
@@ -92,6 +119,8 @@ async def get_auction_values(
         )
 
     url = f"{AUCTION_URL}?scoring={scoring_param}&teams={teams}"
+    if roster:
+        url += _roster_query(roster)
     if year is not None:
         url += f"&year={year}"
 

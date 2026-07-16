@@ -52,7 +52,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v6"
+PLAYER_PROFILES_PROMPT_VERSION = "v7"  # v7: projected_receptions (per-format reprice basis)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +194,25 @@ def compute_input_fingerprint(
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, default=str).encode()
     ).hexdigest()
+
+
+_RECEIVER_POSITIONS = {"RB", "WR", "TE"}
+
+
+def _projected_receptions(prof: dict, position: str | None) -> float | None:
+    """The LLM's projected-season reception count, for the per-format reprice basis.
+    Only meaningful for RB/WR/TE (QB/K/DEF don't catch passes → format-invariant, no
+    reception field). Returns a non-negative rounded float, or None when absent/invalid
+    (the reprice then falls back to the historical baseline receptions, else 0)."""
+    if (position or "").upper() not in _RECEIVER_POSITIONS:
+        return None
+    raw = prof.get("projected_receptions")
+    if raw is None:
+        return None
+    try:
+        return round(max(0.0, float(raw)), 1)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +471,7 @@ OUTPUT only valid JSON:
   "projected_ppr_floor": <float, pessimistic>,
   "projected_ppr_ceiling": <float, optimistic>,
   "projected_games": <int, 14-17>,
+  "projected_receptions": <float>,
   "role_classification": <string>,
   "confidence": "low" | "medium",
   "breakout_probability": <float 0.0-1.0>,
@@ -460,6 +480,12 @@ OUTPUT only valid JSON:
   "key_upside_factors": [<string>, ...],
   "projection_reasoning": <string, 3-5 sentences>
 }}
+
+projected_receptions = expected year-1 RECEPTIONS, consistent with projected_ppr_season
+and the rookie's projected role. REQUIRED for RB/WR/TE (it drives non-PPR scoring):
+a pass-catching back ~40-70, an early-down/committee back ~15-35, a slot/possession WR
+~50-80, an outside/deep WR ~40-65, a receiving TE ~35-60. Use 0 for a QB. Never omit it
+for a skill-position rookie.
 """
 
 # Historical translation rates by position and round for the rookie prompt
@@ -562,12 +588,19 @@ def _parse_rookie_sonnet_output(raw: str, player: dict) -> dict | None:
         return None
 
 
+# Rough year-1 reception priors by position — used ONLY in the Sonnet-failure
+# fallback so even a fallback rookie gets a per-format reprice basis (QB is dropped
+# by the receiver gate at store time).
+_ROOKIE_DEFAULT_RECEPTIONS = {"WR": 45.0, "RB": 30.0, "TE": 38.0}
+
+
 def _rookie_sonnet_fallback(player: dict) -> dict:
     """Fallback dict when rookie Sonnet call fails or returns invalid JSON."""
     comp_yr1 = player.get("comp_yr1_avg_ppg") or _ROOKIE_DEFAULT_PPG.get(player.get("position", "WR"), 8.0)
     midpoint = comp_yr1 * 14  # conservative 14-game assumption
     return {
         "projected_ppr_season": round(midpoint, 1),
+        "projected_receptions": _ROOKIE_DEFAULT_RECEPTIONS.get(player.get("position", "WR"), 40.0),
         "projected_ppr_floor": round(midpoint * 0.6, 1),
         "projected_ppr_ceiling": round(midpoint * 1.4, 1),
         "projected_games": 14,
@@ -614,7 +647,8 @@ Output ONLY a valid JSON object:
   "situation_score": "string (strong/moderate/weak/volatile)",
   "confidence": "string (high/medium/low)",
   "upside_ppr": float,
-  "downside_ppr": float
+  "downside_ppr": float,
+  "projected_receptions": float
 }
 
 role_classification MUST match the player's actual position — never cross-assign roles:
@@ -647,6 +681,12 @@ Rules:
 - A displaced flag with active_and_healthy trigger = LESS opportunity → project LOWER.
 - compound_risk_flag on team system = reduce all skill position projections by 10-15%.
 - upside_ppr = realistic best-case 17-game total; downside_ppr = realistic worst-case.
+- projected_receptions = expected RECEPTIONS in this projected season (the catch count
+  consistent with projected_ppr_points and role_classification). This drives non-PPR
+  scoring, so it MUST reflect the receiving role: a pass_catching_specialist/slot ~60-90,
+  a featured_back ~40-55, an early_down_thumper/workhorse ~20-40, a WR1 alpha ~90-120, a
+  deep_threat ~55-75, a TE1 ~55-85. For a QB, use 0. Base it on the player's real target
+  share and role — not a guess.
 - Age curve peaks: QB 26-32, RB 24-26, WR 24-29, TE 26-29.
 - Contract year (contract_year=true) → slight upward trajectory bias.
 
@@ -2180,6 +2220,10 @@ async def _write_profiles(
                         "key_risks": prof.get("key_risks", []),
                         "key_upside_factors": prof.get("key_upside_factors", []),
                     }
+                    # projected_receptions — the per-format reprice basis (RB/WR/TE).
+                    _rec = _projected_receptions(prof, ctx_player.get("position"))
+                    if _rec is not None:
+                        clean_baseline["projected_receptions"] = _rec
                     # Override Python ceiling/floor with Sonnet's wider range
                     rookie_prof["ceiling_value_ppr"] = round(float(prof.get("projected_ppr_ceiling", rookie_prof["ceiling_value_ppr"])), 1)
                     rookie_prof["floor_value_ppr"] = round(float(prof.get("projected_ppr_floor", rookie_prof["floor_value_ppr"])), 1)
@@ -2218,6 +2262,10 @@ async def _write_profiles(
                     clean_baseline["upside_ppr"] = round(float(prof["upside_ppr"]), 1)
                 if prof.get("downside_ppr"):
                     clean_baseline["downside_ppr"] = round(float(prof["downside_ppr"]), 1)
+                # projected_receptions — the per-format reprice basis (RB/WR/TE).
+                _rec = _projected_receptions(prof, ctx_player.get("position"))
+                if _rec is not None:
+                    clean_baseline["projected_receptions"] = _rec
             elif ctx_player.get("position") == "QB":
                 # QB baseline uses fantasy_points_ppr (includes passing scoring)
                 clean_baseline = _compute_qb_baseline(seasons)

@@ -18,8 +18,8 @@ _FORBIDDEN_TERMS = [
 ]
 
 
-def test_prompt_version_v6():
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v6"
+def test_prompt_version_v7():
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
 
 
 def test_sonnet_prompt_no_forbidden_terms_in_guidance():

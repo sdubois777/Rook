@@ -6,6 +6,7 @@ import { fetchDraftboard } from '../api/draftboard'
 import { usePreferencesStore } from '../stores/preferences'
 import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
+import FormatDisclosureBanner from '../components/shared/FormatDisclosureBanner'
 import PositionBadge from '../components/shared/PositionBadge'
 import InjuryBadge from '../components/shared/InjuryBadge'
 import SortableHeader from '../components/shared/SortableHeader'
@@ -158,8 +159,15 @@ function FlagsDropdown({ selected, onChange }) {
 
 const SNAKE_SORT_KEYS = ['adp_rank', 'adp_fantasypros', 'adp_diff']
 
+// Snake round grouping: players with no adp_rank (K/DEF, and any undrafted player)
+// have no computable round. They go in this bucket, rendered LAST under an honest
+// label — never a phantom "Round 0" at the top. K/DEF genuinely draft last, which
+// the live engine already encodes (KDEF_FINAL_ROUNDS), so the board agrees with it.
+const NO_ADP_GROUP = '__no_adp__'
+const NO_ADP_LABEL = 'No ADP · drafted last (K/DEF, undrafted)'
+
 export default function DraftBoard() {
-  const { isSnake, selectedLeague } = useLeague()
+  const { isSnake, selectedLeague, scoringFormat } = useLeague()
   // Floor at 8: a snake league with fewer than 8 teams isn't a real league. The
   // test league has team_count=1, which would otherwise put every player in
   // their own round (round = ceil(adp_rank / teamCount)).
@@ -184,11 +192,13 @@ export default function DraftBoard() {
   const setGlobalStrategy = usePreferencesStore((s) => s.setStrategy)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['draftboard', strategy, position],
+    queryKey: ['draftboard', strategy, position, scoringFormat],
     queryFn: () =>
       fetchDraftboard({
         strategy: strategy || undefined,
         position: position || undefined,
+        // PRE-DRAFT surface: per-format tier/points/ADP from player_format_values.
+        scoring_format: scoringFormat,
       }),
     // Don't fetch until Clerk is ready, or the request goes out tokenless -> 401.
     enabled: isLoaded,
@@ -466,7 +476,7 @@ export default function DraftBoard() {
     for (const p of sortedPlayers) {
       const rank = getDisplayAdp(p)
       const key = isRoundGroup
-        ? String(rank != null ? Math.floor((rank - 1) / teamCount) + 1 : 0)
+        ? (rank != null ? String(Math.floor((rank - 1) / teamCount) + 1) : NO_ADP_GROUP)
         : String(p.tier ?? 0)
       if (!groups[key]) groups[key] = []
       groups[key].push(p)
@@ -478,6 +488,11 @@ export default function DraftBoard() {
 
   return (
     <div>
+      <FormatDisclosureBanner
+        scoringFormat={data?.scoring_format || scoringFormat}
+        scoringFormatDefaulted={data?.scoring_format_defaulted}
+        adpFormatDefaulted={isSnake && data?.adp_format_defaulted}
+      />
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
         <div className="flex items-center gap-3 no-print">
@@ -568,6 +583,9 @@ export default function DraftBoard() {
         /* Grouped view — rounds (snake) or tiers (auction) */
         <div className="space-y-4">
           {Object.keys(tierGroups).sort((a, b) => {
+            // The no-ADP bucket (K/DEF, undrafted) always sorts to the BOTTOM.
+            if (a === NO_ADP_GROUP) return 1
+            if (b === NO_ADP_GROUP) return -1
             // Rounds always ascending; tiers respect the sort direction.
             const dir = isRoundGroup ? 1 : sortOrder === 'asc' ? 1 : -1
             return (parseInt(a) - parseInt(b)) * dir
@@ -578,7 +596,7 @@ export default function DraftBoard() {
               <div key={tierKey} className="bg-surface-1 rounded-lg border border-border overflow-hidden">
                 <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
                   <h3 className="text-sm font-medium text-slate-200">
-                    {groupLabel} {tierKey}
+                    {tierKey === NO_ADP_GROUP ? NO_ADP_LABEL : `${groupLabel} ${tierKey}`}
                   </h3>
                   <span className="text-xs text-slate-500">{players.length} players</span>
                 </div>

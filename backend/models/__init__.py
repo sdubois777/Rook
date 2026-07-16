@@ -15,8 +15,10 @@ from backend.models.billing import ProcessedStripeEvent, GrantedMonthlyInvoice, 
 from backend.models.user_league import UserLeague
 from backend.models.platform_credential import PlatformCredential
 from backend.models.market_value_historic import MarketValueHistoric
+from backend.models.player_format_values import PlayerFormatValues
 
 __all__ = [
+    "PlayerFormatValues",
     "Player",
     "PlayerProfile",
     "PlayerInjuryProfile",

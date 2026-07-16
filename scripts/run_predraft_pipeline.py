@@ -157,6 +157,15 @@ AGENT_SPECS: dict[str, dict] = {
         "status": "built",
         "description": "Deterministic games-missed availability discount (runs last)",
     },
+    "format_market": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # Playwright scrape, no AI calls
+        "status": "built",
+        "description": "Per-format ADP + auction re-scrape into player_format_values (every run)",
+    },
 }
 
 PIPELINE_ORDER = [
@@ -170,6 +179,7 @@ PIPELINE_ORDER = [
     "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
     "valuation",
     "valuation_agent",   # AI ceiling calibration — runs after math valuation
+    "format_market",     # per-format ADP + auction re-scrape into player_format_values
     "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier + bell)
     "team_notes",        # regenerate system-notes prose from the real stored stats
     "availability",      # LAST: deterministic games-missed availability discount
@@ -359,13 +369,18 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         )
 
     elif name == "valuation":
-        from backend.engines.valuation import run_valuation_pass
+        from backend.engines.valuation import run_valuation_pass, write_format_value_sets
         result = await run_valuation_pass()
         print(
             f"[{name}] {result['updated']} player(s) updated, "
             f"{result['skipped']} skipped "
             f"(analysis_year={result['analysis_year']})."
         )
+        # Per-format (PPR/Half/Standard) value sets — reprices the same board via the
+        # shared math and writes player_format_values (PPR row == the players table).
+        fmt_result = await write_format_value_sets()
+        print(f"[{name}] per-format value sets: {fmt_result['written']} rows "
+              f"across {fmt_result['formats']}.")
 
     elif name == "valuation_agent":
         from backend.agents.valuation_agent import ValuationAgent
@@ -375,6 +390,35 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
         )
+        # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
+        # Half/Standard regenerate format-appropriate prose into player_format_values.
+        copied = await agent.copy_ppr_prose_to_format_rows()
+        print(f"[{name}] PPR prose copied to {copied} format rows.")
+        for _fmt in ("half_ppr", "standard"):
+            pr = await agent.run_prose_for_format(_fmt)
+            print(f"[{name}] {_fmt} prose: {pr['processed']} processed, {pr['written']} written.")
+
+    elif name == "format_market":
+        # Per-format ADP (FantasyPros) + auction (DraftWizard, canonical flex roster)
+        # re-scraped LIVE every run and written to player_format_values. NOT cached — the
+        # inputs drift daily before draft day. Independent of the agents; failure is
+        # non-fatal (leaves the prior per-format market rows in place). Own DB session.
+        from backend.services.format_market_ingest import run_format_market_ingest_stage
+        try:
+            result = await run_format_market_ingest_stage()
+        except Exception as exc:  # noqa: BLE001 — scrape failures must not abort the pipeline
+            print(f"[{name}] WARNING — ingest failed ({exc}); prior market rows unchanged.")
+        else:
+            for _fmt, _s in result["formats"].items():
+                print(
+                    f"[{name}] {_fmt}: ADP {_s['adp_matched']}/{_s['adp_total']} matched, "
+                    f"auction {_s['auction_matched']}/{_s['auction_total']} matched, "
+                    f"{_s['rows']} rows."
+                )
+            print(
+                f"[{name}] {result['rows_written']} rows written across "
+                f"{len(result['formats'])} formats (roster {result['roster_shape']})."
+            )
 
     elif name == "team_metrics":
         # Deterministic Teams-page fields (Teams rework slice 1): scheme from real
@@ -623,6 +667,7 @@ async def main() -> None:
         ["defense_baseline"],                          # Phase 4c: dedicated DST prior
         ["valuation"],                                 # Phase 5: needs profiles
         ["valuation_agent"],                           # Phase 6: needs valuation
+        ["format_market"],                             # Phase 6b: re-scrape per-format ADP + auction (every run)
         ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
         ["availability"],                              # Phase 7: LAST — availability discount
     ]

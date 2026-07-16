@@ -114,6 +114,10 @@ class TradeAnalyzeResponse(BaseModel):
     demo_mode: bool
     acceptability: Optional[AcceptabilityOut] = None
     warnings: list[TradeWarningOut] = []   # additive; empty when no consequence to flag
+    # Phase 2: the format the verdict was computed in + disclosure when we defaulted to
+    # PPR because the league's format was null/ambiguous/custom (UI shows "showing PPR").
+    scoring_format: str = "ppr"
+    scoring_format_defaulted: bool = False
 
 
 class TradeIdeasRequest(BaseModel):
@@ -201,7 +205,7 @@ class TradeLeagueResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Seams (patch points for tests + the slice-6 real provider)
 # ---------------------------------------------------------------------------
-async def _wire_ppg_by_position(db, state, weekly_usage, priors, season, week):
+async def _wire_ppg_by_position(db, state, weekly_usage, priors, season, week, *, scoring_format: str = "ppr"):
     """Value this league's WAIVER WIRE (the derived FA pool) → {position: [forward_ppg]}
     — the wire side of the league-local, waiver-aware VOR replacement pool. Reuses the
     SAME derive + aug-state valuation the waiver source uses, so the wire's K/DEF are
@@ -222,7 +226,7 @@ async def _wire_ppg_by_position(db, state, weekly_usage, priors, season, week):
                                        is_me=False, roster=tuple(pool)),),
         roster_slots=state.roster_slots,
     )
-    vals = evaluate_league(aug, weekly_usage, priors=priors)
+    vals = evaluate_league(aug, weekly_usage, scoring_format=scoring_format, priors=priors)
     vals, _ = apply_dst_matchup(vals, aug, season=season, week=week)
     wire: dict[str, list[float]] = {}
     for rp in pool:
@@ -232,8 +236,14 @@ async def _wire_ppg_by_position(db, state, weekly_usage, priors, season, week):
     return wire
 
 
-async def load_league_for_analysis(db, user, demo: bool):
-    """Return (LeagueState, {player_id: InSeasonValue}, roster_limit, wire_ppg_by_pos).
+async def load_league_for_analysis(db, user, demo: bool, *, scoring_format: str | None = None):
+    """Return (LeagueState, {player_id: InSeasonValue}, roster_limit, wire_ppg_by_pos,
+    scoring_format, scoring_format_defaulted).
+
+    ``scoring_format`` is the league's format — the IN-SEASON re-score basis threaded
+    into evaluate_league (live per-category points, NOT the pre-draft player_format_values
+    table) and the wire. Demo takes an explicit override (default PPR); the real path
+    resolves it from the synced league (source.scoring_format). PPR is byte-identical.
 
     ``wire_ppg_by_pos`` = the derived waiver wire priced by position — the wire side of
     the league-local waiver-aware VOR replacement (value_engine.waiver_aware_replacement).
@@ -246,9 +256,13 @@ async def load_league_for_analysis(db, user, demo: bool):
         from backend.services.trade.trade_demo_source import seed_demo_league
         from backend.services.trade.value_engine import evaluate_league
 
-        source = await seed_demo_league(db)
+        from backend.scoring import is_supported
+        # Explicit demo override (default PPR); disclose when an unsupported value fell back.
+        defaulted = scoring_format is not None and not is_supported(scoring_format)
+        fmt = scoring_format if is_supported(scoring_format) else "ppr"
+        source = await seed_demo_league(db, scoring_format=fmt)
         state = source.get_league_state()
-        values = evaluate_league(state, source.weekly_usage, priors=source.priors)
+        values = evaluate_league(state, source.weekly_usage, scoring_format=fmt, priors=source.priors)
         # K/DEF streaming arc (slice 4): DST-only matchup-weekly tilt — replace flat
         # season DST forward_ppg with a gentle opponent-adjusted number for the demo's
         # pinned week. Offense + kicker untouched.
@@ -256,8 +270,8 @@ async def load_league_for_analysis(db, user, demo: bool):
         from backend.services.trade.trade_demo_source import DEMO_CURRENT_WEEK, DEMO_SEASON
         values, _dst_matchup = apply_dst_matchup(values, state, season=DEMO_SEASON, week=DEMO_CURRENT_WEEK)
         wire = await _wire_ppg_by_position(db, state, source.weekly_usage, source.priors,
-                                           DEMO_SEASON, DEMO_CURRENT_WEEK)
-        return state, values, DEFAULT_ROSTER_LIMIT, wire
+                                           DEMO_SEASON, DEMO_CURRENT_WEEK, scoring_format=fmt)
+        return state, values, DEFAULT_ROSTER_LIMIT, wire, fmt, defaulted
 
     # Real (non-demo) path — the RealLeagueSource: synced platform rosters resolved
     # deterministically via the canonical resolve_player (#243), the live week from
@@ -273,12 +287,16 @@ async def load_league_for_analysis(db, user, demo: bool):
             status_code=404,
             detail="no synced league found — connect a league on the League page first",
         )
+    from backend.scoring import is_supported
+    fmt = source.scoring_format
+    # Real leagues store a preset; disclose only if it wasn't a supported format.
+    defaulted = not is_supported(fmt)
     state = source.get_league_state()
-    values = evaluate_league(state, source.weekly_usage, priors=source.priors)
+    values = evaluate_league(state, source.weekly_usage, scoring_format=fmt, priors=source.priors)
     values, _dst = apply_dst_matchup(values, state, season=source.season, week=source.week)
     wire = await _wire_ppg_by_position(db, state, source.weekly_usage, source.priors,
-                                       source.season, source.week)
-    return state, values, source.roster_limit, wire
+                                       source.season, source.week, scoring_format=fmt)
+    return state, values, source.roster_limit, wire, fmt, defaulted
 
 
 def get_trade_analyzer():
@@ -309,6 +327,7 @@ def _build_injury_map(state) -> dict[str, Optional[str]]:
 def _to_response(
     a: TradeAnalysis, demo: bool, acceptability: Optional[AcceptabilityOut] = None,
     injury_by_id: Optional[dict] = None,
+    scoring_format: str = "ppr", scoring_format_defaulted: bool = False,
 ) -> TradeAnalyzeResponse:
     injury_by_id = injury_by_id or {}
 
@@ -336,6 +355,7 @@ def _to_response(
             TradeWarningOut(type=w.type, position=w.position, message=w.message)
             for w in a.warnings
         ],
+        scoring_format=scoring_format, scoring_format_defaulted=scoring_format_defaulted,
     )
 
 
@@ -361,7 +381,8 @@ async def analyze(
 
     # 2. Resolve the league + per-player engine values (501 if real not ready —
     #    still before any credit deduction).
-    state, values, roster_limit, wire = await load_league_for_analysis(db, user, demo)
+    state, values, roster_limit, wire, scoring_format, scoring_defaulted = \
+        await load_league_for_analysis(db, user, demo)
 
     # 3. Validate the trade (400) — cheap, BEFORE any deduction.
     try:
@@ -398,7 +419,8 @@ async def analyze(
         overtake_flag=acc.overtake_flag, hedged=acc.hedged, why=acc.why,
     )
 
-    return _to_response(analysis, demo, acceptability, injury_by_id=_build_injury_map(state))
+    return _to_response(analysis, demo, acceptability, injury_by_id=_build_injury_map(state),
+                        scoring_format=scoring_format, scoring_format_defaulted=scoring_defaulted)
 
 
 @router.post("/ideas", response_model=TradeIdeasResponse)
@@ -419,7 +441,7 @@ async def ideas(
     #    can run it; free pays CREDIT_COSTS["trade_finder"] at step 3.
 
     # 2. League + per-player values (501 if real not ready — before any deduct).
-    state, values, roster_limit, _wire = await load_league_for_analysis(db, user, demo)
+    state, values, roster_limit, _wire, _scoring_format, _sfd = await load_league_for_analysis(db, user, demo)
 
     my_team_id = body.my_team_id or (state.my_team.team_id if state.my_team else None)
     if my_team_id is None:
@@ -508,7 +530,7 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
     # synced league via the same seam (which raises UndraftedLeagueError → 409 before
     # the value path when the league hasn't drafted, and 404 when none is synced).
     demo = trade_demo_enabled()
-    state, values, _, wire = await load_league_for_analysis(db, user, demo)
+    state, values, _, wire, _scoring_format, _sfd = await load_league_for_analysis(db, user, demo)
     # ONE replacement per league (waiver-aware), passed into the shared trade_value —
     # exactly what analyze_trade does, so a player reads identically in both sections.
     replacement = waiver_aware_replacement(values, wire)

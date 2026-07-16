@@ -19,7 +19,7 @@ import {
 } from '../utils/playerUtils'
 
 export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
-  const { isSnake } = useLeague()
+  const { isSnake, scoringFormat } = useLeague()
   const close = useUIStore((s) => s.closePlayerDetail)
   const openPlayerDetail = onPlayerSelect || useUIStore((s) => s.openPlayerDetail)
   const isWatchlisted = usePreferencesStore((s) => s.watchlist.some((w) => w.player_id === playerId))
@@ -27,8 +27,9 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
 
   const { data: player, isLoading } = useQuery({
-    queryKey: ['player', playerId],
-    queryFn: () => fetchPlayer(playerId),
+    queryKey: ['player', playerId, scoringFormat],
+    // Per-format tier + projected points (pre-draft PFV basis); $ stays PPR.
+    queryFn: () => fetchPlayer(playerId, scoringFormat),
   })
 
   const toggleWatchlist = () => {

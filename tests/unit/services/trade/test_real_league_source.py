@@ -176,7 +176,7 @@ async def test_build_real_league_source_assembles_real_shape(monkeypatch):
         return []
     monkeypatch.setattr(rls, "_derive_pool", _no_pool)
 
-    async def _no_priors(db, ids):
+    async def _no_priors(db, ids, scoring_format="ppr"):
         return {}
     monkeypatch.setattr("backend.services.trade.trade_demo_source._load_priors", _no_priors)
 
