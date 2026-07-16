@@ -381,6 +381,7 @@ class RealWaiverSource:
     dst_matchup: dict = field(default_factory=dict)
     unresolved: list[dict] = field(default_factory=list)
     my_team_id: Optional[str] = None
+    scoring_format: str = "ppr"   # in-season re-score basis (from the league)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -419,7 +420,8 @@ async def build_real_waiver_source(
         season=source.season, week=source.week,
         teams=source.state.teams + (pool_team,), roster_slots=source.state.roster_slots,
     )
-    values = evaluate_league(aug, source.weekly_usage, priors=source.priors)
+    values = evaluate_league(
+        aug, source.weekly_usage, scoring_format=source.scoring_format, priors=source.priors)
     values, dst_matchup = apply_dst_matchup(values, aug, season=source.season, week=source.week)
 
     faab_remaining = {t.team_id: FAAB_BUDGET_DEFAULT for t in source.state.teams}
@@ -429,4 +431,5 @@ async def build_real_waiver_source(
         roster_limit=source.roster_limit, faab_budget=FAAB_BUDGET_DEFAULT,
         faab_remaining_by_team=faab_remaining, dst_matchup=dst_matchup,
         unresolved=source.unresolved, my_team_id=source.my_team_id,
+        scoring_format=source.scoring_format,
     )

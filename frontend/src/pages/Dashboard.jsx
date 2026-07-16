@@ -52,7 +52,7 @@ export default function Dashboard() {
   })
   const leagues = (leaguesData || []).filter((l) => l.is_active)
 
-  const { isSnake, selectedLeague } = useLeague()
+  const { isSnake, selectedLeague, scoringFormat } = useLeague()
 
   // Draft banner reads the SELECTED league's REAL synced draft_date — fresh from the API
   // (matched by id), NOT the possibly-stale localStorage copy. Falls back to the first
@@ -65,8 +65,8 @@ export default function Dashboard() {
 
   // Top value gaps (undervalued) — auction
   const { data: valueData } = useQuery({
-    queryKey: ['dashboard-values'],
-    queryFn: () => fetchPlayers({ value_gap_dir: 'undervalued', sort: 'value_gap', order: 'desc', per_page: 10 }),
+    queryKey: ['dashboard-values', scoringFormat],
+    queryFn: () => fetchPlayers({ value_gap_dir: 'undervalued', sort: 'value_gap', order: 'desc', per_page: 10, scoring_format: scoringFormat }),
     enabled: !isSnake,
   })
 
@@ -104,8 +104,8 @@ export default function Dashboard() {
 
   // Watchlist players
   const { data: watchlistPlayers } = useQuery({
-    queryKey: ['dashboard-watchlist', (watchlist || []).map((w) => w.player_id).join(',')],
-    queryFn: () => fetchPlayers({ per_page: 100 }),
+    queryKey: ['dashboard-watchlist', (watchlist || []).map((w) => w.player_id).join(','), scoringFormat],
+    queryFn: () => fetchPlayers({ per_page: 100, scoring_format: scoringFormat }),
     enabled: (watchlist || []).length > 0,
   })
 
