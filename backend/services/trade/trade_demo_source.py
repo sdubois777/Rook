@@ -206,6 +206,7 @@ class TradeDemoSource:
     state: LeagueState
     weekly_usage: pd.DataFrame
     priors: dict[str, float] = field(default_factory=dict)
+    scoring_format: str = "ppr"   # league's format (in-season re-score basis; PPR default)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -303,7 +304,9 @@ def build_priors(prior_by_id: dict[str, Optional[float]]) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # real generation (DB + the #149 layer) — guarded; skipped where data is absent
 # ---------------------------------------------------------------------------
-async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
+async def _resolve_rosters(
+    db, scoring_format: str = "ppr"
+) -> tuple[list[dict], dict[str, Optional[float]]]:
     """Resolve every drafted player to a Rook canonical id (== the #149 layer's
     ``canonical_player_id``), preserving nfl_team + the drafted position. Resolution
     is name-fuzzy (``find_by_name_fuzzy`` — handles Jr/Sr/II + initials, the same
@@ -338,11 +341,15 @@ async def _resolve_rosters(db) -> tuple[list[dict], dict[str, Optional[float]]]:
             len(unresolved), total,
         )
 
-    prior_by_id = await _load_priors(db, [p["id"] for t in teams_data for p in t["players"]])
+    prior_by_id = await _load_priors(
+        db, [p["id"] for t in teams_data for p in t["players"]], scoring_format
+    )
     return teams_data, prior_by_id
 
 
-async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]]:
+async def _load_priors(
+    db, rostered_ids: list[str], scoring_format: str = "ppr"
+) -> dict[str, Optional[float]]:
     """Preseason prior ppg per rostered player.
 
     FIELD SELECTION (founder decision, signed off): ALWAYS prefer the Sonnet
@@ -354,6 +361,10 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
     exist. Both fields are SEASON TOTALS on the SAME ``clean_season_baseline`` dict,
     so the ÷17 → PPG conversion is unchanged.
 
+    ``scoring_format`` re-scores the (PPR) prior TOTAL into the league's format via
+    ``scoring.season_points`` using the baseline's ``projected_receptions`` — exact,
+    consistent with the live weekly re-score. PPR is the identity (byte-identical).
+
     Players with no profile row are absent from ``rows`` and keep their ``None``
     (null prior → prior_weight 0) — e.g. K/DEF, which have no profile at all
     (handled by separate arc pieces, NOT here). A player that HAS a profile but
@@ -362,6 +373,7 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
     from sqlalchemy import select
 
     from backend.models.player import PlayerProfile
+    from backend.scoring import season_points
 
     prior_by_id: dict[str, Optional[float]] = {pid: None for pid in rostered_ids}
     if not rostered_ids:
@@ -374,10 +386,14 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
     for pid, baseline in rows:
         # Prefer the forward projection; fall back to the historical total.
         prior_total = None
+        receptions = 0.0
         if isinstance(baseline, dict):
             prior_total = baseline.get("projected_ppr_season") or baseline.get("ppr_points")
+            receptions = baseline.get("projected_receptions") or 0.0
         if prior_total:
-            prior_by_id[str(pid)] = float(prior_total) / 17.0
+            # Re-score the PPR prior total into the league format (identity for PPR).
+            fmt_total = season_points(float(prior_total), float(receptions), scoring_format)
+            prior_by_id[str(pid)] = fmt_total / 17.0
         else:
             no_prior.append(str(pid))
     if no_prior:
@@ -399,7 +415,7 @@ async def _load_priors(db, rostered_ids: list[str]) -> dict[str, Optional[float]
 # so a knob change can't serve a stale week (and --reload resets the module —
 # and thus the cache — on any code edit anyway). Injected ``weekly_usage``
 # (tests) BYPASSES the cache entirely. Grep TRADE_DEMO to tear down.
-_SEED_CACHE: dict[tuple[int, int], TradeDemoSource] = {}
+_SEED_CACHE: dict[tuple[int, int, str], TradeDemoSource] = {}
 # Single-flight guard. asyncio.Lock binds to the first loop that awaits it (and
 # raises from another loop — pytest creates a loop per test), so keep one lock
 # PER RUNNING LOOP rather than one module-level lock.
@@ -419,28 +435,33 @@ def clear_demo_seed_cache() -> None:
     _SEED_CACHE.clear()
 
 
-async def seed_demo_league(db, *, weekly_usage: Optional[pd.DataFrame] = None) -> TradeDemoSource:
+async def seed_demo_league(
+    db, *, scoring_format: str = "ppr", weekly_usage: Optional[pd.DataFrame] = None
+) -> TradeDemoSource:
     """Build the demo source from the REAL DB + per-week layer — cached per process
-    (see _SEED_CACHE). ``weekly_usage`` can be injected (tests) to avoid the live
-    fetch; the injected path is never cached."""
+    (see _SEED_CACHE). ``scoring_format`` re-scores the live weekly points + the prior
+    into the league's format (PPR is byte-identical). ``weekly_usage`` can be injected
+    (tests) to avoid the live fetch; the injected path is never cached."""
     if weekly_usage is not None:
-        return await _seed_demo_league_uncached(db, weekly_usage)
-    key = (DEMO_SEASON, DEMO_CURRENT_WEEK)
+        return await _seed_demo_league_uncached(db, weekly_usage, scoring_format)
+    key = (DEMO_SEASON, DEMO_CURRENT_WEEK, scoring_format)
     if (hit := _SEED_CACHE.get(key)) is not None:
         return hit
     async with _seed_lock(_SEED_LOCKS):
         if (hit := _SEED_CACHE.get(key)) is not None:   # lost the race — reuse
             return hit
-        src = await _seed_demo_league_uncached(db, None)
+        src = await _seed_demo_league_uncached(db, None, scoring_format)
         _SEED_CACHE[key] = src
-        logger.info("demo seed cached (per-process) for season=%d week=%d", *key)
+        logger.info("demo seed cached (per-process) for season=%d week=%d format=%s", *key)
         return src
 
 
-async def _seed_demo_league_uncached(db, weekly_usage: Optional[pd.DataFrame]) -> TradeDemoSource:
+async def _seed_demo_league_uncached(
+    db, weekly_usage: Optional[pd.DataFrame], scoring_format: str = "ppr"
+) -> TradeDemoSource:
     """The real build. Starter slots are re-derived from the engine's forward
     value, so the lineup reflects in-season production — not draft order."""
-    teams_data, prior_by_id = await _resolve_rosters(db)
+    teams_data, prior_by_id = await _resolve_rosters(db, scoring_format)
     priors = build_priors(prior_by_id)
     if weekly_usage is None:
         from backend.integrations.nfl_weekly import weekly_player_usage
@@ -459,13 +480,15 @@ async def _seed_demo_league_uncached(db, weekly_usage: Optional[pd.DataFrame]) -
 
     # Forward value first (slot-agnostic), then slot the lineup by that value.
     provisional = build_league_state(teams_data)
-    values = evaluate_league(provisional, weekly_usage, priors=priors)
+    values = evaluate_league(provisional, weekly_usage, scoring_format=scoring_format, priors=priors)
     value_by_id = {pid: v.forward_value for pid, v in values.items()}
     for team in teams_data:
         assign_starter_slots(team["players"], value_by_id)
 
     state = build_league_state(teams_data)
-    return TradeDemoSource(state=state, weekly_usage=weekly_usage, priors=priors)
+    return TradeDemoSource(
+        state=state, weekly_usage=weekly_usage, priors=priors, scoring_format=scoring_format,
+    )
 
 
 async def maybe_demo_league_source(db) -> Optional[TradeDemoSource]:

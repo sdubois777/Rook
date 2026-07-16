@@ -45,7 +45,7 @@ async def test_trade_seed_cached_and_built_once(monkeypatch):
 async def test_trade_injected_weekly_usage_bypasses_cache(monkeypatch):
     built = []
 
-    async def build(db, weekly_usage):
+    async def build(db, weekly_usage, scoring_format="ppr"):
         obj = object()
         built.append(obj)
         return obj

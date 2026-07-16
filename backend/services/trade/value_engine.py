@@ -914,16 +914,49 @@ def _flags_and_why(
 # ---------------------------------------------------------------------------
 # league-level convenience
 # ---------------------------------------------------------------------------
+def _rescore_weekly_points(weekly_usage: pd.DataFrame, scoring_format: str) -> pd.DataFrame:
+    """Re-score the live per-week points column into the league's scoring format.
+
+    IN-SEASON RULE (Phase 2): in-season value is RE-DERIVED from live production, never
+    read from the pre-draft player_format_values table — so format-awareness re-scores
+    the live per-category points, not a projection lookup. ``fantasy_points_std`` is
+    already emitted by the #149 layer (ppr − receptions), so:
+        ppr      → unchanged (the column IS already PPR)
+        standard → fantasy_points_std
+        half_ppr → (ppr + std) / 2   (== ppr − 0.5·rec, exact)
+    PPR returns the SAME frame object untouched → byte-identical to today. A frame
+    missing ``fantasy_points_std`` (shouldn't happen post-#149) falls back to PPR.
+    """
+    if scoring_format == "ppr" or weekly_usage is None or getattr(weekly_usage, "empty", True):
+        return weekly_usage
+    if "fantasy_points_std" not in weekly_usage.columns:
+        return weekly_usage  # safe fallback: no per-category split available → PPR
+    df = weekly_usage.copy()
+    if scoring_format == "standard":
+        df["fantasy_points_ppr"] = df["fantasy_points_std"]
+    elif scoring_format == "half_ppr":
+        df["fantasy_points_ppr"] = (df["fantasy_points_ppr"] + df["fantasy_points_std"]) / 2.0
+    return df
+
+
 def evaluate_league(
     league_state,
     weekly_usage: pd.DataFrame,
     *,
+    scoring_format: str = "ppr",
     priors: Optional[dict[str, float]] = None,
     schedule_modifiers: Optional[dict[str, float]] = None,
     bye_weeks: Optional[dict[str, set[int]]] = None,
 ) -> dict[str, InSeasonValue]:
     """Value every rostered player in a ``LeagueState`` against the per-week
     usage table (the #149 layer output). Pure — inject ``weekly_usage`` for tests.
+
+    ``scoring_format`` re-scores the live per-week points into the league's format
+    (ppr/half_ppr/standard) via ``_rescore_weekly_points`` BEFORE any anchor/level/
+    value derivation, so replacement, forward_ppg, forward_value and the trade verdict
+    are all measured on the same format basis. ``priors`` must already be format-scored
+    by the caller (the source loader owns that — it has the reception breakdown). PPR
+    is byte-identical (no transform, identity prior).
 
     ``bye_weeks`` ({team: {bye_week, …}}, from the already-cached schedule via
     ``bye_weeks_from_schedule``) lets per-player staleness EXCLUDE byes. When
@@ -934,6 +967,7 @@ def evaluate_league(
     priors = priors or {}
     schedule_modifiers = schedule_modifiers or {}
     bye_weeks = bye_weeks or {}
+    weekly_usage = _rescore_weekly_points(weekly_usage, scoring_format)
     by_player = {
         pid: grp for pid, grp in weekly_usage.groupby("canonical_player_id")
     } if not weekly_usage.empty else {}

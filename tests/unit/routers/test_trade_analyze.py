@@ -87,12 +87,14 @@ def _fixture_league(roster_limit=16):
 
 def _patch_loader(monkeypatch, league=None):
     league = league or _fixture_league()
-    # tolerate a 3-tuple (state, values, roster_limit) OR the 4-tuple that now also
-    # carries the waiver wire — append an empty wire so VOR uses the anchor fallback.
+    # tolerate a 3-tuple (state, values, roster_limit) / 4-tuple (+ wire) and pad up to
+    # the 6-tuple (+ wire, scoring_format, scoring_format_defaulted) the router unpacks.
     if len(league) == 3:
         league = (*league, {})
+    if len(league) == 4:
+        league = (*league, "ppr", False)
 
-    async def _fake(db, user, demo):
+    async def _fake(db, user, demo, *, scoring_format=None):
         return league
 
     monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake)

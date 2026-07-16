@@ -89,11 +89,11 @@ def _fixture(my, opp, roster_limit=16):
     rivals = TeamState("opp", "Rivals", False, tuple(RosterPlayer(i, i.upper(), pos) for i, pos, _ in opp))
     state = LeagueState(2025, 14, (me, rivals))
     values = {i: _iv(i, pos, fv) for i, pos, fv in (*my, *opp)}
-    return state, values, roster_limit, {}
+    return state, values, roster_limit, {}, "ppr", False
 
 
 def _patch_loader(monkeypatch, league):
-    async def _fake(db, user, demo):
+    async def _fake(db, user, demo, *, scoring_format=None):
         return league
     monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake)
 

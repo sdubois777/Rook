@@ -39,6 +39,7 @@ from backend.engines.opponent_threat import OpponentThreatAnalyzer
 from backend.engines.valuation import MAX_REALISTIC_BID
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile
 from backend.models.dependency import PlayerDependency
+from backend.models.player_format_values import PlayerFormatValues
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ _DRAFT_CLIENT_RETRIES = 2
 # ---------------------------------------------------------------------------
 KDEF_FINAL_ROUNDS = 3     # K/DEF only in the last 3 rounds (unless nothing else fills a need)
 QB_MIN_ROUND = 7          # never recommend a QB before round 7
+# Phase 2 (non-PPR only): if the FORMAT-MATCHED market ADP falls this many picks past the
+# current pick, the player will clearly still be available → advise WAIT even at a need.
+# A reception-dependent player drafts much later in Half/Standard, so this flips a PPR
+# "take now" to a Standard "wait". Gated on non-PPR so PPR stays byte-identical.
+SNAKE_FORMAT_WAIT_MARGIN = 12
 # Need-vs-BPA rank window (the "don't reach absurdly far" guard). A BPA that
 # still adds STARTER value is itself a need pick and always wins; when the BPA
 # is bench-only, the best need-position player wins UNLESS he trails the BPA by
@@ -559,6 +565,33 @@ class LiveDraftEngine:
             )
         player = players[0]
 
+        # PER-FORMAT ADP OVERLAY (Phase 2). The draft board is a PRE-DRAFT surface, so
+        # its scoring-dependent signal (ADP + tier) reads the league-format row from
+        # player_format_values — NOT a live re-score (that line is for in-season tools).
+        # PPR is byte-identical: the PPR row equals the players table, and PPR skips the
+        # overlay entirely. Missing per-format ADP (pipeline hasn't populated it) → keep
+        # the players-table (PPR) ADP and DISCLOSE the fallback. adp_ai (the AI snake pick)
+        # has no per-format row yet — it stays PPR-anchored, noted in the disclosure.
+        scoring_format = getattr(self.state, "scoring_format", "ppr") or "ppr"
+        fmt_adp_fp: float | None = None
+        fmt_tier: int | None = None
+        fmt_adp_defaulted = False
+        if scoring_format != "ppr":
+            async with self._db_session_factory() as session:
+                fmt_row = (await session.execute(
+                    select(PlayerFormatValues).where(
+                        PlayerFormatValues.player_id == player.id,
+                        PlayerFormatValues.scoring_format == scoring_format,
+                    )
+                )).scalar_one_or_none()
+            if fmt_row is not None:
+                if fmt_row.tier is not None:
+                    fmt_tier = fmt_row.tier
+                if fmt_row.adp_fantasypros is not None:
+                    fmt_adp_fp = float(fmt_row.adp_fantasypros)
+            # No per-format market ADP available → the ADP shown is still PPR.
+            fmt_adp_defaulted = fmt_adp_fp is None
+
         risk_level = "low"
         availability_risk = None
         if player.injury_profile:
@@ -577,7 +610,9 @@ class LiveDraftEngine:
             "position": player.position or "",
             "team_abbr": player.team_abbr or "",
             "injury_status": player.injury_status,
-            "tier": player.tier,
+            # Tier reads the league-format row when available (a reception-dependent
+            # player can tier-fall in Standard); PPR / missing row → players-table tier.
+            "tier": fmt_tier if fmt_tier is not None else player.tier,
             "system_value": float(player.baseline_value or 0),
             "market_value": float(player.market_value or 0),
             "ai_bid_ceiling": player.ai_bid_ceiling,
@@ -585,13 +620,19 @@ class LiveDraftEngine:
             # Pre-draft availability discount (engines/availability.py): the live bid
             # ceiling is prorated by this for a known multi-week absence (base × factor).
             "availability_factor": float(player.availability_factor) if player.availability_factor is not None else 1.0,
-            # ADP (snake path) — null until a pipeline run populates them.
+            # ADP (snake path) — null until a pipeline run populates them. adp_fantasypros
+            # is the FORMAT-MATCHED market ADP (from player_format_values) when populated,
+            # else the players-table PPR value (fmt_adp_defaulted flags the fallback).
             "adp_ai": float(player.adp_ai) if player.adp_ai is not None else None,
             "adp_fantasypros": (
-                float(player.adp_fantasypros)
-                if player.adp_fantasypros is not None else None
+                fmt_adp_fp if fmt_adp_fp is not None
+                else (float(player.adp_fantasypros) if player.adp_fantasypros is not None else None)
             ),
-            "adp_scoring": player.adp_scoring,
+            "adp_scoring": scoring_format if fmt_adp_fp is not None else player.adp_scoring,
+            "scoring_format": scoring_format,
+            # True when a non-PPR league is seeing PPR ADP because the per-format market
+            # ADP isn't populated yet (UI discloses "showing PPR ADP"). adp_ai stays PPR.
+            "adp_format_defaulted": fmt_adp_defaulted,
             "availability_risk": availability_risk,
             "projected_ppr": projected_ppr,
             "risk_level": risk_level,
@@ -731,6 +772,20 @@ class LiveDraftEngine:
         elif pos not in needs:
             why = f"{pos} starters are already filled — hold for an open need."
 
+        # FORMAT-MATCHED AVAILABILITY (Phase 2, non-PPR ONLY → PPR byte-identical). The
+        # market drafts reception-dependent players LATER in Half/Standard, so if this
+        # player's format-matched market ADP falls well past the current pick, he'll still
+        # be here next time around — advise WAIT even for a need (the "take-now in PPR,
+        # wait in Standard" case). Only fires when a per-format market ADP is populated.
+        scoring_format = getattr(self.state, "scoring_format", "ppr") or "ppr"
+        if (action == "draft" and scoring_format != "ppr"
+                and not record.get("adp_format_defaulted")
+                and adp_fp is not None and current_pick is not None
+                and float(adp_fp) > float(current_pick) + SNAKE_FORMAT_WAIT_MARGIN):
+            action = "wait"
+            why = (f"In {scoring_format.replace('_', ' ')} his market ADP (~{float(adp_fp):.0f}) "
+                   f"falls well past pick {int(current_pick)} — he'll be here later, you can wait.")
+
         adp_diff = None
         if adp_ai is not None and adp_fp is not None:
             adp_diff = round(float(adp_fp) - float(adp_ai), 1)
@@ -749,6 +804,11 @@ class LiveDraftEngine:
             "confidence": "high",
             "ai_enriched": False,
             "tier": record.get("tier"),
+            # Phase 2: the format the ADP/tier were read in + disclosure when a non-PPR
+            # league is seeing PPR ADP (per-format market ADP not populated / adp_ai is PPR).
+            "scoring_format": scoring_format,
+            "adp_scoring": record.get("adp_scoring"),
+            "adp_format_defaulted": bool(record.get("adp_format_defaulted")),
             "elapsed_ms": round((time.monotonic() - start) * 1000),
         }
         self.last_recommendation = rec
