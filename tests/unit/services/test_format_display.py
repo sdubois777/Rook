@@ -27,8 +27,12 @@ class TestResolveScoringFormat:
         assert resolve_scoring_format("0.75ppr") == ("ppr", True)
 
 
-def _row(tier=None, pts=None, adp=None):
-    return SimpleNamespace(tier=tier, projected_points=pts, adp_fantasypros=adp)
+def _row(tier=None, pts=None, adp=None, ai_bid_ceiling=None, value_assessment=None,
+         auction_note=None, recommended_bid_ceiling=None, baseline_value=None):
+    return SimpleNamespace(tier=tier, projected_points=pts, adp_fantasypros=adp,
+                           ai_bid_ceiling=ai_bid_ceiling, value_assessment=value_assessment,
+                           auction_note=auction_note, recommended_bid_ceiling=recommended_bid_ceiling,
+                           baseline_value=baseline_value)
 
 
 class TestOverlayFor:

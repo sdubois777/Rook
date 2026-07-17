@@ -57,12 +57,20 @@ async def load_format_rows(
 
 @dataclass(frozen=True)
 class FormatOverlay:
-    """The non-$ per-format overlay for one player. Fields are None when the PFV row is
+    """The per-format overlay for one player. Fields are None when the PFV row is
     absent → the caller keeps its players-table (PPR) value for that field."""
     tier: Optional[int]
     projected_points: Optional[float]
     adp_fantasypros: Optional[float]
     adp_defaulted: bool   # True → no per-format market ADP; the shown ADP is still PPR
+    # Hybrid auction $ + reasoning (the market-blind opinion; non-PPR only). None → PPR
+    # passthrough. These are what make a non-PPR user see their own $ and prose, not PPR's.
+    ai_bid_ceiling: Optional[int] = None
+    value_assessment: Optional[str] = None
+    auction_note: Optional[str] = None
+    # The tier-band $ (anchor) so the board's ceiling/system columns aren't a PPR mix.
+    recommended_bid_ceiling: Optional[float] = None
+    baseline_value: Optional[float] = None
 
 
 def overlay_for(
@@ -81,4 +89,9 @@ def overlay_for(
         projected_points=float(row.projected_points) if row.projected_points is not None else None,
         adp_fantasypros=float(row.adp_fantasypros) if row.adp_fantasypros is not None else None,
         adp_defaulted=row.adp_fantasypros is None,
+        ai_bid_ceiling=int(row.ai_bid_ceiling) if row.ai_bid_ceiling is not None else None,
+        value_assessment=row.value_assessment,
+        auction_note=row.auction_note,
+        recommended_bid_ceiling=float(row.recommended_bid_ceiling) if row.recommended_bid_ceiling is not None else None,
+        baseline_value=float(row.baseline_value) if row.baseline_value is not None else None,
     )

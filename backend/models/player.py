@@ -191,6 +191,10 @@ class PlayerProfile(Base):
     yards_after_catch_score: Mapped[Optional[str]] = mapped_column(String(20))
     contested_catch_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(4, 3))
     efficiency_signal: Mapped[Optional[str]] = mapped_column(String(20))  # elite/above_avg/avg/below_avg
+    # Deterministic RB rushing-efficiency grade from NGS RYOE/att, stacked-box% mitigated
+    # (elite/above_avg/avg/below_avg). RB-only; None for WR/TE/QB. Read by the valuation
+    # agent context so the hybrid can distinguish a good rusher from a bad one.
+    rush_efficiency_score: Mapped[Optional[str]] = mapped_column(String(20))
 
     # Career trajectory
     age_curve_position: Mapped[Optional[str]] = mapped_column(String(20))   # ascending/peak/descending

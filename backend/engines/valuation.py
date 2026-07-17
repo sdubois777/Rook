@@ -208,6 +208,72 @@ ANCHOR_WEIGHTS: dict[int, Decimal] = {
     5: Decimal("0.80"),
 }
 
+# ---------------------------------------------------------------------------
+# Tier-band auction pricing (per-format Half/Standard ONLY — see write_format_value_sets)
+# ---------------------------------------------------------------------------
+# The legacy pool-share auction-$ (par/total_par × budget) inverts under Standard
+# compression: as fewer players clear replacement the position pool shrinks, so an
+# elite pass-catcher's SHARE rises even though his value-over-replacement falls — a
+# tier-falling player gets MORE dollars. Tier-band pricing instead derives $ from the
+# per-format TIER (which already moves correctly), so a player who tier-falls prices
+# down. Each (position, tier) gets a dollar band from these multipliers, a within-tier
+# par gradient spreads players inside a band, then ONE global rescale per format hits
+# the skill budget — GLOBAL (not per-position) so when Standard collapses WR tiers the
+# freed pool flows to RB (rushers rise), the market-correct behavior. Validated by
+# experiment (9/10 direction vs market, pool-sum preserved, no market-data dependency).
+#
+# QB / K / DEF are FORMAT-INVARIANT (no receptions → identical points every format) so
+# they are NOT tier-banded — they keep their existing pool-share value, which is already
+# identical across formats. Only the reception positions reprice.
+TIER_BAND_MULTIPLIERS: dict[int, float] = {1: 1.0, 2: 0.50, 3: 0.24, 4: 0.10, 5: 0.02}
+TIER_BAND_GRADIENT = 0.28  # ± within-tier spread by par rank (so a tier doesn't price flat)
+_TIER_BAND_POSITIONS: tuple[str, ...] = ("RB", "WR", "TE")
+
+
+def _compute_tier_band_sv(
+    par_ctx: dict[str, tuple],
+    ppr_tier_mass: dict[str, float],
+    total_budget: float,
+) -> dict:
+    """Tier-derived auction-$ for the reception positions in ONE format.
+
+    par_ctx[pos] = (group, repl_ppr, total_par) where group = [(player, raw_ppr, adj)].
+    ppr_tier_mass[pos] = Σ TIER_BAND_MULTIPLIERS[tier] over that position's PPR tiers —
+    the PPR anchor that pins each position's share at its budget target in PPR, so any
+    non-PPR shift is driven purely by tier movement. Returns {player.id: Decimal $}.
+    """
+    from collections import defaultdict
+
+    skill_budget = total_budget * sum(POSITION_BUDGET_SHARE[p] for p in _TIER_BAND_POSITIONS)
+    tier_groups: dict[tuple, list] = defaultdict(list)
+    for pos in _TIER_BAND_POSITIONS:
+        if pos not in par_ctx:
+            continue
+        group, repl_ppr, _ = par_ctx[pos]
+        for player, raw_ppr, adj in group:
+            par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
+            tier = assign_tier(par_ratio, pos)
+            # Rank the within-tier gradient by the SAME raw points the tier is built from
+            # (not the injury/dependency-adjusted points) so a higher-projected player is
+            # never priced below a lower one in the same tier — a strict rank index also
+            # keeps ties from collapsing to one z, so ordering is monotonic by projection.
+            tier_groups[(pos, tier)].append((player.id, raw_ppr))
+
+    raw: dict = {}
+    for (pos, tier), members in tier_groups.items():
+        mass = ppr_tier_mass.get(pos) or 1.0
+        scale = total_budget * POSITION_BUDGET_SHARE[pos] / mass
+        order = sorted(members, key=lambda m: m[1], reverse=True)
+        rank = {pid: i for i, (pid, _) in enumerate(order)}
+        n = len(order)
+        for pid, _pts in members:
+            z = (1.0 - 2.0 * rank[pid] / (n - 1)) if n > 1 else 0.0
+            raw[pid] = max(1.0, scale * TIER_BAND_MULTIPLIERS[tier] * (1 + TIER_BAND_GRADIENT * z))
+
+    total_raw = sum(raw.values()) or 1.0
+    k = skill_budget / total_raw
+    return {pid: _to_dec(max(1.0, v * k)) for pid, v in raw.items()}
+
 SCARCITY_MODIFIERS: dict[str, Decimal] = {
     "RB": Decimal("1.35"),
     "WR": Decimal("1.20"),
@@ -226,6 +292,10 @@ SCARCITY_MODIFIERS: dict[str, Decimal] = {
 # is intentionally FLAT for launch (every K identical, every DEF identical) — see
 # the FantasyPros hook in value_kdef().
 _KDEF_POSITIONS = frozenset({"K", "DEF"})
+# Positions copied verbatim from the players table into every format's PFV row (no
+# per-format reprice): they score identically in all formats, so their auction $ is
+# format-invariant. QB joins K/DEF here — QBs don't catch passes.
+_FORMAT_INVARIANT_POSITIONS = frozenset({"QB", "K", "DEF"})
 _KDEF_TIER = 5          # assign_tier's floor (streamer) tier
 _KDEF_BASE_BID = 1      # $1 base — clamped to MAX_REALISTIC_BID ($2) below
 
@@ -623,20 +693,31 @@ def _value_fields_for(
     player, raw_ppr: float, adjusted_ppr: float,
     repl_ppr, total_par: float, pos_budget: float, pos: str,
     upside_ppr: float, downside_ppr: float,
+    override_sv: Optional[Decimal] = None,
 ) -> dict:
     """Compute the full value-field set for one player from its (already
-    format-repriced) points + the position's PAR context. Pure — no writes."""
+    format-repriced) points + the position's PAR context. Pure — no writes.
+
+    override_sv (Half/Standard reception positions): the tier-band auction-$ replaces
+    the legacy pool-share system_value. When set, ALL dollar fields derive from it (the
+    ceiling anchors on the tier-band $ with NO PPR market blend, so non-PPR $ stay on
+    the per-format basis; ceiling/floor scale by the upside/downside points ratio). PPR
+    and format-invariant positions (override_sv=None) keep the exact pool-share path.
+    """
     par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
     tier = assign_tier(par_ratio, pos)
-    sv = ppr_to_system_value(adjusted_ppr, repl_ppr, total_par, pos_budget)
+    sv = override_sv if override_sv is not None else ppr_to_system_value(
+        adjusted_ppr, repl_ppr, total_par, pos_budget)
 
     risk_level = "low"
     if player.injury_profile and player.injury_profile.overall_risk_level:
         risk_level = player.injury_profile.overall_risk_level
     rm = _get_risk_modifier(player.injury_profile)
 
-    effective_mv = get_market_context(player)["effective_market_value"]
-    ceiling = compute_bid_ceiling(sv, effective_mv, tier, pos, risk_level)
+    # Non-PPR tier-band $ anchor purely on the tier-band value (market=None) so the PPR
+    # ADP market value never leaks into a per-format ceiling; PPR keeps the market blend.
+    ceiling_mv = None if override_sv is not None else get_market_context(player)["effective_market_value"]
+    ceiling = compute_bid_ceiling(sv, ceiling_mv, tier, pos, risk_level)
     max_bid_dec = Decimal(str(MAX_REALISTIC_BID.get(pos, 80)))
     if ceiling > max_bid_dec:
         ceiling = max_bid_dec
@@ -646,8 +727,15 @@ def _value_fields_for(
     anchor = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
     scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
 
-    ceiling_val = ppr_to_system_value(upside_ppr, repl_ppr, total_par, pos_budget) if upside_ppr > 0 else None
-    floor_val = ppr_to_system_value(downside_ppr, repl_ppr, total_par, pos_budget) if downside_ppr > 0 else None
+    if override_sv is not None:
+        # Scale ceiling/floor $ by the upside/downside points ratio to the projection
+        # (the pool-share ppr_to_system_value basis no longer applies to these rows).
+        base_pts = adjusted_ppr if adjusted_ppr > 0 else raw_ppr
+        ceiling_val = _to_dec(sv * Decimal(str(upside_ppr / base_pts))) if (upside_ppr > 0 and base_pts > 0) else None
+        floor_val = _to_dec(sv * Decimal(str(downside_ppr / base_pts))) if (downside_ppr > 0 and base_pts > 0) else None
+    else:
+        ceiling_val = ppr_to_system_value(upside_ppr, repl_ppr, total_par, pos_budget) if upside_ppr > 0 else None
+        floor_val = ppr_to_system_value(downside_ppr, repl_ppr, total_par, pos_budget) if downside_ppr > 0 else None
 
     return {
         "tier": tier,
@@ -929,6 +1017,9 @@ async def write_format_value_sets(
         # PPR's per-position total PAR anchors the format-aware budget shift below.
         # SCORING_FORMATS puts "ppr" first, so this is populated before it's read.
         ppr_total_par: dict[str, float] = {}
+        # PPR tier mass per reception position anchors tier-band pricing (below), also
+        # populated on the ppr pass before any non-PPR pass reads it.
+        ppr_tier_mass: dict[str, float] = {}
 
         for fmt in SCORING_FORMATS:
             # Group skill positions with per-format points (identical shape to the PPR pass).
@@ -965,15 +1056,37 @@ async def write_format_value_sets(
             fmt_total_par = {pos: par_ctx[pos][2] for pos in par_ctx}
             if fmt == "ppr":
                 ppr_total_par = fmt_total_par
+                # Capture PPR tier mass (Σ multipliers) per reception position — the
+                # anchor for tier-band pricing of the non-PPR formats.
+                for pos in _TIER_BAND_POSITIONS:
+                    if pos in par_ctx:
+                        group, repl_ppr, _ = par_ctx[pos]
+                        ppr_tier_mass[pos] = sum(
+                            TIER_BAND_MULTIPLIERS[assign_tier(
+                                raw_ppr / repl_ppr if repl_ppr > 0 else 0.0, pos)]
+                            for _, raw_ppr, _ in group
+                        )
             budget_share = _format_budget_shares(fmt, ppr_total_par, fmt_total_par)
 
-            # PASS 2 — values, with the format-aware position budget.
+            # Tier-band auction-$ for the reception positions — Half/Standard ONLY. PPR
+            # keeps its exact pool-share baseline (byte-identical for current users); this
+            # replaces the inverting pool-share $ with a tier-derived $ for non-PPR.
+            tier_band_sv: dict = {}
+            if fmt != "ppr":
+                tier_band_sv = _compute_tier_band_sv(par_ctx, ppr_tier_mass, total_budget)
+
+            # PASS 2 — values, with the format-aware position budget. QB is FORMAT-
+            # INVARIANT (no receptions) so it is copied from the players table below
+            # (like K/DEF), never repriced per format — skip it in the skill loop.
             for pos, (group, repl_ppr, total_par) in par_ctx.items():
+                if pos in _FORMAT_INVARIANT_POSITIONS:
+                    continue
                 pos_budget = total_budget * budget_share.get(pos, POSITION_BUDGET_SHARE.get(pos, 0.0))
                 for player, raw_ppr, adjusted_ppr in group:
                     up, down = _extract_upside_downside(player.profile, fmt)
                     vf = _value_fields_for(
-                        player, raw_ppr, adjusted_ppr, repl_ppr, total_par, pos_budget, pos, up, down)
+                        player, raw_ppr, adjusted_ppr, repl_ppr, total_par, pos_budget, pos, up, down,
+                        override_sv=tier_band_sv.get(player.id))
                     await _upsert({
                         "player_id": player.id, "scoring_format": fmt,
                         "projected_points": round(raw_ppr, 1),
@@ -984,9 +1097,11 @@ async def write_format_value_sets(
                         "risk_adjusted_value": vf["risk_adjusted_value"],
                     })
 
-            # K/DEF: format-invariant — copy the players-table (PPR) values verbatim.
+            # QB / K / DEF: format-invariant — copy the players-table (PPR) values
+            # verbatim (identical points every format → identical auction $, so a QB's
+            # non-PPR price equals its PPR price and can never drift from the pass).
             for player in players:
-                if (player.position in _KDEF_POSITIONS and player.team_abbr
+                if (player.position in _FORMAT_INVARIANT_POSITIONS and player.team_abbr
                         and player.team_abbr != "FA" and player.baseline_value is not None):
                     await _upsert({
                         "player_id": player.id, "scoring_format": fmt,
