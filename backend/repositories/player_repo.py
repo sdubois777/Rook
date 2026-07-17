@@ -65,6 +65,39 @@ SORTABLE_COLUMNS = {
 
 SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
 
+# Player columns an ingestion source may set (whitelist; excludes the PK + server-managed).
+_PLAYER_COLUMNS = frozenset(c.name for c in Player.__table__.columns) - {"id"}
+# `team` is the common alias sources use for team_abbr.
+_FIELD_ALIASES = {"team": "team_abbr"}
+
+
+def _is_real_gsis(v) -> bool:
+    """A real nflverse gsis is '00-00…'; Sleeper placeholders (e.g. 'LOV121782') are not."""
+    return bool(v) and str(v).startswith("00-")
+
+
+def _apply_ingest_fields(player: Player, data: dict) -> None:
+    """UNION incoming fields onto a player row (create or update). Rules:
+      * None never blanks an existing value (fill/refresh only).
+      * gsis_id prefers a REAL gsis over a placeholder — never downgrades a real → placeholder.
+      * yahoo_player_id (unique, legacy 'nfl_<gsis>' trap) is fill-if-empty only.
+      * every other whitelisted column takes the incoming non-None value (current state).
+    """
+    for key, value in data.items():
+        col = _FIELD_ALIASES.get(key, key)
+        if col not in _PLAYER_COLUMNS or value is None:
+            continue
+        if col == "gsis_id":
+            cur = getattr(player, "gsis_id", None)
+            if _is_real_gsis(cur) and not _is_real_gsis(value):
+                continue  # don't downgrade a real gsis to a Sleeper placeholder
+            setattr(player, "gsis_id", value)
+        elif col == "yahoo_player_id":
+            if getattr(player, "yahoo_player_id", None) is None:
+                setattr(player, "yahoo_player_id", value)  # fill-if-empty (unique, derived)
+        else:
+            setattr(player, col, value)
+
 
 class PlayerRepository(BaseRepository[Player]):
     """Read access to players and their pipeline-generated relations."""
@@ -195,6 +228,59 @@ class PlayerRepository(BaseRepository[Player]):
         query = query.order_by(Player.recommended_bid_ceiling.desc().nulls_last())
         candidates = list((await self._session.execute(query)).scalars().all())
         return guarded_name_pick(candidates, name, team=team, position=position)
+
+    async def resolve_or_create(
+        self, data: dict, *, allow_create: "bool | callable" = True, on_update=None,
+    ) -> tuple[Player | None, bool]:
+        """THE canonical INGEST path: resolve an incoming player against existing rows
+        via ``resolve_player`` (ID-first → guarded name+pos), then UPDATE that row or
+        INSERT a new one. Returns ``(player, created)``.
+
+        ``allow_create`` gates INSERTS only (a resolved row always updates): pass a bool,
+        or a 0-arg callable evaluated ONLY when no row resolves (so an expensive
+        relevance check — e.g. sync_rosters' depth-chart/recent-games gate — runs just for
+        genuinely-new players). When creation is disallowed, returns ``(None, False)``.
+
+        ``on_update(existing, data)`` fires on a MATCH, BEFORE the field union — the caller
+        can diff the pre-update row against the incoming data (e.g. detect a team move for
+        cache invalidation) while the old values are still intact.
+
+        This is the single dedup point every ingestion source must route through — it
+        REUSES ``resolve_player``/``guarded_name_pick`` (no re-implemented matching), so
+        the Sleeper row (placeholder gsis + sleeper_id) and the nflverse row (real gsis,
+        no sleeper_id) for one human resolve to ONE row (matched by a shared stable id or
+        the guarded name+pos fallback) instead of a second insert — the exact seam that
+        bred the duplicate rows.
+
+        UPDATE is a field UNION: an incoming non-None value fills/refreshes the row, but a
+        None never blanks an existing value. Two identity fields are special: ``gsis_id``
+        prefers a REAL gsis (``00-…``) over a Sleeper placeholder (never downgrades), and
+        the legacy ``yahoo_player_id`` (unique, derived) is fill-if-empty only.
+        """
+        existing = await self.resolve_player(
+            sleeper_id=data.get("sleeper_id"),
+            espn_id=data.get("espn_id"),
+            yahoo_id=data.get("yahoo_id"),
+            gsis_id=data.get("gsis_id"),
+            sportradar_id=data.get("sportradar_id"),
+            name=data.get("name"),
+            position=data.get("position"),
+            team=data.get("team_abbr") or data.get("team"),
+        )
+        if existing is not None:
+            if on_update is not None:
+                on_update(existing, data)
+            _apply_ingest_fields(existing, data)
+            return existing, False
+
+        allow = allow_create() if callable(allow_create) else allow_create
+        if not allow:
+            return None, False
+
+        player = Player()
+        _apply_ingest_fields(player, data)
+        self._session.add(player)
+        return player, True
 
     async def find_by_name_fuzzy(self, name: str) -> Player | None:
         """Resolve a display name to a single Player via the canonical resolver's
