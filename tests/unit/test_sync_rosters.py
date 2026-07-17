@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from backend.repositories.player_repo import PlayerRepository
+from backend.utils.player_resolver import guarded_name_pick
+
 
 def _make_player(
     name="Test Player",
@@ -30,6 +33,10 @@ def _make_player(
     p.nfl_seasons_played = 3
     p.team_updated_at = None
     p.depth_chart_order = depth_chart_order
+    p.injury_status = None
+    p.injury_status_updated_at = None
+    p.espn_id = None
+    p.yahoo_id = None
     return p
 
 
@@ -53,45 +60,79 @@ def _make_sleeper_df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
-def _mock_session(existing_players: list):
-    """Create a mock async session that returns existing_players on SELECT."""
-    session = AsyncMock()
+class _FakeSession:
+    """Async-session stand-in carrying the in-memory player list. sync_rosters only
+    hits it for the AgentCache DELETE + commit + add (new-player insert) now that
+    matching goes through the repo."""
 
-    # execute() returns a result with scalars().all() → existing_players
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = existing_players
-    session.execute = AsyncMock(return_value=mock_result)
+    def __init__(self, existing_players: list):
+        self._players = existing_players
+        self._delete_calls: list = []
 
-    session.commit = AsyncMock()
-    session.add = MagicMock()
-
-    # Track delete calls for cache invalidation assertions
-    session._delete_calls = []
-    _orig_execute = session.execute
-
-    async def tracking_execute(stmt, *args, **kwargs):
-        # Check if this is a DELETE statement (for AgentCache)
-        stmt_str = str(stmt) if hasattr(stmt, 'compile') else str(stmt)
-        if "DELETE" in str(type(stmt).__name__).upper() or "delete" in stmt_str.lower():
-            session._delete_calls.append(stmt)
-            return MagicMock()
-        return await _orig_execute(stmt, *args, **kwargs)
-
-    # Replace execute after first call (SELECT)
-    call_count = {"n": 0}
-    orig = session.execute
-
-    async def smart_execute(stmt, *args, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            # First call is SELECT Player
-            return mock_result
-        # Subsequent calls are DELETE AgentCache
-        session._delete_calls.append(stmt)
+    async def execute(self, stmt, *args, **kwargs):
+        self._delete_calls.append(stmt)   # only the AgentCache DELETE reaches here
         return MagicMock()
 
-    session.execute = smart_execute
-    return session
+    async def commit(self):
+        return None
+
+    def add(self, obj):
+        self._players.append(obj)         # a newly-created player joins the pool
+
+
+class _InMemoryRepo(PlayerRepository):
+    """Subclasses the REAL PlayerRepository so ``resolve_or_create`` (+ field union +
+    the #217 guard) runs unmodified — only the DB-touching ``resolve_player`` is faked
+    to search the in-memory list with the SAME priority (id-first → guarded name+pos)."""
+
+    def __init__(self, session):
+        self._session = session
+        self._players = session._players
+
+    async def resolve_player(
+        self, *, sleeper_id=None, espn_id=None, yahoo_id=None, gsis_id=None,
+        sportradar_id=None, name=None, position=None, team=None,
+    ):
+        pos = (position or "").upper()
+        if pos == "DEF":
+            key = (team or name or "").strip()
+            for p in self._players:
+                if (p.position or "").upper() == "DEF" and (
+                    (p.team_abbr or "").upper() == key.upper()
+                    or (p.name or "").lower() == key.lower()
+                ):
+                    return p
+            return None
+        for val, col in ((sleeper_id, "sleeper_id"), (sportradar_id, "sportradar_id"),
+                         (gsis_id, "gsis_id"), (espn_id, "espn_id"), (yahoo_id, "yahoo_id")):
+            v = (val or "").strip()
+            if not v:
+                continue
+            for p in self._players:
+                if str(getattr(p, col, None) or "") == v:
+                    return p
+        if not name:
+            return None
+        from backend.agents.roster_changes import _norm_name
+        last = (_norm_name(name).split() or [""])[-1]
+        candidates = [p for p in self._players if p.name and last.lower() in p.name.lower()]
+        if position:
+            candidates = [p for p in candidates if (p.position or "").upper() == pos]
+        return guarded_name_pick(candidates, name, team=team, position=position)
+
+
+def _mock_session(existing_players: list):
+    """Back-compat shim for the existing tests — returns the fake session; the autouse
+    fixture routes sync_rosters' repo at the in-memory resolver over the same list."""
+    return _FakeSession(existing_players)
+
+
+@pytest.fixture(autouse=True)
+def _route_repo_in_memory(monkeypatch):
+    """Point sync_rosters' PlayerRepository at the in-memory subclass (real
+    resolve_or_create, faked resolve_player)."""
+    import scripts.sync_rosters as sr
+    monkeypatch.setattr(sr, "PlayerRepository", _InMemoryRepo)
 
 
 @pytest.mark.asyncio
@@ -353,28 +394,9 @@ async def test_sync_returns_teams_invalidated():
 
 
 # ===========================================================================
-# Suffix normalization tests (Jr./Sr./II/III)
+# Suffix normalization — now via the guarded name resolver (last-name + first-name
+# agreement), exercised behaviourally by the sync tests below.
 # ===========================================================================
-
-
-def test_suffix_normalization():
-    """_SUFFIX_RE strips Jr., Sr., II, III, IV, V from player names."""
-    from scripts.sync_rosters import _SUFFIX_RE
-
-    cases = {
-        "Brian Thomas Jr.": "Brian Thomas",
-        "Brian Thomas Jr": "Brian Thomas",
-        "Kenneth Walker III": "Kenneth Walker",
-        "Marvin Harrison Jr.": "Marvin Harrison",
-        "Odell Beckham Jr": "Odell Beckham",
-        "Anthony Tyus Jr.": "Anthony Tyus",
-        "Michael Pittman Jr": "Michael Pittman",
-        "Irv Smith Jr.": "Irv Smith",
-        "Patrick Mahomes II": "Patrick Mahomes",
-    }
-    for original, expected in cases.items():
-        stripped = _SUFFIX_RE.sub("", original).strip()
-        assert stripped == expected, f"Failed: {original!r} → {stripped!r}, expected {expected!r}"
 
 
 @pytest.mark.asyncio
