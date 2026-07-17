@@ -27,17 +27,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import re
-
 import pandas as pd
 
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend.repositories.player_repo import PlayerRepository
 from backend.utils.injury_status import to_canonical
-
-# Strip suffixes for fuzzy name matching (III, Jr, Sr, II, IV, V)
-_SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +110,9 @@ async def sync_players_from_sleeper(
     Returns dict with counts: updated, inserted, skipped,
     teams_invalidated, cache_cleared.
     """
-    from sqlalchemy import select, delete
+    from sqlalchemy import delete
 
     from backend.integrations.sleeper import fetch_sleeper_players
-    from backend.models.player import Player
 
     players_df = fetch_sleeper_players()
     print(f"Loaded {len(players_df)} active skill players from Sleeper.\n")
@@ -139,24 +134,12 @@ async def sync_players_from_sleeper(
 
     session = db if db is not None else await session_ctx.__aenter__()
     try:
-        # Pre-load all existing players for batch matching
-        all_players = (await session.execute(select(Player))).scalars().all()
-
-        # Build lookup maps for efficient matching
-        by_sportradar = {p.sportradar_id: p for p in all_players if p.sportradar_id}
-        by_gsis = {p.gsis_id: p for p in all_players if p.gsis_id}
-        by_name_pos = {}
-        # Reverse map: stripped Sleeper name → DB player with suffix
-        by_stripped_name_pos: dict[tuple[str, str], Player] = {}
-        for p in all_players:
-            if p.name and p.position:
-                by_name_pos[(p.name.lower(), p.position.upper())] = p
-                # Also index by stripped suffix (e.g., "Kenneth Walker III" → "kenneth walker")
-                stripped = _SUFFIX_RE.sub("", p.name).strip().lower()
-                if stripped != p.name.lower():
-                    by_name_pos.setdefault((stripped, p.position.upper()), p)
-                    # Reverse: Sleeper sends "Brian Thomas" → match DB "Brian Thomas Jr."
-                    by_stripped_name_pos.setdefault((stripped, p.position.upper()), p)
+        # Route EVERY row through the canonical resolver (ID-first → guarded name+pos),
+        # replacing the old in-memory 4-key matching. Identity/dedup now lives in ONE
+        # place (PlayerRepository.resolve_or_create), so a player already inserted by
+        # another source (e.g. an nflverse-seeded row) resolves + updates instead of a
+        # duplicate. Current-state semantics are preserved via the hooks below.
+        repo = PlayerRepository(session)
 
         for _, row in players_df.iterrows():
             sleeper_id = str(row["player_id"])
@@ -189,101 +172,67 @@ async def sync_players_from_sleeper(
                 skipped += 1
                 continue
 
-            # Find existing player: sportradar_id > gsis_id > name+position
-            # Position must match to prevent cross-position collisions
-            # (e.g., WR Kenneth Walker vs RB Kenneth Walker)
-            existing = None
-            if sportradar:
-                cand = by_sportradar.get(sportradar)
-                if cand and cand.position == position:
-                    existing = cand
-            if not existing and gsis:
-                cand = by_gsis.get(gsis)
-                if cand and cand.position == position:
-                    existing = cand
-            if not existing:
-                existing = by_name_pos.get((full_name.lower(), position.upper()))
-            # Reverse suffix match: Sleeper "Brian Thomas" → DB "Brian Thomas Jr."
-            if not existing:
-                existing = by_stripped_name_pos.get((full_name.lower(), position.upper()))
+            data = {
+                "name": full_name, "position": position, "team_abbr": team,
+                "sleeper_id": sleeper_id, "sportradar_id": sportradar, "gsis_id": gsis,
+                "age": age, "nfl_seasons_played": years_exp,
+                "depth_chart_order": new_depth, "injury_status": new_injury,
+            }
 
-            if existing:
-                # Track meaningful changes — team move
-                if existing.team_abbr != team:
-                    if not dry_run:
-                        if existing.team_abbr:
-                            changed_teams.add(existing.team_abbr)  # old team
-                        if team:
-                            changed_teams.add(team)  # new team
-                        existing.team_abbr = team
-                        existing.team_updated_at = datetime.now(timezone.utc)
-                    else:
+            # DRY-RUN: resolve (find-only) + report; never mutate/insert.
+            if dry_run:
+                existing = await repo.resolve_player(
+                    sleeper_id=sleeper_id, sportradar_id=sportradar, gsis_id=gsis,
+                    name=full_name, position=position, team=team,
+                )
+                if existing is not None:
+                    if existing.team_abbr != team:
                         print(f"  [DRY-RUN] {full_name}: {existing.team_abbr or '???'} -> {team}")
-
-                # Track meaningful changes — depth chart shift
-                if (
-                    new_depth is not None
-                    and existing.depth_chart_order != new_depth
-                ):
-                    if not dry_run:
-                        if team:
-                            changed_teams.add(team)
-                        existing.depth_chart_order = new_depth
-
-                # Always update IDs — prevents stale cross-player collisions
-                # ID-only updates don't invalidate cache
-                if not dry_run:
-                    existing.sleeper_id = sleeper_id
-                    if sportradar:
-                        existing.sportradar_id = sportradar
-                    if gsis:
-                        existing.gsis_id = gsis
-                    if age is not None:
-                        existing.age = age
-                    if years_exp is not None:
-                        existing.nfl_seasons_played = years_exp
-                    # Injury badge — bump the timestamp only when the code changes
-                    # (display data; no cache invalidation).
-                    if existing.injury_status != new_injury:
-                        existing.injury_status = new_injury
-                        existing.injury_status_updated_at = datetime.now(timezone.utc)
-
-                updated += 1
-            else:
-                # Recent-activity gate — only seed NEW players who are on
-                # the 2026 depth chart or appeared in 2024/2025 games.
-                # Filters retired/practice-squad noise Sleeper marks Active
-                # (Roethlisberger, Bell, Haskins). Existing players are never
-                # gated here, so an active player already in the DB is never
-                # dropped by a coverage gap.
-                if not is_relevant_player(row, warehouse):
-                    filtered += 1
-                    if dry_run:
-                        print(f"  [DRY-RUN] FILTERED (no depth chart, no 2024/25 games): {full_name} ({position}, {team or 'FA'})")
-                    continue
-
-                # Insert new player — invalidate their team
-                if not dry_run:
-                    if team:
-                        changed_teams.add(team)
-                    new_player = Player(
-                        name=full_name,
-                        position=position,
-                        team_abbr=team,
-                        sleeper_id=sleeper_id,
-                        sportradar_id=sportradar,
-                        gsis_id=gsis,
-                        age=age,
-                        depth_chart_order=new_depth,
-                        injury_status=new_injury,
-                        injury_status_updated_at=(
-                            datetime.now(timezone.utc) if new_injury else None
-                        ),
-                    )
-                    session.add(new_player)
-                else:
+                    updated += 1
+                elif is_relevant_player(row, warehouse):
                     print(f"  [DRY-RUN] NEW: {full_name} ({position}, {team or 'FA'})")
+                    inserted += 1
+                else:
+                    print(f"  [DRY-RUN] FILTERED (no depth chart, no 2024/25 games): {full_name} ({position}, {team or 'FA'})")
+                    filtered += 1
+                continue
+
+            # On MATCH, diff the pre-update row for cache invalidation + apply the
+            # CURRENT-STATE injury field (which may CLEAR to None on recovery — the field
+            # union never blanks, so it's applied directly here with its timestamp).
+            def _on_update(existing, d, _team=team, _depth=new_depth, _injury=new_injury):
+                if existing.team_abbr != _team:
+                    if existing.team_abbr:
+                        changed_teams.add(existing.team_abbr)   # old team
+                    if _team:
+                        changed_teams.add(_team)                # new team
+                    d["team_updated_at"] = datetime.now(timezone.utc)
+                if _depth is not None and existing.depth_chart_order != _depth and _team:
+                    changed_teams.add(_team)                     # depth shift
+                if existing.injury_status != _injury:
+                    existing.injury_status = _injury            # may be None (recovery)
+                    existing.injury_status_updated_at = datetime.now(timezone.utc)
+                d.pop("injury_status", None)                    # handled above (allow blank)
+
+            # Recent-activity gate — only INSERT genuinely-new players on the 2026 depth
+            # chart or with 2024/25 games (existing players always update, never gated).
+            player, created = await repo.resolve_or_create(
+                data,
+                allow_create=lambda _row=row: is_relevant_player(_row, warehouse),
+                on_update=_on_update,
+            )
+            if player is None:
+                filtered += 1
+            elif created:
+                if team:
+                    changed_teams.add(team)                     # new player → invalidate team
+                # New players carry the injury timestamp only when injured (parity w/ old insert).
+                player.injury_status_updated_at = (
+                    datetime.now(timezone.utc) if new_injury else None
+                )
                 inserted += 1
+            else:
+                updated += 1
 
         if not dry_run:
             await session.commit()

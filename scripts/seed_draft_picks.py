@@ -79,87 +79,48 @@ async def seed_draft_picks(draft_year: int | None = None):
             "draft_year": year,
             "nfl_seasons_played": 0,
             "draft_capital_signal": _draft_capital_signal(round_num),
+            "variance_flag": True,   # rookies carry projection variance (insert-time flag)
         })
 
+    # Route through the canonical resolver (ID-first → guarded name+pos), replacing the
+    # yahoo_player_id-only dedup. A player already present (from Sleeper/nflverse) now
+    # resolves and UPDATES rather than inserting a duplicate.
+    #
+    # VETERAN GUARD (preserved): a player can appear in draft-picks data but already have
+    # nfl_seasons_played > 0 — a prior-year draftee who spent year 1 on IR (e.g. JJ
+    # McCarthy 2024). Those are NOT rookies in year 2, so on a MATCH we strip is_rookie +
+    # nfl_seasons_played from the incoming data (via on_update) and only refresh draft info.
+    from backend.repositories.player_repo import PlayerRepository
+
+    def _veteran_guard(existing, data):
+        if existing.nfl_seasons_played and existing.nfl_seasons_played > 0:
+            data.pop("is_rookie", None)
+            data.pop("nfl_seasons_played", None)
+            data.pop("variance_flag", None)
+
+    inserted = updated = kept = 0
     async with AsyncSessionLocal() as session:
-        existing_result = await session.execute(select(Player.yahoo_player_id))
-        existing_keys = {r[0] for r in existing_result.all()}
+        repo = PlayerRepository(session)
+        for r in records:
+            had_history = {"kept": False}
 
-        new_records = [r for r in records if r["yahoo_player_id"] not in existing_keys]
-        update_records = [r for r in records if r["yahoo_player_id"] in existing_keys]
+            def _guard(existing, data, _flag=had_history):
+                if existing.nfl_seasons_played and existing.nfl_seasons_played > 0:
+                    _flag["kept"] = True
+                _veteran_guard(existing, data)
 
-        # Insert new rookies
-        if new_records:
-            await session.execute(
-                Player.__table__.insert(),
-                [
-                    {
-                        **r,
-                        "contract_year": False,
-                        "breakout_flag": False,
-                        "variance_flag": True,
-                    }
-                    for r in new_records
-                ],
-            )
-
-        # Update existing players with draft info + rookie flag.
-        #
-        # NOTE: A player can appear in draft picks data but have
-        # nfl_seasons_played > 0 if they were drafted in a prior year
-        # and spent year 1 on IR (e.g. JJ McCarthy 2024).
-        # These players are NOT rookies in their second year.
-        # They should use the full_season_absence path in profiling,
-        # not the rookie comp path.
-        # is_rookie=True only for players with 0 NFL seasons who have
-        # NEVER been on an NFL roster.
-        updated = 0
-        skipped_existing = 0
-        for r in update_records:
-            # Check if player already has NFL history
-            existing = (
-                await session.execute(
-                    select(Player).where(
-                        Player.yahoo_player_id == r["yahoo_player_id"]
-                    )
-                )
-            ).scalar_one_or_none()
-
-            if existing and existing.nfl_seasons_played and existing.nfl_seasons_played > 0:
-                # Has real NFL history — update draft info only, don't
-                # overwrite is_rookie or nfl_seasons_played
-                await session.execute(
-                    Player.__table__.update()
-                    .where(Player.yahoo_player_id == r["yahoo_player_id"])
-                    .values(
-                        draft_round=r["draft_round"],
-                        draft_pick=r["draft_pick"],
-                        draft_year=r["draft_year"],
-                        draft_capital_signal=r["draft_capital_signal"],
-                    )
-                )
-                skipped_existing += 1
+            _, created = await repo.resolve_or_create(r, on_update=_guard)
+            if created:
+                inserted += 1
+            elif had_history["kept"]:
+                kept += 1
             else:
-                await session.execute(
-                    Player.__table__.update()
-                    .where(Player.yahoo_player_id == r["yahoo_player_id"])
-                    .values(
-                        is_rookie=True,
-                        draft_round=r["draft_round"],
-                        draft_pick=r["draft_pick"],
-                        draft_year=r["draft_year"],
-                        nfl_seasons_played=0,
-                        draft_capital_signal=r["draft_capital_signal"],
-                        team_abbr=r["team_abbr"],
-                    )
-                )
                 updated += 1
-
         await session.commit()
 
-    print(f"  Inserted : {len(new_records)}")
+    print(f"  Inserted : {inserted}")
     print(f"  Updated  : {updated}")
-    print(f"  Kept (NFL history) : {skipped_existing}")
+    print(f"  Kept (NFL history) : {kept}")
     print(f"  Skipped (no data)  : {skipped}")
 
 
