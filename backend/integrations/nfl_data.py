@@ -1371,7 +1371,8 @@ class NflDataWarehouse:
             try:
                 raw = fetch_ngs_data("rushing", season)
                 self.ngs_rushing[season] = PlayerProfilesAgent._aggregate_ngs(
-                    raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected"]
+                    raw, ["rush_yards_over_expected_per_att", "rush_pct_over_expected",
+                          "efficiency", "percent_attempts_gte_eight_defenders"]
                 )
                 logger.info("  %d ngs_rushing: %d players", season, len(self.ngs_rushing[season]))
             except Exception as exc:

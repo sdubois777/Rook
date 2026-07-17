@@ -199,6 +199,57 @@ def compute_input_fingerprint(
 _RECEIVER_POSITIONS = {"RB", "WR", "TE"}
 
 
+def _grade_rush_efficiency(ryoe: float, box_pct: float | None) -> str:
+    """Grade a back's rushing efficiency from NGS rush-yards-over-expected per attempt,
+    with stacked-box% as a mitigating adjustment. Thresholds calibrated on real recent-season
+    NGS (elite ~ +0.9, above ~ +0.3, avg ~ -0.15, below ~ -0.5). A negative RYOE against a
+    heavy stacked box (>=35%) is situation not badness, so it is softened one grade (a back
+    at -2.6 RYOE @ 54% boxes must not read as pure badness)."""
+    if ryoe >= 0.5:
+        grade = "elite"
+    elif ryoe >= 0.15:
+        grade = "above_avg"
+    elif ryoe >= -0.15:
+        grade = "avg"
+    else:
+        grade = "below_avg"
+    if grade == "below_avg" and box_pct is not None and box_pct >= 35.0:
+        grade = "avg"  # heavy-box mitigation
+    return grade
+
+
+def _rush_efficiency_from_seasons(seasons: list[dict], position: str | None) -> str | None:
+    """Deterministic RB rushing grade from the NGS RYOE/att already attached to each
+    season dict (rush_yards_over_expected_per_att + percent_attempts_gte_eight_defenders),
+    recency-weighted (0.5/0.3/0.2) with a ±2.0 per-season cap so a small-sample rookie
+    outlier can't dominate. RB-only. The single grading path — the agent method and the
+    pipeline write both funnel through here (no drift). Read by the valuation agent."""
+    if (position or "").upper() != "RB":
+        return None
+    per_season: dict[int, tuple[float, float | None]] = {}
+    for s in seasons:
+        ryoe = s.get("rush_yards_over_expected_per_att")
+        if ryoe is None:
+            continue
+        yr = s.get("year")
+        if yr is None:
+            continue
+        try:
+            per_season[int(yr)] = (max(-2.0, min(2.0, float(ryoe))),
+                                   s.get("percent_attempts_gte_eight_defenders"))
+        except (TypeError, ValueError):
+            continue
+    if not per_season:
+        return None
+    yrs = sorted(per_season)
+    weights = [0.2, 0.3, 0.5][-len(yrs):]
+    wsum = sum(weights)
+    avg_ryoe = sum(w * per_season[y][0] for w, y in zip(weights, yrs)) / wsum
+    box_pairs = [(w, per_season[y][1]) for w, y in zip(weights, yrs) if per_season[y][1] is not None]
+    avg_box = (sum(w * b for w, b in box_pairs) / sum(w for w, _ in box_pairs)) if box_pairs else None
+    return _grade_rush_efficiency(avg_ryoe, avg_box)
+
+
 def _projected_receptions(prof: dict, position: str | None) -> float | None:
     """The LLM's projected-season reception count, for the per-format reprice basis.
     Only meaningful for RB/WR/TE (QB/K/DEF don't catch passes → format-invariant, no
@@ -378,6 +429,10 @@ Additional NGS efficiency data in player seasons (when present):
   avg_separation: average yards of separation at catch point; higher = elite route running.
   avg_yac_above_expectation: yards after catch above model expectation; positive = elite YAC.
   rush_yards_over_expected_per_att: rushing yards over expected; positive = above-avg vision/burst.
+  percent_attempts_gte_eight_defenders: % of carries vs a stacked box (8+ defenders); high = the
+    defense keys on him, which SUPPRESSES rush_yards_over_expected — read a negative RYOE against a
+    high stacked-box % as SITUATION, not the back being bad.
+  efficiency: NGS rushing efficiency (distance travelled per rush yard); LOWER = more direct/decisive.
 Use these numeric signals to inform separation_score, yards_after_catch_score, and efficiency_signal.
 
 Additional Sleeper efficiency data in player seasons (when present):
@@ -1080,7 +1135,8 @@ class PlayerProfilesAgent(BaseAgent):
 
         row = rows.iloc[0]
         result = {}
-        for col in ("rush_yards_over_expected_per_att", "rush_pct_over_expected"):
+        for col in ("rush_yards_over_expected_per_att", "rush_pct_over_expected",
+                    "efficiency", "percent_attempts_gte_eight_defenders"):
             v = row.get(col)
             try:
                 if v is not None and pd.notna(v):
@@ -1088,6 +1144,25 @@ class PlayerProfilesAgent(BaseAgent):
             except (TypeError, ValueError):
                 pass
         return result
+
+    def _compute_rush_efficiency_score(self, name: str, team: str, position: str | None) -> str | None:
+        """Deterministic RB rushing-efficiency grade from NGS RYOE/att over the analysis
+        seasons, with stacked-box% as a MITIGATING context (a bad RYOE against heavy boxes
+        is situation, not the back being bad — e.g. McCaffrey -2.6 @ 54% boxes).
+
+        RB-only (None for WR/TE/QB and for backs below the NGS rush-attempt threshold, i.e.
+        pure receiving backs — whose rushing correctly carries no signal). Read by the
+        valuation agent context (the hybrid rushing signal)."""
+        if (position or "").upper() != "RB":
+            return None
+        # Build a season list from the warehouse (backfill path) and grade it through the
+        # single shared grader (_rush_efficiency_from_seasons) — same path the pipeline uses.
+        seasons = []
+        for season in get_analysis_seasons(3):
+            ngs = self._get_ngs_rushing_stats(name, team, season)
+            if ngs.get("rush_yards_over_expected_per_att") is not None:
+                seasons.append({"year": season, **ngs})
+        return _rush_efficiency_from_seasons(seasons, position)
 
     def _get_ngs_passing_stats(self, player_name: str, team: str, season: int) -> dict:
         """Return NGS passing metrics (CPOE, time to throw, aggressiveness)."""
@@ -2294,6 +2369,11 @@ async def _write_profiles(
             record.separation_score           = effective.get("separation_score")
             record.yards_after_catch_score    = effective.get("yards_after_catch_score")
             record.efficiency_signal          = effective.get("efficiency_signal")
+            # Deterministic RB rushing-efficiency grade from the NGS RYOE/att already
+            # attached to `seasons` (box%-mitigated, recency-weighted). Read by the
+            # valuation agent context (Part 2 hybrid). RB-only → None otherwise.
+            record.rush_efficiency_score      = _rush_efficiency_from_seasons(
+                seasons, ctx_player.get("position"))
             record.age_curve_position         = effective.get("age_curve_position")
             record.career_trajectory          = effective.get("career_trajectory")
             if clean_baseline is None:
