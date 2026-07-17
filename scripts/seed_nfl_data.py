@@ -189,22 +189,41 @@ async def seed_players():
     # instead of the old yahoo_player_id-only dedup — so an nflverse row (real gsis) that
     # matches an existing Sleeper row (placeholder gsis, no shared yahoo_player_id) UPDATES
     # it (unioning the real gsis) rather than inserting a duplicate. This was THE dupe seam.
+    from sqlalchemy.exc import IntegrityError
+
     from backend.repositories.player_repo import PlayerRepository
 
-    inserted = updated = 0
+    # Each record runs in its OWN savepoint (begin_nested) + flush, so a uniqueness
+    # collision (e.g. a stale row squatting on a yahoo_player_id that belongs to a
+    # different human — a father/son name pair whose ids got crossed) rolls back ONLY
+    # that record and is logged + skipped, never aborting the whole seed. The resolver's
+    # identity guard already refuses to FUSE distinct humans; this makes the surviving
+    # insert-collision non-fatal instead of hard-crashing the pipeline.
+    inserted = updated = collided = 0
     async with AsyncSessionLocal() as session:
         repo = PlayerRepository(session)
         for r in records:
-            _, created = await repo.resolve_or_create(r)
-            if created:
-                inserted += 1
-            else:
-                updated += 1
+            try:
+                async with session.begin_nested():
+                    _, created = await repo.resolve_or_create(r)
+                    await session.flush()  # surface any IntegrityError inside the savepoint
+                if created:
+                    inserted += 1
+                else:
+                    updated += 1
+            except IntegrityError as exc:
+                collided += 1
+                orig = getattr(exc, "orig", exc)
+                print(
+                    f"  COLLISION (skipped): {r.get('name')} "
+                    f"[{r.get('yahoo_player_id')}] — {str(orig).splitlines()[0]}"
+                )
         await session.commit()
 
     print(f"  Inserted : {inserted}")
     print(f"  Updated  : {updated}")
-    print(f"  Skipped  : {skipped}")
+    print(f"  Collided (skipped) : {collided}")
+    print(f"  Skipped (no data)  : {skipped}")
 
 
 # ---------------------------------------------------------------------------
