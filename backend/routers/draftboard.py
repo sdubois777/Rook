@@ -222,14 +222,22 @@ async def get_draftboard(
               and (p.profile.clean_season_baseline.get("projected_ppr_season") is not None
                    or p.profile.clean_season_baseline.get("ppr_points") is not None)) else None
 
-        # Per-format overlay (non-$ only): tier + projected points reprice by format; a
-        # reception-dependent player tier-falls in Standard. $ fields below stay PPR (dark).
+        # Per-format overlay: tier + points reprice by format; and (non-PPR) the hybrid
+        # auction $ + market-blind reasoning + tier-band ceiling/baseline. Each field
+        # falls back to the players-table (PPR) value when the overlay has none — so PPR
+        # is byte-identical and a non-PPR user sees their own $ and prose.
         ov = overlay_for(str(p.id), fmt_rows, scoring_format)
         eff_tier = ov.tier if ov.tier is not None else p.tier
         if ov.projected_points is not None:
             _raw_proj = ov.projected_points   # already the format's SEASON total
         if scoring_format != "ppr" and ov.adp_defaulted:
             adp_format_defaulted = True
+        eff_ai_ceiling = ov.ai_bid_ceiling if ov.ai_bid_ceiling is not None else p.ai_bid_ceiling
+        eff_rec_ceiling = ov.recommended_bid_ceiling if ov.recommended_bid_ceiling is not None else (
+            float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None)
+        eff_baseline = ov.baseline_value if ov.baseline_value is not None else (
+            float(p.baseline_value) if p.baseline_value else None)
+        eff_value_assessment = ov.value_assessment if ov.value_assessment is not None else p.value_assessment
 
         dbp = DraftBoardPlayer(
             id=str(p.id),
@@ -237,8 +245,8 @@ async def get_draftboard(
             team_abbr=p.team_abbr,
             position=p.position,
             tier=eff_tier,
-            recommended_bid_ceiling=round(float(p.recommended_bid_ceiling) * avf, 1) if p.recommended_bid_ceiling else None,
-            baseline_value=float(p.baseline_value) if p.baseline_value else None,
+            recommended_bid_ceiling=round(eff_rec_ceiling * avf, 1) if eff_rec_ceiling else None,
+            baseline_value=eff_baseline,
             market_value=float(p.market_value_fantasypros) if p.market_value_fantasypros else None,
             market_value_season=get_current_season() if p.market_value_fantasypros else None,
             prior_season_price=hist_price,
@@ -252,10 +260,10 @@ async def get_draftboard(
             injury_risk_level=p.injury_profile.overall_risk_level if p.injury_profile else None,
             availability_factor=avf,
             availability_games_missed=p.availability_games_missed or 0,
-            ai_bid_ceiling=round(p.ai_bid_ceiling * avf) if p.ai_bid_ceiling else p.ai_bid_ceiling,
+            ai_bid_ceiling=round(eff_ai_ceiling * avf) if eff_ai_ceiling else eff_ai_ceiling,
             pay_up_flag=p.pay_up_flag or False,
             nomination_target_flag=p.nomination_target_flag or False,
-            value_assessment=p.value_assessment,
+            value_assessment=eff_value_assessment,
             adp_ai=float(p.adp_ai) if p.adp_ai is not None else None,
             # Per-format market ADP where a pipeline run has populated it; else the
             # players-table PPR value (adp_format_defaulted flags the fallback).
