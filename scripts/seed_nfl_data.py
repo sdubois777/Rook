@@ -185,42 +185,25 @@ async def seed_players():
             "age": _compute_age(row.get("birth_date")),
         })
 
-    # Fetch existing keys in one query
+    # Route EVERY record through the canonical resolver (ID-first → guarded name+pos)
+    # instead of the old yahoo_player_id-only dedup — so an nflverse row (real gsis) that
+    # matches an existing Sleeper row (placeholder gsis, no shared yahoo_player_id) UPDATES
+    # it (unioning the real gsis) rather than inserting a duplicate. This was THE dupe seam.
+    from backend.repositories.player_repo import PlayerRepository
+
+    inserted = updated = 0
     async with AsyncSessionLocal() as session:
-        existing_result = await session.execute(select(Player.yahoo_player_id))
-        existing_keys = {r[0] for r in existing_result.all()}
-
-        new_records = [r for r in records if r["yahoo_player_id"] not in existing_keys]
-        update_records = [r for r in records if r["yahoo_player_id"] in existing_keys]
-
-        # Bulk insert new players
-        if new_records:
-            await session.execute(
-                Player.__table__.insert(),
-                [
-                    {
-                        **r,
-                        "contract_year": False,
-                        "breakout_flag": False,
-                    }
-                    for r in new_records
-                ],
-            )
-
-        # Update existing (one by one but only for those that exist)
-        for r in update_records:
-            await session.execute(
-                Player.__table__.update()
-                .where(Player.yahoo_player_id == r["yahoo_player_id"])
-                .values(name=r["name"], team_abbr=r["team_abbr"],
-                        position=r["position"], age=r["age"],
-                        gsis_id=r.get("gsis_id"))
-            )
-
+        repo = PlayerRepository(session)
+        for r in records:
+            _, created = await repo.resolve_or_create(r)
+            if created:
+                inserted += 1
+            else:
+                updated += 1
         await session.commit()
 
-    print(f"  Inserted : {len(new_records)}")
-    print(f"  Updated  : {len(update_records)}")
+    print(f"  Inserted : {inserted}")
+    print(f"  Updated  : {updated}")
     print(f"  Skipped  : {skipped}")
 
 
