@@ -79,10 +79,13 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     ahead of FP consensus, costing elite RB/WR value).
 # v4: QB 5-tier framework + anti-cluster rule (v3 overcorrected — startable QBs
 #     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
-# NOTE: the market-blind HYBRID (non-PPR reception positions) does NOT bump this — it
-# carries its own `hybrid` cache marker (see _process_batch), so PPR keeps hitting the
-# v4 cache byte-identically while the hybrid gets a fresh namespace.
-VALUATION_AGENT_VERSION = "v4"
+# v5: cache invalidation after a full profile re-sweep — the AGENT'S INPUTS CHANGED
+#     (fresh projections, tier-band anchors, and the new rush_efficiency_score signal),
+#     but the cache keys on (player names + version), so without a bump the PPR ceilings
+#     and the hybrid would cache-hit and serve numbers reasoned BEFORE the new signals
+#     existed. Bumping forces a genuine re-reason over the current signals. (The hybrid's
+#     own `hybrid` cache marker still separates it from the PPR namespace.)
+VALUATION_AGENT_VERSION = "v5"
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
