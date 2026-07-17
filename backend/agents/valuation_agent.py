@@ -79,6 +79,9 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     ahead of FP consensus, costing elite RB/WR value).
 # v4: QB 5-tier framework + anti-cluster rule (v3 overcorrected — startable QBs
 #     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
+# NOTE: the market-blind HYBRID (non-PPR reception positions) does NOT bump this — it
+# carries its own `hybrid` cache marker (see _process_batch), so PPR keeps hitting the
+# v4 cache byte-identically while the hybrid gets a fresh namespace.
 VALUATION_AGENT_VERSION = "v4"
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
@@ -316,6 +319,100 @@ def _system_prompt(scoring_format: str) -> str:
     )
 
 
+# --- MARKET-BLIND HYBRID prompt (Half/Standard reception positions only) --------------
+# The hybrid forms an INDEPENDENT opinion: it never sees the market (no ADP / prior price),
+# anchors on our own tier-band $ (`math_bid_ceiling`), and reasons over real football
+# signals to diverge up to ±25%. Built by transforming the format prompt: strip the market
+# paragraph + its rules, widen the leash, and inject the market-blind football-signal block.
+_HYBRID_BLOCK = """
+
+MARKET-BLIND INDEPENDENT VALUATION — READ CAREFULLY:
+You are given NO market data (no consensus ADP, no prior auction price). Form your OWN opinion.
+`math_bid_ceiling` is OUR structural anchor (a tier + points-over-replacement baseline that sums
+to the league budget) — it is NOT the market. Anchor on it and reason from the FOOTBALL SIGNALS:
+  - rush_efficiency_score (RB): elite/above_avg/avg/below_avg from NGS yards-over-expected, already
+    stacked-box-adjusted. A below_avg pure rusher who leans on receptions is worth LESS as the
+    reception value shrinks in this format — say so.
+  - rush_yards_over_expected_per_att: the raw number behind that grade (negative = below expectation).
+  - separation_score / yards_after_catch_score (WR/TE): route separation + YAC quality.
+  - team_grade: scheme, o-line pass_protection / run_blocking, QB tier, system_ceiling — a weak
+    line or offense caps a back/receiver; a strong one lifts them.
+  - beat_signal: the latest camp/practice/depth news.
+Diverge from math_bid_ceiling up to ±25% (either direction) when these signals justify it, and
+state WHY in auction_note using the signal (e.g. "below-average rusher on a weak run-blocking line").
+Do NOT invent a market number; your ai_bid_ceiling is YOUR opinion, not a consensus guess."""
+
+
+def _hybrid_system_prompt(scoring_format: str) -> str:
+    """Market-blind hybrid prompt for a non-PPR reception-position run. Never used for PPR."""
+    prompt = _system_prompt(scoring_format)
+    # Strip the market-context paragraph (the agent must not be told to use market).
+    market_para = (
+        "You may also receive market context:\n"
+        "- market_value_fantasypros: consensus ADP price from FantasyPros\n"
+        "- prior_season_price: what this player actually sold for in prior season auctions\n"
+        "Use these as references for what the market typically pays for this player.\n"
+        "When both are available, note any gap — a player whose ADP is $30 but sold for $45 last year\n"
+        "likely faces aggressive bidding again.\n\n"
+    )
+    prompt = prompt.replace(market_para, "")
+    prompt = prompt.replace(
+        "- ai_bid_ceiling should usually be within 15-20% of the math ceiling, but you CAN deviate more with reasoning",
+        "- ai_bid_ceiling anchors on math_bid_ceiling and may diverge up to ±25% when the football signals justify it",
+    )
+    prompt = prompt.replace(
+        "- Use market context (consensus ADP, prior price) to inform ai_bid_ceiling and\n"
+        "  value_assessment — but keep dollar figures OUT of auction_note",
+        "- Reason from the FOOTBALL SIGNALS (never market) to set ai_bid_ceiling and value_assessment;\n"
+        "  keep dollar figures OUT of auction_note",
+    )
+    return prompt + _HYBRID_BLOCK
+
+
+_POS_MAX_BID = {"RB": 80, "WR": 70, "QB": 50, "TE": 45, "K": 2, "DEF": 2}
+_HYBRID_POSITIONS = ("RB", "WR", "TE")  # reception positions reprice; QB/K/DEF are copied
+
+
+def _apply_hybrid_rails(rows: list[dict]) -> dict:
+    """Non-market rails on the hybrid's raw ai_bid_ceilings for one format's reception
+    positions. rows: [{name, ai_raw, anchor, tier, position}] → {name: ai_final:int}.
+    Rails (all structural, none is the market): (1) ±25% leash off the tier-band anchor,
+    (2) sum-to-budget rescale (aggregate == the anchor aggregate — don't mint money),
+    (3) tier-ordinal (no lower tier outprices the max of a better tier), (4) ≤ position
+    pool max, floor $1."""
+    if not rows:
+        return {}
+    # (1) ±25% leash off the anchor
+    for r in rows:
+        a = float(r["anchor"]) if r.get("anchor") else 0.0
+        ai = float(r["ai_raw"]) if r.get("ai_raw") is not None else a
+        if a > 0:
+            ai = max(a * 0.75, min(ai, a * 1.25))
+        r["ai"] = max(1.0, ai)
+    # (2) sum-to-budget: rescale to the tier-band anchor aggregate
+    sum_anchor = sum(float(r["anchor"]) for r in rows if r.get("anchor"))
+    sum_ai = sum(r["ai"] for r in rows) or 1.0
+    if sum_anchor > 0:
+        scale = sum_anchor / sum_ai
+        for r in rows:
+            r["ai"] *= scale
+    # (3) tier-ordinal: ascending tiers, cap at the max ai of the immediately better tier
+    from collections import defaultdict
+    by_tier: dict = defaultdict(list)
+    for r in rows:
+        by_tier[r.get("tier") or 99].append(r)
+    prev_max = float("inf")
+    for tier in sorted(by_tier):
+        for r in by_tier[tier]:
+            r["ai"] = min(r["ai"], prev_max)
+        prev_max = max((r["ai"] for r in by_tier[tier]), default=prev_max)
+    # (4) position pool max + floor + round
+    return {
+        r["name"]: max(1, min(int(round(r["ai"])), _POS_MAX_BID.get(r.get("position"), 80)))
+        for r in rows
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent class
 # ---------------------------------------------------------------------------
@@ -383,18 +480,20 @@ class ValuationAgent(BaseAgent):
         return {"processed": batch["processed"], "skipped": batch["skipped"]}
 
     async def _run_tier_batches(
-        self, tier_groups: dict, scoring_format: str = "ppr"
+        self, tier_groups: dict, scoring_format: str = "ppr", hybrid: bool = False
     ) -> dict:
         """Run the tier-batched LLM calls and return {results_map, processed, skipped}.
 
         Shared by run_all (PPR → players table) and run_prose_for_format (per-format
-        prose → player_format_values). For PPR the entity_ids and prompt are identical
+        hybrid → player_format_values). For PPR the entity_ids and prompt are identical
         to before (cache hit → byte-identical output); non-PPR suffixes entity_ids so
-        the three formats don't collide in the cache."""
+        the three formats don't collide in the cache. `hybrid` selects the market-blind
+        prompt + cache marker (non-PPR only) — the tier-based Sonnet/Haiku gate is
+        UNCHANGED (T1 individual Sonnet, T2-3 batched Sonnet, T4-5 batched Haiku)."""
         results_map: dict[str, dict] = {}
         processed = 0
         skipped = 0
-        suffix = "" if scoring_format == "ppr" else f"::{scoring_format}"
+        suffix = ("" if scoring_format == "ppr" else f"::{scoring_format}") + ("::hybrid" if hybrid else "")
 
         for tier, group in sorted(tier_groups.items()):
             if tier == 1:
@@ -409,6 +508,7 @@ class ValuationAgent(BaseAgent):
                         model=SONNET,
                         max_tokens=800,
                         scoring_format=scoring_format,
+                        hybrid=hybrid,
                     )
                     if result:
                         for r in result:
@@ -429,6 +529,7 @@ class ValuationAgent(BaseAgent):
                         model=SONNET,
                         max_tokens=600 * len(contexts),
                         scoring_format=scoring_format,
+                        hybrid=hybrid,
                     )
                     if result:
                         for r in result:
@@ -449,6 +550,7 @@ class ValuationAgent(BaseAgent):
                         model=HAIKU,
                         max_tokens=400 * len(contexts),
                         scoring_format=scoring_format,
+                        hybrid=hybrid,
                     )
                     if result:
                         for r in result:
@@ -459,47 +561,109 @@ class ValuationAgent(BaseAgent):
 
         return {"results_map": results_map, "processed": processed, "skipped": skipped}
 
+    @staticmethod
+    def _latest_beat(p) -> dict | None:
+        """Most recent beat-reporter signal for a player (the independent news signal)."""
+        sigs = list(getattr(p, "beat_signals", None) or [])
+        if not sigs:
+            return None
+        latest = max(sigs, key=lambda s: (s.flagged_at is not None, s.flagged_at))
+        return {
+            "signal_type": latest.signal_type,
+            "note": (latest.raw_text or "")[:200] or None,
+            "confidence": latest.confidence,
+        }
+
     async def run_prose_for_format(self, scoring_format: str) -> dict:
-        """Regenerate value_assessment + auction_note for a NON-PPR format and write
-        them to that format's player_format_values rows. Reuses the shared analysis;
-        only the narrative (and the point figures it quotes) is format-specific."""
+        """MARKET-BLIND HYBRID valuation for a NON-PPR format. For the reception positions
+        (RB/WR/TE) the agent forms an INDEPENDENT opinion — anchored on the tier-band $
+        (never the market: no ADP / prior price in context), reasoning over football
+        signals (rush efficiency, team grade, beat, separation/YAC) — producing a per-format
+        ai_bid_ceiling (±25% off the anchor, rails applied) + value_assessment + auction_note
+        written to player_format_values. QB/K/DEF are format-invariant → copied verbatim from
+        the players table. PPR never calls this (PPR stays byte-identical on the players table)."""
         from backend.models.player_format_values import PlayerFormatValues
+        from backend.models.team_system import TeamSystem
 
         if scoring_format == "ppr":
             raise ValueError("run_prose_for_format is for non-PPR; PPR copies the players table")
 
+        season = get_current_season()
         async with AsyncSessionLocal() as session:
             players = (await session.execute(
                 select(Player).where(Player.recommended_bid_ceiling.isnot(None)).options(
                     selectinload(Player.profile), selectinload(Player.injury_profile),
                     selectinload(Player.schedule), selectinload(Player.dependencies),
-                    selectinload(Player.historic_prices),
+                    selectinload(Player.beat_signals), selectinload(Player.historic_prices),
                 ).order_by(Player.tier.asc().nulls_last(), Player.recommended_bid_ceiling.desc())
             )).scalars().all()
+            # Per-format ANCHOR = the tier-band recommended_bid_ceiling (+ points + tier).
             fmt_rows = (await session.execute(
                 select(PlayerFormatValues.player_id, PlayerFormatValues.projected_points,
-                       PlayerFormatValues.tier).where(PlayerFormatValues.scoring_format == scoring_format)
+                       PlayerFormatValues.tier, PlayerFormatValues.recommended_bid_ceiling)
+                .where(PlayerFormatValues.scoring_format == scoring_format)
             )).all()
+            team_rows = (await session.execute(
+                select(TeamSystem).where(TeamSystem.season_year == season)
+            )).scalars().all()
 
-        fmt_by_id = {r.player_id: (r.projected_points, r.tier) for r in fmt_rows}
+        team_grades = {
+            t.team_abbr: {
+                "pass_protection_grade": t.pass_protection_grade,
+                "run_blocking_grade": t.run_blocking_grade,
+                "qb_tier": t.qb_tier,
+                "scheme": t.oc_scheme,
+                "system_ceiling": t.system_ceiling,
+            } for t in team_rows
+        }
+        fmt_by_id = {r.player_id: (r.projected_points, r.tier, r.recommended_bid_ceiling) for r in fmt_rows}
         name_to_id = {p.name: p.id for p in players}
 
-        # Build contexts with the FORMAT's projected points + tier (a player's tier can
-        # differ by format, e.g. a pass-catcher falls a tier in Standard).
+        # Split reception positions (hybrid LLM) from format-invariant QB/K/DEF (copied).
+        anchors: dict = {}                 # name -> (anchor, tier, position) for the rails
         tier_groups: dict[int, list] = {}
+        invariant: list = []               # QB/K/DEF players
         for p in players:
-            pp, ftier = fmt_by_id.get(p.id, (None, p.tier))
+            pos = (p.position or "").upper()
+            pp, ftier, fceil = fmt_by_id.get(p.id, (None, p.tier, p.recommended_bid_ceiling))
+            if pos not in _HYBRID_POSITIONS:
+                invariant.append(p)
+                continue
             ctx = self._build_player_context(
                 p, scoring_format, fmt_points=float(pp) if pp is not None else None)
+            # BLIND IT: strip every market input + the PPR pool-share magnitudes from the opinion.
+            for k in ("market_value_fantasypros", "prior_season_price", "market_value",
+                      "value_gap", "value_gap_signal", "system_value", "ceiling_value", "floor_value"):
+                ctx.pop(k, None)
+            # ANCHOR: the tier-band $ replaces the pool-share ceiling as math_bid_ceiling.
+            anchor = float(fceil) if fceil is not None else ctx.get("math_bid_ceiling")
+            ctx["math_bid_ceiling"] = round(anchor, 1) if anchor else None
             ctx["tier"] = ftier or p.tier
-            key = ftier or p.tier or 0
-            tier_groups.setdefault(key, []).append((p, ctx))
+            # INDEPENDENT SIGNALS (discrete inputs the agent reasons on):
+            if p.profile is not None:
+                ctx["rush_efficiency_score"] = p.profile.rush_efficiency_score
+                ctx["separation_score"] = p.profile.separation_score
+                ctx["yards_after_catch_score"] = p.profile.yards_after_catch_score
+            ctx["team_grade"] = team_grades.get((p.team_abbr or "").upper())
+            beat = self._latest_beat(p)
+            if beat:
+                ctx["beat_signal"] = beat
+            anchors[p.name] = (anchor, ctx["tier"], pos)
+            tier_groups.setdefault(ctx["tier"] or 0, []).append((p, ctx))
 
-        batch = await self._run_tier_batches(tier_groups, scoring_format)
+        batch = await self._run_tier_batches(tier_groups, scoring_format, hybrid=True)
 
-        # Write prose to the format rows.
+        # Apply the non-market rails to the raw ai_bid_ceilings.
+        rail_rows = [
+            {"name": name, "anchor": anchor, "tier": tier, "position": pos,
+             "ai_raw": (batch["results_map"].get(name) or {}).get("ai_bid_ceiling")}
+            for name, (anchor, tier, pos) in anchors.items()
+        ]
+        ai_by_name = _apply_hybrid_rails(rail_rows)
+
         written = 0
         async with AsyncSessionLocal() as session:
+            # Reception positions: the hybrid opinion (ai_bid_ceiling + reasoning).
             for name, r in batch["results_map"].items():
                 pid = name_to_id.get(name)
                 if pid is None:
@@ -509,13 +673,24 @@ class ValuationAgent(BaseAgent):
                     .where(PlayerFormatValues.player_id == pid,
                            PlayerFormatValues.scoring_format == scoring_format)
                     .values(value_assessment=r.get("value_assessment"),
-                            auction_note=r.get("auction_note"))
+                            auction_note=r.get("auction_note"),
+                            ai_bid_ceiling=ai_by_name.get(name))
                 )
                 written += 1
+            # QB/K/DEF: format-invariant — copy the players-table opinion verbatim.
+            for p in invariant:
+                await session.execute(
+                    update(PlayerFormatValues)
+                    .where(PlayerFormatValues.player_id == p.id,
+                           PlayerFormatValues.scoring_format == scoring_format)
+                    .values(value_assessment=p.value_assessment,
+                            auction_note=p.auction_note,
+                            ai_bid_ceiling=p.ai_bid_ceiling)
+                )
             await session.commit()
 
-        logger.info("Per-format prose (%s): %d processed, %d written",
-                    scoring_format, batch["processed"], written)
+        logger.info("Hybrid valuation (%s): %d reception processed, %d invariant copied",
+                    scoring_format, written, len(invariant))
         return {"scoring_format": scoring_format, "processed": batch["processed"], "written": written}
 
     async def copy_ppr_prose_to_format_rows(self) -> int:
@@ -671,23 +846,28 @@ class ValuationAgent(BaseAgent):
         model: str,
         max_tokens: int,
         scoring_format: str = "ppr",
+        hybrid: bool = False,
     ) -> list[dict] | None:
         """Process a batch of players through the AI model. `scoring_format` selects
-        the prompt; PPR (default) uses the unchanged prompt + cache key."""
+        the prompt; PPR (default) uses the unchanged prompt + cache key. `hybrid` selects
+        the market-blind hybrid prompt (non-PPR reception positions only)."""
         user_content = json.dumps(contexts, default=str)
 
         # PPR keeps today's cache key exactly; non-PPR adds scoring_format so the
-        # three formats never collide on the same (entity_id, input_hash).
+        # three formats never collide on the same (entity_id, input_hash). hybrid adds
+        # its own marker so the market-blind output never reuses a prose-only cache hit.
         input_data = {
             "players": [c["player_name"] for c in contexts],
             "version": VALUATION_AGENT_VERSION,
         }
         if scoring_format != "ppr":
             input_data["scoring_format"] = scoring_format
+        if hybrid:
+            input_data["hybrid"] = True
 
         try:
             raw = await self.call_once(
-                system=_system_prompt(scoring_format),
+                system=_hybrid_system_prompt(scoring_format) if hybrid else _system_prompt(scoring_format),
                 user=user_content,
                 input_data=input_data,
                 entity_id=entity_id,

@@ -235,14 +235,26 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
 
     prior_price, prior_year = _get_prior_season_price(player)
 
-    # PRE-DRAFT surface → per-format TIER from player_format_values (non-$). $ fields
-    # (bid ceilings / market / value_gap) stay PPR (dark). PPR / no row → players-table.
-    eff_tier = overlay.tier if (overlay is not None and overlay.tier is not None) else player.tier
+    # PRE-DRAFT surface → per-format TIER + the hybrid auction $ (ai_bid_ceiling / tier-band
+    # ceiling+baseline) + market-blind value_assessment from player_format_values. Each falls
+    # back to the players-table (PPR) value when the overlay has none → PPR byte-identical.
+    _ov = overlay
+    eff_tier = _ov.tier if (_ov is not None and _ov.tier is not None) else player.tier
     eff_adp_fp = (
-        overlay.adp_fantasypros
-        if (overlay is not None and overlay.adp_fantasypros is not None)
+        _ov.adp_fantasypros
+        if (_ov is not None and _ov.adp_fantasypros is not None)
         else (float(player.adp_fantasypros) if player.adp_fantasypros is not None else None)
     )
+    eff_ai_ceiling = _ov.ai_bid_ceiling if (_ov is not None and _ov.ai_bid_ceiling is not None) else player.ai_bid_ceiling
+    eff_rec_ceiling = (
+        _ov.recommended_bid_ceiling if (_ov is not None and _ov.recommended_bid_ceiling is not None)
+        else (float(player.recommended_bid_ceiling) if player.recommended_bid_ceiling else None)
+    )
+    eff_baseline = (
+        _ov.baseline_value if (_ov is not None and _ov.baseline_value is not None)
+        else (float(player.baseline_value) if player.baseline_value else None)
+    )
+    eff_assessment = _ov.value_assessment if (_ov is not None and _ov.value_assessment is not None) else player.value_assessment
 
     return PlayerSummary(
         id=str(player.id),
@@ -251,8 +263,8 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         position=player.position,
         age=player.age,
         tier=eff_tier,
-        recommended_bid_ceiling=float(player.recommended_bid_ceiling) if player.recommended_bid_ceiling else None,
-        baseline_value=float(player.baseline_value) if player.baseline_value else None,
+        recommended_bid_ceiling=eff_rec_ceiling,
+        baseline_value=eff_baseline,
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
         floor_value=float(player.floor_value) if player.floor_value else None,
         market_value=float(player.market_value_fantasypros) if player.market_value_fantasypros else None,
@@ -269,7 +281,7 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         injury_status=player.injury_status,  # live badge code (distinct from injury_risk_level season risk)
         injury_risk_level=player.injury_profile.overall_risk_level if player.injury_profile else None,
         schedule_score=float(player.schedule.schedule_score) if player.schedule and player.schedule.schedule_score else None,
-        ai_bid_ceiling=player.ai_bid_ceiling,
+        ai_bid_ceiling=eff_ai_ceiling,
         pay_up_flag=player.pay_up_flag or False,
         nomination_target_flag=player.nomination_target_flag or False,
         adp_rank=player.adp_rank,
@@ -459,8 +471,9 @@ async def get_player(
         team_system=team_system,
         ai_confidence_floor=player.ai_confidence_floor,
         ai_confidence_ceiling=player.ai_confidence_ceiling,
-        value_assessment=player.value_assessment,
-        auction_note=player.auction_note,
+        # Non-PPR: the market-blind hybrid reasoning; PPR / no overlay → players-table prose.
+        value_assessment=(overlay.value_assessment if (overlay is not None and overlay.value_assessment is not None) else player.value_assessment),
+        auction_note=(overlay.auction_note if (overlay is not None and overlay.auction_note is not None) else player.auction_note),
         league_bias=float(mctx["league_bias"]) if mctx["league_bias"] is not None else None,
         league_bias_signal=mctx["league_bias_signal"],
         scoring_format=scoring_format,

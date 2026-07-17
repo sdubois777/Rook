@@ -50,6 +50,12 @@ class PlayerFormatValues(Base):
     value_assessment: Mapped[str | None] = mapped_column(String(20))
     auction_note: Mapped[str | None] = mapped_column(Text)
 
+    # Per-format HYBRID auction $ — the valuation agent's independent, market-blind
+    # opinion (tier-band anchor ±25%, reasoned over football signals). Half/Standard only;
+    # PPR keeps ai_bid_ceiling on the players table. Read by format_display.overlay_for →
+    # the draft board / players / detail surfaces (the non-PPR headline auction $).
+    ai_bid_ceiling: Mapped[int | None] = mapped_column(Integer)
+
     # Per-format MARKET INPUTS (G5), re-scraped every pipeline run. ADP = FantasyPros
     # overall rank (same integer scale as players.adp_fantasypros). auction_value =
     # DraftWizard $ for the CANONICAL 12-team/1-flex roster (auction_roster_shape
