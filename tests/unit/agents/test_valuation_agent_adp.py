@@ -279,8 +279,9 @@ def test_prompt_auction_note_no_dollar_instruction():
 
 
 def test_valuation_agent_version_defined():
-    # Bumped to v4 with the QB 5-tier framework to invalidate the v3 cache.
-    assert VALUATION_AGENT_VERSION == "v4"
+    # Bumped to v5 to invalidate the cache after a full profile re-sweep (fresh
+    # projections + tier-band anchors + rush_efficiency_score) so the AI re-reasons.
+    assert VALUATION_AGENT_VERSION == "v5"
 
 
 def test_prompt_qb_floor_is_pick_40():
