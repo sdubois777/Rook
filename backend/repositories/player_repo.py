@@ -311,7 +311,7 @@ class PlayerRepository(BaseRepository[Player]):
         return result.scalar_one_or_none()
 
     async def count_by_position_tier(self) -> list[tuple[str, int | None, int]]:
-        """(position, tier, count) rows for skill positions."""
+        """(position, tier, count) rows for skill positions — PPR (players-table tier)."""
         result = await self._session.execute(
             select(
                 Player.position,
@@ -320,6 +320,28 @@ class PlayerRepository(BaseRepository[Player]):
             )
             .where(Player.position.in_(SKILL_POSITIONS))
             .group_by(Player.position, Player.tier)
+        )
+        return list(result.all())
+
+    async def count_by_position_tier_format(
+        self, scoring_format: str
+    ) -> list[tuple[str, int | None, int]]:
+        """(position, tier, count) rows for skill positions, counting the PER-FORMAT tier
+        from player_format_values (the same source overlay_for reads). Used for the
+        scarcity panel in a non-PPR league so its counts reflect the league's scoring."""
+        from backend.models.player_format_values import PlayerFormatValues
+        result = await self._session.execute(
+            select(
+                Player.position,
+                PlayerFormatValues.tier,
+                func.count(PlayerFormatValues.id),
+            )
+            .join(PlayerFormatValues, PlayerFormatValues.player_id == Player.id)
+            .where(
+                Player.position.in_(SKILL_POSITIONS),
+                PlayerFormatValues.scoring_format == scoring_format,
+            )
+            .group_by(Player.position, PlayerFormatValues.tier)
         )
         return list(result.all())
 

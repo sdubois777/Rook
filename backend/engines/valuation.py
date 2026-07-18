@@ -827,8 +827,12 @@ async def run_valuation_pass(
         par_context: dict[str, dict] = {}
         for pos, group in pos_groups.items():
             pool_size = pool_sizes.get(pos, len(group))
-            # Use adjusted_ppr (x[2]) for PAR calculations — dollar values reflect risk
-            sorted_pprs = [adj_ppr for _, _, adj_ppr in group]
+            # Use adjusted_ppr (x[2]) for PAR calculations — dollar values reflect risk.
+            # `group` is sorted by RAW ppr, but calculate_replacement_level indexes its
+            # input as descending-SORTED, so sort the adjusted values here — otherwise a
+            # discounted near-cutoff player (e.g. an injured TE) drags replacement below
+            # the true marginal value and inflates every par-ratio above it.
+            sorted_pprs = sorted((adj_ppr for _, _, adj_ppr in group), reverse=True)
             dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
 
             # Enforce replacement level bounds (PPR/game × 17 games)
@@ -1042,7 +1046,9 @@ async def write_format_value_sets(
             par_ctx: dict[str, tuple] = {}
             for pos, group in pos_groups.items():
                 pool_size = pool_sizes.get(pos, len(group))
-                sorted_pprs = [adj for _, _, adj in group]
+                # `group` is RAW-sorted; calculate_replacement_level assumes descending-
+                # sorted input, so sort the adjusted values (see the players-table pass).
+                sorted_pprs = sorted((adj for _, _, adj in group), reverse=True)
                 dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
                 floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
                 max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
