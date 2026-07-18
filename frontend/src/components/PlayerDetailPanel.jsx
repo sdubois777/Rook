@@ -314,12 +314,13 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                   )
                 })()}
 
-                {/* Reasoning — for AI projections and rookie Sonnet */}
-                {(player.profile.profile_source === 'sonnet_projection' || player.profile.profile_source === 'sonnet_rookie') && player.profile.projection_reasoning && (
-                  <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                    {player.profile.projection_reasoning}
-                  </p>
-                )}
+                {/* Projection prose intentionally NOT rendered: it re-narrates the same
+                    role/usage/efficiency background as the Valuation summary (the edge
+                    narrative we keep). profile.projection_reasoning is still generated —
+                    it's the projection agent's reasoning output AND an input to the
+                    valuation agent — we just don't display it here to avoid duplication.
+                    The projection NUMBER, floor/ceiling, and trajectory/separation/YAC
+                    chips below remain. */}
 
                 {/* College comps without Sonnet — show insufficient data note */}
                 {player.profile.profile_source === 'college_comps' && !baseline.projected_ppr_season && (
