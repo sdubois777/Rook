@@ -10,8 +10,8 @@ export async function searchPlayers(q, scoringFormat = 'ppr') {
   return data
 }
 
-export async function fetchPlayerSummary() {
-  const { data } = await api.get('/players/summary')
+export async function fetchPlayerSummary(scoringFormat = 'ppr') {
+  const { data } = await api.get('/players/summary', { params: { scoring_format: scoringFormat } })
   return data
 }
 
