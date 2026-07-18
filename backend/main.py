@@ -315,27 +315,38 @@ th { background: #f8fafc; }
 """
 
 
-def _render_privacy_html() -> str:
-    """Render the policy markdown to a self-contained HTML page. Defensive: a
-    missing/unreadable file yields a minimal valid page rather than crashing boot."""
+def _render_policy_page(md_path: Path, title: str, fallback_body: str) -> str:
+    """Render a legal-doc markdown file to a self-contained HTML page (shared by
+    /privacy and /terms so the two stay identical). Defensive: a missing/unreadable
+    file yields a minimal valid page rather than crashing boot."""
     try:
         import markdown
         body = markdown.markdown(
-            _PRIVACY_MD.read_text(encoding="utf-8"),
+            md_path.read_text(encoding="utf-8"),
             extensions=["tables", "fenced_code", "sane_lists"],
         )
-    except Exception as exc:  # never let the policy page take down startup
-        logger.error("Privacy policy render failed: %s", exc)
-        body = "<h1>Rook Privacy Policy</h1><p>Contact rookadmin@rookff.com.</p>"
+    except Exception as exc:  # never let a policy page take down startup
+        logger.error("%s render failed: %s", title, exc)
+        body = fallback_body
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>Rook Privacy Policy</title>"
+        f"<title>{title}</title>"
         f"<style>{_PRIVACY_CSS}</style></head><body><main>{body}</main></body></html>"
     )
 
 
-_PRIVACY_HTML = _render_privacy_html()
+_PRIVACY_HTML = _render_policy_page(
+    _PRIVACY_MD, "Rook Privacy Policy",
+    "<h1>Rook Privacy Policy</h1><p>Contact rookadmin@rookff.com.</p>",
+)
+_TERMS_MD = (
+    Path(__file__).resolve().parent.parent / "docs" / "business" / "rook-terms-of-service.md"
+)
+_TERMS_HTML = _render_policy_page(
+    _TERMS_MD, "Rook Terms of Service",
+    "<h1>Rook Terms of Service</h1><p>Contact support@rookff.com.</p>",
+)
 
 
 @app.get("/privacy", include_in_schema=False)
@@ -344,6 +355,16 @@ async def privacy_policy():
     """Public privacy policy — no auth, full content server-rendered."""
     return HTMLResponse(
         _PRIVACY_HTML,
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/terms", include_in_schema=False)
+@app.get("/terms.html", include_in_schema=False)
+async def terms_of_service():
+    """Public terms of service — no auth, full content server-rendered (mirrors /privacy)."""
+    return HTMLResponse(
+        _TERMS_HTML,
         headers={"Cache-Control": "public, max-age=3600"},
     )
 
@@ -363,6 +384,7 @@ _SITEMAP_URLS: list[tuple[str, str, str]] = [
     ("/", "weekly", "1.0"),
     ("/pricing", "monthly", "0.7"),
     ("/privacy", "yearly", "0.3"),
+    ("/terms", "yearly", "0.3"),
 ]
 
 # AI crawlers explicitly named (welcomed); auth-gated app routes disallowed for

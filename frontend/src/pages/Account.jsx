@@ -7,6 +7,7 @@ import { createPortal, redirectTo } from '../api/billing'
 import ChangePlanCard from '../components/billing/ChangePlanCard'
 import BuyCreditsCard from '../components/billing/BuyCreditsCard'
 import LeagueChooser from '../components/billing/LeagueChooser'
+import LandingFooter from '../components/landing/LandingFooter'
 import { SCORING_LABELS } from '../lib/constants'
 import { usePricing } from '../hooks/usePricing'
 
@@ -498,6 +499,8 @@ export default function AccountPage() {
           <SignOutButton />
         </div>
       </div>
+
+      <LandingFooter />
     </div>
   )
 }
