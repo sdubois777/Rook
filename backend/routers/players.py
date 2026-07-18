@@ -317,10 +317,21 @@ async def search_players(
 
 
 @router.get("/summary", response_model=PlayerSummaryResponse)
-async def player_summary(db=Depends(get_db)) -> PlayerSummaryResponse:
-    """Position counts by tier for scarcity display."""
+async def player_summary(
+    scoring_format: str = "ppr",
+    db=Depends(get_db),
+) -> PlayerSummaryResponse:
+    """Position counts by tier for the scarcity panel. PPR reads the players-table tier
+    (byte-identical). Non-PPR reads the per-format tiers from player_format_values so the
+    panel varies with the league's scoring format (fewer elite pass-catchers in Standard).
+    Mirrors the format threading already on /players, /players/{id}, /draftboard."""
+    from backend.services.format_display import resolve_scoring_format
+    scoring_format, _defaulted = resolve_scoring_format(scoring_format)
     repo = PlayerRepository(db)
-    rows = await repo.count_by_position_tier()
+    if scoring_format == "ppr":
+        rows = await repo.count_by_position_tier()
+    else:
+        rows = await repo.count_by_position_tier_format(scoring_format)
     total_players = await repo.count_all()
 
     position_counts: dict[str, PositionCounts] = {}

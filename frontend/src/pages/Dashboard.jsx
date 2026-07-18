@@ -97,10 +97,11 @@ export default function Dashboard() {
     queryFn: () => fetchNews({ days: 7, per_page: 5 }),
   })
 
-  // Position scarcity
+  // Position scarcity — per the selected league's scoring format. The format is in the
+  // query key so the panel refetches on a league switch (was static → never updated).
   const { data: summaryData } = useQuery({
-    queryKey: ['dashboard-summary'],
-    queryFn: fetchPlayerSummary,
+    queryKey: ['dashboard-summary', scoringFormat],
+    queryFn: () => fetchPlayerSummary(scoringFormat),
   })
 
   // Watchlist players
