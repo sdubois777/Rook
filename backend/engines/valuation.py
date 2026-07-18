@@ -171,7 +171,11 @@ _PAR_RATIO_THRESHOLDS = {
     "QB": {"T1": Decimal("1.15"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
     "RB": {"T1": Decimal("1.9"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
     "WR": {"T1": Decimal("2.0"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
-    "TE": {"T1": Decimal("1.85"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
+    # TE T1 calibrated to the natural par-ratio cliff: it sits in the McBride(~1.77)↔
+    # Loveland/Pitts(~1.74) gap so the elite tier is Warren + McBride (the real drop-off
+    # after the field's clear #1/#2), not the whole startable-TE pack. TE-specific — QB/
+    # RB/WR untouched. Applies to every format via the per-format PFV pass.
+    "TE": {"T1": Decimal("1.755"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
 }
 
 _T4_FLOOR = Decimal("0.8")  # T4: >= 0.8x replacement, all positions
@@ -827,8 +831,12 @@ async def run_valuation_pass(
         par_context: dict[str, dict] = {}
         for pos, group in pos_groups.items():
             pool_size = pool_sizes.get(pos, len(group))
-            # Use adjusted_ppr (x[2]) for PAR calculations — dollar values reflect risk
-            sorted_pprs = [adj_ppr for _, _, adj_ppr in group]
+            # Use adjusted_ppr (x[2]) for PAR calculations — dollar values reflect risk.
+            # `group` is sorted by RAW ppr, but calculate_replacement_level indexes its
+            # input as descending-SORTED, so sort the adjusted values here — otherwise a
+            # discounted near-cutoff player (e.g. an injured TE) drags replacement below
+            # the true marginal value and inflates every par-ratio above it.
+            sorted_pprs = sorted((adj_ppr for _, _, adj_ppr in group), reverse=True)
             dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
 
             # Enforce replacement level bounds (PPR/game × 17 games)
@@ -1042,7 +1050,9 @@ async def write_format_value_sets(
             par_ctx: dict[str, tuple] = {}
             for pos, group in pos_groups.items():
                 pool_size = pool_sizes.get(pos, len(group))
-                sorted_pprs = [adj for _, _, adj in group]
+                # `group` is RAW-sorted; calculate_replacement_level assumes descending-
+                # sorted input, so sort the adjusted values (see the players-table pass).
+                sorted_pprs = sorted((adj for _, _, adj in group), reverse=True)
                 dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
                 floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
                 max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17

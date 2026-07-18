@@ -181,6 +181,36 @@ async def test_player_summary():
     assert data["position_counts"]["WR"]["tier2"] == 20
 
 
+@pytest.mark.asyncio
+async def test_player_summary_non_ppr_reads_per_format_tiers():
+    """A non-PPR format counts tiers from the per-format PFV rows (format-aware panel),
+    not the players-table tier column — so Standard shows fewer elite pass-catchers."""
+    session = AsyncMock()
+
+    # Grouped position/tier/count sourced from player_format_values for standard.
+    rows = [("TE", 1, 0), ("TE", 2, 6), ("WR", 1, 0), ("RB", 1, 2), ("QB", 1, 1)]
+    grouped_result = MagicMock()
+    grouped_result.all.return_value = rows
+    total_result = MagicMock()
+    total_result.scalar.return_value = 121
+    session.execute = AsyncMock(side_effect=[grouped_result, total_result])
+
+    app.dependency_overrides[get_db] = _override_db(session)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/players/summary", params={"scoring_format": "standard"})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Standard: no elite (T1) TEs or WRs — the format-correct scarcity picture.
+    assert data["position_counts"]["TE"]["tier1"] == 0
+    assert data["position_counts"]["TE"]["tier2"] == 6
+    assert data["position_counts"]["WR"]["tier1"] == 0
+    assert data["position_counts"]["RB"]["tier1"] == 2
+
+
 # ---------------------------------------------------------------------------
 # GET /players/{id}
 # ---------------------------------------------------------------------------
