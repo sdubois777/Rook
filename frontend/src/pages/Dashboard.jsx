@@ -11,6 +11,7 @@ import { useUIStore } from '../stores/ui'
 import { useLeague } from '../context/LeagueContext'
 import { PlayerBadges } from '../components/shared/PlayerName'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
+import LandingFooter from '../components/landing/LandingFooter'
 import {
   getBidCeiling,
   getAdpDiff,
@@ -316,6 +317,8 @@ export default function Dashboard() {
       {detailPanelOpen && selectedPlayerId && (
         <PlayerDetailPanel playerId={selectedPlayerId} />
       )}
+
+      <LandingFooter />
     </div>
   )
 }
