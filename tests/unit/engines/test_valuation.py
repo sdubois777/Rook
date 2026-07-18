@@ -46,11 +46,12 @@ def test_assign_tier_wr_elite_par_is_tier1():
 
 
 def test_assign_tier_te_elite_par_is_tier1():
-    """TE PAR ratio >= 1.85 → T1 (McBride/Bowers clear gap above field)."""
+    """TE PAR ratio >= 1.755 → T1. Bar sits in the McBride↔Loveland/Pitts par-ratio gap
+    so the elite tier is the real #1/#2 (Warren + McBride), not the whole startable pack."""
     assert assign_tier(2.5, "TE") == 1
     assert assign_tier(2.05, "TE") == 1
-    assert assign_tier(1.85, "TE") == 1
-    assert assign_tier(1.84, "TE") == 2
+    assert assign_tier(1.755, "TE") == 1
+    assert assign_tier(1.75, "TE") == 2
 
 
 def test_assign_tier_qb_elite_par_is_tier1():

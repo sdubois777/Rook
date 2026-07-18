@@ -171,7 +171,11 @@ _PAR_RATIO_THRESHOLDS = {
     "QB": {"T1": Decimal("1.15"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
     "RB": {"T1": Decimal("1.9"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
     "WR": {"T1": Decimal("2.0"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
-    "TE": {"T1": Decimal("1.85"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
+    # TE T1 calibrated to the natural par-ratio cliff: it sits in the McBride(~1.77)↔
+    # Loveland/Pitts(~1.74) gap so the elite tier is Warren + McBride (the real drop-off
+    # after the field's clear #1/#2), not the whole startable-TE pack. TE-specific — QB/
+    # RB/WR untouched. Applies to every format via the per-format PFV pass.
+    "TE": {"T1": Decimal("1.755"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
 }
 
 _T4_FLOOR = Decimal("0.8")  # T4: >= 0.8x replacement, all positions
