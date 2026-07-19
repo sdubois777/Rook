@@ -144,6 +144,11 @@ _TS_MATERIAL_FIELDS = (
 _DEP_MATERIAL_FIELDS = (
     "flag_type", "trigger_player_name", "trigger_condition",
     "effect_on_value", "value_impact_pct", "confidence", "season_year",
+    # reasoning is now passed into the projection context (Bug-1 fix), so it is a
+    # MATERIAL input — a reasoning change must re-fingerprint and regenerate. Adding
+    # it here also invalidates every existing profile so the re-run picks up the new
+    # condition-labelled context (the fix is inert until profiles regenerate).
+    "reasoning",
 )
 
 # Injury-profile fields the profile context consumes (timestamps excluded).
@@ -1309,8 +1314,15 @@ class PlayerProfilesAgent(BaseAgent):
             flags_by_player.setdefault(player_name, []).append({
                 "type":       dep.flag_type,
                 "trigger":    dep.trigger_player_name,
+                # trigger_condition is the field the grounding clamp references —
+                # only "departed_team" is a real roster move; "injured" /
+                # "active_and_healthy" are NOT. Without it the model can't tell them
+                # apart and guesses "departure". reasoning is the correct upstream
+                # explanation ("if X misses time…"), previously discarded here.
+                "trigger_condition": dep.trigger_condition,
                 "effect":     dep.effect_on_value,
                 "confidence": dep.confidence,
+                "reasoning":  dep.reasoning,
             })
         return flags_by_player
 
