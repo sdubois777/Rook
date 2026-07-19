@@ -1535,7 +1535,15 @@ async def _bulk_resolve_player_ids(
     Returns {(name, team): (player_id, resolved_team)}.
     """
     results: dict[tuple, tuple[str | None, str | None]] = {}
-    unique_lasts = {name.split()[-1] for name, _ in names_and_teams if name}
+    # Key by the SUFFIX-STRIPPED surname (via _norm_name) so a suffixed rostered
+    # player ("Chris Godwin Jr." → "godwin") is a candidate for a plain-surname
+    # lookup. The old code keyed on name.split()[-1] → "jr.", so the suffixed player
+    # was invisible and a same-surname free agent (Terry Godwin) got picked.
+    unique_lasts = {
+        _norm_name(name).split()[-1]
+        for name, _ in names_and_teams
+        if _norm_name(name)
+    }
     if not unique_lasts:
         return results
 
@@ -1547,34 +1555,54 @@ async def _bulk_resolve_player_ids(
 
     player_map: dict[str, list[Player]] = {}
     for p in all_players:
-        last = p.name.split()[-1].lower()
-        player_map.setdefault(last, []).append(p)
+        norm = _norm_name(p.name)
+        if norm:
+            player_map.setdefault(norm.split()[-1], []).append(p)
+
+    def _rostered(p) -> bool:
+        return bool(p.team_abbr) and p.team_abbr.upper() != "FA"
 
     for name, team in names_and_teams:
         if not name:
             results[(name, team)] = (None, None)
             continue
-        last = name.split()[-1].lower()
+        nname = _norm_name(name)
+        last = nname.split()[-1] if nname else ""
+        team_u = team.upper() if team else None
         candidates = player_map.get(last, [])
         if not candidates:
             results[(name, team)] = (None, None)
-        elif len(candidates) == 1:
-            results[(name, team)] = (str(candidates[0].id), candidates[0].team_abbr)
-        else:
-            # Prefer exact full-name match
-            exact = [p for p in candidates if p.name.lower() == name.lower()]
-            if len(exact) == 1:
-                results[(name, team)] = (str(exact[0].id), exact[0].team_abbr)
-                continue
-            # Then filter by team
-            if team:
-                match = [p for p in (exact or candidates) if p.team_abbr == team.upper()]
-                if match:
-                    results[(name, team)] = (str(match[0].id), match[0].team_abbr)
-                    continue
-            # Last resort: first candidate (but flag team for cross-team validation)
-            pick = (exact or candidates)[0]
+            continue
+
+        # 1) EXACT normalized full-name match (suffix-insensitive). Among ties prefer
+        #    the requested team, then a rostered player, then the first.
+        exact = [p for p in candidates if _norm_name(p.name) == nname]
+        if exact:
+            pick = (
+                next((p for p in exact if team_u and (p.team_abbr or "").upper() == team_u), None)
+                or next((p for p in exact if _rostered(p)), None)
+                or exact[0]
+            )
             results[(name, team)] = (str(pick.id), pick.team_abbr)
+            continue
+
+        # 2) No exact match — accept ONLY a UNIQUE candidate on the requested team (a
+        #    strong signal it's the right human despite a surface name difference).
+        if team_u:
+            team_match = [p for p in candidates if (p.team_abbr or "").upper() == team_u]
+            if len(team_match) == 1:
+                results[(name, team)] = (str(team_match[0].id), team_match[0].team_abbr)
+                continue
+
+        # 3) No safe match — do NOT link. Never fall back to a same-surname, wrong-
+        #    first-name player (especially a free agent). Better no link than a wrong
+        #    human. Loud warning so the class is visible.
+        logger.warning(
+            "roster_changes resolution: no safe match for %r (team=%s) — surname "
+            "candidates=%s; leaving UNLINKED rather than picking a wrong human.",
+            name, team, [p.name for p in candidates],
+        )
+        results[(name, team)] = (None, None)
 
     return results
 

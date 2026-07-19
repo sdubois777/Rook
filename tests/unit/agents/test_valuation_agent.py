@@ -313,3 +313,32 @@ def test_half_ppr_prompt_labels_half_and_tempers():
     assert "HALF-PPR" in sp
     assert "12-team PPR fantasy football league" not in sp
     assert "0.5 points per reception" in sp
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — valuation context must carry trigger_condition + reasoning
+# ---------------------------------------------------------------------------
+
+def test_valuation_dependency_flags_carry_condition_and_reasoning():
+    """_build_player_context must include trigger_condition + reasoning per flag, so
+    auction_note can distinguish an injured beneficiary from a departed one."""
+    from types import SimpleNamespace
+
+    dep = SimpleNamespace(
+        flag_type="beneficiary", trigger_player_name="Travis Kelce",
+        value_impact_pct=0.12, trigger_condition="injured",
+        reasoning="if Kelce's volume declines due to age or injury",
+    )
+    p = SimpleNamespace(
+        name="Xavier Worthy", position="WR", team_abbr="KC", age=22, tier=2,
+        is_rookie=False, recommended_bid_ceiling=None, baseline_value=None,
+        market_value=None, value_gap=None, value_gap_signal=None, ceiling_value=None,
+        floor_value=None, market_value_fantasypros=None, historic_prices=[],
+        profile=None, injury_profile=None, schedule=None, dependencies=[dep],
+    )
+    agent = ValuationAgent.__new__(ValuationAgent)
+    ctx = agent._build_player_context(p)
+
+    df = ctx["dependency_flags"][0]
+    assert df["trigger_condition"] == "injured"
+    assert "injury" in df["reasoning"]

@@ -1930,3 +1930,63 @@ async def test_suffix_mismatch_does_not_cause_false_departure():
     # Brian Thomas should NOT be flagged as departed — suffix mismatch handled
     departed_triggers = {f["trigger_player_name"] for f in flags}
     assert "Brian Thomas Jr." not in departed_triggers
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — beneficiary resolution: suffix keying + no FA/wrong-human links
+# ---------------------------------------------------------------------------
+
+def _fake_session_returning(players):
+    res = MagicMock()
+    res.scalars.return_value.all.return_value = players
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=res)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_suffixed_names_and_no_fa_link(caplog):
+    """Bug 2: a suffixed rostered player must win over a same-surname free agent;
+    the 4 known-bad rows must resolve correctly; a name with no real match must NOT
+    link to a wrong-first-name FA (no link + loud warn); Evans->Egbuka unchanged."""
+    import logging
+    import uuid
+    from types import SimpleNamespace
+    from backend.agents.roster_changes import _bulk_resolve_player_ids
+
+    def P(name, team):
+        return SimpleNamespace(id=uuid.uuid4(), name=name, team_abbr=team)
+
+    players = [
+        P("Chris Godwin Jr.", "TB"),   P("Terry Godwin", None), P("Godwin Igwebuike", None),
+        P("Calvin Austin III", "PIT"), P("Miles Austin", None),
+        P("Dont'e Thornton Jr.", "LV"), P("Tyquan Thornton", "KC"),
+        P("Daniel Rodriguez", None),   # NO "Chris Rodriguez" exists
+        P("Emeka Egbuka", "TB"),        P("Mike Evans", "SF"), P("Tez Johnson", "TB"),
+    ]
+    id_of = {p.name: str(p.id) for p in players}
+    session = _fake_session_returning(players)
+
+    pairs = [
+        ("Chris Godwin", "TB"), ("Calvin Austin", "PIT"), ("Dont'e Thornton", "LV"),
+        ("Chris Rodriguez", "JAX"),
+        ("Emeka Egbuka", "TB"), ("Mike Evans", "TB"), ("Tez Johnson", "TB"),
+    ]
+    with caplog.at_level(logging.WARNING):
+        idmap = await _bulk_resolve_player_ids(session, pairs)
+
+    def got(n, t):
+        return idmap[(n, t)][0]
+
+    # The 4 known-bad rows resolve to the correct rostered/suffixed player.
+    assert got("Chris Godwin", "TB") == id_of["Chris Godwin Jr."]
+    assert got("Calvin Austin", "PIT") == id_of["Calvin Austin III"]
+    assert got("Dont'e Thornton", "LV") == id_of["Dont'e Thornton Jr."]
+    # No real "Chris Rodriguez" → NO link (must NOT pick Daniel Rodriguez, a FA).
+    assert got("Chris Rodriguez", "JAX") is None
+    assert any("rodriguez" in r.getMessage().lower() for r in caplog.records)
+
+    # Canonical Evans→Egbuka set unchanged (byte-identical linkage).
+    assert got("Emeka Egbuka", "TB") == id_of["Emeka Egbuka"]
+    assert got("Mike Evans", "TB") == id_of["Mike Evans"]   # exact name wins over team hint
+    assert got("Tez Johnson", "TB") == id_of["Tez Johnson"]

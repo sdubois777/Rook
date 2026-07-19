@@ -85,7 +85,7 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     and the hybrid would cache-hit and serve numbers reasoned BEFORE the new signals
 #     existed. Bumping forces a genuine re-reason over the current signals. (The hybrid's
 #     own `hybrid` cache marker still separates it from the PPR namespace.)
-VALUATION_AGENT_VERSION = "v6"  # v6: transaction-grounding clamp (no ungrounded departures)
+VALUATION_AGENT_VERSION = "v7"  # v7: dep-flag context carries trigger_condition + reasoning
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
@@ -837,7 +837,12 @@ class ValuationAgent(BaseAgent):
             dep_flags.append({
                 "flag_type": dep.flag_type,
                 "trigger": dep.trigger_player_name,
+                # trigger_condition (referenced by the grounding clamp) + the correct
+                # upstream reasoning — so auction_note can tell an injured beneficiary
+                # from a departed one instead of guessing "departure".
+                "trigger_condition": dep.trigger_condition,
                 "impact_pct": float(dep.value_impact_pct) if dep.value_impact_pct else None,
+                "reasoning": dep.reasoning,
             })
         if dep_flags:
             ctx["dependency_flags"] = dep_flags
