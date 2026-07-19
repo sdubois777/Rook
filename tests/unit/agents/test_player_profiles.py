@@ -2702,10 +2702,9 @@ def test_prompt_version_triggers_regeneration():
     )
 
 
-def test_prompt_version_constant_is_v7():
-    """Sanity: prompt version is v7 after adding projected_receptions (per-format
-    reprice basis)."""
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
+def test_prompt_version_constant_is_v8():
+    """Sanity: prompt version is v8 after the transaction-grounding clamp."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v8"
 
 
 # ---------------------------------------------------------------------------
@@ -3218,4 +3217,4 @@ def test_prompt_v7_asks_for_projected_receptions_in_both_paths():
     projected_receptions, or the backfill won't populate the reprice basis."""
     src = Path("backend/agents/player_profiles.py").read_text(encoding="utf-8")
     assert src.count('"projected_receptions"') >= 2   # both output schemas
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v8"
