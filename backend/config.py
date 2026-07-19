@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # and which price ids are populated is purely an environment concern, no code branch.
     stripe_secret_key: Optional[str] = None
     stripe_webhook_secret: Optional[str] = None
+    # Local-dev ESCAPE HATCH ONLY: accept an UNSIGNED webhook (no Stripe-Signature
+    # header) without verification. Defaults to False (verify). Requires BOTH this
+    # AND environment != "production" to ever take the unverified path — a present
+    # signature is ALWAYS verified regardless. Never set this in any deployed env.
+    stripe_allow_unverified_webhooks: bool = False
     # Subscription price ids (recurring monthly, one per tier)
     stripe_price_standard_monthly: Optional[str] = None
     stripe_price_standard_season: Optional[str] = None

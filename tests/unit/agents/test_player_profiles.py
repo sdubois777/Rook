@@ -2702,10 +2702,9 @@ def test_prompt_version_triggers_regeneration():
     )
 
 
-def test_prompt_version_constant_is_v7():
-    """Sanity: prompt version is v7 after adding projected_receptions (per-format
-    reprice basis)."""
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
+def test_prompt_version_constant_is_v8():
+    """Sanity: prompt version is v8 after the transaction-grounding clamp."""
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v8"
 
 
 # ---------------------------------------------------------------------------
@@ -3218,4 +3217,38 @@ def test_prompt_v7_asks_for_projected_receptions_in_both_paths():
     projected_receptions, or the backfill won't populate the reprice basis."""
     src = Path("backend/agents/player_profiles.py").read_text(encoding="utf-8")
     assert src.count('"projected_receptions"') >= 2   # both output schemas
-    assert PLAYER_PROFILES_PROMPT_VERSION == "v7"
+    assert PLAYER_PROFILES_PROMPT_VERSION == "v8"
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — dependency-flag context must carry trigger_condition + reasoning
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_team_dependency_flags_carry_condition_and_reasoning():
+    """_get_team_dependency_flags must expose trigger_condition (the field the clamp
+    references) and the upstream reasoning, so the agent can tell injured from
+    departed instead of guessing 'departure'."""
+    from types import SimpleNamespace
+    from backend.agents.player_profiles import PlayerProfilesAgent
+
+    dep = SimpleNamespace(
+        flag_type="beneficiary", trigger_player_name="Christian McCaffrey",
+        effect_on_value="positive", confidence="high",
+        trigger_condition="injured",
+        reasoning="if CMC misses time Guerendo absorbs the workload",
+    )
+    res = MagicMock()
+    res.all.return_value = [(dep, "Isaac Guerendo")]
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=res)
+
+    agent = PlayerProfilesAgent.__new__(PlayerProfilesAgent)
+    with patch("backend.agents.player_profiles.AsyncSessionLocal", return_value=session):
+        out = await agent._get_team_dependency_flags("SF")
+
+    flag = out["Isaac Guerendo"][0]
+    assert flag["trigger_condition"] == "injured"
+    assert "misses time" in flag["reasoning"]

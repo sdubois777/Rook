@@ -40,10 +40,15 @@ class FeatureService:
 
     @staticmethod
     def can_add_league(user: User, current_count: int) -> None:
-        """Raises LeagueLimitError if user is at their league limit."""
-        from backend.core.exceptions import LeagueLimitError
+        """Raises LeagueLimitError if user is at their league limit.
 
-        limits = TIER_LIMITS.get(user.tier, {})
+        Uses the EFFECTIVE tier — an expired season entitlement caps as free, so an
+        expired Pro can't keep adding leagues past the free cap before the lazy
+        write-back lands."""
+        from backend.core.exceptions import LeagueLimitError
+        from backend.models.user import effective_tier
+
+        limits = TIER_LIMITS.get(effective_tier(user), {})
         max_leagues = limits.get("max_leagues")
 
         if max_leagues is not None and current_count >= max_leagues:
@@ -54,8 +59,10 @@ class FeatureService:
 
     @staticmethod
     def get_limits(user: User) -> dict:
-        """Return full tier limits for user's tier."""
-        return TIER_LIMITS.get(user.tier, {}).copy()
+        """Return full tier limits for the user's EFFECTIVE tier (an expired season
+        entitlement resolves to free)."""
+        from backend.models.user import effective_tier
+        return TIER_LIMITS.get(effective_tier(user), {}).copy()
 
 
 def _find_min_tier(feature: str) -> str:

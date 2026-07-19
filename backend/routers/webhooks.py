@@ -127,37 +127,47 @@ async def _verify_stripe_signature(request: Request) -> dict:
     from backend.config import settings
 
     body = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
     webhook_secret = settings.stripe_webhook_secret
 
-    if not webhook_secret:
-        if settings.environment == "production":
-            raise HTTPException(
-                status_code=400,
-                detail="Webhook secret not configured",
-            )
-        # Dev: parse without verification
-        return json.loads(body)
+    # (1) A signature is present → ALWAYS verify, in EVERY environment. A present-
+    # but-invalid signature is a hard 400 — it NEVER falls through to unverified
+    # parsing. If we can't verify (no secret), fail closed rather than trust it.
+    if sig_header:
+        if not webhook_secret:
+            logger.warning("Stripe webhook: signature present but no secret configured")
+            raise HTTPException(status_code=400, detail="Webhook secret not configured")
+        try:
+            from backend.services.billing import stripe_gateway
 
-    sig_header = request.headers.get("stripe-signature", "")
-    try:
-        from backend.services.billing import stripe_gateway
+            # construct_event verifies the signature (raises on tamper/mismatch).
+            # We then parse the raw body ourselves: construct_event returns a
+            # stripe.Event (StripeObject) whose attribute access is key-based —
+            # `event.get(...)` raises — so we hand the handler plain nested dicts
+            # from json.loads. (Body is unchanged, so re-parsing is safe.)
+            stripe_gateway.construct_event(body, sig_header, webhook_secret)
+            return json.loads(body)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("Stripe webhook signature invalid: %s", e)
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
-        # construct_event verifies the signature (raises on tamper/mismatch). We
-        # then parse the raw body ourselves: construct_event returns a stripe.Event
-        # (StripeObject) whose attribute access is key-based — `event.get(...)`
-        # raises — so we hand the handler plain nested dicts from json.loads,
-        # identical to the dev-unverified path. (Body is unchanged, so parsing it
-        # after a successful verify is safe.)
-        stripe_gateway.construct_event(body, sig_header, webhook_secret)
-        return json.loads(body)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Stripe webhook signature invalid: %s", e)
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid webhook signature",
+    # (2) No signature header. Production ALWAYS rejects (an unverified endpoint is
+    # an entitlement-forgery hole). The unverified parse is a local-dev escape hatch
+    # requiring TWO independent opt-ins, each defaulting to "verify":
+    #   - settings.stripe_allow_unverified_webhooks is True (default False), AND
+    #   - environment != "production".
+    if settings.stripe_allow_unverified_webhooks and settings.environment != "production":
+        logger.warning(
+            "⚠️⚠️ STRIPE WEBHOOK ACCEPTED WITHOUT SIGNATURE VERIFICATION ⚠️⚠️ "
+            "(stripe_allow_unverified_webhooks=True, environment=%s). "
+            "This trusts an unsigned payload — DEV ONLY, NEVER production.",
+            settings.environment,
         )
+        return json.loads(body)
+
+    raise HTTPException(status_code=400, detail="Missing Stripe signature")
 
 
 @router.post("/stripe")
@@ -180,7 +190,15 @@ async def stripe_webhook(
     result = await service.process(event)
 
     logger.info(
-        "Stripe webhook: %s (duplicate=%s, handled=%s)",
-        result.event_type, result.duplicate, result.handled,
+        "Stripe webhook: %s (duplicate=%s, handled=%s, retry=%s)",
+        result.event_type, result.duplicate, result.handled, result.retry,
     )
+    # An entitlement-bearing event whose customer didn't resolve was NOT recorded
+    # (see StripeWebhookService.process) — return 5xx so Stripe redelivers it,
+    # rather than 200'ing a real payment into a silent drop.
+    if result.retry:
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook could not resolve customer; will retry",
+        )
     return {"ok": True}
