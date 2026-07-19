@@ -20,14 +20,26 @@ from backend.services.billing.webhook_service import StripeWebhookService
 # ── fakes ───────────────────────────────────────────────────────────────
 
 class FakeEventRepo:
+    """Models layer-1 dedup AS A TRANSACTION: mark_processed stages a pending
+    insert; db.commit persists it, db.rollback discards it — so a failed event is
+    not durably recorded and a redelivery reprocesses (wired in _build)."""
+
     def __init__(self):
-        self.seen = set()
+        self.committed = set()
+        self._pending = set()
 
     async def mark_processed(self, event_id):
-        if event_id in self.seen:
+        if event_id in self.committed or event_id in self._pending:
             return False
-        self.seen.add(event_id)
+        self._pending.add(event_id)
         return True
+
+    def _commit(self):
+        self.committed |= self._pending
+        self._pending = set()
+
+    def _rollback(self):
+        self._pending = set()
 
 
 class FakePackRepo:
@@ -101,13 +113,17 @@ def _make_user(tier="free", credits=30, customer_id="cus_1"):
 
 def _build(user):
     repo = FakeUserRepo(user)
+    events = FakeEventRepo()
     db = MagicMock()
-    db.commit = AsyncMock()
+    # Wire commit/rollback to the fake event repo's txn state so "recorded only on
+    # success" and "rolled back on failure" are observable.
+    db.commit = AsyncMock(side_effect=events._commit)
+    db.rollback = AsyncMock(side_effect=events._rollback)
     service = StripeWebhookService(
         db,
         user_repo=repo,
         user_service=UserService(repo),
-        events=FakeEventRepo(),
+        events=events,
         packs=(packs := FakePackRepo()),
         leagues=(leagues := FakeLeagueReconciler()),
     )
@@ -373,13 +389,57 @@ async def test_redelivered_event_id_is_a_noop():
 
 
 @pytest.mark.asyncio
-async def test_unknown_customer_is_a_safe_noop():
+async def test_unmatched_customer_retries_and_is_not_recorded():
+    """An entitlement event whose customer resolves to no user must NOT be
+    recorded (so Stripe redelivers) — no silent 200-drop of a real payment."""
     user = _make_user(tier="standard", credits=100, customer_id="cus_1")
-    service, _db = _build(user)
+    service, db = _build(user)
 
     obj = {"id": "cs_x", "customer": "cus_OTHER", "mode": "payment",
            "metadata": {"pack": "credits_100", "credits": "100"}}
     result = await service.process(_event("checkout.session.completed", obj))
 
-    assert result.handled
-    assert user.credits_remaining == 100  # untouched
+    assert result.retry is True
+    assert not result.handled
+    assert user.credits_remaining == 100          # side effect NOT applied
+    db.commit.assert_not_awaited()                # NOT recorded as processed
+    db.rollback.assert_awaited_once()             # rolled back for clean redelivery
+    assert service._events.committed == set()     # event id not durably kept
+
+
+@pytest.mark.asyncio
+async def test_replay_of_failed_event_processes_normally():
+    """A previously-failed (unmatched, rolled-back) event, redelivered after the
+    user is resolvable, must reprocess — the event id was not burned."""
+    user = _make_user(tier="free", credits=30, customer_id="cus_1")
+    service, db = _build(user)
+
+    ev = _event(
+        "checkout.session.completed",
+        {"id": "cs_r", "customer": "cus_LATE", "mode": "subscription",
+         "subscription": "sub_9", "metadata": {"tier": "pro"}},
+        event_id="evt_replay",
+    )
+    r1 = await service.process(ev)
+    assert r1.retry is True and user.tier == "free"   # first delivery: no user yet
+
+    user.stripe_customer_id = "cus_LATE"              # user now resolvable
+    r2 = await service.process(ev)                    # SAME event id redelivered
+    assert r2.handled and not r2.duplicate            # reprocessed, not skipped
+    assert user.tier == "pro"
+
+
+@pytest.mark.asyncio
+async def test_no_customer_id_is_recorded_noop():
+    """An event with NO customer id is 'not applicable' (nothing to match) — it is
+    recorded + handled (no retry), distinct from an unmatched-but-present customer."""
+    user = _make_user(tier="standard", credits=100, customer_id="cus_1")
+    service, db = _build(user)
+
+    obj = {"id": "cs_none", "mode": "payment",
+           "metadata": {"pack": "credits_100", "credits": "100"}}  # no "customer"
+    result = await service.process(_event("checkout.session.completed", obj))
+
+    assert result.handled and not result.retry
+    assert user.credits_remaining == 100          # no side effect (no user)
+    db.commit.assert_awaited_once()               # recorded — retry would not help

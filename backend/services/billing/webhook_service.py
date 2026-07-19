@@ -29,6 +29,17 @@ class WebhookResult:
     duplicate: bool = False
     handled: bool = False
     event_type: Optional[str] = None
+    retry: bool = False  # entitlement event whose customer didn't resolve → make Stripe redeliver
+
+
+class UnmatchedCustomerError(Exception):
+    """An entitlement-bearing event carried a customer id that resolves to no user.
+    This is a 'should have matched but didn't' failure (a real payment we can't
+    apply), NOT a benign no-op — the event must NOT be recorded so Stripe retries."""
+
+    def __init__(self, customer_id: str):
+        super().__init__(f"No user for Stripe customer {customer_id}")
+        self.customer_id = customer_id
 
 
 class StripeWebhookService:
@@ -65,7 +76,10 @@ class StripeWebhookService:
         event_id = event.get("id")
         event_type = event.get("type")
 
-        # Layer 1 — global idempotency BEFORE any side effect.
+        # Layer 1 — global idempotency BEFORE any side effect. The insert lives in
+        # THIS uncommitted transaction: a genuine duplicate (from a prior COMMITTED
+        # run) is caught here and skipped before any side effect, while a failure
+        # below rolls this insert back so a redelivery reprocesses cleanly.
         is_new = await self._events.mark_processed(event_id)
         if not is_new:
             logger.info("Stripe webhook: duplicate event %s ignored", event_id)
@@ -73,25 +87,50 @@ class StripeWebhookService:
 
         obj = (event.get("data") or {}).get("object") or {}
         handler = self._DISPATCH.get(event_type)
-        if handler is not None:
-            await handler(self, obj)
-        else:
-            logger.info("Stripe webhook: unhandled event type %s", event_type)
 
+        # NOT APPLICABLE: an event type we intentionally ignore. Record + 200 —
+        # retrying would never change the outcome.
+        if handler is None:
+            logger.info("Stripe webhook: unhandled event type %s", event_type)
+            await self._db.commit()
+            return WebhookResult(handled=False, event_type=event_type)
+
+        try:
+            await handler(self, obj)
+        except UnmatchedCustomerError as exc:
+            # SHOULD have matched but didn't. Roll back so the event is NOT recorded
+            # (the mark_processed insert is undone), then signal a retry. A generic
+            # handler exception also rolls back — it just propagates (→ 500) via the
+            # get_db dependency, same redelivery outcome.
+            await self._db.rollback()
+            logger.error(
+                "Stripe webhook UNMATCHED CUSTOMER — not recorded, will retry. "
+                "event_id=%s type=%s customer=%s",
+                event_id, event_type, exc.customer_id,
+            )
+            return WebhookResult(retry=True, event_type=event_type)
+
+        # Success (side effect applied, or a benign no-op inside the handler such as
+        # an event with no customer id). Commit the mark + side effects together.
         await self._db.commit()
-        return WebhookResult(handled=handler is not None, event_type=event_type)
+        return WebhookResult(handled=True, event_type=event_type)
 
     # ── user resolution (customer-id only) ──────────────────────────────
 
     async def _user_for(self, customer_id: Optional[str]):
+        """Resolve the user for an event, by stored customer id ONLY.
+
+        Returns None ONLY when the event carries NO customer id (not applicable —
+        nothing to match; the handler no-ops and the event is recorded + 200'd).
+        A customer id that resolves to no user RAISES UnmatchedCustomerError — a
+        real payment we can't apply must be retried, never silently dropped.
+        """
         if not customer_id:
             logger.warning("Stripe webhook: event with no customer id")
             return None
         user = await self._users.get_by_stripe_customer_id(customer_id)
         if user is None:
-            logger.warning(
-                "Stripe webhook: no user for customer %s", customer_id
-            )
+            raise UnmatchedCustomerError(customer_id)
         return user
 
     # ── handlers (§4) ───────────────────────────────────────────────────

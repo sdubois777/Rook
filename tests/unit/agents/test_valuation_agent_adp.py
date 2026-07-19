@@ -279,9 +279,10 @@ def test_prompt_auction_note_no_dollar_instruction():
 
 
 def test_valuation_agent_version_defined():
-    # Bumped to v5 to invalidate the cache after a full profile re-sweep (fresh
-    # projections + tier-band anchors + rush_efficiency_score) so the AI re-reasons.
-    assert VALUATION_AGENT_VERSION == "v5"
+    # Bumped to v7 to invalidate the cache after adding trigger_condition + reasoning
+    # to the dependency-flag context (the cache key is players+version, so the added
+    # context is inert until the version bump forces a re-reason).
+    assert VALUATION_AGENT_VERSION == "v7"
 
 
 def test_prompt_qb_floor_is_pick_40():

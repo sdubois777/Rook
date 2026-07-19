@@ -85,7 +85,7 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     and the hybrid would cache-hit and serve numbers reasoned BEFORE the new signals
 #     existed. Bumping forces a genuine re-reason over the current signals. (The hybrid's
 #     own `hybrid` cache marker still separates it from the PPR namespace.)
-VALUATION_AGENT_VERSION = "v5"
+VALUATION_AGENT_VERSION = "v7"  # v7: dep-flag context carries trigger_condition + reasoning
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
@@ -207,6 +207,13 @@ Rules:
 - nomination_target_flag = true means: "Nominate this player early — opponents will overpay, draining their budget"
 - auction_note must reference the player's specific situation (role / usage /
   production), not generic advice, and contain NO dollar amounts or bid prices
+- GROUNDING: do NOT assert that any player has left, joined, been traded, signed,
+  or changed teams, and do NOT name a specific player as a departed/added teammate,
+  unless that transaction is explicitly present in the provided dependency_flags or
+  context. Reason about opened opportunity / target share / role from the flags you
+  ARE given (using each flag's trigger_condition, e.g. departed_team / injured), never
+  from memory. Grounded specifics (a flag's named trigger + its actual condition, the
+  player's own team, real beat signals) are encouraged — do not sterilize into vagueness
 - Use market context (consensus ADP, prior price) to inform ai_bid_ceiling and
   value_assessment — but keep dollar figures OUT of auction_note
 - NEVER say "your league paid" or "in your league" — this analysis is shared across all users
@@ -830,7 +837,12 @@ class ValuationAgent(BaseAgent):
             dep_flags.append({
                 "flag_type": dep.flag_type,
                 "trigger": dep.trigger_player_name,
+                # trigger_condition (referenced by the grounding clamp) + the correct
+                # upstream reasoning — so auction_note can tell an injured beneficiary
+                # from a departed one instead of guessing "departure".
+                "trigger_condition": dep.trigger_condition,
                 "impact_pct": float(dep.value_impact_pct) if dep.value_impact_pct else None,
+                "reasoning": dep.reasoning,
             })
         if dep_flags:
             ctx["dependency_flags"] = dep_flags

@@ -115,3 +115,30 @@ def test_get_limits_returns_copy():
     # Ensure it's a copy, not the original
     limits["price_monthly_usd"] = 999
     assert FeatureService.get_limits(user)["price_monthly_usd"] == 8
+
+
+def test_expired_season_pro_capped_as_free_for_leagues():
+    """An expired season Pro must be capped at the FREE league limit, not Pro's
+    unlimited — the league gate now reads effective_tier."""
+    from datetime import datetime, timedelta, timezone
+    user = _FakeUser("pro")
+    user.tier_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+    # Free cap is 1: adding a second league must raise (Pro would allow it).
+    with pytest.raises(LeagueLimitError):
+        FeatureService.can_add_league(user, current_count=1)
+
+
+def test_unexpired_season_pro_keeps_unlimited_leagues():
+    from datetime import datetime, timedelta, timezone
+    user = _FakeUser("pro")
+    user.tier_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    FeatureService.can_add_league(user, current_count=100)  # no raise
+
+
+def test_get_limits_uses_effective_tier():
+    """Expired season entitlement → get_limits reflects the free tier."""
+    from datetime import datetime, timedelta, timezone
+    from backend.models.user import TIER_LIMITS
+    user = _FakeUser("pro")
+    user.tier_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+    assert FeatureService.get_limits(user)["max_leagues"] == TIER_LIMITS["free"]["max_leagues"]

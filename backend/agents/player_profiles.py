@@ -52,7 +52,7 @@ SKILL_POSITIONS = {"QB", "WR", "RB", "TE"}
 PROFILE_STALENESS_DAYS = 30
 
 # Increment whenever system prompts change to force regeneration of all profiles.
-PLAYER_PROFILES_PROMPT_VERSION = "v7"  # v7: projected_receptions (per-format reprice basis)
+PLAYER_PROFILES_PROMPT_VERSION = "v8"  # v8: transaction-grounding clamp (no ungrounded departures)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +144,11 @@ _TS_MATERIAL_FIELDS = (
 _DEP_MATERIAL_FIELDS = (
     "flag_type", "trigger_player_name", "trigger_condition",
     "effect_on_value", "value_impact_pct", "confidence", "season_year",
+    # reasoning is now passed into the projection context (Bug-1 fix), so it is a
+    # MATERIAL input — a reasoning change must re-fingerprint and regenerate. Adding
+    # it here also invalidates every existing profile so the re-run picks up the new
+    # condition-labelled context (the fix is inert until profiles regenerate).
+    "reasoning",
 )
 
 # Injury-profile fields the profile context consumes (timestamps excluded).
@@ -683,6 +688,17 @@ You receive:
 Your job: reason through ALL of these signals to produce a projected PPR total
 for the upcoming 17-game season. This is a forward projection that accounts for
 situation changes, role shifts, and risk factors — NOT a historical average.
+
+GROUNDING — transaction claims: Do NOT assert that any player has left, joined,
+been traded, signed, retired, or changed teams, and do NOT name a specific player
+as a departed or added teammate, UNLESS that transaction is explicitly present in
+the provided dependency_flags or context. Reason about opened opportunity, target
+share, and role from the flags you ARE given — using each flag's stated
+trigger_condition (e.g. departed_team, injured, active_and_healthy) — without
+inventing the cause or the player. Grounded specifics are encouraged: a flag's
+named trigger player with its ACTUAL trigger_condition, the player's own team, and
+real beat signals. If no departure/arrival flag is present, describe the opportunity
+without attributing it to a named transaction.
 
 Output ONLY a valid JSON object:
 {
@@ -1298,8 +1314,15 @@ class PlayerProfilesAgent(BaseAgent):
             flags_by_player.setdefault(player_name, []).append({
                 "type":       dep.flag_type,
                 "trigger":    dep.trigger_player_name,
+                # trigger_condition is the field the grounding clamp references —
+                # only "departed_team" is a real roster move; "injured" /
+                # "active_and_healthy" are NOT. Without it the model can't tell them
+                # apart and guesses "departure". reasoning is the correct upstream
+                # explanation ("if X misses time…"), previously discarded here.
+                "trigger_condition": dep.trigger_condition,
                 "effect":     dep.effect_on_value,
                 "confidence": dep.confidence,
+                "reasoning":  dep.reasoning,
             })
         return flags_by_player
 
