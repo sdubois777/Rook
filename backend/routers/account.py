@@ -18,7 +18,7 @@ from backend.core.dependencies import (
     get_db,
     get_league_service,
 )
-from backend.models.user import TIER_LIMITS, User
+from backend.models.user import TIER_LIMITS, User, effective_tier
 from backend.repositories.user_repo import UserRepository
 
 router = APIRouter(prefix="/account", tags=["account"])
@@ -281,7 +281,8 @@ async def get_league_limit_state(
     """Over-limit snapshot for the forced chooser: how many active leagues vs the
     tier cap, and the current-season candidates (finished history excluded)."""
     reconciler, _ = _reconciler(db)
-    state = await reconciler.limit_state(user.id, user.tier)
+    # Effective tier — an expired season entitlement caps as free here too.
+    state = await reconciler.limit_state(user.id, effective_tier(user))
     return _limit_state_response(state)
 
 
@@ -301,10 +302,11 @@ async def resolve_league_limit(
     except ValueError:
         raise ValidationError("Invalid league id in keep list")
 
-    await reconciler.resolve_keep(user.id, user.tier, keep_ids)
+    eff = effective_tier(user)  # expired season caps as free for the chooser too
+    await reconciler.resolve_keep(user.id, eff, keep_ids)
     await repo.commit()
 
-    state = await reconciler.limit_state(user.id, user.tier)
+    state = await reconciler.limit_state(user.id, eff)
     return _limit_state_response(state)
 
 
