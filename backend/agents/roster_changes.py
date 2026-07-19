@@ -42,8 +42,13 @@ logger = logging.getLogger(__name__)
 ROSTER_CHANGES_STALENESS_DAYS = 7
 
 # Min production thresholds — departures/arrivals below these are depth moves, not flag-worthy
-MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level
-MIN_CARRIES = 150  # ~9 carries/game — RB1 level
+MIN_TARGETS = 80   # ~5 targets/game — WR1/TE1 level (season VOLUME)
+MIN_CARRIES = 150  # ~9 carries/game — RB1 level (season VOLUME)
+# Alpha-usage-during-games-played gate (avg_target_share = mean per-game team-target
+# share over games the player appeared in). Catches injury-shortened alphas the volume
+# gate misses (e.g. Evans: 61 targets in 8 games = below MIN_TARGETS but 13.1% share).
+# OR'd with MIN_TARGETS so count-passers whose share fails to compute (0.0) still flag.
+MIN_TARGET_SHARE = 0.13
 
 # Suffix regex for cross-source name matching (Sleeper drops suffixes, nfl_data_py keeps them)
 _SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
@@ -988,23 +993,28 @@ class RosterChangesAgent(BaseAgent):
         # Load target share for production filter from warehouse
         ts_df = self._warehouse.get_target_share(prev_season)
 
-        # Build production lookups: by player_id and by name (covers gsis_id gaps)
-        prod_by_id: dict[str, tuple[int, int]] = {}
-        prod_by_name: dict[str, tuple[int, int]] = {}
+        # Build production lookups GLOBALLY (all teams), keyed id-first + name fallback,
+        # value = (targets, carries, avg_target_share). NOTE: no recent_team==team mask —
+        # nfl_data's recent_team is the player's CURRENT team, so a departed player's prior
+        # production is filed under their NEW team. Masking to this team hid every already-
+        # updated departure (Evans -> SF); the 12 prior flags only fired because nfl_data
+        # hadn't yet repointed those players' recent_team. A departed player's own
+        # production is what we want, wherever recent_team now points.
+        prod_by_id: dict[str, tuple[int, int, float]] = {}
+        prod_by_name: dict[str, tuple[int, int, float]] = {}
         if ts_df is not None:
-            ts_team = "recent_team" if "recent_team" in ts_df.columns else "team"
-            team_mask = ts_df[ts_team].str.upper() == team if ts_team in ts_df.columns else True
-            for _, r in ts_df[team_mask].iterrows():
+            for _, r in ts_df.iterrows():
                 tgts = int(r.get("total_targets", 0) or 0)
                 carries = int(r.get("total_carries", 0) or 0)
+                share = float(r.get("avg_target_share", 0) or 0)
                 pid = str(r.get("player_id", "")).strip()
                 if pid and pid != "None":
-                    existing = prod_by_id.get(pid, (0, 0))
-                    prod_by_id[pid] = (existing[0] + tgts, existing[1] + carries)
+                    e = prod_by_id.get(pid, (0, 0, 0.0))
+                    prod_by_id[pid] = (e[0] + tgts, e[1] + carries, max(e[2], share))
                 name = _norm_name(str(r.get("player_name", "")))
                 if name:
-                    existing = prod_by_name.get(name, (0, 0))
-                    prod_by_name[name] = (existing[0] + tgts, existing[1] + carries)
+                    e = prod_by_name.get(name, (0, 0, 0.0))
+                    prod_by_name[name] = (e[0] + tgts, e[1] + carries, max(e[2], share))
 
         mask = prev_rosters[team_col].str.upper() == team
         if "position" in prev_rosters.columns:
@@ -1021,20 +1031,24 @@ class RosterChangesAgent(BaseAgent):
             if departed_name in current_names or _norm_name(departed_name) in current_names_norm:
                 continue  # Still on the team
 
-            # Production filter: skip depth/practice squad players
+            # Production filter: skip depth/practice-squad players.
             pid = str(row.get("player_id", "")).strip()
-            tgts, carries = prod_by_id.get(pid, (0, 0))
+            tgts, carries, share = prod_by_id.get(pid, (0, 0, 0.0))
             # Name fallback for players with no gsis_id in target_share
-            if tgts == 0 and carries == 0:
-                tgts, carries = prod_by_name.get(_norm_name(departed_name), (0, 0))
-            if departed_pos in ("WR", "TE") and tgts < MIN_TARGETS:
+            if tgts == 0 and carries == 0 and share == 0.0:
+                tgts, carries, share = prod_by_name.get(_norm_name(departed_name), (0, 0, 0.0))
+            # WR/TE: alpha usage DURING GAMES PLAYED (share) OR season volume (count).
+            # The OR keeps volume-passers whose per-game share failed to compute (0.0).
+            if departed_pos in ("WR", "TE") and share < MIN_TARGET_SHARE and tgts < MIN_TARGETS:
                 continue
+            # RB: season carry volume (true carry-share needs team rush-attempt data,
+            # not stored — see ledger; no current RB departure is mis-dropped by count).
             if departed_pos == "RB" and carries < MIN_CARRIES:
                 continue
 
             logger.info(
-                "%s departure: %s (%s) — targets=%d, carries=%d",
-                team, departed_name, departed_pos, tgts, carries,
+                "%s departure: %s (%s) — targets=%d, carries=%d, share=%.3f",
+                team, departed_name, departed_pos, tgts, carries, share,
             )
 
             # Only flag top-3 same-position incumbents (by production)
@@ -1052,7 +1066,13 @@ class RosterChangesAgent(BaseAgent):
                     inc_row = prev_rosters[prev_rosters[name_col] == inc_name]
                     if not inc_row.empty:
                         inc_pid = str(inc_row.iloc[0].get("player_id", ""))
-                inc_tgts, inc_carries = prod_by_id.get(inc_pid, (0, 0))
+                inc_tgts, inc_carries, _ = prod_by_id.get(inc_pid, (0, 0, 0.0))
+                # Name fallback (mirror the departure lookup): rookies/players with a
+                # gsis gap in prev_rosters would otherwise rank 0 and lose the top-3 slot
+                # to arbitrary roster order — e.g. Egbuka (127 rookie targets) dropping
+                # below a deep bench WR. Resolve them by normalized name.
+                if inc_tgts == 0 and inc_carries == 0:
+                    inc_tgts, inc_carries, _ = prod_by_name.get(_norm_name(inc_name), (0, 0, 0.0))
                 inc["_prod_sort"] = inc_tgts + inc_carries
             same_pos.sort(key=lambda x: x.get("_prod_sort", 0), reverse=True)
 
