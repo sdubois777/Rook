@@ -113,9 +113,14 @@ async def get_me(
         repo = UserRepository(db)
         await repo.update_tier(user.id, tier=eff, credits_bonus=0)
         await repo.set_tier_expiry(user.id, None)
+        # A season purchase set subscription_status='active' and nothing clears it
+        # on expiry (one-time payment → no subscription.deleted). Clear it in the
+        # same write-back — don't leave a field asserting an active sub that ended.
+        await repo.set_subscription_status(user.id, None)
         await repo.commit()
         user.tier = eff
         user.tier_expires_at = None
+        user.subscription_status = None
 
     return UserResponse(
         id=str(user.id),
