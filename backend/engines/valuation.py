@@ -34,6 +34,7 @@ Let-go:          low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -43,7 +44,7 @@ from sqlalchemy.orm import selectinload
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile
 from backend.models.league_config import LeagueConfig, DEFAULT_LEAGUE_CONFIG
-from backend.utils.seasons import get_analysis_year
+from backend.utils.seasons import get_analysis_year, get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -762,9 +763,15 @@ def _value_fields_for(
 
 async def run_valuation_pass(
     config: LeagueConfig = DEFAULT_LEAGUE_CONFIG,
+    dry_run: bool = False,
+    prior_production: Optional[dict] = None,
 ) -> dict:
     """
     Load all players with profiles, compute valuations, write back to DB.
+
+    dry_run=True computes everything but writes NOTHING (rolls back the session)
+    and returns a per-player before/after report in result["report"] — used to
+    review a math change's effect before committing it to prod.
 
     Uses config.total_skill_pool as the total calibration pool
     per docs/rules/LEAGUE_RULES.md Rule #3.
@@ -801,6 +808,11 @@ async def run_valuation_pass(
         }
         valued_player_ids: set = set()
 
+        # STEP 4 — displaced direction guard. prior_production ({key: (ppg, games)}) is
+        # passed in by the pipeline (pure data load, no AI); when absent the guard is inert
+        # so existing callers/tests are unaffected. suppressions are collected for the report.
+        displaced_suppressed: list[dict] = []
+
         for player in players:
             pos = player.position
             if pos not in DRAFTABLE_POSITIONS:
@@ -817,7 +829,12 @@ async def run_valuation_pass(
             adjusted_ppr = raw_ppr
             adjusted_ppr = _apply_injury_discount(adjusted_ppr, player.injury_profile, player.profile)
             if adjusted_ppr > 0:
-                adjusted_ppr = _apply_dependency_adjustment(adjusted_ppr, player.dependencies)
+                adjusted_ppr = _apply_dependency_adjustment(
+                    adjusted_ppr, player.dependencies,
+                    player_name=player.name,
+                    prior_production=prior_production,
+                    suppressed_log=displaced_suppressed,
+                )
             adjusted_ppr = max(0.0, adjusted_ppr)
             pos_groups[pos].append((player, raw_ppr, adjusted_ppr))
 
@@ -882,6 +899,7 @@ async def run_valuation_pass(
         processed = 0
         updated   = 0
         skipped   = 0
+        dry_report: list[dict] = []
 
         # K/DEF take the SEPARATE static streaming path — they NEVER enter the
         # skill PAR/scarcity machinery above (pos_groups holds only DRAFTABLE_POSITIONS,
@@ -910,6 +928,18 @@ async def run_valuation_pass(
                     ctx["replacement_ppr"], ctx["total_par"], ctx["position_budget"], pos,
                     upside_ppr, downside_ppr,
                 )
+                # Capture before/after for the dry-run diff (old = current DB row).
+                _new_par = (raw_ppr / ctx["replacement_ppr"]) if ctx["replacement_ppr"] else 0.0
+                dry_report.append({
+                    "name":     player.name,
+                    "pos":      pos,
+                    "old_tier": player.tier,
+                    "new_tier": vf["tier"],
+                    "old_base": float(player.baseline_value) if player.baseline_value is not None else None,
+                    "new_base": float(vf["baseline_value"]) if vf["baseline_value"] is not None else None,
+                    "par":      round(_new_par, 3),
+                    "raw_ppr":  round(raw_ppr, 1),
+                })
                 # Update in-session player object — set values BEFORE gap
                 # so compute_value_gap_from_player sees current ceiling
                 player.tier                       = vf["tier"]
@@ -961,11 +991,14 @@ async def run_valuation_pass(
         for w in warnings:
             logger.warning("SANITY CHECK: %s", w)
 
-        await session.commit()
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
 
     logger.info(
-        "Valuation pass (%d): %d updated, %d skipped, %d cleared, analysis_year=%d",
-        processed, updated, skipped, cleared, analysis_year,
+        "Valuation pass (%d): %d updated, %d skipped, %d cleared, analysis_year=%d (dry_run=%s)",
+        processed, updated, skipped, cleared, analysis_year, dry_run,
     )
     return {
         "processed":     processed,
@@ -978,6 +1011,82 @@ async def run_valuation_pass(
             pos: ctx["replacement_ppr"] for pos, ctx in par_context.items()
         },
         "warnings":      warnings,
+        "dry_run":       dry_run,
+        "report":        dry_report,
+        "displaced_suppressed": displaced_suppressed,
+    }
+
+
+# STEP 5 — margin (in $) below market beyond which a "PAY UP" badge is contradictory.
+PAY_UP_SUPPRESS_MARGIN = Decimal("5")
+
+
+async def reconcile_value_signals(dry_run: bool = False) -> dict:
+    """Recompute value_gap / value_gap_signal AFTER the valuation agent has written the
+    final ai_bid_ceiling (Phase 6), and reconcile pay_up_flag. Pure DB pass — NO AI calls.
+
+    Fixes the ordering bug: run_valuation_pass (Phase 5) computes value_gap from the PRIOR
+    run's ai_bid_ceiling (Phase 6 overwrites it afterward), so every displayed gap is one
+    cycle stale. This recomputes against the current ceiling. It also suppresses pay_up_flag
+    when our ceiling sits more than PAY_UP_SUPPRESS_MARGIN below market — so "PAY UP at $44
+    vs $61" can't render. Uses market_value_fantasypros (same basis as compute_value_gap_from_
+    player) — the client chip's cheap/small-gap guards read league price separately; this does
+    not change that, it only makes the stored gap fresh and the pay_up badge non-contradictory.
+    """
+    updated = 0
+    payup_suppressed: list[dict] = []
+    report: list[dict] = []
+    async with AsyncSessionLocal() as session:
+        players = (await session.execute(
+            select(Player).where(Player.ai_bid_ceiling.isnot(None))
+        )).scalars().all()
+        for p in players:
+            old_gap = float(p.value_gap) if p.value_gap is not None else None
+            old_sig = p.value_gap_signal
+            old_payup = bool(p.pay_up_flag)
+
+            gap, sig = compute_value_gap_from_player(p)
+
+            new_payup = old_payup
+            market = getattr(p, "market_value_fantasypros", None)
+            ceil = getattr(p, "ai_bid_ceiling", None)
+            if (
+                old_payup and market and ceil
+                and _to_dec(ceil) < _to_dec(market) - PAY_UP_SUPPRESS_MARGIN
+            ):
+                new_payup = False
+                payup_suppressed.append({
+                    "player": p.name,
+                    "ai_bid_ceiling": float(ceil),
+                    "market_fp": float(market),
+                })
+
+            new_gap = float(gap) if gap is not None else None
+            if dry_run:
+                if old_gap != new_gap or old_sig != sig or old_payup != new_payup:
+                    report.append({
+                        "name": p.name,
+                        "gap": [old_gap, new_gap],
+                        "signal": [old_sig, sig],
+                        "pay_up": [old_payup, new_payup],
+                    })
+            else:
+                p.value_gap = gap
+                p.value_gap_signal = sig
+                p.pay_up_flag = new_payup
+                session.add(p)
+                updated += 1
+
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
+
+    return {
+        "updated": updated,
+        "payup_suppressed": payup_suppressed,
+        "report": report,
+        "dry_run": dry_run,
     }
 
 
@@ -1252,13 +1361,64 @@ def _apply_injury_discount(
     return ppr * discount
 
 
-def _apply_dependency_adjustment(ppr: float, dependencies: list) -> float:
+# STEP 4 — displaced direction guard. A "displaced" flag says the flagged player
+# lost role to a SUPERIOR trigger player. When the flagged player actually OUT-PRODUCED
+# the trigger last season (per-game, both with a real sample), the direction is backwards
+# and the negative $ adjustment is wrong (Puka 375 flagged displaced by Adams 223). We
+# suppress the negative adjustment. Per-game + a games floor on BOTH players so a trigger
+# who merely MISSED TIME (injured, e.g. Kyren Williams 0.5 PPR / ~1 game) does not trip the
+# guard — that displaced flag (Corum) is legitimate and must stand.
+_DISPLACED_GUARD_MIN_GAMES = 8
+
+
+def _prod_key_full(name: str) -> str:
+    """'Puka Nacua' -> 'pnacua' (first initial + surname, punctuation-stripped)."""
+    parts = re.sub(r"[.']", "", (name or "").lower()).split()
+    return (parts[0][0] + parts[-1]) if len(parts) >= 2 else "".join(parts)
+
+
+def _prod_key_abbr(name: str) -> str:
+    """'P.Nacua' -> 'pnacua' (nflverse abbreviated form)."""
+    return re.sub(r"[.'\s]", "", (name or "").lower())
+
+
+def _load_prior_production() -> dict:
+    """{abbr_key: (ppg, games)} for the prior COMPLETED season. Pure data load, no AI.
+    Returns {} on any failure so the guard degrades to inert (no suppression)."""
+    try:
+        from backend.integrations.nfl_data import NflDataWarehouse
+        wh = NflDataWarehouse.build()
+        season = get_current_season() - 1
+        df = wh.get_seasonal_stats(season)
+        out: dict = {}
+        if df is None or df.empty:
+            return out
+        for _, r in df.iterrows():
+            games = int(r.get("games", 0) or 0)
+            if games <= 0:
+                continue
+            ppg = float(r.get("fantasy_points_ppr", 0) or 0) / games
+            out[_prod_key_abbr(str(r.get("player_name", "")))] = (ppg, games)
+        return out
+    except Exception as exc:  # noqa: BLE001 — guard must never abort the valuation pass
+        logger.warning("Displaced guard: prior production load failed (%s); guard inert", exc)
+        return {}
+
+
+def _apply_dependency_adjustment(
+    ppr: float,
+    dependencies: list,
+    player_name: str | None = None,
+    prior_production: dict | None = None,
+    suppressed_log: list | None = None,
+) -> float:
     """
     Apply pre-draft dependency flag adjustments to projected PPR.
 
     Rules:
     - BENEFICIARY + departed_team → apply immediately (positive)
-    - DISPLACED + active_and_healthy → apply immediately (negative)
+    - DISPLACED + active_and_healthy → apply immediately (negative), UNLESS the
+      displaced-direction guard fires (flagged player out-produced the trigger)
     - SCHEME_FIT → half weight pre-draft
     - CONTINGENT, injured/absent BENEFICIARY → skip (live-draft only)
     """
@@ -1279,6 +1439,30 @@ def _apply_dependency_adjustment(ppr: float, dependencies: list) -> float:
         if flag == "beneficiary" and trigger == "departed_team":
             total_adj += impact
         elif flag == "displaced" and trigger == "active_and_healthy":
+            # STEP 4 direction guard — skip a NEGATIVE displaced adj when the flagged
+            # player out-produced the trigger per-game last season (both real samples).
+            if impact < 0 and prior_production and isinstance(player_name, str):
+                fp = prior_production.get(_prod_key_full(player_name))
+                tp = prior_production.get(_prod_key_full(dep.trigger_player_name or ""))
+                if (
+                    fp and tp
+                    and fp[1] >= _DISPLACED_GUARD_MIN_GAMES
+                    and tp[1] >= _DISPLACED_GUARD_MIN_GAMES
+                    and fp[0] > tp[0]
+                ):
+                    logger.warning(
+                        "DISPLACED GUARD suppressed %+.0f%% on %s (%.1f ppg / %dg) "
+                        "vs trigger %s (%.1f ppg / %dg) — flagged out-produced trigger",
+                        impact * 100, player_name, fp[0], fp[1],
+                        dep.trigger_player_name, tp[0], tp[1],
+                    )
+                    if suppressed_log is not None:
+                        suppressed_log.append({
+                            "player": player_name, "trigger": dep.trigger_player_name,
+                            "player_ppg": round(fp[0], 1), "trigger_ppg": round(tp[0], 1),
+                            "suppressed_pct": round(impact * 100, 0),
+                        })
+                    continue  # direction backwards — do NOT apply the negative adj
             total_adj += impact
         elif flag == "scheme_fit":
             total_adj += impact * 0.5
