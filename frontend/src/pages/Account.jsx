@@ -157,10 +157,25 @@ function DraftTokenSection({ token, onRevoke }) {
   return (
     <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
       <h2 className="text-lg font-semibold mb-2">Browser Extension</h2>
-      <p className="text-sm text-gray-400 mb-4">
-        Paste this token into the Rook extension popup to connect.
+      <p className="text-sm text-gray-400 mb-1">
+        Rook's live-draft assistant runs as a browser extension.
       </p>
-      <div className="flex items-center gap-2">
+      <p className="text-xs text-gray-500 mb-4">
+        Works in Chrome and other Chromium-based browsers (Edge, Brave, Arc). Not
+        supported in Safari or Firefox.
+      </p>
+
+      <a
+        href="https://chromewebstore.google.com/detail/rook/ghidhkebdcecadfliepmlpkehpehaoma"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-block bg-brand hover:bg-brand-hover text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors mb-5"
+      >
+        Install from Chrome Web Store
+      </a>
+
+      <p className="text-sm text-gray-400 mb-2">Your extension token:</p>
+      <div className="flex items-center gap-2 mb-5">
         <code className="flex-1 bg-gray-800 text-gray-300 text-sm px-3 py-2 rounded-lg font-mono truncate">
           {token}
         </code>
@@ -178,6 +193,15 @@ function DraftTokenSection({ token, onRevoke }) {
           {revoking ? 'Revoking...' : 'Revoke'}
         </button>
       </div>
+
+      <h3 className="text-sm font-semibold text-gray-300 mb-2">Setup</h3>
+      <ol className="list-decimal list-inside text-sm text-gray-400 space-y-1">
+        <li>Install the extension from the Chrome Web Store</li>
+        <li>Copy your extension token above (the <span className="text-gray-300">Copy</span> button)</li>
+        <li>Paste the token into the extension to connect</li>
+        <li>Open the Rook draft room and start a draft</li>
+        <li>Join your draft or a mock draft on a connected platform</li>
+      </ol>
     </section>
   )
 }
