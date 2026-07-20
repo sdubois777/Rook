@@ -383,9 +383,10 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         )
         # Per-format (PPR/Half/Standard) value sets — reprices the same board via the
         # shared math and writes player_format_values (PPR row == the players table).
-        fmt_result = await write_format_value_sets()
+        fmt_result = await write_format_value_sets(prior_production=prior)
         print(f"[{name}] per-format value sets: {fmt_result['written']} rows "
-              f"across {fmt_result['formats']}.")
+              f"across {fmt_result['formats']} "
+              f"({len(fmt_result.get('suppressed', []))} displaced-guard suppression(s)).")
 
     elif name == "valuation_agent":
         from backend.agents.valuation_agent import ValuationAgent

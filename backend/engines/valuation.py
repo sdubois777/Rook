@@ -1092,6 +1092,8 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
 
 async def write_format_value_sets(
     config: LeagueConfig = DEFAULT_LEAGUE_CONFIG,
+    prior_production: Optional[dict] = None,
+    dry_run: bool = False,
 ) -> dict:
     """Reprice the board into ALL scoring formats and write player_format_values.
 
@@ -1112,6 +1114,8 @@ async def write_format_value_sets(
     league_teams = config.team_count
     pool_sizes = get_draftable_pool_sizes(league_teams)
     written = 0
+    dry_rows: list[dict] = []
+    suppressed: list[dict] = []  # STEP 4 guard firings (same players each format)
 
     async with AsyncSessionLocal() as session:
         players = (await session.execute(
@@ -1124,6 +1128,10 @@ async def write_format_value_sets(
 
         async def _upsert(row: dict) -> None:
             nonlocal written
+            if dry_run:
+                dry_rows.append(row)
+                written += 1
+                return
             stmt = pg_insert(PlayerFormatValues).values(**row)
             update = {k: row[k] for k in row if k not in ("player_id", "scoring_format")}
             update["updated_at"] = _func.now()
@@ -1150,7 +1158,13 @@ async def write_format_value_sets(
                     continue
                 adjusted_ppr = _apply_injury_discount(raw_ppr, player.injury_profile, player.profile)
                 if adjusted_ppr > 0:
-                    adjusted_ppr = _apply_dependency_adjustment(adjusted_ppr, player.dependencies)
+                    adjusted_ppr = _apply_dependency_adjustment(
+                        adjusted_ppr, player.dependencies,
+                        player_name=player.name,
+                        prior_production=prior_production,
+                        # collect firings once (ppr pass) — the same players suppress every format
+                        suppressed_log=suppressed if fmt == "ppr" else None,
+                    )
                 pos_groups[pos].append((player, raw_ppr, max(0.0, adjusted_ppr)))
             for pos in pos_groups:
                 pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
@@ -1231,10 +1245,15 @@ async def write_format_value_sets(
                         "risk_adjusted_value": player.risk_adjusted_value,
                     })
 
-        await session.commit()
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
 
-    logger.info("Per-format value sets written: %d rows across %s", written, list(SCORING_FORMATS))
-    return {"written": written, "formats": list(SCORING_FORMATS)}
+    logger.info("Per-format value sets written: %d rows across %s (dry_run=%s)",
+                written, list(SCORING_FORMATS), dry_run)
+    return {"written": written, "formats": list(SCORING_FORMATS),
+            "dry_run": dry_run, "report": dry_rows, "suppressed": suppressed}
 
 
 # ---------------------------------------------------------------------------
