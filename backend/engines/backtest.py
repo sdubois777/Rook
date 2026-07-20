@@ -215,10 +215,13 @@ async def _load_historical_prices(
 
 async def run_backtest(
     session: AsyncSession, season: int | None = None,
+    fair_value_per_dollar: float = FAIR_VALUE_PPR_PER_DOLLAR,
 ) -> tuple[BacktestMetrics, pd.DataFrame]:
     """Run the backtest and return (metrics, player_df).
 
-    Read-only: never writes to any table.
+    Read-only: never writes to any table. `fair_value_per_dollar` is the buy/avoid
+    value-per-dollar bar (default = PPR 3.8); pass a format-appropriate bar for non-PPR
+    signal scoring. The projection/distribution metrics do not depend on it.
     """
     if season is None:
         season = get_current_season() - 1
@@ -315,7 +318,7 @@ async def run_backtest(
         value_gap = ai_ceiling - price if price > 0 else 0.0
 
         actual_vpd = actual_ppr / price if actual_ppr and price > 0 else None
-        was_good_buy = actual_vpd is not None and actual_vpd >= FAIR_VALUE_PPR_PER_DOLLAR
+        was_good_buy = actual_vpd is not None and actual_vpd >= fair_value_per_dollar
 
         # Only compute signals for players with a meaningful price
         if price > 0:
@@ -415,3 +418,174 @@ async def run_backtest(
         metrics.grade = "POOR"
 
     return metrics, df
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FORMAT-AWARE evaluation harness — projection curve + tier-calibration scoring.
+# READ-ONLY. It MEASURES the projection against real actuals; it never fits or
+# optimizes a transform toward any target dollar value or tier count. The two
+# downstream builds (projection reshape, distribution-relative tiers) score
+# themselves against these measurements — the harness itself has no free knobs.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Points-per-reception by format. Non-PPR points = ppr - (1 - rp) * receptions.
+_RECEPTION_POINTS = {"ppr": 1.0, "half_ppr": 0.5, "standard": 0.0}
+_RANKS = [1, 3, 5, 10, 20, 30, 40, 50, 60]
+_SKILL = ("QB", "RB", "WR", "TE")
+ALL_FORMATS = ("ppr", "half_ppr", "standard")
+
+
+def reception_data_available(actuals: pd.DataFrame) -> bool:
+    """True if a season's actuals carry a reception breakdown (required for non-PPR).
+    2023/2024 hold PPR totals + games only; only 2025 (PBP-derived) has receptions."""
+    return "receptions" in actuals.columns
+
+
+def actual_points_for_format(ppr_points: float, receptions, fmt: str) -> float | None:
+    """Actual points in `fmt`. Returns None for non-PPR when receptions are unavailable —
+    the harness must SAY a format is uncomputable for a season, never score it on PPR data."""
+    if fmt == "ppr":
+        return ppr_points
+    if receptions is None or (isinstance(receptions, float) and pd.isna(receptions)):
+        return None
+    return ppr_points - (1.0 - _RECEPTION_POINTS[fmt]) * float(receptions)
+
+
+def _finish_at_ranks(values: list[float]) -> dict[int, float | None]:
+    v = sorted([x for x in values if x and x > 0], reverse=True)
+    return {r: (round(v[r - 1], 1) if len(v) >= r else None) for r in _RANKS}
+
+
+def spread_ratio(actual_finish: dict, proj_finish: dict, hi: int = 5, lo: int = 50) -> float | None:
+    """actual spread ÷ projected spread between rank `hi` and `lo`. >1 == projections are
+    compressed vs reality (the measured flatness). A pure shape measure — no player matching."""
+    a_hi, a_lo, p_hi, p_lo = actual_finish.get(hi), actual_finish.get(lo), proj_finish.get(hi), proj_finish.get(lo)
+    if None in (a_hi, a_lo, p_hi, p_lo) or (p_hi - p_lo) == 0:
+        return None
+    return round((a_hi - a_lo) / (p_hi - p_lo), 2)
+
+
+def separator_count(values: list[float], topn: int = 12) -> dict | None:
+    """Largest gap in the top-`topn` (sorted desc) → count above the break + gap size.
+    This is the gap method tier candidates get scored against (B4)."""
+    v = sorted([x for x in values if x and x > 0], reverse=True)[:topn]
+    if len(v) < 3:
+        return None
+    gaps = [(v[i] - v[i + 1], i + 1) for i in range(len(v) - 1)]
+    b = max(gaps, key=lambda g: g[0])
+    return {"count": b[1], "gap": round(b[0], 1)}
+
+
+async def run_format_backtest(
+    session: AsyncSession,
+    seasons: list[int],
+    formats: tuple[str, ...] = ALL_FORMATS,
+    holdout: int | None = None,
+) -> dict:
+    """Format-aware, read-only measurement of the CURRENT projection vs historical actuals.
+
+    Returns a structured dict (see CLI for rendering). For each format it reports, per season:
+      * availability (False when the season lacks a reception breakdown for non-PPR)
+      * player-level matched metrics per position: n, mae, bias, corr, within20
+      * distribution shape per position: projected-vs-actual finish at ranks (rank_delta),
+        spread_ratio, and separator_count
+    `holdout` seasons are computed but LABELLED separately so a transform fit on the reference
+    seasons can be verified on held-out data. This function fits nothing.
+    """
+    from backend.engines.valuation import _extract_ppr  # local import: engine dep, avoid cycle
+    import statistics
+
+    await session.execute(text("SET TRANSACTION READ ONLY"))
+
+    proj_rows = (await session.execute(
+        select(Player, PlayerProfile)
+        .join(PlayerProfile, Player.id == PlayerProfile.player_id, isouter=True)
+        .where(Player.position.in_(list(_SKILL)))
+    )).fetchall()
+
+    # current projected points per format per player (with match keys)
+    proj: dict[str, list] = {f: [] for f in formats}
+    for player, profile in proj_rows:
+        if not profile or not profile.clean_season_baseline:
+            continue
+        gsis = (player.yahoo_player_id or "").replace("nfl_", "") or None
+        nm = player.name.lower()
+        for f in formats:
+            pts = _extract_ppr(profile, f)
+            if pts and pts > 0:
+                proj[f].append((player.position, float(pts), gsis, nm))
+
+    out = {
+        "seasons": seasons,
+        "reference_seasons": [s for s in seasons if s != holdout],
+        "holdout": holdout,
+        "formats": {},
+    }
+
+    for f in formats:
+        proj_finish = {pos: _finish_at_ranks([p for (po, p, _, _) in proj[f] if po == pos]) for pos in _SKILL}
+        fmt_out = {"projected_finish": proj_finish, "availability": {}, "by_season": {}}
+        for sea in seasons:
+            actuals = _load_actual_season(sea)
+            has_rec = reception_data_available(actuals)
+            available = (f == "ppr") or has_rec
+            fmt_out["availability"][sea] = available
+            if not available:
+                continue
+            name_col = "player_display_name" if "player_display_name" in actuals.columns else "player_name"
+            actual_by_id: dict[str, dict] = {}
+            actual_by_name: dict[str, dict] = {}
+            by_pos: dict[str, list] = {pos: [] for pos in _SKILL}
+            for _, r in actuals.iterrows():
+                ppr = float(r["fantasy_points_ppr"] or 0)
+                rec = r["receptions"] if has_rec else None
+                pts = actual_points_for_format(ppr, rec, f)
+                if pts is None:
+                    continue
+                ent = {"pts": pts, "games": int(r.get("games") or 0)}
+                actual_by_id[str(r["player_id"])] = ent
+                actual_by_name[str(r[name_col]).lower()] = ent
+                pos = r.get("position")
+                if pos in by_pos:
+                    by_pos[pos].append(pts)
+
+            actual_finish = {pos: _finish_at_ranks(by_pos[pos]) for pos in _SKILL}
+            seps = {pos: separator_count(by_pos[pos]) for pos in _SKILL}
+
+            player_metrics: dict[str, dict] = {}
+            shape: dict[str, dict] = {}
+            for pos in _SKILL:
+                pairs = []
+                for (po, pts, gsis, nm) in proj[f]:
+                    if po != pos:
+                        continue
+                    a = (actual_by_id.get(gsis) if gsis else None) or actual_by_name.get(nm)
+                    if a:
+                        pairs.append((pts, a["pts"]))
+                if len(pairs) >= 5:
+                    errs = [p - a for p, a in pairs]
+                    ae = [abs(e) for e in errs]
+                    ps = pd.Series([p for p, _ in pairs])
+                    as_ = pd.Series([a for _, a in pairs])
+                    try:
+                        corr = round(float(ps.corr(as_)), 3)
+                    except Exception:
+                        corr = None
+                    within = round(sum(1 for (p, a) in pairs if a > 0 and abs(p - a) <= 0.2 * abs(a)) / len(pairs) * 100, 1)
+                    player_metrics[pos] = {
+                        "n": len(pairs), "mae": round(statistics.mean(ae), 1),
+                        "bias": round(statistics.mean(errs), 1), "corr": corr, "within20": within,
+                    }
+                delta = {
+                    r: (round(proj_finish[pos][r] - actual_finish[pos][r])
+                        if (proj_finish[pos][r] is not None and actual_finish[pos][r] is not None) else None)
+                    for r in _RANKS
+                }
+                shape[pos] = {
+                    "spread_ratio": spread_ratio(actual_finish[pos], proj_finish[pos]),
+                    "rank_delta": delta,
+                    "actual_finish": actual_finish[pos],
+                }
+            fmt_out["by_season"][sea] = {"separators": seps, "player_metrics": player_metrics, "shape": shape}
+        out["formats"][f] = fmt_out
+    return out
