@@ -369,11 +369,16 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         )
 
     elif name == "valuation":
-        from backend.engines.valuation import run_valuation_pass, write_format_value_sets
-        result = await run_valuation_pass()
+        from backend.engines.valuation import (
+            run_valuation_pass, write_format_value_sets, _load_prior_production,
+        )
+        # STEP 4 guard input — prior-season per-game production (pure data load, no AI).
+        prior = _load_prior_production()
+        result = await run_valuation_pass(prior_production=prior)
         print(
             f"[{name}] {result['updated']} player(s) updated, "
-            f"{result['skipped']} skipped "
+            f"{result['skipped']} skipped, "
+            f"{len(result.get('displaced_suppressed', []))} displaced-guard suppression(s) "
             f"(analysis_year={result['analysis_year']})."
         )
         # Per-format (PPR/Half/Standard) value sets — reprices the same board via the
@@ -389,6 +394,14 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         print(
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
+        )
+        # STEP 5 — recompute value_gap/signal now that ai_bid_ceiling is final (Phase 6),
+        # and reconcile pay_up_flag. Pure DB pass, no AI. Fixes the stale-gap ordering bug.
+        from backend.engines.valuation import reconcile_value_signals
+        rec = await reconcile_value_signals()
+        print(
+            f"[{name}] reconciled value_gap for {rec['updated']} player(s); "
+            f"pay_up suppressed on {len(rec['payup_suppressed'])}."
         )
         # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
         # Half/Standard regenerate format-appropriate prose into player_format_values.
