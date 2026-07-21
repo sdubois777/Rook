@@ -19,6 +19,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -73,19 +74,101 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
     return max(lo, min(round(float(adp_ai), 1), hi))
 
 
-# Bump to invalidate the valuation_agent cache (it keys on input_data, so the
-# version is folded into the key). Increment on any SYSTEM_PROMPT change.
+# Manual kill-switch, folded into the cache key alongside prompt_hash + context_fp
+# (see _process_batch). Since the key now auto-invalidates on prompt edits (prompt_hash)
+# and on material context changes (context_fp), a bump is NO LONGER REQUIRED for those —
+# it remains as an explicit override to force a full cold re-reason on demand (e.g. a
+# semantic change the fingerprint can't see, like a downstream-consumer reinterpretation).
+# History (pre-context-hash era, when a bump was the ONLY invalidation lever):
 # v3: QB ADP floor 25->40 + tiered framework (QBs were ranking ~15-20 picks
 #     ahead of FP consensus, costing elite RB/WR value).
 # v4: QB 5-tier framework + anti-cluster rule (v3 overcorrected — startable QBs
 #     like Lawrence/Murray were dumped to the 170 cap; add a 110-140 streamer band).
 # v5: cache invalidation after a full profile re-sweep — the AGENT'S INPUTS CHANGED
 #     (fresh projections, tier-band anchors, and the new rush_efficiency_score signal),
-#     but the cache keys on (player names + version), so without a bump the PPR ceilings
-#     and the hybrid would cache-hit and serve numbers reasoned BEFORE the new signals
-#     existed. Bumping forces a genuine re-reason over the current signals. (The hybrid's
-#     own `hybrid` cache marker still separates it from the PPR namespace.)
-VALUATION_AGENT_VERSION = "v8"  # v8: force re-reason after roster_changes displaced-direction fix (flags rewritten; cache keys on names+version so a bump is required to pick up the corrected flags)
+#     but the cache keyed on (player names + version) only, so without a bump the PPR
+#     ceilings and the hybrid would cache-hit and serve numbers reasoned BEFORE the new
+#     signals existed. (This class of bug is what context_fp now prevents automatically.)
+VALUATION_AGENT_VERSION = "v8"  # v8: force re-reason after roster_changes displaced-direction fix
+
+
+# ---------------------------------------------------------------------------
+# Context fingerprint — the value-delta cache key (mirrors player_profiles'
+# compute_input_fingerprint). The cache key folds a per-player hash of the MATERIAL
+# context so any input change the model actually sees invalidates that player's cache
+# entry — no manual version bump, no stale hit. See _process_batch for the full key.
+# ---------------------------------------------------------------------------
+
+# Excluded from the fingerprint (present in context, but must NOT drive invalidation):
+#  - projection_reasoning: DERIVED prose. player_profiles generates it FROM the same
+#    projected_ppr / projection_confidence / career_trajectory fields that ARE already
+#    hashed here, so any material change to it is already covered by those numbers.
+#    Hashing the prose too would only add false-misses when it is reworded without a
+#    value change. This is the OPPOSITE of dependency-flag `reasoning`, which IS hashed
+#    (see _FP_DEP_FIELDS): flag reasoning is an INDEPENDENT upstream input from
+#    roster_changes, not derived from other hashed fields. DO NOT add projection_reasoning
+#    to the fingerprint — it would re-introduce over-invalidation the exclusion prevents.
+#  - injury_modifier, schedule_score: float noise whose materiality is already carried by
+#    the letter grades / flags (injury_risk, availability_risk, injury_flags, schedule_grade).
+#  - profile_source: a provenance label, not a value input.
+_FP_EXCLUDE = frozenset({
+    "projection_reasoning", "injury_modifier", "schedule_score", "profile_source",
+})
+# Float families bucketed so sub-bucket jitter (mainly AI-projected rookie fields) does
+# not false-miss: dollars rounded to $1, projected points rounded to 1 PPR.
+_FP_MONEY = frozenset({
+    "math_bid_ceiling", "system_value", "market_value", "value_gap",
+    "ceiling_value", "floor_value", "market_value_fantasypros", "prior_season_price",
+})
+_FP_PPR = frozenset({"projected_ppr", "upside_ppr", "downside_ppr"})
+# Dependency-flag fields that carry meaning (mirrors player_profiles._DEP_MATERIAL_FIELDS).
+# Row ids are never in the context dict, so a delete+reinsert with identical VALUES
+# fingerprints identically — a no-op bulk rewrite does not false-dirty.
+_FP_DEP_FIELDS = ("flag_type", "trigger", "trigger_condition", "impact_pct", "reasoning")
+
+
+def _fp_bucket(key: str, value):
+    """Round money to $1 and projected points to 1 PPR; pass everything else through."""
+    if value is None:
+        return None
+    if key in _FP_MONEY or key in _FP_PPR:
+        try:
+            return round(float(value))
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _context_fingerprint(ctx: dict) -> str:
+    """sha256 over the MATERIAL subset of a player's context dict. Deterministic
+    (sorted JSON, sorted collections, bucketed floats) so an identical-value rebuild
+    hashes identically and a material change flips the hash."""
+    material: dict = {}
+    for k, v in ctx.items():
+        if k in _FP_EXCLUDE:
+            continue
+        if k == "dependency_flags":
+            material[k] = sorted(
+                json.dumps(
+                    {
+                        f: (round(float(d[f]), 2) if f == "impact_pct" and d.get(f) is not None
+                            else d.get(f))
+                        for f in _FP_DEP_FIELDS
+                    },
+                    sort_keys=True,
+                )
+                for d in (v or [])
+            )
+        elif k == "injury_flags":
+            # A flag SET: order and duplicates are never material, and de-duping also
+            # hardens against any upstream list aliasing (see _build_player_context).
+            material[k] = sorted(set(v or []))
+        else:
+            material[k] = _fp_bucket(k, v)
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only
@@ -812,7 +895,10 @@ class ValuationAgent(BaseAgent):
             # snake-ADP "concern → push later" adjustment.
             ctx["availability_risk"] = ip.availability_risk
             ctx["injury_modifier"] = float(ip.risk_adjusted_value_modifier) if ip.risk_adjusted_value_modifier else None
-            active_flags = ip.pattern_flags or []
+            # COPY the ORM list — `or []` aliases pattern_flags, and appending below would
+            # MUTATE the ORM row in place, so a second build of the same player would keep
+            # accumulating flags (non-deterministic context → non-deterministic fingerprint).
+            active_flags = list(ip.pattern_flags or [])
             if ip.workload_cliff_flag:
                 active_flags.append("WORKLOAD_CLIFF")
             if ip.high_mileage_flag:
@@ -867,13 +953,21 @@ class ValuationAgent(BaseAgent):
         the prompt; PPR (default) uses the unchanged prompt + cache key. `hybrid` selects
         the market-blind hybrid prompt (non-PPR reception positions only)."""
         user_content = json.dumps(contexts, default=str)
+        system = _hybrid_system_prompt(scoring_format) if hybrid else _system_prompt(scoring_format)
 
-        # PPR keeps today's cache key exactly; non-PPR adds scoring_format so the
-        # three formats never collide on the same (entity_id, input_hash). hybrid adds
-        # its own marker so the market-blind output never reuses a prose-only cache hit.
+        # Cache key = names + version + prompt_hash + per-player context_fp. The names
+        # anchor the entity; the version is a manual kill-switch (see VALUATION_AGENT_VERSION);
+        # prompt_hash auto-invalidates on ANY prompt edit (the PAR test changed the prompt
+        # and no context hash would have caught it — this closes that gap); context_fp
+        # auto-invalidates when the MATERIAL context a player is reasoned from changes
+        # (flags, projections, tier, anchors), so an upstream change no longer serves a
+        # stale hit and no manual bump is needed. scoring_format / hybrid still partition
+        # the three formats + the market-blind namespace so they never collide.
         input_data = {
             "players": [c["player_name"] for c in contexts],
             "version": VALUATION_AGENT_VERSION,
+            "prompt_hash": hashlib.sha256(system.encode()).hexdigest()[:16],
+            "context_fp": [_context_fingerprint(c) for c in contexts],
         }
         if scoring_format != "ppr":
             input_data["scoring_format"] = scoring_format
@@ -882,7 +976,7 @@ class ValuationAgent(BaseAgent):
 
         try:
             raw = await self.call_once(
-                system=_hybrid_system_prompt(scoring_format) if hybrid else _system_prompt(scoring_format),
+                system=system,
                 user=user_content,
                 input_data=input_data,
                 entity_id=entity_id,
