@@ -53,6 +53,11 @@ async def main() -> None:
     ap.add_argument("--season", type=int, default=None, help="season predicted (default: current)")
     ap.add_argument("--dry-run", action="store_true", help="compute + report, write nothing")
     args = ap.parse_args()
+    # Refuse to write a snapshot to prod unless deliberately overridden. A --dry-run
+    # writes nothing, so it is allowed to inspect prod without the override.
+    if not args.dry_run:
+        from backend.db_guard import guard_writes
+        guard_writes("snapshot_values.py (writes value_snapshots)")
     season = args.season or get_current_season()
     async with AsyncSessionLocal() as s:
         res = await capture_snapshot(s, season, args.label, git_sha=_git_sha(), dry_run=args.dry_run)

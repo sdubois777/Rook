@@ -1,9 +1,19 @@
+import os
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Which env file to load. Defaults to `.env`, which (post dev-DB inversion) points at
+# the LOCAL DEV database — so forgetting lands you in dev. To run against prod you must
+# DELIBERATELY select the prod env file: `ROOK_ENV_FILE=.env.prod <command>` (and, for
+# writes, ALSO set ROOK_ALLOW_PROD_WRITES=1 — see backend/db_guard.py). A shell-exported
+# DATABASE_URL still overrides either file (pydantic precedence), which is a third,
+# equally-explicit prod path.
+_ENV_FILE = os.environ.get("ROOK_ENV_FILE", ".env")
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
 
     # Anthropic
     anthropic_api_key: str
