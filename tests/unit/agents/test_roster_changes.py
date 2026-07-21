@@ -1432,7 +1432,7 @@ async def test_enforce_called_before_write_in_run_for_team():
 
     written_flags = []
 
-    async def capture_write(flags):
+    async def capture_write(flags, **kwargs):  # **kwargs: accept _write_flags' replace_team
         written_flags.extend(flags)
         return len(flags)
 
@@ -1990,3 +1990,66 @@ async def test_bulk_resolve_suffixed_names_and_no_fa_link(caplog):
     assert got("Emeka Egbuka", "TB") == id_of["Emeka Egbuka"]
     assert got("Mike Evans", "TB") == id_of["Mike Evans"]   # exact name wins over team hint
     assert got("Tez Johnson", "TB") == id_of["Tez Johnson"]
+
+
+@pytest.mark.asyncio
+async def test_cross_position_displaced_qb_rejected():
+    """A QB cannot displace a WR — different contested resources → rejected by the guard."""
+    from backend.agents.roster_changes import _write_flags
+    import uuid
+    pid_wr, pid_qb = uuid.uuid4(), uuid.uuid4()
+    flags = [_make_flag("WR X", "MIN", "WR", "displaced", "QB Y", "MIN",
+                        "active_and_healthy", "negative", -15)]
+    mock_map = {("WR X", "MIN"): (str(pid_wr), "MIN"), ("QB Y", "MIN"): (str(pid_qb), "MIN")}
+    posres = MagicMock()
+    posres.all = MagicMock(return_value=[(pid_wr, "WR"), (pid_qb, "QB")])
+    with patch("backend.agents.roster_changes._bulk_resolve_player_ids",
+               new=AsyncMock(return_value=mock_map)):
+        with patch("backend.agents.roster_changes.AsyncSessionLocal") as mf:
+            session = AsyncMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            session.execute = AsyncMock(return_value=posres)
+            session.add = MagicMock()
+            session.commit = AsyncMock()
+            mf.return_value = session
+            written = await _write_flags(flags)
+    assert written == 0, "QB-displaces-WR must be rejected as a category error"
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_intra_position_displaced_passes():
+    """WR displaced by WR — both contest targets → allowed through the guard."""
+    from backend.agents.roster_changes import _write_flags
+    import uuid
+    pid1, pid2 = uuid.uuid4(), uuid.uuid4()
+    flags = [_make_flag("WR A", "LAC", "WR", "displaced", "WR B", "LAC",
+                        "active_and_healthy", "negative", -15)]
+    mock_map = {("WR A", "LAC"): (str(pid1), "LAC"), ("WR B", "LAC"): (str(pid2), "LAC")}
+    posres = MagicMock()
+    posres.all = MagicMock(return_value=[(pid1, "WR"), (pid2, "WR")])
+    with patch("backend.agents.roster_changes._bulk_resolve_player_ids",
+               new=AsyncMock(return_value=mock_map)):
+        with patch("backend.agents.roster_changes.AsyncSessionLocal") as mf:
+            session = AsyncMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            session.execute = AsyncMock(return_value=posres)
+            session.add = MagicMock()
+            session.commit = AsyncMock()
+            mf.return_value = session
+            written = await _write_flags(flags)
+    assert written == 1, "WR-displaces-WR must pass (same contested resource)"
+    session.add.assert_called_once()
+
+
+def test_displaced_positions_compatible_rule():
+    """Unit: the compatibility rule itself. WR/TE compatible; QB isolated; RB isolated."""
+    from backend.agents.roster_changes import _displaced_positions_compatible as c
+    assert c("WR", "TE") and c("TE", "WR")          # both contest targets
+    assert c("WR", "WR") and c("RB", "RB")
+    assert not c("WR", "QB") and not c("QB", "WR")  # QB contests nothing
+    assert not c("TE", "QB") and not c("RB", "QB")
+    assert not c("WR", "RB") and not c("RB", "WR")  # targets vs carries
+    assert c("WR", None) and c(None, "QB")          # unknown → fail-open (don't reject)

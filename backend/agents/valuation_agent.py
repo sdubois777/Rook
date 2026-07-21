@@ -85,7 +85,7 @@ def clamp_adp(adp_ai, position: str | None) -> float | None:
 #     and the hybrid would cache-hit and serve numbers reasoned BEFORE the new signals
 #     existed. Bumping forces a genuine re-reason over the current signals. (The hybrid's
 #     own `hybrid` cache marker still separates it from the PPR namespace.)
-VALUATION_AGENT_VERSION = "v7"  # v7: dep-flag context carries trigger_condition + reasoning
+VALUATION_AGENT_VERSION = "v8"  # v8: force re-reason after roster_changes displaced-direction fix (flags rewritten; cache keys on names+version so a bump is required to pick up the corrected flags)
 
 # Beyond this pick depth (12 teams x 15 rounds) ADP comparisons aren't
 # meaningful: our adp_rank runs 1..N (~640) while FantasyPros' overall rank only

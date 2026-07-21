@@ -164,32 +164,45 @@ DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
 # Tier assignment — PAR-ratio-based (no rank caps)
 # ---------------------------------------------------------------------------
 
-# Position-specific PAR ratio thresholds: raw_ppr / replacement_ppr
-# Players are tiered by how far above replacement they are, not by rank.
-# Different positions have different tier cutoffs because PPR scoring
-# compresses QB/TE ranges relative to RB/WR.
-_PAR_RATIO_THRESHOLDS = {
+# ═══════════════════════════════════════════════════════════════════════════
+# TIERING — DISTRIBUTION-RELATIVE (z-score above the draftable-pool mean).
+#
+# A player's tier = how many standard deviations his projected points sit above
+# the MEAN of the DRAFTABLE POOL at his position (top-K by points, K from the
+# league config — NOT a constant). This is format-aware BY CONSTRUCTION: the
+# format-specific points produce a format-specific mean/sigma, so the SAME z-cuts
+# work for every position and every format — zero per-position, zero per-format
+# constants. It self-calibrates to the pool, so it adapts to a cliff year (few
+# elites) vs a bunched year (many) and survives replacement/projection drift.
+#
+# z-cuts justified by historical validation (three seasons of actuals), not chosen:
+#   * z>=1.25 is more year-over-year STABLE than z>=1.0 (RB/WR T1 spread 0 vs 1-3)
+#   * z>=1.25 lands in a SPARSER boundary region (fewer near-cut players → less
+#     drift-flip). Both checks point the same way. See the tier-method recon.
+# ═══════════════════════════════════════════════════════════════════════════
+_Z_TIER_CUTS = {1: 1.25, 2: 0.4, 3: -0.2, 4: -0.7}  # tier N if z >= cut[N], else next
+_Z_MIN_POOL = 5   # below this a pool has no meaningful sigma → absolute-threshold fallback
+
+# FALLBACK ONLY — the legacy hardcoded absolute thresholds. These are NOT the live
+# tiering path; they are used ONLY when a positional pool has < _Z_MIN_POOL players
+# (no meaningful sigma), and using them emits a LOUD warning. Do not read these as the
+# active thresholds — the live path is z-score (assign_tier_z / compute_pool_ztiers).
+_FALLBACK_PAR_RATIO_THRESHOLDS = {
     "QB": {"T1": Decimal("1.15"), "T2": Decimal("1.03"), "T3": Decimal("0.95")},
     "RB": {"T1": Decimal("1.9"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
     "WR": {"T1": Decimal("2.0"),  "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
-    # TE T1 calibrated to the natural par-ratio cliff: it sits in the McBride(~1.77)↔
-    # Loveland/Pitts(~1.74) gap so the elite tier is Warren + McBride (the real drop-off
-    # after the field's clear #1/#2), not the whole startable-TE pack. TE-specific — QB/
-    # RB/WR untouched. Applies to every format via the per-format PFV pass.
     "TE": {"T1": Decimal("1.755"), "T2": Decimal("1.5"),  "T3": Decimal("1.2")},
 }
 
-_T4_FLOOR = Decimal("0.8")  # T4: >= 0.8x replacement, all positions
+_T4_FLOOR = Decimal("0.8")  # T4 fallback floor: >= 0.8x replacement, all positions
 
 
 def assign_tier(par_ratio: float, position: str) -> int:
-    """Return tier 1-5 based on PAR ratio and position.
-
-    Higher PAR ratio = higher tier. No per-position rank cap.
-    Position-specific thresholds account for PPR scoring compression.
-    """
+    """FALLBACK tiering — absolute PAR-ratio thresholds. Used only when a positional pool
+    is too small for a distribution-relative tier (< _Z_MIN_POOL). The LIVE tiering path is
+    compute_pool_ztiers() below. Kept format-BLIND on purpose (it is a last resort)."""
     ratio = Decimal(str(par_ratio))
-    thresholds = _PAR_RATIO_THRESHOLDS.get(position, _PAR_RATIO_THRESHOLDS["WR"])
+    thresholds = _FALLBACK_PAR_RATIO_THRESHOLDS.get(position, _FALLBACK_PAR_RATIO_THRESHOLDS["WR"])
     if ratio >= thresholds["T1"]:
         return 1
     if ratio >= thresholds["T2"]:
@@ -199,6 +212,43 @@ def assign_tier(par_ratio: float, position: str) -> int:
     if ratio >= _T4_FLOOR:
         return 4
     return 5
+
+
+def z_to_tier(z: float) -> int:
+    """Map a within-pool z-score to a 1-5 tier via the shared (position- and format-
+    agnostic) z-cuts. Higher z = higher tier."""
+    if z >= _Z_TIER_CUTS[1]:
+        return 1
+    if z >= _Z_TIER_CUTS[2]:
+        return 2
+    if z >= _Z_TIER_CUTS[3]:
+        return 3
+    if z >= _Z_TIER_CUTS[4]:
+        return 4
+    return 5
+
+
+def compute_pool_ztiers(
+    ranked_points: list[float], pool_size: int, position: str,
+) -> tuple[Optional[list[int]], Optional[float], Optional[float]]:
+    """LIVE tiering. Given points sorted DESC for one position, tier every player by
+    z-score over the DRAFTABLE POOL (top `pool_size` — the $1 depth tail is excluded so it
+    can't drag the mean / inflate sigma). Returns (tiers_for_all_players, mean, sigma):
+      * tiers list aligns 1:1 with ranked_points (players beyond the pool tier off the same
+        pool mean/sigma → naturally T4/T5).
+      * Returns (None, None, None) when the pool is too small (< _Z_MIN_POOL) or sigma==0 —
+        the caller then falls back to assign_tier() with a LOUD warning.
+    """
+    pool = [p for p in ranked_points if p and p > 0][:pool_size]
+    if len(pool) < _Z_MIN_POOL:
+        return None, None, None
+    mu = sum(pool) / len(pool)
+    var = sum((p - mu) ** 2 for p in pool) / len(pool)
+    sigma = var ** 0.5
+    if sigma == 0:
+        return None, None, None
+    tiers = [z_to_tier((p - mu) / sigma) for p in ranked_points]
+    return tiers, mu, sigma
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +289,7 @@ def _compute_tier_band_sv(
     par_ctx: dict[str, tuple],
     ppr_tier_mass: dict[str, float],
     total_budget: float,
+    ztier_by_pos: Optional[dict[str, dict]] = None,
 ) -> dict:
     """Tier-derived auction-$ for the reception positions in ONE format.
 
@@ -246,18 +297,23 @@ def _compute_tier_band_sv(
     ppr_tier_mass[pos] = Σ TIER_BAND_MULTIPLIERS[tier] over that position's PPR tiers —
     the PPR anchor that pins each position's share at its budget target in PPR, so any
     non-PPR shift is driven purely by tier movement. Returns {player.id: Decimal $}.
+
+    ztier_by_pos: the LIVE distribution-relative tiers {pos: {player.id: tier}}. When a
+    player is absent (tiny pool) it falls back to the absolute assign_tier.
     """
     from collections import defaultdict
 
+    ztier_by_pos = ztier_by_pos or {}
     skill_budget = total_budget * sum(POSITION_BUDGET_SHARE[p] for p in _TIER_BAND_POSITIONS)
     tier_groups: dict[tuple, list] = defaultdict(list)
     for pos in _TIER_BAND_POSITIONS:
         if pos not in par_ctx:
             continue
         group, repl_ppr, _ = par_ctx[pos]
+        _tmap = ztier_by_pos.get(pos, {})
         for player, raw_ppr, adj in group:
             par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
-            tier = assign_tier(par_ratio, pos)
+            tier = _tmap.get(player.id) or assign_tier(par_ratio, pos)
             # Rank the within-tier gradient by the SAME raw points the tier is built from
             # (not the injury/dependency-adjusted points) so a higher-projected player is
             # never priced below a lower one in the same tier — a strict rank index also
@@ -699,9 +755,14 @@ def _value_fields_for(
     repl_ppr, total_par: float, pos_budget: float, pos: str,
     upside_ppr: float, downside_ppr: float,
     override_sv: Optional[Decimal] = None,
+    tier_override: Optional[int] = None,
 ) -> dict:
     """Compute the full value-field set for one player from its (already
     format-repriced) points + the position's PAR context. Pure — no writes.
+
+    tier_override: the distribution-relative (z-score) tier computed over the positional
+    pool by compute_pool_ztiers(). This is the LIVE tier. Only when it is None (pool too
+    small for a meaningful sigma) does this fall back to assign_tier() with a loud warning.
 
     override_sv (Half/Standard reception positions): the tier-band auction-$ replaces
     the legacy pool-share system_value. When set, ALL dollar fields derive from it (the
@@ -710,7 +771,15 @@ def _value_fields_for(
     and format-invariant positions (override_sv=None) keep the exact pool-share path.
     """
     par_ratio = raw_ppr / repl_ppr if repl_ppr > 0 else 0.0
-    tier = assign_tier(par_ratio, pos)
+    if tier_override is not None:
+        tier = tier_override
+    else:
+        tier = assign_tier(par_ratio, pos)
+        logger.warning(
+            "TIER FALLBACK (absolute thresholds, NOT z-score) used for %s (%s) — "
+            "pool too small for a distribution-relative tier",
+            getattr(player, "name", "?"), pos,
+        )
     sv = override_sv if override_sv is not None else ppr_to_system_value(
         adjusted_ppr, repl_ppr, total_par, pos_budget)
 
@@ -880,19 +949,29 @@ async def run_valuation_pass(
             total_par = sum(max(0.0, adj_ppr - repl_ppr) for _, _, adj_ppr in group)
             pos_budget = total_budget * POSITION_BUDGET_SHARE[pos]
 
+            # Distribution-relative tiers over this position's DRAFTABLE POOL. Uses RAW ppr
+            # (group is raw-sorted) — tier is talent/role, never risk. Keyed by player.id.
+            raw_ranked = [rp for _, rp, _ in group]  # already sorted desc by raw ppr
+            ztiers, _zmu, _zsd = compute_pool_ztiers(raw_ranked, pool_size, pos)
+            tier_by_id = ({group[i][0].id: ztiers[i] for i in range(len(group))}
+                          if ztiers is not None else {})
+
             par_context[pos] = {
                 "replacement_ppr": repl_ppr,
                 "total_par":       total_par,
                 "position_budget": pos_budget,
                 "pool_size":       pool_size,
+                "tier_by_id":      tier_by_id,
             }
 
             logger.info(
                 "PAR context %s: pool=%d, repl=%.1f PPR (#%d of %d players), "
-                "total_par=%.1f, budget=$%.0f",
+                "total_par=%.1f, budget=$%.0f, z-tiers=%s (mu=%.0f sd=%.0f)",
                 pos, pool_size, repl_ppr,
                 min(pool_size, len(group)), len(group),
                 total_par, pos_budget,
+                "yes" if ztiers is not None else "FALLBACK",
+                _zmu or 0, _zsd or 0,
             )
 
         # --------------- Compute and write valuations ------------------------
@@ -927,6 +1006,7 @@ async def run_valuation_pass(
                     player, raw_ppr, adjusted_ppr,
                     ctx["replacement_ppr"], ctx["total_par"], ctx["position_budget"], pos,
                     upside_ppr, downside_ppr,
+                    tier_override=ctx["tier_by_id"].get(player.id),
                 )
                 # Capture before/after for the dry-run diff (old = current DB row).
                 _new_par = (raw_ppr / ctx["replacement_ppr"]) if ctx["replacement_ppr"] else 0.0
@@ -1170,7 +1250,12 @@ async def write_format_value_sets(
                 pos_groups[pos].sort(key=lambda x: x[1], reverse=True)
 
             # PASS 1 — per-position PAR context (replacement level + total PAR).
+            # ztier_by_pos: distribution-relative (z-score) tiers over this FORMAT's pool,
+            # keyed by player.id — the format-specific points give a format-specific mean/
+            # sigma, so the same z-cuts yield format-appropriate tiers. Empty per-pos map
+            # → the pool was too small (fallback to assign_tier in the consumers, loudly).
             par_ctx: dict[str, tuple] = {}
+            ztier_by_pos: dict[str, dict] = {}
             for pos, group in pos_groups.items():
                 pool_size = pool_sizes.get(pos, len(group))
                 # `group` is RAW-sorted; calculate_replacement_level assumes descending-
@@ -1182,6 +1267,10 @@ async def write_format_value_sets(
                 repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
                 total_par = sum(max(0.0, adj - repl_ppr) for _, _, adj in group)
                 par_ctx[pos] = (group, repl_ppr, total_par)
+                # z-tiers on RAW ppr (group is raw-sorted) — tier is talent, not risk.
+                ztiers, _mu, _sd = compute_pool_ztiers([rp for _, rp, _ in group], pool_size, pos)
+                ztier_by_pos[pos] = ({group[i][0].id: ztiers[i] for i in range(len(group))}
+                                     if ztiers is not None else {})
 
             # FORMAT-AWARE position budgets (see _format_budget_shares). PPR anchors on
             # the fixed shares (byte-identical); non-PPR shifts the reception-affected
@@ -1194,10 +1283,11 @@ async def write_format_value_sets(
                 for pos in _TIER_BAND_POSITIONS:
                     if pos in par_ctx:
                         group, repl_ppr, _ = par_ctx[pos]
+                        _tmap = ztier_by_pos.get(pos, {})
                         ppr_tier_mass[pos] = sum(
-                            TIER_BAND_MULTIPLIERS[assign_tier(
-                                raw_ppr / repl_ppr if repl_ppr > 0 else 0.0, pos)]
-                            for _, raw_ppr, _ in group
+                            TIER_BAND_MULTIPLIERS[_tmap.get(
+                                pl.id, assign_tier(rp / repl_ppr if repl_ppr > 0 else 0.0, pos))]
+                            for pl, rp, _ in group
                         )
             budget_share = _format_budget_shares(fmt, ppr_total_par, fmt_total_par)
 
@@ -1206,7 +1296,7 @@ async def write_format_value_sets(
             # replaces the inverting pool-share $ with a tier-derived $ for non-PPR.
             tier_band_sv: dict = {}
             if fmt != "ppr":
-                tier_band_sv = _compute_tier_band_sv(par_ctx, ppr_tier_mass, total_budget)
+                tier_band_sv = _compute_tier_band_sv(par_ctx, ppr_tier_mass, total_budget, ztier_by_pos)
 
             # PASS 2 — values, with the format-aware position budget. QB is FORMAT-
             # INVARIANT (no receptions) so it is copied from the players table below
@@ -1215,11 +1305,13 @@ async def write_format_value_sets(
                 if pos in _FORMAT_INVARIANT_POSITIONS:
                     continue
                 pos_budget = total_budget * budget_share.get(pos, POSITION_BUDGET_SHARE.get(pos, 0.0))
+                _tmap = ztier_by_pos.get(pos, {})
                 for player, raw_ppr, adjusted_ppr in group:
                     up, down = _extract_upside_downside(player.profile, fmt)
                     vf = _value_fields_for(
                         player, raw_ppr, adjusted_ppr, repl_ppr, total_par, pos_budget, pos, up, down,
-                        override_sv=tier_band_sv.get(player.id))
+                        override_sv=tier_band_sv.get(player.id),
+                        tier_override=_tmap.get(player.id))
                     await _upsert({
                         "player_id": player.id, "scoring_format": fmt,
                         "projected_points": round(raw_ppr, 1),

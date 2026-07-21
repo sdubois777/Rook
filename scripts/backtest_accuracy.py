@@ -33,8 +33,69 @@ from backend.database import AsyncSessionLocal  # noqa: E402
 from backend.engines.backtest import (  # noqa: E402
     BacktestMetrics,
     run_backtest,
+    run_format_backtest,
+    ALL_FORMATS,
 )
 from backend.utils.seasons import get_current_season  # noqa: E402
+
+
+def print_format_recon(res: dict) -> None:
+    """Render the format-aware harness output: availability, rank-Δ (proj vs actual
+    reference-avg), spread ratio, ordering quality (corr/MAE), and separator counts —
+    per position AND per format, with held-out labelled separately."""
+    seasons = res["seasons"]
+    ref = res["reference_seasons"]
+    hold = res["holdout"]
+    POS = ("QB", "RB", "WR", "TE")
+    print("=" * 78)
+    print("FORMAT-AWARE PROJECTION HARNESS — read-only; measures, never optimizes")
+    print(f"  seasons={seasons}   reference(fit)={ref}   held-out(eval)={hold if hold else 'none'}")
+    print("=" * 78)
+    for f in ALL_FORMATS:
+        if f not in res["formats"]:
+            continue
+        fo = res["formats"][f]
+        unavail = [s for s, ok in fo["availability"].items() if not ok]
+        usable = [s for s, ok in fo["availability"].items() if ok]
+        ref_ok = [s for s in ref if s in usable]
+        print(f"\n########## FORMAT: {f} ##########")
+        if unavail:
+            print(f"  ⚠ NON-PPR UNCOMPUTABLE (no reception data) for seasons: {unavail}")
+        if not usable:
+            print("  (no usable seasons for this format)")
+            continue
+        for pos in POS:
+            pf = fo["projected_finish"][pos]
+            ranks = sorted(pf.keys())
+            print(f"\n  --- {pos} ---   rank-Δ (proj − actual)  [ref-avg over {ref_ok}]"
+                  + (f" | held-out {hold} shown as (h)" if hold in usable else ""))
+            hdr = f"    {'rank':>5} {'proj':>6} {'refAct':>7} {'Δref':>6}"
+            if hold in usable:
+                hdr += f" {'hAct':>6} {'Δh':>5}"
+            print(hdr)
+            for r in ranks:
+                acts = [fo["by_season"][s]["shape"][pos]["actual_finish"].get(r) for s in ref_ok if s in fo["by_season"]]
+                av = [a for a in acts if a is not None]
+                refavg = round(sum(av) / len(av)) if av else None
+                pv = pf[r]
+                dref = (round(pv - refavg) if (pv is not None and refavg is not None) else None)
+                line = f"    {pos}{r:<4} {str(pv):>6} {str(refavg):>7} {('%+d' % dref) if dref is not None else '   -':>6}"
+                if hold in usable and hold in fo["by_season"]:
+                    ha = fo["by_season"][hold]["shape"][pos]["actual_finish"].get(r)
+                    dh = (round(pv - ha) if (pv is not None and ha is not None) else None)
+                    line += f" {str(ha):>6} {('%+d' % dh) if dh is not None else '  -':>5}"
+                print(line)
+            # shape + ordering per usable season
+            for s in usable:
+                sh = fo["by_season"][s]["shape"][pos]
+                pm = fo["by_season"][s]["player_metrics"].get(pos, {})
+                sep = fo["by_season"][s]["separators"].get(pos)
+                tag = "HELD-OUT" if s == hold else "ref"
+                sr = sh.get("spread_ratio")
+                print(f"      {s} [{tag}]: spread_ratio={sr}  "
+                      f"corr={pm.get('corr')}  mae={pm.get('mae')}  bias={pm.get('bias')}  "
+                      f"within20={pm.get('within20')}  n={pm.get('n')}  "
+                      f"separators={sep['count'] if sep else '-'}(gap {sep['gap'] if sep else '-'})")
 
 
 def print_backtest_report(
@@ -341,7 +402,27 @@ async def main() -> None:
         "--season", type=int, default=None,
         help="Season to backtest against (default: current-1)",
     )
+    parser.add_argument(
+        "--format-recon", action="store_true",
+        help="Format-aware projection-curve harness (PPR/Half/Standard): rank-Δ, spread "
+             "ratio, ordering quality, separator counts, per position per format.",
+    )
+    parser.add_argument(
+        "--seasons", type=str, default="2023,2024,2025",
+        help="Comma-separated seasons for --format-recon (default 2023,2024,2025)",
+    )
+    parser.add_argument(
+        "--holdout", type=int, default=None,
+        help="Season to hold out for evaluation (excluded from the reference average).",
+    )
     args = parser.parse_args()
+
+    if args.format_recon:
+        seasons = [int(x) for x in args.seasons.split(",") if x.strip()]
+        async with AsyncSessionLocal() as db:
+            res = await run_format_backtest(db, seasons, ALL_FORMATS, holdout=args.holdout)
+        print_format_recon(res)
+        return
 
     actual_season = args.season or (get_current_season() - 1)
 

@@ -94,7 +94,27 @@ FLAG SELECTION RULES — committee vs displaced (mutual exclusivity):
 - Decision tree: incoming clearly superior → DISPLACED (high impact). Specialist pairing → DISPLACED (mild impact -8 to -12%). True 50/50 split → COMMITTEE.
 - Non-RB positions (WR/TE/QB) NEVER get committee — always use displaced.
 
+DIRECTION CONSTRAINT — the displaced player must be the LESSER producer (HARD RULE):
+The `prior_production` object gives each player's prior-season PPR PER GAME and games played.
+A "displaced" flag means the flagged player LOST role to a SUPERIOR teammate. Therefore:
+- DO NOT flag player X as displaced by teammate Y when X's prior-season ppr_per_game was
+  GREATER than Y's. The higher per-game producer is the alpha; he is not displaced by a
+  lesser one. (Example of the ERROR to avoid: Puka Nacua, ~22 ppr/game, is NOT displaced by
+  Davante Adams, ~16 ppr/game — Nacua is the alpha.)
+- Compare on PER-GAME production, never season totals, so an injury-shortened alpha is not
+  mistaken for a lesser player.
+- Games floor: only treat a player's per-game number as a valid basis when
+  `prior_production.qualified` is true (enough games). If the TRIGGER player has
+  qualified=false (missed most of last season, e.g. an injured starter), you MAY still flag a
+  displaced relationship on his replacement — a returning starter can reclaim a role he did
+  not produce in last year. The constraint only forbids displacing a player by a QUALIFIED
+  teammate who produced LESS per game than he did.
+- When unsure of direction, prefer NOT emitting the displaced flag over emitting a backwards one.
+
 Output ONLY a valid JSON array. No explanation, no preamble, no markdown fences.
+Your FIRST character MUST be '[' and your LAST character MUST be ']'. Do NOT write any
+analysis, reasoning, numbered lists, or commentary before or after the array — put all
+reasoning INSIDE each element's "reasoning" field. If there are no flags, return exactly [].
 Your entire response must be parseable by json.loads().
 Each element must match this schema exactly:
 {{
@@ -284,7 +304,10 @@ def enforce_flag_mutual_exclusivity(flags: list[dict]) -> list[dict]:
 class RosterChangesAgent(BaseAgent):
     AGENT_NAME       = "roster_changes"
     AGENT_MODEL      = SONNET
-    AGENT_MAX_TOKENS = 4000
+    # 8000: large rosters (e.g. SF: McCaffrey/Kittle/Aiyuk/Evans/Stribling/... ~30 players)
+    # produce a full flag set that truncated at 4000 mid-JSON → unparseable. A ceiling only;
+    # billed on actual output, so smaller teams are unaffected.
+    AGENT_MAX_TOKENS = 8000
 
     def __init__(self, dry_run: bool = False, warehouse=None):
         super().__init__(dry_run=dry_run, warehouse=warehouse)
@@ -324,6 +347,7 @@ class RosterChangesAgent(BaseAgent):
             logger.debug("Could not enrich roster IDs for %s: %s", team, exc)
 
         target_shares  = await self._fetch_target_shares(roster)
+        prior_production = await self._fetch_prior_production(roster)
         backfield      = await self._fetch_backfield(team)
         qb_histories   = await self._fetch_qb_histories(team, roster)
         system_grade   = await self._fetch_team_system(team)
@@ -338,6 +362,7 @@ class RosterChangesAgent(BaseAgent):
             "transactions": transactions,
             "current_roster": roster,
             "target_share_history": target_shares,
+            "prior_production": prior_production,
             "backfield_usage": backfield,
             "qb_receiver_history": qb_histories,
             "draft_picks": draft_picks_context,
@@ -392,6 +417,67 @@ class RosterChangesAgent(BaseAgent):
             result.append(entry)
 
         return result
+
+    async def _fetch_prior_production(self, roster: list[dict]) -> dict:
+        """Prior-COMPLETED-season per-game PPR + games played for every roster player.
+
+        This is the OUTPUT the model lacked — it saw usage share but not production, so it
+        called a high-usage arrival the alpha even when the incumbent produced far more
+        (Puka 375 PPR flagged displaced by Adams 223). Basis is deliberately IDENTICAL to the
+        valuation.py displaced guard so the two never diverge: prior completed season
+        (get_current_season()-1), PER-GAME PPR, and the SAME games floor
+        (valuation._DISPLACED_GUARD_MIN_GAMES) below which a low-games player is NOT treated
+        as having "out-produced" anyone — so an injured trigger (Kyren Williams, 0.5 PPR /
+        ~1 game) does not block a legitimate displaced flag on his replacement.
+
+        Returns {roster_player_name: {season, ppr_per_game, games, qualified}}.
+        """
+        from backend.engines.valuation import _DISPLACED_GUARD_MIN_GAMES
+
+        season = get_current_season() - 1
+        df = self._warehouse.get_seasonal_stats(season)
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+            return {}
+
+        # Index prior-season stats by gsis player_id AND normalized (first-initial+surname)
+        # name — seasonal stats use abbreviated names ("P.Nacua"), rosters use full names.
+        by_gsis: dict[str, tuple] = {}
+        by_name: dict[str, tuple] = {}
+        for _, r in df.iterrows():
+            g = int(r.get("games", 0) or 0)
+            if g <= 0:
+                continue
+            ppg = float(r.get("fantasy_points_ppr", 0) or 0) / g
+            gid = str(r.get("player_id", "") or "")
+            nm = str(r.get("player_name", "") or "")
+            key = re.sub(r"[.']", "", nm.lower())
+            key = (key.split()[0][0] + key.split()[-1]) if len(key.split()) >= 2 else key
+            if gid:
+                by_gsis[gid] = (ppg, g)
+            if key:
+                by_name[key] = (ppg, g)
+
+        def _name_key(full: str) -> str:
+            parts = re.sub(r"[.']", "", (full or "").lower()).split()
+            return (parts[0][0] + parts[-1]) if len(parts) >= 2 else "".join(parts)
+
+        out: dict[str, dict] = {}
+        for p in roster:
+            nm = p.get("name", "")
+            if not nm:
+                continue
+            hit = by_gsis.get(str(p.get("gsis_id") or "")) or by_name.get(_name_key(nm))
+            if hit is None:
+                continue
+            ppg, g = hit
+            out[nm] = {
+                "season": season,
+                "ppr_per_game": round(ppg, 1),
+                "games": g,
+                # qualified=False → too few games to count as "out-produced" (injury case)
+                "qualified": g >= _DISPLACED_GUARD_MIN_GAMES,
+            }
+        return out
 
     async def _fetch_target_shares(self, roster: list[dict]) -> dict:
         """
@@ -1429,9 +1515,15 @@ class RosterChangesAgent(BaseAgent):
             )
             flags = enforce_flag_mutual_exclusivity(flags)
 
-            written = await _write_flags(flags)
+            # replace_team clears ALL of this team's existing flags (team-wide, not just
+            # the batch players) in the SAME transaction as the insert — so a flag the
+            # model REMOVED this run (e.g. a backwards displaced flag now suppressed, whose
+            # player is absent from the batch) is cleared instead of orphaned. This is the
+            # ONLY call that clears the team; the departure append below must NOT re-clear.
+            written = await _write_flags(flags, replace_team=team_abbr)
 
-            # Departure-based BENEFICIARY flags — Python-generated
+            # Departure-based BENEFICIARY flags — Python-generated. Appended (batch-scoped
+            # delete-insert, no replace_team) so it does not wipe the main flags above.
             try:
                 departure_flags = await self._handle_departures(
                     team_abbr,
@@ -1459,10 +1551,15 @@ class RosterChangesAgent(BaseAgent):
     # Full pipeline — pre-warm caches once, then run all 32 teams
     # ------------------------------------------------------------------
 
-    async def run_all_teams(self, warehouse=None, concurrency: int = 10) -> dict[str, int]:
+    async def run_all_teams(self, warehouse=None, concurrency: int = 10,
+                            force: bool = False) -> dict[str, int]:
         """
         Run all 32 teams. NFL data from warehouse, college/comp data loaded here.
         Returns {team_abbr: flag_count}.
+
+        force=True bypasses the ROSTER_CHANGES_STALENESS_DAYS smart-skip so every team
+        re-runs even if analyzed recently — required for a deliberate full-sweep regen
+        (e.g. after a prompt/context change that must rewrite existing flags).
         """
         from backend.agents.team_systems import NFL_TEAMS
 
@@ -1512,7 +1609,7 @@ class RosterChangesAgent(BaseAgent):
 
         async def _run_one(team: str) -> None:
             async with semaphore:
-                flags = await self.run_for_team(team, skip_if_fresh=True)
+                flags = await self.run_for_team(team, skip_if_fresh=not force)
                 results[team] = len(flags)
 
         await asyncio.gather(*[_run_one(t) for t in NFL_TEAMS])
@@ -1607,12 +1704,41 @@ async def _bulk_resolve_player_ids(
     return results
 
 
-async def _write_flags(flags: list[dict]) -> int:
-    """Replace all dependency flags for the affected players in one DB transaction.
+# Position compatibility for `displaced` flags — a CATEGORY rule, not judgment. A displaced
+# flag means one player takes another's share of a CONTESTED RESOURCE. Pass-catchers (WR/TE)
+# contest TARGET SHARE; running backs contest CARRIES; a QB contests neither. So a displaced
+# flag is only coherent when BOTH players contest the SAME resource. QB-displaces-WR (a QB takes
+# no targets) and WR-displaces-RB (a WR takes no carries) are category errors, not close calls —
+# rejected deterministically here rather than asking the model to be more careful. WR<->TE stays
+# allowed (both contest targets).
+_DISPLACE_RESOURCE_GROUP = {"WR": "receiving", "TE": "receiving", "RB": "rushing", "QB": "passing"}
+
+
+def _displaced_positions_compatible(flagged_pos: str | None, trigger_pos: str | None) -> bool:
+    """True if a displaced flag between these positions contests the SAME resource. Unknown or
+    non-skill positions → True: never reject on missing data (an unresolved trigger is handled
+    by re-running the team, not by this guard)."""
+    if not flagged_pos or not trigger_pos:
+        return True
+    fg = _DISPLACE_RESOURCE_GROUP.get(flagged_pos.upper())
+    tg = _DISPLACE_RESOURCE_GROUP.get(trigger_pos.upper())
+    if fg is None or tg is None:
+        return True
+    return fg == tg
+
+
+async def _write_flags(flags: list[dict], replace_team: str | None = None) -> int:
+    """Replace dependency flags in one DB transaction.
 
     Delete-then-insert ensures re-runs (including cache hits) are idempotent.
-    All flags in one batch belong to the same team, so we delete by resolved
-    player IDs + season_year before inserting the fresh set.
+
+    Delete scope:
+    - Default (replace_team=None): delete by the resolved player IDs in THIS batch only
+      (used by the departure append, which must not wipe the main flags).
+    - replace_team="TEAM": delete EVERY existing flag whose flagged player is on that team
+      — including players ABSENT from this batch — so a flag the model REMOVED this run
+      (e.g. a suppressed backwards displaced flag) is cleared, not orphaned. Runs in the
+      same session/transaction as the insert. Scope never widens beyond the given team.
     """
     if not flags:
         return 0
@@ -1650,19 +1776,43 @@ async def _write_flags(flags: list[dict]) -> int:
             if pid:
                 player_ids_in_batch.add(pid)
 
-        # Delete ALL existing flags for these players to prevent duplicates on re-run.
-        # Previously scoped to season_year == analysis_year, but the model sometimes
-        # outputs flags with different season_year values (e.g. 2027), leaving stale
-        # duplicates behind. Deleting by player_id alone ensures a clean slate.
-        if player_ids_in_batch:
+        # Delete existing flags before inserting the fresh set. Deleting by player_id
+        # (not season_year) ensures a clean slate even when the model emits off-year flags.
+        if replace_team:
+            # Team-wide clear — covers every current-roster player of the team, so flags
+            # the model removed this run (player absent from the batch) are cleared too.
+            # Same transaction as the insert. Only this team's flags are touched.
+            roster_ids = select(Player.id).where(Player.team_abbr == replace_team.upper())
+            await session.execute(
+                sa_delete(PlayerDependency).where(
+                    PlayerDependency.player_id.in_(roster_ids),
+                )
+            )
+        elif player_ids_in_batch:
             await session.execute(
                 sa_delete(PlayerDependency).where(
                     PlayerDependency.player_id.in_(player_ids_in_batch),
                 )
             )
 
+        # Authoritative positions (from the DB, not the model-supplied flag) for the
+        # cross-position displaced guard below. One query, same session/transaction.
+        # Fail-open: if positions can't be read, treat as unknown (guard skips) — never
+        # reject a flag on missing position data (matches _displaced_positions_compatible).
+        all_ids = {pid for (pid, _t) in id_map.values() if pid}
+        pos_by_id: dict[str, str | None] = {}
+        if all_ids:
+            try:
+                prows = await session.execute(
+                    select(Player.id, Player.position).where(Player.id.in_(all_ids))
+                )
+                pos_by_id = {str(pid): pos for pid, pos in prows.all()}
+            except (TypeError, ValueError):
+                pos_by_id = {}
+
         written = 0
         cross_team_rejected = 0
+        cross_position_rejected = 0
         for flag in flags:
             player_name  = flag.get("player_name", "")
             player_team  = flag.get("player_team")
@@ -1716,6 +1866,22 @@ async def _write_flags(flags: list[dict]) -> int:
                 )
                 continue
 
+            # CROSS-POSITION-GROUP guard — reject a `displaced` flag whose two players contest
+            # DIFFERENT resources (QB-displaces-WR, WR-displaces-RB). A category error, not a
+            # judgment call. Positions are the DB-authoritative ones. Rejection only — never
+            # converted to another flag type (a correct absence beats a persuasive error).
+            if flag_type == "displaced" and trigger_id:
+                fpos = pos_by_id.get(str(player_id))
+                tpos = pos_by_id.get(str(trigger_id))
+                if not _displaced_positions_compatible(fpos, tpos):
+                    cross_position_rejected += 1
+                    logger.warning(
+                        "REJECTED cross-position displaced: %s (%s) displaced by %s (%s) — "
+                        "%s cannot take a %s's share (different contested resources).",
+                        player_name, fpos, trigger_name, tpos, tpos, fpos,
+                    )
+                    continue
+
             session.add(PlayerDependency(
                 player_id=player_id,
                 flag_type=flag_type,
@@ -1732,6 +1898,9 @@ async def _write_flags(flags: list[dict]) -> int:
 
         if cross_team_rejected:
             logger.info("Rejected %d cross-team phantom flags", cross_team_rejected)
+        if cross_position_rejected:
+            logger.warning("Rejected %d cross-position displaced flags (category errors)",
+                           cross_position_rejected)
 
         await session.commit()
 
