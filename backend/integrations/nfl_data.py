@@ -732,8 +732,12 @@ def compute_seasonal_stats_from_pbp(
 
     # Cache result (skip if use_cache=False to avoid test pollution)
     if use_cache:
-        with open(cache_file, "wb") as f:
+        # Atomic write — a crash mid-write must not leave a half-written / corrupt .pkl
+        # (resumability: re-running recomputes only seasons whose cache is absent/complete).
+        tmp_file = cache_file.with_suffix(".pkl.tmp")
+        with open(tmp_file, "wb") as f:
             pickle.dump(df, f)
+        os.replace(tmp_file, cache_file)
 
     return df
 
@@ -746,9 +750,19 @@ def get_seasonal_stats(season: int, scoring: str = "ppr") -> pd.DataFrame:
     Falls back to PBP computation if the file doesn't exist (e.g. 2025).
     """
     try:
+        # Component columns pulled alongside PPR from the SAME weekly parquet, so
+        # fantasy_points_ppr is byte-identical to before (the historical baseline never
+        # moves) while receptions/targets/carries etc. become available for all seasons.
+        # (target_share / air_yards_share are already provided per-season, correctly, by
+        # compute_target_share — not duplicated here since they are shares, not sums.)
+        _COMPONENT_SUMS = [
+            "fantasy_points_ppr", "receptions", "targets",
+            "receiving_yards", "receiving_tds",
+            "carries", "rushing_yards", "rushing_tds",
+        ]
         cols = [
-            "player_id", "player_display_name", "position",
-            "recent_team", "fantasy_points_ppr", "season_type",
+            "player_id", "player_display_name", "position", "recent_team", "season_type",
+            *_COMPONENT_SUMS,
         ]
         weekly = nfl.import_weekly_data([season], cols)
         if len(weekly) > 0:
@@ -758,17 +772,24 @@ def get_seasonal_stats(season: int, scoring: str = "ppr") -> pd.DataFrame:
                 (weekly["season_type"] == "REG")
                 & (weekly["position"].isin(["QB", "RB", "WR", "TE"]))
             ]
+            agg_spec = {"games": ("fantasy_points_ppr", "count")}
+            for c in _COMPONENT_SUMS:
+                agg_spec[c] = (c, "sum")  # PPR agg unchanged; components summed
             seasonal = (
                 weekly.groupby(["player_id", "player_display_name", "position", "recent_team"])
-                .agg(
-                    games=("fantasy_points_ppr", "count"),
-                    fantasy_points_ppr=("fantasy_points_ppr", "sum"),
-                )
+                .agg(**agg_spec)
                 .reset_index()
             )
             seasonal = seasonal.sort_values("games", ascending=False).drop_duplicates("player_id")
-            if "player_display_name" in seasonal.columns:
-                seasonal = seasonal.rename(columns={"player_display_name": "player_name"})
+            # NaN components (e.g. a QB's receptions) → 0; PPR is never NaN so it is untouched.
+            for c in _COMPONENT_SUMS:
+                if c != "fantasy_points_ppr":
+                    seasonal[c] = seasonal[c].fillna(0)
+            # Normalize to the PBP path's schema so consumers see one column set per season.
+            seasonal = seasonal.rename(columns={
+                "player_display_name": "player_name",
+                "carries": "rush_attempts",
+            })
             return seasonal
         raise ValueError("Empty dataframe from import_weekly_data")
     except Exception as exc:

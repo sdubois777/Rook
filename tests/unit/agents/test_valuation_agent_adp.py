@@ -279,10 +279,12 @@ def test_prompt_auction_note_no_dollar_instruction():
 
 
 def test_valuation_agent_version_defined():
-    # Bumped to v7 to invalidate the cache after adding trigger_condition + reasoning
-    # to the dependency-flag context (the cache key is players+version, so the added
-    # context is inert until the version bump forces a re-reason).
-    assert VALUATION_AGENT_VERSION == "v7"
+    # The version invalidates the (players + version) cache on a prompt/context change.
+    # It is bumped whenever the agent's inputs change (v7: trigger_condition + reasoning;
+    # v8: re-reason after the roster_changes displaced-direction fix). Assert the SHAPE
+    # ("v<N>") rather than a fixed value so a legitimate bump doesn't fail this test.
+    import re
+    assert re.fullmatch(r"v\d+", VALUATION_AGENT_VERSION), VALUATION_AGENT_VERSION
 
 
 def test_prompt_qb_floor_is_pick_40():

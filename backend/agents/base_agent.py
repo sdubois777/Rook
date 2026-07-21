@@ -472,4 +472,21 @@ def parse_json_output(raw: str) -> dict | list:
     if items:
         return items
 
+    # Array recovery — a prose preamble may WRAP a JSON array (model ignored the
+    # JSON-only instruction and reasoned out loud first). Try each '[' as the array start
+    # (sliced to the last ']'); the first that parses is the array. A stray '[' inside the
+    # preamble prose won't parse, so we advance to the real array. This is what the
+    # brace-object recovery above misses when a preamble brace corrupts its depth count.
+    last_rb = raw.rfind("]")
+    if last_rb != -1:
+        pos = 0
+        while True:
+            lb = raw.find("[", pos)
+            if lb == -1 or lb >= last_rb:
+                break
+            try:
+                return json.loads(raw[lb : last_rb + 1])
+            except json.JSONDecodeError:
+                pos = lb + 1
+
     return json.loads(raw)  # Re-raise original error for clean failure

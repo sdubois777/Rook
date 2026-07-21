@@ -990,9 +990,17 @@ async def test_tier_from_raw_ppr_not_adjusted():
         await run_valuation_pass()
 
     amon_ra = [p for p in mock_players if p.name == "Amon-Ra"][0]
-    # 265 raw PPR / 153 repl = 1.73 PAR ratio → Tier 2 (WR T2 >= 1.5)
-    assert amon_ra.tier == 2, f"Amon-Ra tier should be 2, got {amon_ra.tier}"
-    # Dollar value should still be reduced (adjusted PPR used for PAR)
+    # Tiering is distribution-relative (z-score over the pool) and must be driven by RAW
+    # ppr, never the dependency-ADJUSTED ppr. Verify by recomputing the z-tier from the raw
+    # pool: Amon-Ra's tier must equal what raw ppr alone yields (the -25% displaced flag must
+    # NOT move his tier — it only lowers his dollars). This preserves the test's original
+    # intent under the new method (the old absolute-threshold "== 2" was an artifact).
+    from backend.engines.valuation import compute_pool_ztiers, get_draftable_pool_sizes
+    raws = sorted([300 - i * 5 for i in range(10)], reverse=True)
+    tiers, _, _ = compute_pool_ztiers(raws, get_draftable_pool_sizes()["WR"], "WR")
+    expected = tiers[raws.index(265)]
+    assert amon_ra.tier == expected, f"tier should follow RAW-ppr z-tier {expected}, got {amon_ra.tier}"
+    # Dollar value should still be reduced (adjusted PPR used for PAR, not tier)
     assert amon_ra.baseline_value is not None
 
 
