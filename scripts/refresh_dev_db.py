@@ -67,33 +67,71 @@ def _resolve_prod_url(arg: str | None) -> str:
     sys.exit("No prod URL: pass --prod-url, set PROD_DATABASE_URL, or add DATABASE_URL to .env.prod")
 
 
-# Child-first prune. The 3 CASCADE children (draft_sessions, league_auction_history,
-# platform_credentials) auto-delete with the user; league_auction_history ALSO cascades
-# from user_leagues. These 5 tables have NO FK to users, so they MUST be deleted
-# explicitly first or they orphan. leagues/league_configs/draft_state are not user-FK-
-# scoped (shared reference data) and are intentionally left intact.
+# Prune everything not belonging to the keep user. FK map (verified against prod):
+#   REAL FK to users, ON DELETE CASCADE: draft_sessions, league_auction_history,
+#     platform_credentials.
+#   NO FK (logical user_id only): user_preferences, credit_usage_log,
+#     granted_monthly_invoices, granted_pack_sessions, user_leagues.
+#   leagues/league_configs/draft_state are shared reference data (not user-scoped) —
+#     left intact.
+#
+# We delete by the KEEP set, NOT by "existing non-keep users". The old
+# `user_id IN (SELECT id FROM gone)` missed TWO orphan classes and reported DONE
+# anyway: (1) NULL user_ids never match IN (→ 5 stranded user_preferences), and
+# (2) rows whose user_id points at a user already absent in prod — with no FK to
+# enforce integrity these exist, and are not in `gone` (→ 6 stranded
+# credit_usage_log). `user_id IS DISTINCT FROM <keep_id>` deletes all three: rows
+# of the 9 removed users, NULL-user rows, and pre-existing danglers. The CASCADE
+# tables are pruned explicitly too — CASCADE only fires on the parent DELETE and
+# won't clear rows that already point nowhere.
+_USER_TABLES = (
+    "user_preferences",
+    "credit_usage_log",
+    "granted_monthly_invoices",
+    "granted_pack_sessions",
+    "user_leagues",
+    "draft_sessions",
+    "league_auction_history",
+    "platform_credentials",
+)
+
+_DELETES = "\n".join(
+    f"DELETE FROM {t} WHERE user_id IS DISTINCT FROM (SELECT id FROM users WHERE email = '{KEEP_EMAIL}');"
+    for t in _USER_TABLES
+)
+
+# One orphan probe per table, accumulated into `bad`; any nonzero → RAISE EXCEPTION,
+# which (inside the txn, under ON_ERROR_STOP=1) rolls back and exits psql non-zero so
+# the caller aborts instead of printing DONE. A prune that leaves orphans is not done.
+_ORPHAN_CHECKS = "\n".join(
+    f"  SELECT count(*) INTO n FROM {t} x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x.user_id);\n"
+    f"  IF n > 0 THEN bad := bad || format(' {t}=%s', n); END IF;"
+    for t in _USER_TABLES
+)
+
 _PRUNE_SQL = f"""
 BEGIN;
-WITH gone AS (SELECT id FROM users WHERE email IS DISTINCT FROM '{KEEP_EMAIL}')
-, d1 AS (DELETE FROM user_preferences      WHERE user_id IN (SELECT id FROM gone))
-, d2 AS (DELETE FROM credit_usage_log      WHERE user_id IN (SELECT id FROM gone))
-, d3 AS (DELETE FROM granted_monthly_invoices WHERE user_id IN (SELECT id FROM gone))
-, d4 AS (DELETE FROM granted_pack_sessions WHERE user_id IN (SELECT id FROM gone))
-, d5 AS (DELETE FROM user_leagues          WHERE user_id IN (SELECT id FROM gone))
-SELECT 1;
+{_DELETES}
 DELETE FROM users WHERE email IS DISTINCT FROM '{KEEP_EMAIL}';
 UPDATE users SET stripe_customer_id = NULL,
                  stripe_subscription_id = NULL,
                  subscription_status = NULL
  WHERE email = '{KEEP_EMAIL}';
+DO $$
+DECLARE
+  n bigint;
+  bad text := '';
+  extra_users bigint;
+BEGIN
+{_ORPHAN_CHECKS}
+  SELECT count(*) INTO extra_users FROM users WHERE email IS DISTINCT FROM '{KEEP_EMAIL}';
+  IF extra_users > 0 THEN bad := bad || format(' users=%s', extra_users); END IF;
+  IF bad <> '' THEN
+    RAISE EXCEPTION 'PRUNE FAILED - orphans remain, rolling back:%', bad;
+  END IF;
+  RAISE NOTICE 'orphan check PASSED: 0 orphans across {len(_USER_TABLES)} user-referencing tables';
+END $$;
 COMMIT;
--- Orphan check: every user-scoped table must have zero rows without a matching user.
-SELECT 'ORPHANS' AS check,
-  (SELECT count(*) FROM user_preferences   x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id=x.user_id)) AS user_preferences,
-  (SELECT count(*) FROM user_leagues       x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id=x.user_id)) AS user_leagues,
-  (SELECT count(*) FROM platform_credentials x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id=x.user_id)) AS platform_credentials,
-  (SELECT count(*) FROM draft_sessions     x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id=x.user_id)) AS draft_sessions,
-  (SELECT count(*) FROM users WHERE email IS DISTINCT FROM '{KEEP_EMAIL}') AS other_users_left;
 """
 
 
@@ -134,7 +172,11 @@ def main() -> None:
         print("[3/3] prune SKIPPED (--skip-prune)")
     else:
         print(f"[3/3] prune users -> keep {KEEP_EMAIL}, null Stripe cols, verify orphans")
-        _dx("psql", dev, "-v", "ON_ERROR_STOP=1", "-c", _PRUNE_SQL)
+        try:
+            _dx("psql", dev, "-v", "ON_ERROR_STOP=1", "-c", _PRUNE_SQL)
+        except subprocess.CalledProcessError:
+            sys.exit("ABORT: prune failed the orphan assertion (transaction rolled back). "
+                     "Dev is NOT refreshed — see the psql error above.")
     print("DONE. Dev refreshed. (Point .env DATABASE_URL at localhost:5433 to use it.)")
 
 
