@@ -93,21 +93,16 @@ def test_market_context_neither():
 # Ceiling differs with league vs FP
 # ===========================================================================
 
-def test_ceiling_differs_with_league_vs_fp():
-    """Verify compute_bid_ceiling responds differently to league vs FP market value."""
+def test_ceiling_is_market_free_pure_pool_share():
+    """MARKET-FREE, PURE POOL-SHARE (ToS): compute_bid_ceiling ignores market_value AND tier/
+    position (no market blend, no scarcity modifier). The ceiling is exactly system_value for
+    every tier — any market_value (FP, league, high, low, None) yields the SAME ceiling."""
     sv = Decimal("30")
-    fp_mv = Decimal("40")
-    league_mv = Decimal("25")
-
-    ceiling_fp = compute_bid_ceiling(sv, fp_mv, tier=2, position="WR", risk_level="low")
-    ceiling_league = compute_bid_ceiling(sv, league_mv, tier=2, position="WR", risk_level="low")
-
-    # T2 anchor=0.45: blend = sv * 0.55 + mv * 0.45
-    # With FP=40: 30*0.55 + 40*0.45 = 16.50 + 18.00 = 34.50
-    # With league=25: 30*0.55 + 25*0.45 = 16.50 + 11.25 = 27.75
-    assert ceiling_fp > ceiling_league
-    assert ceiling_fp == Decimal("34.50")
-    assert ceiling_league == Decimal("27.75")
+    for mv in (Decimal("40"), Decimal("25"), Decimal("0"), None):
+        assert compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="low") == Decimal("30")
+    # T1 is ALSO pure pool-share now — the tier-1 scarcity modifier is dropped.
+    t1_rb = compute_bid_ceiling(sv, Decimal("40"), tier=1, position="RB", risk_level="low")
+    assert t1_rb == compute_bid_ceiling(sv, None, tier=1, position="RB") == Decimal("30")
 
 
 # ===========================================================================
