@@ -600,6 +600,48 @@ def compute_value_gap_from_player(player) -> tuple[Optional[Decimal], Optional[s
     return gap, signal
 
 
+# Market-relative signal thresholds (dollars), applied to the gap =
+# blind ai_bid_ceiling - market_value_fantasypros. The ±5 aligned band reuses the
+# existing VALUE_GAP_*_THRESHOLD constants; ±15 is the "strong" band (mirrors the
+# backtest's strong_buy/strong_avoid cut and classify_snake_flag's VALUE/REACH cut).
+VALUE_GAP_ELITE_THRESHOLD = Decimal("15")    # ceiling >= market + 15 → elite_value / pay_up
+VALUE_GAP_AVOID_THRESHOLD = Decimal("-15")   # ceiling <= market - 15 → avoid / nomination target
+
+
+def derive_market_relative_signals(
+    gap: Optional[Decimal],
+) -> tuple[Optional[str], bool, bool]:
+    """Deterministic (value_assessment, pay_up_flag, nomination_target_flag) from the
+    BLIND ceiling-vs-market gap (ai_bid_ceiling - market_value_fantasypros).
+
+    This is where market RE-ENTERS: the price opinion (ai_bid_ceiling) is formed blind by
+    the agent; only afterward do we compare it to market to label how far off consensus it
+    is. Monotonic in the gap, vocabulary unchanged (elite_value / good_value / fair_value /
+    slight_overpay / avoid — the same set backtest.derive_system_signal consumes):
+
+        gap >= +15  → elite_value,    pay_up=True   (we value them well above market)
+        gap >= +5   → good_value
+        -5 < gap<+5 → fair_value      (aligned with market)
+        -15< gap<=-5→ slight_overpay
+        gap <= -15  → avoid,          nomination_target=True   (market well above us)
+
+    Returns (None, False, False) when there is no market to compare against (gap is None) —
+    we make no market-relative claim rather than inventing a neutral one.
+    """
+    if gap is None:
+        return None, False, False
+    gap = _to_dec(gap)
+    if gap >= VALUE_GAP_ELITE_THRESHOLD:
+        return "elite_value", True, False
+    if gap > VALUE_GAP_UNDERVALUE_THRESHOLD:      # > +5
+        return "good_value", False, False
+    if gap >= VALUE_GAP_OVERVALUE_THRESHOLD:      # -5 .. +5 inclusive band
+        return "fair_value", False, False
+    if gap > VALUE_GAP_AVOID_THRESHOLD:           # -15 < gap < -5
+        return "slight_overpay", False, False
+    return "avoid", False, True                   # gap <= -15
+
+
 def compute_let_go_threshold(bid_ceiling: Decimal, risk_level: str = "low") -> Decimal:
     """Let-go threshold — risk-adjusted walk-away price above ceiling.
 
@@ -1097,63 +1139,69 @@ async def run_valuation_pass(
     }
 
 
-# STEP 5 — margin (in $) below market beyond which a "PAY UP" badge is contradictory.
-PAY_UP_SUPPRESS_MARGIN = Decimal("5")
-
-
 async def reconcile_value_signals(dry_run: bool = False) -> dict:
-    """Recompute value_gap / value_gap_signal AFTER the valuation agent has written the
-    final ai_bid_ceiling (Phase 6), and reconcile pay_up_flag. Pure DB pass — NO AI calls.
+    """DETERMINISTIC market-relative post-pass (Phase 6). Pure DB pass — NO AI calls.
 
-    Fixes the ordering bug: run_valuation_pass (Phase 5) computes value_gap from the PRIOR
-    run's ai_bid_ceiling (Phase 6 overwrites it afterward), so every displayed gap is one
-    cycle stale. This recomputes against the current ceiling. It also suppresses pay_up_flag
-    when our ceiling sits more than PAY_UP_SUPPRESS_MARGIN below market — so "PAY UP at $44
-    vs $61" can't render. Uses market_value_fantasypros (same basis as compute_value_gap_from_
-    player) — the client chip's cheap/small-gap guards read league price separately; this does
-    not change that, it only makes the stored gap fresh and the pay_up badge non-contradictory.
+    The PPR valuation agent is now MARKET-BLIND: it forms ai_bid_ceiling + auction_note with
+    no market/ADP/prior-price in its context, so it can no longer honestly emit the
+    market-relative fields. This pass is where MARKET RE-ENTERS — after the blind opinion
+    exists — to compute, from the blind ai_bid_ceiling vs market_value_fantasypros:
+      - value_gap + value_gap_signal (unchanged: compute_value_gap_from_player), AND
+      - value_assessment / pay_up_flag / nomination_target_flag
+        (NEW: derive_market_relative_signals — previously the model produced these; the
+        blind model no longer does, and _write_results no longer writes them).
+
+    This also inherently fixes the old stale-gap ordering bug (value_gap is recomputed against
+    the FINAL ceiling) and makes pay_up non-contradictory (pay_up now requires ceiling >=
+    market + $15, so "PAY UP at $44 vs $61" cannot render — it is generated, not merely
+    suppressed). market_value_fantasypros is the sole market basis (consensus ADP, shared
+    across users); the client chip's cheap/small-gap guards read league price separately and
+    are unaffected.
     """
     updated = 0
-    payup_suppressed: list[dict] = []
+    flag_counts = {"pay_up": 0, "nomination_target": 0}
     report: list[dict] = []
     async with AsyncSessionLocal() as session:
         players = (await session.execute(
             select(Player).where(Player.ai_bid_ceiling.isnot(None))
         )).scalars().all()
         for p in players:
-            old_gap = float(p.value_gap) if p.value_gap is not None else None
-            old_sig = p.value_gap_signal
-            old_payup = bool(p.pay_up_flag)
+            old = (
+                float(p.value_gap) if p.value_gap is not None else None,
+                p.value_gap_signal,
+                p.value_assessment,
+                bool(p.pay_up_flag),
+                bool(p.nomination_target_flag),
+            )
 
             gap, sig = compute_value_gap_from_player(p)
-
-            new_payup = old_payup
-            market = getattr(p, "market_value_fantasypros", None)
-            ceil = getattr(p, "ai_bid_ceiling", None)
-            if (
-                old_payup and market and ceil
-                and _to_dec(ceil) < _to_dec(market) - PAY_UP_SUPPRESS_MARGIN
-            ):
-                new_payup = False
-                payup_suppressed.append({
-                    "player": p.name,
-                    "ai_bid_ceiling": float(ceil),
-                    "market_fp": float(market),
-                })
-
+            assessment, pay_up, nomination = derive_market_relative_signals(gap)
             new_gap = float(gap) if gap is not None else None
+            new = (new_gap, sig, assessment, pay_up, nomination)
+
+            if pay_up:
+                flag_counts["pay_up"] += 1
+            if nomination:
+                flag_counts["nomination_target"] += 1
+
             if dry_run:
-                if old_gap != new_gap or old_sig != sig or old_payup != new_payup:
+                if old != new:
                     report.append({
                         "name": p.name,
-                        "gap": [old_gap, new_gap],
-                        "signal": [old_sig, sig],
-                        "pay_up": [old_payup, new_payup],
+                        "ai_bid_ceiling": float(p.ai_bid_ceiling) if p.ai_bid_ceiling is not None else None,
+                        "market_fp": float(p.market_value_fantasypros) if p.market_value_fantasypros is not None else None,
+                        "gap": [old[0], new_gap],
+                        "signal": [old[1], sig],
+                        "assessment": [old[2], assessment],
+                        "pay_up": [old[3], pay_up],
+                        "nomination_target": [old[4], nomination],
                     })
             else:
                 p.value_gap = gap
                 p.value_gap_signal = sig
-                p.pay_up_flag = new_payup
+                p.value_assessment = assessment
+                p.pay_up_flag = pay_up
+                p.nomination_target_flag = nomination
                 session.add(p)
                 updated += 1
 
@@ -1164,7 +1212,10 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
 
     return {
         "updated": updated,
-        "payup_suppressed": payup_suppressed,
+        "flag_counts": flag_counts,
+        # Back-compat: the pipeline prints len(payup_suppressed); pay_up is now GENERATED
+        # (only ever true at gap >= +15, never contradictory), so nothing is "suppressed".
+        "payup_suppressed": [],
         "report": report,
         "dry_run": dry_run,
     }

@@ -165,16 +165,23 @@ async def test_ai_ceiling_within_reasonable_range():
     assert deviation > 0.20  # We detect this is out of range
 
 
-@pytest.mark.asyncio
-async def test_value_assessment_populated_for_all_players():
-    """Every player result should have a value_assessment."""
-    names = ["Player A", "Player B", "Player C"]
-    results = [_make_ai_result(n) for n in names]
-    for r in results:
-        assert r["value_assessment"] is not None
-        assert r["value_assessment"] in (
-            "elite_value", "good_value", "fair_value", "slight_overpay", "avoid"
-        )
+def test_ppr_prompt_is_market_blind():
+    """The PPR agent no longer CONSUMES market, and no longer PRODUCES the market-relative
+    fields (they are deterministic downstream). value_assessment / pay_up_flag /
+    nomination_target_flag must be absent from the output schema, and market may appear only
+    as a prohibition — never as a 'use market to set the ceiling' instruction."""
+    from backend.agents.valuation_agent import _hybrid_system_prompt
+    ppr = SYSTEM_PROMPT
+    # Output schema no longer requests these (deterministic post-pass owns them):
+    for field in ('"value_assessment"', '"pay_up_flag"', '"nomination_target_flag"'):
+        assert field not in ppr, f"{field} must not be in the blind PPR output schema"
+    # No market-consumption instructions remain:
+    assert "market_value_fantasypros: consensus ADP" not in ppr
+    assert "Use market context" not in ppr
+    assert "prior_season_price" not in ppr
+    assert "NOT given any market data" in ppr  # blindness is stated positively
+    # Non-PPR hybrid still needs value_assessment (no per-format market to derive it):
+    assert '"value_assessment"' in _hybrid_system_prompt("half_ppr")
 
 
 @pytest.mark.asyncio
@@ -182,32 +189,6 @@ async def test_auction_note_references_player_context():
     """Auction note should contain the player's name or situation-specific text."""
     result = _make_ai_result("Puka Nacua", auction_note="Nacua is the alpha in LA — lock him in early.")
     assert "Nacua" in result["auction_note"]
-
-
-@pytest.mark.asyncio
-async def test_nomination_target_flag_for_overvalued_players():
-    """Players with market value >> system value should get nomination_target_flag."""
-    result = _make_ai_result(
-        "Overpriced Guy",
-        nomination_target_flag=True,
-        value_assessment="slight_overpay",
-        auction_note="Market loves him — nominate early to drain opponents.",
-    )
-    assert result["nomination_target_flag"] is True
-    assert result["value_assessment"] in ("slight_overpay", "avoid")
-
-
-@pytest.mark.asyncio
-async def test_pay_up_flag_for_undervalued_players():
-    """Players with system value >> market value should get pay_up_flag."""
-    result = _make_ai_result(
-        "Bargain Elite",
-        pay_up_flag=True,
-        value_assessment="elite_value",
-        auction_note="Clear market inefficiency — don't let this one go.",
-    )
-    assert result["pay_up_flag"] is True
-    assert result["value_assessment"] in ("elite_value", "good_value")
 
 
 @pytest.mark.asyncio
@@ -243,6 +224,10 @@ async def test_build_player_context_includes_all_fields():
     assert ctx["projected_ppr"] == 220.0
     assert ctx["injury_risk"] == "low"
     assert ctx["schedule_grade"] == "favorable"
+    # MARKET IS STRIPPED (ToS): none of these market inputs may reach the agent context.
+    for k in ("market_value", "value_gap", "value_gap_signal",
+              "market_value_fantasypros", "prior_season_price"):
+        assert k not in ctx, f"{k} must be stripped from the PPR agent context"
 
 
 @pytest.mark.asyncio

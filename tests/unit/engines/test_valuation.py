@@ -22,6 +22,7 @@ from backend.engines.valuation import (
     compute_bid_ceiling,
     compute_let_go_threshold,
     compute_value_gap,
+    derive_market_relative_signals,
     ppr_to_system_value,
     run_valuation_pass,
 )
@@ -313,6 +314,45 @@ def test_value_gap_exact_threshold_aligned():
     # gap = -5 → not < -5 → aligned; gap = 5 → not > 5 → aligned
     assert signal_over  == "aligned"
     assert signal_under == "aligned"
+
+
+# ===========================================================================
+# derive_market_relative_signals — the deterministic post-pass (market re-enters
+# here, AFTER the blind ceiling exists). gap = ai_bid_ceiling - market_fp.
+# ===========================================================================
+
+@pytest.mark.parametrize("gap,assessment,pay_up,nom", [
+    (30,  "elite_value",    True,  False),
+    (15,  "elite_value",    True,  False),   # boundary: >= +15
+    (14,  "good_value",     False, False),
+    (6,   "good_value",     False, False),
+    (5,   "fair_value",     False, False),   # +5 is aligned, not good
+    (0,   "fair_value",     False, False),
+    (-5,  "fair_value",     False, False),   # -5 is aligned, not overpay
+    (-6,  "slight_overpay", False, False),
+    (-14, "slight_overpay", False, False),
+    (-15, "avoid",          False, True),    # boundary: <= -15
+    (-40, "avoid",          False, True),
+])
+def test_derive_market_relative_signals_bands(gap, assessment, pay_up, nom):
+    assert derive_market_relative_signals(Decimal(gap)) == (assessment, pay_up, nom)
+
+
+def test_derive_market_relative_signals_no_market_makes_no_claim():
+    """No market to compare against → no market-relative label (not a neutral guess)."""
+    assert derive_market_relative_signals(None) == (None, False, False)
+
+
+def test_derive_market_relative_signals_monotonic_and_flags_exclusive():
+    """Assessment is monotone non-increasing in -gap; pay_up and nomination never co-fire."""
+    order = ["elite_value", "good_value", "fair_value", "slight_overpay", "avoid"]
+    prev = -1
+    for gap in range(40, -41, -5):
+        a, pu, nm = derive_market_relative_signals(Decimal(gap))
+        assert not (pu and nm)                     # mutually exclusive
+        idx = order.index(a)
+        assert idx >= prev                          # worsens (or holds) as gap falls
+        prev = idx
 
 
 # ===========================================================================
