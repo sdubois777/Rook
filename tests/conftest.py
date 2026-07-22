@@ -21,6 +21,48 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------
+# PROD-DB KILL SWITCH — the class-level fix, not a per-test patch.
+# ---------------------------------------------------------------------------
+# The old `mock_db` fixture was OPT-IN and patched backend.database.AsyncSessionLocal
+# by attribute — so the ~25 modules that hold their own imported reference bypassed it,
+# and any test requesting no fixtures had NO protection at all. That is how a test run
+# deleted 129 prod dependency rows. These two hooks refuse to run the ENTIRE suite when
+# DATABASE_URL points at a prod host, REGARDLESS of what any individual test or module
+# does with sessions — a new code path that opens its own session cannot reopen the hole.
+#
+# Keyed on the DB HOST (via backend.db_guard), NEVER on settings.environment (which has
+# been observed reading "development" against a prod DB).
+
+def _refuse_if_prod(where: str) -> None:
+    from backend.db_guard import is_prod_db, db_host
+    if is_prod_db():
+        pytest.exit(
+            "\n" + "=" * 72 + "\n"
+            "  [!!] TEST SUITE REFUSING TO RUN -- DATABASE_URL POINTS AT PRODUCTION\n"
+            + "=" * 72 + "\n"
+            f"  DB host: {db_host()}   (detected via {where})\n"
+            "  Tests open real sessions and WILL mutate whatever they point at.\n"
+            "  Point DATABASE_URL at your dev DB (localhost:5433) and re-run.\n"
+            "  There is intentionally NO override -- tests never run against prod.\n"
+            + "=" * 72,
+            returncode=2,
+        )
+
+
+def pytest_configure(config):
+    """Fail before collection/import — the earliest possible point."""
+    _refuse_if_prod("pytest_configure")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_prod_db():
+    """Session-scoped, autouse: a second gate that fires before the first test even if
+    pytest_configure is somehow bypassed. Autouse ⇒ a fixture-less test is still guarded."""
+    _refuse_if_prod("session fixture")
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Anthropic API mock
 # ---------------------------------------------------------------------------
 

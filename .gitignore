@@ -2,6 +2,11 @@
 .env
 .env.local
 .env.*.local
+.env.prod
+
+# Dev-DB dumps (prod data restored locally — NEVER commit)
+devdata/
+*.dump
 
 # Python
 __pycache__/

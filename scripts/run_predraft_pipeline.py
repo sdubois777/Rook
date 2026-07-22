@@ -609,6 +609,13 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
+    # Refuse to run a real (writing) pipeline against prod unless deliberately
+    # overridden. --dry-run makes no writes, so it is exempt. Covers BOTH the targeted
+    # path below and the full/team path.
+    if not args.dry_run:
+        from backend.db_guard import guard_writes
+        guard_writes("run_predraft_pipeline.py (writes players/profiles/valuations)")
+
     # --- TARGETED REFRESH mode (PART 1/2) — distinct from the full/team pipeline ---
     if args.players or args.player:
         await run_targeted_cli(args)
