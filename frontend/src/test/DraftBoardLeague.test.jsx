@@ -66,7 +66,7 @@ describe('DraftBoard league toggle', () => {
   it('shows ceiling columns when auction', async () => {
     renderBoard(false)
     expect(await screen.findByText('AI Ceil')).toBeInTheDocument()
-    expect(screen.getByText('PPR')).toBeInTheDocument()
+    expect(screen.getByText('Points')).toBeInTheDocument()
     expect(screen.queryByText('AI ADP')).not.toBeInTheDocument()
   })
 

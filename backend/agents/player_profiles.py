@@ -28,7 +28,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import ClassVar
 import pandas as pd
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU, SONNET
@@ -2187,6 +2188,37 @@ async def _bulk_resolve_player_ids(
     return results
 
 
+async def _upsert_profile(session: AsyncSession, record: "PlayerProfile") -> None:
+    """Atomically write a fully-built (transient) PlayerProfile via
+    INSERT ... ON CONFLICT (player_id) DO UPDATE — replacing the check-then-insert that
+    RACED under the concurrent per-team writes.
+
+    The phase processes teams concurrently (asyncio.gather, semaphore=concurrency), each in
+    its own session. When two teams resolve the SAME player_id (a dual-rostered / traded
+    player) they both inserted into player_profiles, and the loser hit
+    `uq_player_profiles_player_id`. There is no prior SELECT here — the whole point is
+    closing the check-then-act window; the DB enforces atomicity.
+
+    LAST-WRITE-WINS is correct because the profile is PLAYER-INTRINSIC: every field derives
+    from the player's own seasons / model output / usage (production, role, target share,
+    snaps), never from which roster is being processed. Two teams writing the same player
+    write equivalent content, so whichever commits second is a safe overwrite.
+    """
+    # Only the columns EXPLICITLY set on the transient record (mirrors an ORM insert: unset
+    # columns fall back to their DB default rather than being overwritten with NULL).
+    col_keys = {c.key for c in PlayerProfile.__mapper__.columns}
+    values = {
+        k: v for k, v in record.__dict__.items()
+        if k in col_keys and k not in ("id", "created_at", "updated_at")
+    }
+    stmt = pg_insert(PlayerProfile).values(**values)
+    set_cols = {k: getattr(stmt.excluded, k) for k in values if k != "player_id"}
+    set_cols["updated_at"] = func.now()   # ON CONFLICT doesn't fire the ORM onupdate hook
+    await session.execute(
+        stmt.on_conflict_do_update(index_elements=["player_id"], set_=set_cols)
+    )
+
+
 async def _write_profiles(
     profiles: list[dict], context: dict, team: str,
     stale_names: set[str] | None = None,
@@ -2374,17 +2406,10 @@ async def _write_profiles(
                 clean_baseline = _compute_clean_baseline(seasons)
                 rookie_prof    = {}
 
-            # Upsert: use existing record if already written by another team batch
-            existing_record = (
-                await session.execute(
-                    select(PlayerProfile).where(PlayerProfile.player_id == player_id)
-                )
-            ).scalar_one_or_none()
-            if existing_record:
-                record = existing_record
-            else:
-                record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-                session.add(record)
+            # Build a TRANSIENT record (no session.add, no existence SELECT) — it is written
+            # atomically by _upsert_profile() below (INSERT ... ON CONFLICT DO UPDATE), which
+            # is race-safe across the concurrent per-team sessions.
+            record = PlayerProfile(player_id=player_id, season_year=analysis_year)
 
             # Veteran fields — from model output (rookies use defaults from rookie_prof)
             effective = rookie_prof if is_rookie else prof
@@ -2434,6 +2459,8 @@ async def _write_profiles(
             record.ceiling_value_ppr = _to_decimal(rookie_prof.get("ceiling_value_ppr")) if is_rookie else None
             record.floor_value_ppr   = _to_decimal(rookie_prof.get("floor_value_ppr")) if is_rookie else None
 
+            await _upsert_profile(session, record)
+
             # Update parent Player record
             player_row = (await session.execute(
                 select(Player).where(Player.id == player_id)
@@ -2467,7 +2494,6 @@ async def _write_profiles(
                 continue  # not enough data
 
             record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-            session.add(record)
             record.role_classification = _derive_qb_role(clean_baseline)
             clean_baseline["prompt_version"] = PLAYER_PROFILES_PROMPT_VERSION
             if pname in input_fingerprints:
@@ -2479,6 +2505,7 @@ async def _write_profiles(
             record.confidence = "medium"
             record.age_curve_position = _derive_qb_age_curve(ctx_player.get("age"))
             record.efficiency_signal = _derive_qb_efficiency(clean_baseline)
+            await _upsert_profile(session, record)
 
             written_ids.add(player_id)
             written += 1
@@ -2499,7 +2526,6 @@ async def _write_profiles(
 
             depth = _build_depth_profile(dp["position"])
             record = PlayerProfile(player_id=player_id, season_year=analysis_year)
-            session.add(record)
             record.role_classification = depth["role_classification"]
             record.clean_season_baseline = {
                 "prompt_version": PLAYER_PROFILES_PROMPT_VERSION,
@@ -2514,6 +2540,7 @@ async def _write_profiles(
             record.confidence = depth["confidence"]
             record.efficiency_signal = depth["efficiency_signal"]
             record.positional_scarcity_tier = depth["positional_scarcity_tier"]
+            await _upsert_profile(session, record)
 
             written_ids.add(player_id)
             written += 1

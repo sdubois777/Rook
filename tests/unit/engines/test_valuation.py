@@ -15,13 +15,13 @@ import pytest
 
 from backend.engines.valuation import (
     ANCHOR_WEIGHTS,
-    SCARCITY_MODIFIERS,
     VALUE_GAP_OVERVALUE_THRESHOLD,
     VALUE_GAP_UNDERVALUE_THRESHOLD,
     assign_tier,
     compute_bid_ceiling,
     compute_let_go_threshold,
     compute_value_gap,
+    derive_market_relative_signals,
     ppr_to_system_value,
     run_valuation_pass,
 )
@@ -154,81 +154,59 @@ def test_ppr_to_system_value_zero_total_par_returns_one_dollar():
 # compute_bid_ceiling — Tier 1
 # ===========================================================================
 
-def test_tier1_bid_ceiling_uses_anchor_weight():
-    """Tier 1: blend = system × 0.70 + risk_adj_market × 0.30, then × scarcity."""
+def test_tier1_bid_ceiling_market_free_pure_pool_share():
+    """Tier 1 (MARKET-FREE, PURE POOL-SHARE): ceiling = system_value — NO market blend and
+    NO scarcity modifier (the tier-1 scarcity lift is dropped)."""
     sv = Decimal("40")
-    mv = Decimal("50")
-    # low risk = 0% discount → risk_adj_market = 50
-    # anchor = 0.30 → blend = 40×0.70 + 50×0.30 = 28 + 15 = 43
-    # scarcity for WR T1 = 1.20 → 43 × 1.20 = 51.60
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="WR", risk_level="low")
-    assert ceiling == Decimal("51.60")
+    ceiling = compute_bid_ceiling(sv, Decimal("50"), tier=1, position="WR", risk_level="low")
+    assert ceiling == Decimal("40")
+    # RB gets no special lift either (scarcity dead).
+    assert compute_bid_ceiling(sv, Decimal("50"), tier=1, position="RB") == Decimal("40")
 
 
-def test_tier1_anchor_weight_is_system_dominant():
-    assert ANCHOR_WEIGHTS[1] == Decimal("0.30")
-
-
-def test_scarcity_modifier_applied_to_tier1_rb():
-    """Tier 1 RB scarcity modifier = 1.35."""
-    sv = Decimal("40")
-    mv = Decimal("40")
-    # blend = 40×0.70 + 40×0.30 = 40, scarcity 1.35 → 40×1.35 = 54
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB")
-    assert ceiling == Decimal("54.00")
-
-
-def test_tier1_rb_scarcity_modifier_is_1_35():
-    assert SCARCITY_MODIFIERS["RB"] == Decimal("1.35")
-
-
-def test_tier1_wr_scarcity_modifier_is_1_20():
-    assert SCARCITY_MODIFIERS["WR"] == Decimal("1.20")
+def test_all_tiers_ignore_position_and_market():
+    """Pure pool-share: the ceiling == system_value regardless of tier, position, or market."""
+    sv = Decimal("37")
+    for tier in (1, 2, 3, 4, 5):
+        for pos in ("QB", "RB", "WR", "TE"):
+            assert compute_bid_ceiling(sv, Decimal("99"), tier=tier, position=pos) == Decimal("37")
 
 
 # ===========================================================================
 # compute_bid_ceiling — Tier 2/3
 # ===========================================================================
 
-def test_tier2_bid_ceiling_uses_anchor_weight():
-    """Tier 2: anchor=0.45 → blend = system × 0.55 + market × 0.45."""
+def test_tier2_bid_ceiling_market_free_pool_share():
+    """Tier 2 (MARKET-FREE): ceiling = system_value (no market blend, no scarcity modifier)."""
     sv = Decimal("20")
-    mv = Decimal("30")
-    # low risk → risk_adj_market = 30
-    # blend = 20×0.55 + 30×0.45 = 11 + 13.5 = 24.5
-    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR")
-    assert ceiling == Decimal("24.50")
+    ceiling = compute_bid_ceiling(sv, Decimal("30"), tier=2, position="WR")
+    assert ceiling == Decimal("20")
 
 
-def test_tier3_bid_ceiling_uses_anchor_weight():
-    """Tier 3: anchor=0.55 → blend = system × 0.45 + market × 0.55."""
+def test_tier3_bid_ceiling_market_free_pool_share():
+    """Tier 3 (MARKET-FREE): ceiling = system_value."""
     sv = Decimal("10")
-    mv = Decimal("15")
-    # blend = 10×0.45 + 15×0.55 = 4.5 + 8.25 = 12.75
-    ceiling = compute_bid_ceiling(sv, mv, tier=3, position="RB")
-    assert ceiling == Decimal("12.75")
+    ceiling = compute_bid_ceiling(sv, Decimal("15"), tier=3, position="RB")
+    assert ceiling == Decimal("10")
 
 
 # ===========================================================================
 # compute_bid_ceiling — Tier 4/5
 # ===========================================================================
 
-def test_tier4_bid_ceiling_uses_market_dominant_weight():
-    """Tier 4: anchor=0.70 → blend = system × 0.30 + market × 0.70."""
+def test_tier4_bid_ceiling_market_free_ignores_market():
+    """Tier 4 (MARKET-FREE): ceiling = system_value even against a huge market_value
+    (previously market dominated at anchor 0.70 — that blend is gone)."""
     sv = Decimal("5")
-    mv = Decimal("100")
-    # blend = 5×0.30 + 100×0.70 = 1.5 + 70 = 71.50
-    ceiling = compute_bid_ceiling(sv, mv, tier=4, position="RB")
-    assert ceiling == Decimal("71.50")
+    ceiling = compute_bid_ceiling(sv, Decimal("100"), tier=4, position="RB")
+    assert ceiling == Decimal("5")
 
 
-def test_tier5_bid_ceiling_uses_heavy_market_weight():
-    """Tier 5: anchor=0.80 → blend = system × 0.20 + market × 0.80."""
+def test_tier5_bid_ceiling_market_free_ignores_market():
+    """Tier 5 (MARKET-FREE): ceiling = system_value (previously 0.80 market-weighted)."""
     sv = Decimal("3")
-    mv = Decimal("50")
-    # blend = 3×0.20 + 50×0.80 = 0.6 + 40 = 40.60
-    ceiling = compute_bid_ceiling(sv, mv, tier=5, position="WR")
-    assert ceiling == Decimal("40.60")
+    ceiling = compute_bid_ceiling(sv, Decimal("50"), tier=5, position="WR")
+    assert ceiling == Decimal("3")
 
 
 def test_tier5_bid_ceiling_uses_system_value_only():
@@ -242,14 +220,14 @@ def test_tier5_bid_ceiling_uses_system_value_only():
 # compute_bid_ceiling — risk level (market discount)
 # ===========================================================================
 
-def test_risk_discount_reduces_market_before_blend():
-    """High risk (15% discount) reduces market_value before blending."""
+def test_risk_level_does_not_affect_market_free_ceiling():
+    """MARKET-FREE: risk_level no longer changes the ceiling (it only discounted the market
+    term, which is removed). Same ceiling regardless of risk_level."""
     sv = Decimal("30")
     mv = Decimal("40")
-    # Tier 2 (anchor=0.45), high risk: risk_adjusted_market = 40 × (1 - 0.15) = 34
-    # blend = 30 × 0.55 + 34 × 0.45 = 16.5 + 15.3 = 31.80
-    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
-    assert ceiling == Decimal("31.80")
+    high = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
+    low = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="low")
+    assert high == low == Decimal("30")
 
 
 def test_low_risk_no_market_discount():
@@ -313,6 +291,45 @@ def test_value_gap_exact_threshold_aligned():
     # gap = -5 → not < -5 → aligned; gap = 5 → not > 5 → aligned
     assert signal_over  == "aligned"
     assert signal_under == "aligned"
+
+
+# ===========================================================================
+# derive_market_relative_signals — the deterministic post-pass (market re-enters
+# here, AFTER the blind ceiling exists). gap = ai_bid_ceiling - market_fp.
+# ===========================================================================
+
+@pytest.mark.parametrize("gap,assessment,pay_up,nom", [
+    (30,  "elite_value",    True,  False),
+    (15,  "elite_value",    True,  False),   # boundary: >= +15
+    (14,  "good_value",     False, False),
+    (6,   "good_value",     False, False),
+    (5,   "fair_value",     False, False),   # +5 is aligned, not good
+    (0,   "fair_value",     False, False),
+    (-5,  "fair_value",     False, False),   # -5 is aligned, not overpay
+    (-6,  "slight_overpay", False, False),
+    (-14, "slight_overpay", False, False),
+    (-15, "avoid",          False, True),    # boundary: <= -15
+    (-40, "avoid",          False, True),
+])
+def test_derive_market_relative_signals_bands(gap, assessment, pay_up, nom):
+    assert derive_market_relative_signals(Decimal(gap)) == (assessment, pay_up, nom)
+
+
+def test_derive_market_relative_signals_no_market_makes_no_claim():
+    """No market to compare against → no market-relative label (not a neutral guess)."""
+    assert derive_market_relative_signals(None) == (None, False, False)
+
+
+def test_derive_market_relative_signals_monotonic_and_flags_exclusive():
+    """Assessment is monotone non-increasing in -gap; pay_up and nomination never co-fire."""
+    order = ["elite_value", "good_value", "fair_value", "slight_overpay", "avoid"]
+    prev = -1
+    for gap in range(40, -41, -5):
+        a, pu, nm = derive_market_relative_signals(Decimal(gap))
+        assert not (pu and nm)                     # mutually exclusive
+        idx = order.index(a)
+        assert idx >= prev                          # worsens (or holds) as gap falls
+        prev = idx
 
 
 # ===========================================================================
@@ -1271,15 +1288,12 @@ def test_tighter_let_go_for_risky_players():
     assert let_go_vol < let_go_low
 
 
-def test_healthy_tier1_near_market():
-    """Healthy T1 RB: system-dominant ceiling reflects system value more than market."""
+def test_healthy_tier1_market_free_pure_pool_share():
+    """Healthy T1 RB (MARKET-FREE, PURE POOL-SHARE): ceiling = system_value; no market blend,
+    no scarcity modifier."""
     sv = Decimal("55")
-    mv = Decimal("60")
-    # low risk → risk_adj_market = 60
-    # T1 anchor=0.30: blend = 55 × 0.70 + 60 × 0.30 = 38.5 + 18 = 56.5
-    # scarcity RB = 1.35 → 56.5 × 1.35 = 76.275
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="low")
-    assert ceiling == Decimal("76.28")
+    ceiling = compute_bid_ceiling(sv, Decimal("60"), tier=1, position="RB", risk_level="low")
+    assert ceiling == Decimal("55")
 
 
 def test_risk_level_not_risk_modifier_in_ceiling():
@@ -1291,27 +1305,21 @@ def test_risk_level_not_risk_modifier_in_ceiling():
     assert "risk_modifier" not in param_names
 
 
-def test_amon_ra_ceiling_above_20():
-    """Amon-Ra scenario: T2 WR, sv=$21, mv=$49, high risk → ceiling > $20."""
+def test_amon_ra_ceiling_market_free():
+    """Amon-Ra scenario (MARKET-FREE): T2 WR, sv=$21 → ceiling = $21. No market lift and no
+    market crush; risk_level no longer affects it. Still above the old $20 concern."""
     sv = Decimal("21")
-    mv = Decimal("49")
-    # high discount = 15%: risk_adj_market = 49 × 0.85 = 41.65
-    # T2 anchor=0.45: blend = 21 × 0.55 + 41.65 × 0.45 = 11.55 + 18.7425 = 30.2925
-    ceiling = compute_bid_ceiling(sv, mv, tier=2, position="WR", risk_level="high")
+    ceiling = compute_bid_ceiling(sv, Decimal("49"), tier=2, position="WR", risk_level="high")
+    assert ceiling == Decimal("21")
     assert ceiling > Decimal("20.00")
-    assert ceiling == Decimal("30.29")
 
 
-def test_cmc_ceiling_above_45():
-    """CMC scenario: T1 RB, sv=$55, mv=$60, moderate risk → ceiling > $45."""
+def test_cmc_ceiling_market_free():
+    """CMC scenario (MARKET-FREE, PURE POOL-SHARE): T1 RB, sv=$55 → $55; market + scarcity
+    modifier both ignored."""
     sv = Decimal("55")
-    mv = Decimal("60")
-    # moderate discount = 8%: risk_adj_market = 60 × 0.92 = 55.2
-    # T1 anchor=0.30: blend = 55 × 0.70 + 55.2 × 0.30 = 38.5 + 16.56 = 55.06
-    # scarcity RB = 1.35 → 55.06 × 1.35 = 74.331
-    ceiling = compute_bid_ceiling(sv, mv, tier=1, position="RB", risk_level="moderate")
-    assert ceiling > Decimal("45.00")
-    assert ceiling == Decimal("74.33")
+    ceiling = compute_bid_ceiling(sv, Decimal("60"), tier=1, position="RB", risk_level="moderate")
+    assert ceiling == Decimal("55")
 
 
 @pytest.mark.asyncio

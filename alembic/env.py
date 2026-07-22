@@ -55,6 +55,10 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    # Migrations mutate schema — refuse against prod unless ROOK_ALLOW_PROD_WRITES=1.
+    # (A migration that "ran on prod before anyone noticed" is exactly this hole.)
+    from backend.db_guard import guard_writes
+    guard_writes("alembic migration (schema change)")
     import asyncio
     asyncio.run(run_async_migrations())
 
