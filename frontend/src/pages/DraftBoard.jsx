@@ -86,8 +86,15 @@ function sortPlayers(players, sortKey, sortOrder) {
       case 'adp_diff': va = getAdpDiff(a) ?? -Infinity; vb = getAdpDiff(b) ?? -Infinity; break
       default: va = a.tier ?? 99; vb = b.tier ?? 99; break
     }
-    if (typeof va === 'string') return va < vb ? -dir : va > vb ? dir : 0
-    return (va - vb) * dir
+    let cmp
+    if (typeof va === 'string') cmp = va < vb ? -dir : va > vb ? dir : 0
+    else cmp = (va - vb) * dir
+    // Within a tier, break ties by highest projected points first — always
+    // descending, independent of the tier sort direction.
+    if (cmp === 0 && sortKey === 'tier') {
+      cmp = (b.ppr_points ?? -Infinity) - (a.ppr_points ?? -Infinity)
+    }
+    return cmp
   })
   return sorted
 }
@@ -379,7 +386,7 @@ export default function DraftBoard() {
                 ${p.market_value?.toFixed(0) || '--'}
               </span>
               <span className="hidden lg:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
-                {p.ppr_points ? `${p.ppr_points.toFixed(0)} PPR` : ''}
+                {p.ppr_points ? `${p.ppr_points.toFixed(0)}` : ''}
               </span>
 
               <span
@@ -460,7 +467,7 @@ export default function DraftBoard() {
           <>
             <span className="hidden sm:block w-20 shrink-0"><SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <span className="hidden md:block w-20 shrink-0"><SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
-            <span className="hidden lg:block w-20 shrink-0"><SortableHeader label="PPR" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
+            <span className="hidden lg:block w-20 shrink-0"><SortableHeader label="Points" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
           </>
         )}

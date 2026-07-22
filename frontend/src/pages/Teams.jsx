@@ -15,6 +15,11 @@ const NFL_DIVISIONS = {
   'NFC West': ['ARI', 'LAR', 'SEA', 'SF'],
 }
 
+// Numeric grade values (higher = better) so A+ > A > A- orders correctly instead
+// of alphabetically. Mirrors TeamDetail's gradeValues. Missing/unknown grades sort last.
+const GRADE_VALUE = { 'A+': 95, A: 90, 'A-': 85, 'B+': 80, B: 75, 'B-': 70, 'C+': 65, C: 60, 'C-': 55, 'D+': 50, D: 45, 'D-': 40, F: 30 }
+const gradeVal = (g) => (g != null && GRADE_VALUE[g] != null ? GRADE_VALUE[g] : -Infinity)
+
 export default function Teams() {
   const navigate = useNavigate()
   const [division, setDivision] = useState('')
@@ -28,6 +33,14 @@ export default function Teams() {
     const divTeams = NFL_DIVISIONS[division] || []
     teams = teams.filter((t) => divTeams.includes(t.team_abbr))
   }
+  // Best teams first: overall grade A→F, tiebreak pass-protection (best→worst),
+  // then run-blocking (best→worst). Sorted by numeric grade value, not letter string.
+  teams = [...teams].sort(
+    (a, b) =>
+      gradeVal(b.system_grade) - gradeVal(a.system_grade) ||
+      gradeVal(b.pass_protection_grade) - gradeVal(a.pass_protection_grade) ||
+      gradeVal(b.run_blocking_grade) - gradeVal(a.run_blocking_grade),
+  )
 
   return (
     <div>
