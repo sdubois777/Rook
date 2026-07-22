@@ -166,8 +166,9 @@ def test_block_flag_suppressed_insufficient_own_budget():
 # Test 6: test_bid_ceiling_tier1_uses_anchor_weight
 # ---------------------------------------------------------------------------
 
-def test_bid_ceiling_tier1_uses_anchor_weight():
-    """Tier 1 RB: ceiling blends system + market at 0.85 anchor, scarcity 1.35."""
+def test_bid_ceiling_tier1_market_free_pure_pool_share():
+    """Tier 1 RB (MARKET-FREE, PURE POOL-SHARE): ceiling = system_value — no market blend,
+    no scarcity modifier."""
     ceiling = compute_bid_ceiling(
         system_value=Decimal("58"),
         market_value=Decimal("68"),
@@ -175,20 +176,15 @@ def test_bid_ceiling_tier1_uses_anchor_weight():
         position="RB",
         risk_level="low",
     )
-    # blend = 58 * 0.15 + 68 * 0.85 = 8.7 + 57.8 = 66.5
-    # ceiling = 66.5 * 1.35 = 89.78 → capped at 80 by MAX_REALISTIC_BID
-    # compute_bid_ceiling doesn't cap — that's done in run_valuation_pass()
-    # So raw ceiling should be ~89.78
-    assert float(ceiling) > 60
-    assert float(ceiling) < 95  # Pre-cap value should be in this range
+    assert float(ceiling) == pytest.approx(58.0, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
 # Test 7: test_bid_ceiling_tier4_market_dominant
 # ---------------------------------------------------------------------------
 
-def test_bid_ceiling_tier4_ignores_anchor():
-    """Tier 4: anchor=0.70 (market-dominant for depth players)."""
+def test_bid_ceiling_tier4_market_free():
+    """Tier 4 (MARKET-FREE): ceiling = system_value; the old 0.70 market-dominant blend is gone."""
     ceiling = compute_bid_ceiling(
         system_value=Decimal("12"),
         market_value=Decimal("18"),
@@ -196,8 +192,7 @@ def test_bid_ceiling_tier4_ignores_anchor():
         position="WR",
         risk_level="low",
     )
-    # blend = 12 * 0.30 + 18 * 0.70 = 3.6 + 12.6 = 16.2
-    assert float(ceiling) == pytest.approx(16.2, abs=2)
+    assert float(ceiling) == pytest.approx(12.0, abs=0.01)
 
 
 # ---------------------------------------------------------------------------

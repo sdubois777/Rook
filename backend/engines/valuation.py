@@ -12,16 +12,13 @@ into final valuation fields on the players table:
   - let_go_threshold (bid ceiling × risk-adjusted multiplier)
   - value_gap and value_gap_signal (system vs market gap)
 
-Formulas from docs/ARCHITECTURE.md — Two-Value Auction System:
+Auction anchor — MARKET-FREE, PURE POOL-SHARE (ToS):
 
-  Risk is applied as a discount to market_value BEFORE blending,
-  not as a multiplier on the final ceiling.
+  recommended_bid_ceiling = system_value   (PAR pool-share, floored at $1, capped by position)
 
-  risk_adjusted_market = market_value × (1 - RISK_MARKET_DISCOUNT[risk_level])
-
-  All tiers:
-    blend = system_value × (1 - anchor_weight) + risk_adjusted_market × anchor_weight
-    ceiling = blend × positional_scarcity_modifier (T1 only)
+  The old two-value formula (market blend at anchor_weight + a tier-1 scarcity modifier) is
+  removed: market no longer enters the anchor (ToS), and the scarcity modifier is dead. The
+  market gap + risk-adjusted value are computed separately (value_gap, risk_adjusted_value).
 
   let_go_threshold = ceiling × LET_GO_MULTIPLIER[risk_level]
 
@@ -335,12 +332,9 @@ def _compute_tier_band_sv(
     k = skill_budget / total_raw
     return {pid: _to_dec(max(1.0, v * k)) for pid, v in raw.items()}
 
-SCARCITY_MODIFIERS: dict[str, Decimal] = {
-    "RB": Decimal("1.35"),
-    "WR": Decimal("1.20"),
-    "QB": Decimal("1.10"),
-    "TE": Decimal("1.10"),
-}
+# SCARCITY_MODIFIERS removed: the tier-1 positional scarcity lift is dead (0.83 collinear
+# with PAR, no out-of-sample signal, and it inflated elite RBs ~35% in the wrong direction).
+# The anchor is now pure pool-share; positional_scarcity_modifier is always 1.00.
 
 # ---------------------------------------------------------------------------
 # K / DEF — separate STATIC streaming valuation (NOT the skill pipeline)
@@ -471,36 +465,31 @@ def compute_bid_ceiling(
     risk_level: str = "low",
 ) -> Decimal:
     """
-    Compute the recommended bid ceiling using the two-value formula.
+    Compute the recommended bid ceiling — MARKET-FREE, PURE POOL-SHARE (ToS).
 
-    Risk is applied as a discount to market_value BEFORE blending, not as a
-    multiplier on the final ceiling. This prevents elite injured players from
-    becoming undraftable (e.g., Amon-Ra $16 ceiling on $49 market).
+    The ceiling is now exactly the PAR pool-share ``system_value`` (floored at $1; the
+    position cap is applied by the caller). TWO things were removed:
+      * the FantasyPros/market blend (``ANCHOR_WEIGHTS[tier]`` weighted 0.30 T1 … 0.80 T5),
+        which made the anchor 30–80% market by construction — the ToS close. #350 stripped
+        market from the agent CONTEXT; this strips it from the ANCHOR.
+      * the tier-1 positional scarcity modifier (RB 1.35 / WR 1.20 / …). Scarcity is dead
+        (0.83 collinear with PAR, no out-of-sample signal) and it lifted elite RBs ~35% in
+        the wrong direction (they are already the worst value-per-dollar). The board the
+        held-out test validated (scripts/reshape_phase1_baseline.py,
+        reshape_phase2_rb_stress.py) is pure pool-share with NO modifier; ship that.
+
+    ``market_value`` / ``tier`` / ``position`` / ``risk_level`` are retained in the signature
+    for call-site compatibility but are NO LONGER used here. Do NOT reintroduce a market or
+    scarcity term.
 
     Args:
-        system_value: PAR-derived auction dollar value.
-        market_value: Consensus market price (None = use system_value).
-        tier: Player tier (1-5).
-        position: Position string (QB, RB, WR, TE).
-        risk_level: Injury risk level (low/moderate/high/volatile).
+        system_value: PAR-derived auction dollar value (the pure pool-share anchor).
+        market_value / tier / position / risk_level: IGNORED (signature compatibility).
 
     Returns:
-        Decimal bid ceiling in dollars (minimum $1).
+        Decimal bid ceiling in dollars (minimum $1) == system_value floored at $1.
     """
-    mv = market_value if market_value is not None else system_value
-    discount = RISK_MARKET_DISCOUNT.get(risk_level, Decimal("0.00"))
-    risk_adjusted_market = mv * (Decimal("1") - discount)
-
-    anchor = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
-    blend = system_value * (Decimal("1") - anchor) + risk_adjusted_market * anchor
-
-    if tier == 1:
-        scarcity = SCARCITY_MODIFIERS.get(position, Decimal("1.00"))
-        ceiling = blend * scarcity
-    else:
-        ceiling = blend
-
-    return _to_dec(max(Decimal("1.00"), ceiling))
+    return _to_dec(max(Decimal("1.00"), system_value))
 
 
 def get_market_context(player) -> dict:
@@ -830,10 +819,10 @@ def _value_fields_for(
         risk_level = player.injury_profile.overall_risk_level
     rm = _get_risk_modifier(player.injury_profile)
 
-    # Non-PPR tier-band $ anchor purely on the tier-band value (market=None) so the PPR
-    # ADP market value never leaks into a per-format ceiling; PPR keeps the market blend.
-    ceiling_mv = None if override_sv is not None else get_market_context(player)["effective_market_value"]
-    ceiling = compute_bid_ceiling(sv, ceiling_mv, tier, pos, risk_level)
+    # MARKET-FREE (ToS): the anchor no longer blends market on ANY path. Pass market_value=None
+    # explicitly so no FantasyPros/ADP value can reach the ceiling (compute_bid_ceiling ignores
+    # it regardless — belt and suspenders).
+    ceiling = compute_bid_ceiling(sv, None, tier, pos, risk_level)
     max_bid_dec = Decimal(str(MAX_REALISTIC_BID.get(pos, 80)))
     if ceiling > max_bid_dec:
         ceiling = max_bid_dec
@@ -841,7 +830,7 @@ def _value_fields_for(
     let_go = compute_let_go_threshold(ceiling, risk_level)
     risk_adj = _to_dec(sv * (Decimal("1") + (rm or Decimal("0"))))
     anchor = ANCHOR_WEIGHTS.get(tier, Decimal("0.00"))
-    scarcity = SCARCITY_MODIFIERS.get(pos, Decimal("1.00")) if tier == 1 else Decimal("1.00")
+    scarcity = Decimal("1.00")  # positional scarcity modifier dropped — pure pool-share
 
     if override_sv is not None:
         # Scale ceiling/floor $ by the upside/downside points ratio to the projection
