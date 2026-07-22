@@ -2174,31 +2174,24 @@ async def test_sonnet_projection_stored_as_projected_ppr_season():
     mock_session.commit = AsyncMock()
     mock_session.delete = AsyncMock()
 
+    # The record is written via the atomic _upsert_profile (INSERT ... ON CONFLICT), not
+    # session.add — capture the transient record it's handed.
     records_written = []
-    original_add = mock_session.add
 
-    def track_add(record):
+    async def fake_upsert(session, record):
         records_written.append(record)
-
-    mock_session.add = track_add
 
     # Patch the scalar_one_or_none for the Player update query
     player_result = MagicMock()
     player_result.scalar_one_or_none.return_value = mock_player
 
-    # Mock to return None for existing profile check (no prior profile)
-    no_profile_result = MagicMock()
-    no_profile_result.scalar_one_or_none.return_value = None
-
     call_count = 0
     async def mock_execute(stmt):
         nonlocal call_count
         call_count += 1
-        if call_count <= 2:  # first two calls: team players + existing profiles
+        if call_count <= 2:  # team players query, then existing-profiles-to-delete query
             return mock_result
-        if call_count == 3:  # existing profile upsert check
-            return no_profile_result
-        return player_result  # subsequent: player lookup
+        return player_result  # subsequent: parent Player lookup for the update
 
     mock_session.execute = AsyncMock(side_effect=mock_execute)
 
@@ -2206,7 +2199,8 @@ async def test_sonnet_projection_stored_as_projected_ppr_season():
     ctx_mgr.__aenter__ = AsyncMock(return_value=mock_session)
     ctx_mgr.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.agents.player_profiles.AsyncSessionLocal", return_value=ctx_mgr):
+    with patch("backend.agents.player_profiles.AsyncSessionLocal", return_value=ctx_mgr), \
+         patch("backend.agents.player_profiles._upsert_profile", side_effect=fake_upsert):
         written = await _write_profiles([profile], context, "LAR")
 
     assert written == 1
