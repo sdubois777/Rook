@@ -396,13 +396,15 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
         )
-        # STEP 5 — recompute value_gap/signal now that ai_bid_ceiling is final (Phase 6),
-        # and reconcile pay_up_flag. Pure DB pass, no AI. Fixes the stale-gap ordering bug.
+        # STEP 5 (Phase 6) — DETERMINISTIC market-relative post-pass now that ai_bid_ceiling
+        # is final and blind: recompute value_gap/signal AND derive value_assessment/
+        # pay_up_flag/nomination_target_flag from the blind ceiling vs market. Pure DB, no AI.
         from backend.engines.valuation import reconcile_value_signals
         rec = await reconcile_value_signals()
         print(
-            f"[{name}] reconciled value_gap for {rec['updated']} player(s); "
-            f"pay_up suppressed on {len(rec['payup_suppressed'])}."
+            f"[{name}] reconciled value signals for {rec['updated']} player(s); "
+            f"pay_up={rec['flag_counts']['pay_up']}, "
+            f"nomination_target={rec['flag_counts']['nomination_target']}."
         )
         # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
         # Half/Standard regenerate format-appropriate prose into player_format_values.

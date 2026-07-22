@@ -270,26 +270,20 @@ adp_ai, even for elite players):
   "ai_bid_ceiling": integer — your recommended max bid ($1 minimum),
   "confidence_floor": integer — lowest you'd bid in a cautious room,
   "confidence_ceiling": integer — highest you'd go in an aggressive room,
-  "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",
-  "auction_note": "string — 1-2 sentences on the player's fantasy OUTLOOK: role, usage, production potential. Do NOT mention dollar amounts, bid prices, or auction strategy — this note appears in both auction AND snake contexts",
-  "pay_up_flag": boolean — true if this player is clearly undervalued and worth paying above math ceiling,
-  "nomination_target_flag": boolean — true if this player is overvalued and should be nominated early to drain opponent budgets
+  "auction_note": "string — 1-2 sentences on the player's fantasy OUTLOOK: role, usage, production potential. Do NOT mention dollar amounts, bid prices, auction strategy, or market/consensus/ADP/prior price — this note appears in both auction AND snake contexts"
 }
 
-You may also receive market context:
-- market_value_fantasypros: consensus ADP price from FantasyPros
-- prior_season_price: what this player actually sold for in prior season auctions
-Use these as references for what the market typically pays for this player.
-When both are available, note any gap — a player whose ADP is $30 but sold for $45 last year
-likely faces aggressive bidding again.
+You are NOT given any market data — no consensus ADP, no FantasyPros price, no
+prior-season auction price, no value gap. Form ai_bid_ceiling as an INDEPENDENT
+opinion from the football signals + the MATH-DERIVED anchor only. Do not try to
+guess the market or "what people will pay."
 
 Rules:
 - ai_bid_ceiling should usually be within 15-20% of the math ceiling, but you CAN deviate more with reasoning
 - confidence_floor must be < ai_bid_ceiling, confidence_ceiling must be > ai_bid_ceiling
-- pay_up_flag = true means: "If someone else bids near your ceiling, keep going — this player is special"
-- nomination_target_flag = true means: "Nominate this player early — opponents will overpay, draining their budget"
 - auction_note must reference the player's specific situation (role / usage /
-  production), not generic advice, and contain NO dollar amounts or bid prices
+  production), not generic advice, and contain NO dollar amounts, bid prices, or
+  any reference to market / consensus / ADP / prior price
 - GROUNDING: do NOT assert that any player has left, joined, been traded, signed,
   or changed teams, and do NOT name a specific player as a departed/added teammate,
   unless that transaction is explicitly present in the provided dependency_flags or
@@ -297,10 +291,11 @@ Rules:
   ARE given (using each flag's trigger_condition, e.g. departed_team / injured), never
   from memory. Grounded specifics (a flag's named trigger + its actual condition, the
   player's own team, real beat signals) are encouraged — do not sterilize into vagueness
-- Use market context (consensus ADP, prior price) to inform ai_bid_ceiling and
-  value_assessment — but keep dollar figures OUT of auction_note
-- NEVER say "your league paid" or "in your league" — this analysis is shared across all users
-- Value assessment considers: projection confidence, injury risk, schedule, dependency flags, positional scarcity
+- NEVER say "your league paid" or "in your league", and never reference market,
+  consensus, ADP, or what a player sold for — this opinion is market-blind and
+  shared across all users
+- ai_bid_ceiling considers: projection (incl. upside/downside), confidence, injury
+  risk, schedule, dependency flags, positional scarcity — NOT market
 - Max realistic bids: RB=$80, WR=$70, QB=$50, TE=$45. Never exceed these.
 
 SNAKE DRAFT ADP (adp_ai):
@@ -323,7 +318,6 @@ Tier framework (12-team snake):
 
 Adjust WITHIN the tier:
   - availability_risk="concern"  → push 10-15 picks LATER (higher number)
-  - value_gap strongly positive  → push earlier (lower number)
   - QB / K / DEF → go MUCH later than their auction dollars imply. This is the
     biggest auction-vs-snake difference: a $38 auction QB (e.g. Lamar Jackson)
     is typically pick ~35-40 in snake PPR, not a first-round pick. Kickers and
@@ -437,27 +431,27 @@ Do NOT invent a market number; your ai_bid_ceiling is YOUR opinion, not a consen
 
 
 def _hybrid_system_prompt(scoring_format: str) -> str:
-    """Market-blind hybrid prompt for a non-PPR reception-position run. Never used for PPR."""
+    """Market-blind hybrid prompt for a non-PPR reception-position run. Never used for PPR.
+
+    The shared base prompt is ALREADY market-blind (market was stripped from it), so the
+    hybrid only diverges on two points: (1) it widens the leash off the tier-band anchor to
+    ±25%, and (2) it RE-ADDS value_assessment to the output schema. Non-PPR format rows still
+    store a MODEL value_assessment because there is no per-format market to derive it
+    deterministically — unlike the PPR players table, where value_assessment / pay_up /
+    nomination are computed in engines.valuation.reconcile_value_signals from the blind
+    ceiling vs market. It then appends the football-signal block."""
     prompt = _system_prompt(scoring_format)
-    # Strip the market-context paragraph (the agent must not be told to use market).
-    market_para = (
-        "You may also receive market context:\n"
-        "- market_value_fantasypros: consensus ADP price from FantasyPros\n"
-        "- prior_season_price: what this player actually sold for in prior season auctions\n"
-        "Use these as references for what the market typically pays for this player.\n"
-        "When both are available, note any gap — a player whose ADP is $30 but sold for $45 last year\n"
-        "likely faces aggressive bidding again.\n\n"
-    )
-    prompt = prompt.replace(market_para, "")
     prompt = prompt.replace(
         "- ai_bid_ceiling should usually be within 15-20% of the math ceiling, but you CAN deviate more with reasoning",
         "- ai_bid_ceiling anchors on math_bid_ceiling and may diverge up to ±25% when the football signals justify it",
     )
+    # PPR dropped value_assessment from the schema (deterministic downstream); re-add it
+    # for the hybrid, immediately before auction_note. count=1 → the schema line only.
     prompt = prompt.replace(
-        "- Use market context (consensus ADP, prior price) to inform ai_bid_ceiling and\n"
-        "  value_assessment — but keep dollar figures OUT of auction_note",
-        "- Reason from the FOOTBALL SIGNALS (never market) to set ai_bid_ceiling and value_assessment;\n"
-        "  keep dollar figures OUT of auction_note",
+        '  "auction_note": "string —',
+        '  "value_assessment": "string — one of: elite_value, good_value, fair_value, slight_overpay, avoid",\n'
+        '  "auction_note": "string —',
+        1,
     )
     return prompt + _HYBRID_BLOCK
 
@@ -850,25 +844,22 @@ class ValuationAgent(BaseAgent):
             "is_rookie": p.is_rookie or False,
         }
 
-        # Math-derived values
+        # Math-derived values (NON-market: PAR pool-share ceiling + risk-adjusted bands).
         ctx["math_bid_ceiling"] = float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None
         ctx["system_value"] = float(p.baseline_value) if p.baseline_value else None
-        ctx["market_value"] = float(p.market_value) if p.market_value else None
-        ctx["value_gap"] = float(p.value_gap) if p.value_gap else None
-        ctx["value_gap_signal"] = p.value_gap_signal
         ctx["ceiling_value"] = float(p.ceiling_value) if p.ceiling_value else None
         ctx["floor_value"] = float(p.floor_value) if p.floor_value else None
 
-        # Consensus ADP (shared across all users — no league-specific data)
-        if p.market_value_fantasypros is not None:
-            ctx["market_value_fantasypros"] = float(p.market_value_fantasypros)
-
-        # Prior season actual auction price (from historic archive)
-        prior_year = get_current_season() - 1
-        for hp in (p.historic_prices or []):
-            if hp.season_year == prior_year:
-                ctx["prior_season_price"] = float(hp.price)
-                break
+        # MARKET IS STRIPPED FROM THE CONTEXT (ToS/compliance): market_value, value_gap,
+        # value_gap_signal, market_value_fantasypros, and prior_season_price are NOT fed
+        # to the model on ANY path. The price opinion (ai_bid_ceiling + auction_note)
+        # forms BLIND from football signals + the PAR math anchor only. Market re-enters
+        # exactly once, AFTER the opinion exists, in the deterministic post-pass
+        # (engines/valuation.reconcile_value_signals) that computes value_gap and the
+        # market-relative flags. This matches the hybrid/non-PPR path, which already
+        # blinded these inputs (run_prose_for_format). Because the fingerprint hashes
+        # only what is present in ctx, dropping these keys removes them from the cache
+        # key automatically — no manual _FP_* change required.
 
         # Profile data
         if p.profile:
@@ -1049,7 +1040,12 @@ class ValuationAgent(BaseAgent):
 
                 db_player.ai_confidence_floor = result.get("confidence_floor")
                 db_player.ai_confidence_ceiling = result.get("confidence_ceiling")
-                db_player.value_assessment = result.get("value_assessment")
+                # value_assessment / pay_up_flag / nomination_target_flag are NO LONGER
+                # written here. They are market-relative and the PPR model is now blind
+                # to market, so they are computed DETERMINISTICALLY in the Phase-6 post-pass
+                # (engines.valuation.reconcile_value_signals) from this blind ai_bid_ceiling
+                # vs market_value_fantasypros. Leaving them untouched here lets the post-pass
+                # own them (it runs after run_all in the pipeline).
                 note = result.get("auction_note")
                 if note:
                     # Sanitize: strip league-specific language the model
@@ -1061,8 +1057,6 @@ class ValuationAgent(BaseAgent):
                     )
                     note = re.sub(r"(?i)\bin your league\b", "at consensus", note)
                 db_player.auction_note = note
-                db_player.pay_up_flag = result.get("pay_up_flag", False)
-                db_player.nomination_target_flag = result.get("nomination_target_flag", False)
                 written += 1
 
             await session.commit()

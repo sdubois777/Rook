@@ -157,16 +157,20 @@ async def test_rotation_on_refresh():
 
 
 # ---------------------------------------------------------------------------
-# Valuation agent context includes prior_season_price from historic_prices
+# Valuation agent context is MARKET-BLIND (ToS): market_value_fantasypros and
+# prior_season_price are stripped from _build_player_context on every path — even
+# when they are available — so the blind price opinion never sees market. Market
+# re-enters only in the deterministic post-pass (reconcile_value_signals).
 # ---------------------------------------------------------------------------
 
-def test_valuation_agent_context_includes_prior_season():
-    """_build_player_context includes prior_season_price from historic_prices."""
+def test_valuation_agent_context_excludes_market_even_when_available():
+    """_build_player_context must NOT include market_value_fantasypros or
+    prior_season_price, even for a player that HAS both."""
     from backend.agents.valuation_agent import ValuationAgent
 
     agent = ValuationAgent.__new__(ValuationAgent)
 
-    # Mock historic price record
+    # Mock historic price record (available — must still be excluded)
     hist = MagicMock()
     hist.season_year = 2025
     hist.price = Decimal("42")
@@ -195,41 +199,11 @@ def test_valuation_agent_context_includes_prior_season():
     with patch("backend.agents.valuation_agent.get_current_season", return_value=2026):
         ctx = agent._build_player_context(player)
 
-    assert ctx["market_value_fantasypros"] == 48.0
-    assert ctx["prior_season_price"] == 42.0
-
-
-def test_valuation_agent_context_no_prior_season_when_missing():
-    """_build_player_context omits prior_season_price when no historic record."""
-    from backend.agents.valuation_agent import ValuationAgent
-
-    agent = ValuationAgent.__new__(ValuationAgent)
-
-    player = MagicMock()
-    player.name = "Rookie Player"
-    player.position = "WR"
-    player.team_abbr = "NYG"
-    player.age = 22
-    player.tier = 4
-    player.is_rookie = True
-    player.recommended_bid_ceiling = Decimal("5")
-    player.baseline_value = Decimal("3")
-    player.market_value = Decimal("4")
-    player.value_gap = Decimal("1")
-    player.value_gap_signal = "aligned"
-    player.ceiling_value = Decimal("10")
-    player.floor_value = Decimal("1")
-    player.market_value_fantasypros = Decimal("4")
-    player.historic_prices = []  # No prior season data
-    player.profile = None
-    player.injury_profile = None
-    player.schedule = None
-    player.dependencies = []
-
-    with patch("backend.agents.valuation_agent.get_current_season", return_value=2026):
-        ctx = agent._build_player_context(player)
-
-    assert "prior_season_price" not in ctx
+    for k in ("market_value", "value_gap", "value_gap_signal",
+              "market_value_fantasypros", "prior_season_price"):
+        assert k not in ctx, f"{k} must be stripped from the blind PPR context"
+    # The non-market math anchor is still present.
+    assert ctx["math_bid_ceiling"] == 55.0
 
 
 def test_valuation_prompt_no_league_language():
