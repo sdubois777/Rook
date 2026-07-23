@@ -482,7 +482,11 @@ export default function AccountPage() {
             </div>
           )}
 
-          <BuyCreditsCard />
+          {/* Buy credits — free tier only. Paid tiers are unlimited (never spend
+              credits), so selling them packs is dead inventory; the balance above
+              stays visible for everyone because credits persist across tier
+              changes. user.tier is the EFFECTIVE tier from /account/me. */}
+          {user.tier === 'free' && <BuyCreditsCard />}
         </section>
 
         {/* Browser Extension */}
