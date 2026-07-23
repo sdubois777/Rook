@@ -219,10 +219,20 @@ class StripeWebhookService:
             await self._users.set_stripe_subscription_id(user.id, sub_id)
 
         tier = price_to_tier(_first_price_id(obj))
-        if tier and user.tier != tier:
-            await self._user_service.upgrade_tier(
-                user, tier, grant_signup_bonus=False, commit=False
-            )
+        if tier:
+            if user.tier != tier:
+                await self._user_service.upgrade_tier(
+                    user, tier, grant_signup_bonus=False, commit=False
+                )
+            # A monthly subscription supersedes any season expiry (mirrors the
+            # checkout branch). Without this, a sub that arrives without our
+            # checkout metadata (dashboard-created, or checkout.session.completed
+            # never landing) leaves a stale past-dated tier_expires_at from a
+            # prior season pass — effective_tier() then reads a paying subscriber
+            # as free, and the /account/me lazy write-back persists that
+            # downgrade. Cleared only when this event actually grants a paid
+            # tier (an unmapped price grants nothing).
+            await self._users.set_tier_expiry(user.id, None)
         await self._users.set_subscription_status(user.id, "active")
         await self._leagues.reconcile_for_tier(user.id, tier or user.tier)
 

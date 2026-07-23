@@ -285,6 +285,41 @@ async def test_subscription_created_reconciles_tier_without_bonus():
 
 
 @pytest.mark.asyncio
+async def test_subscription_created_clears_stale_season_expiry():
+    """A monthly sub supersedes any season expiry — even when the sub arrives
+    WITHOUT the checkout handler (dashboard-created, or checkout.session.completed
+    never landing). A stale past-dated tier_expires_at from a prior season pass
+    must be cleared, or effective_tier() reads the paying subscriber as free and
+    the /account/me lazy write-back persists the downgrade."""
+    from backend.models.user import effective_tier
+
+    user = _make_user(tier="free", credits=30)
+    user.tier_expires_at = datetime.now(timezone.utc) - timedelta(days=30)
+    service, _db = _build(user)
+
+    await service.process(
+        _event("customer.subscription.created", _sub_obj(price="price_pro"))
+    )
+    assert user.tier_expires_at is None
+    assert effective_tier(user) == "pro"  # not "free" — the stale expiry is gone
+
+
+@pytest.mark.asyncio
+async def test_subscription_created_unmapped_price_leaves_expiry_untouched():
+    """No paid tier granted (price doesn't map) → the expiry is NOT cleared."""
+    stale = datetime.now(timezone.utc) - timedelta(days=30)
+    user = _make_user(tier="free", credits=30)
+    user.tier_expires_at = stale
+    service, _db = _build(user)
+
+    await service.process(
+        _event("customer.subscription.created", _sub_obj(price="price_mystery"))
+    )
+    assert user.tier == "free"              # nothing granted
+    assert user.tier_expires_at == stale    # expiry untouched
+
+
+@pytest.mark.asyncio
 async def test_subscription_updated_cancel_scheduled_does_not_downgrade():
     user = _make_user(tier="pro", credits=200)
     service, _db = _build(user)
