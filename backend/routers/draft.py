@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.core.dependencies import _verify_clerk_jwt, get_current_user, get_db, require_feature
@@ -178,6 +179,34 @@ async def relay_draft_event(
     user = await repo.get_by_draft_token(x_draft_token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid draft token")
+
+    # ── Live-draft entitlement gate (F4/F8/F11) ──────────────────────────
+    # POST /draft/start is gated by require_feature("live_draft"); this event path
+    # was not. A free user could mint a draft token (GET /account/draft-token is
+    # gated only by get_current_user), skip /draft/start entirely, and POST a
+    # your_turn/nomination event here — which lazily creates a session and runs the
+    # Sonnet-backed live-draft engine, i.e. paid AI + uncapped model spend on our
+    # key. Re-check entitlement LIVE on every event: draft_token persists on the
+    # user row forever, so a lapsed subscriber must not keep a working token.
+    # This route authenticates by header (not a Clerk JWT), so we call the service
+    # directly on the already-resolved user instead of the require_feature()
+    # dependency. check_feature_access uses effective_tier() internally, so expired
+    # season passes / lapsed subs correctly evaluate as free.
+    from backend.core.exceptions import FeatureNotAvailableError
+    from backend.services.feature_service import FeatureService
+
+    try:
+        FeatureService.check_feature_access(user, "live_draft")
+    except FeatureNotAvailableError:
+        # Flat body (not HTTPException's nested {"detail": {...}}) so the extension
+        # / web app can read a top-level machine-readable `code`.
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Live draft requires a Standard or Pro plan.",
+                "code": "live_draft_requires_paid_plan",
+            },
+        )
 
     session_key = str(user.id)
 
@@ -748,8 +777,15 @@ async def inject_frame(req: FrameRequest, user: User = Depends(get_current_user)
 
 
 @router.get("/recommendation", summary="Last AI recommendation")
-async def get_recommendation(user: User = Depends(get_current_user)):
-    """Return the most recent recommendation from the current user's engine."""
+async def get_recommendation(
+    user: User = Depends(get_current_user),
+    _gate: None = Depends(require_feature("live_draft")),
+):
+    """Return the most recent recommendation from the current user's engine.
+
+    Live draft is a Standard+ entitlement — the require_feature("live_draft")
+    dependency raises 403 feature_not_available for free users, so the web app
+    can surface an upgrade prompt instead of a stale/empty recommendation."""
     session = await _require_session(user)
     if session.engine.last_recommendation is None:
         return {"status": "no_recommendation", "message": "No nomination processed yet"}
