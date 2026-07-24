@@ -48,6 +48,23 @@ router = APIRouter(prefix="/draft", tags=["draft"])
 # button is the immediate-forget signal. Env-overridable. Default 6h.
 RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 6 * 60 * 60))
 
+# Hard cap on any relayed player_name before it reaches the name resolvers /
+# dedupe keys (F5/F7). DraftEventPayload.payload is an untyped dict, so a crafted
+# event could carry a huge (hundreds-of-KB) whitespace name straight into the
+# `\s+...$` suffix regexes (_norm_name, _pick_key) — O(N^2) on the single event
+# loop. Real NFL names are well under 100 chars; anything longer is junk and is
+# truncated (silently → degrades to "no match", never a 500). Truncating at the
+# ingress boundary protects every downstream call site (all event types) at once.
+MAX_PLAYER_NAME_LEN = 100
+
+
+def _bounded_name(value):
+    """Truncate an inbound player_name to MAX_PLAYER_NAME_LEN. Non-str / falsy
+    values pass through unchanged (downstream already handles empty/missing)."""
+    if isinstance(value, str) and len(value) > MAX_PLAYER_NAME_LEN:
+        return value[:MAX_PLAYER_NAME_LEN]
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Request models
@@ -210,6 +227,14 @@ async def relay_draft_event(
 
     session_key = str(user.id)
 
+    # ── Bound the relayed player_name at the ingress (F5/F7) ──────────────
+    # payload is an untyped dict; cap player_name here, before any resolver /
+    # dedupe key / broadcast sees it, so a giant crafted name can't drive the
+    # O(N^2) suffix regexes on the event loop (and can't be broadcast/stored
+    # verbatim either). Applies to every request-body event type in one place.
+    if isinstance(event.payload, dict) and "player_name" in event.payload:
+        event.payload["player_name"] = _bounded_name(event.payload["player_name"])
+
     # FULL-STATE SYNC (Sleeper) — reconcile the engine against the platform's
     # authoritative draft state and broadcast any recovered picks. Handled apart
     # from the delta events below; the raw draft_sync itself carries nothing the
@@ -344,6 +369,12 @@ async def _resolve_player(player_name: str, sleeper_id: str | None = None):
     name-fuzzy path (`name_backstop`), so they're unaffected.
     """
     from backend.repositories.player_repo import PlayerRepository
+
+    # Second layer of the F5/F7 bound: the draft_sync path builds internal events
+    # from Sleeper REST names that never pass through the /event ingress cap, and
+    # every name-fuzzy resolution funnels through here — so cap once more before
+    # the resolver's `\s+...$` normalization.
+    player_name = _bounded_name(player_name)
 
     async with AsyncSessionLocal() as session:
         repo = PlayerRepository(session)
