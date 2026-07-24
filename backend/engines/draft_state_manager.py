@@ -52,7 +52,13 @@ def _pick_key(name: str | None) -> str:
     normalizeName so both layers agree on what "the same player" means."""
     import re
 
-    n = (name or "").lower()
+    # Defense-in-depth for the F5/F7 ReDoS: the leading `\s+` in the suffix regex
+    # below is O(N^2) on a long whitespace string. This key is built directly from
+    # relayed names on the pick-dedupe path (draft.py `_already_sold`, record dedup)
+    # without passing through the /event ingress cap, so bound the input here too.
+    # 100 chars comfortably exceeds any real "First Last Jr." — normal names are
+    # untouched; only junk is truncated, which can only affect a non-match anyway.
+    n = (name or "")[:100].lower()
     n = re.sub(r"\s+(jr\.?|sr\.?|ii|iii|iv|v)$", "", n)
     n = n.replace("-", " ")
     n = re.sub(r"[.'’]", "", n)

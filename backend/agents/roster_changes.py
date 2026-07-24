@@ -55,8 +55,13 @@ _SUFFIX_RE = re.compile(r"\s+(III|II|IV|V|Jr\.?|Sr\.?)\s*$", re.IGNORECASE)
 
 
 def _norm_name(name: str) -> str:
-    """Strip suffixes for cross-source name comparison."""
-    return _SUFFIX_RE.sub("", name).strip().lower()
+    """Strip suffixes for cross-source name comparison.
+
+    The input is capped at 100 chars first: _SUFFIX_RE's leading `\\s+` is O(N^2)
+    on a long whitespace string (F5/F7 ReDoS), and this helper is reached from the
+    relayed-name resolver as well as off-hot-path callers. Real names are well
+    under 100, so normal matching is unchanged; only junk input is truncated."""
+    return _SUFFIX_RE.sub("", (name or "")[:100]).strip().lower()
 
 # ---------------------------------------------------------------------------
 # System prompt — dynamic year, no hardcoded integers
