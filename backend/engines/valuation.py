@@ -941,6 +941,7 @@ async def run_valuation_pass(
                     prior_production=prior_production,
                     suppressed_log=displaced_suppressed,
                     credible_triggers=credible_triggers,
+                    projection_prices_flags=_projection_prices_flags(player),
                 )
             adjusted_ppr = max(0.0, adjusted_ppr)
             pos_groups[pos].append((player, raw_ppr, adjusted_ppr))
@@ -1301,6 +1302,7 @@ async def write_format_value_sets(
                         # collect firings once (ppr pass) — the same players suppress every format
                         suppressed_log=suppressed if fmt == "ppr" else None,
                         credible_triggers=credible_triggers,
+                        projection_prices_flags=_projection_prices_flags(player),
                     )
                 pos_groups[pos].append((player, raw_ppr, max(0.0, adjusted_ppr)))
             for pos in pos_groups:
@@ -1628,6 +1630,38 @@ def _load_prior_production() -> dict:
         return {}
 
 
+# Profile sources whose PROJECTION ALREADY PRICES the dependency flags.
+#
+# player_profiles runs LAST in the pipeline (CLAUDE.md step 7, after roster_changes at
+# step 3) and both Sonnet prompts are handed the flags and told what to do with them:
+#   "A beneficiary flag with departed_team trigger = MORE opportunity -> project HIGHER
+#    than historical baseline"
+#   "A displaced flag with active_and_healthy trigger = LESS opportunity -> project LOWER"
+# (backend/agents/player_profiles.py; the rookie prompt gets a DEPENDENCY FLAGS block too.)
+#
+# So projected_ppr_season already contains the flag's effect, and the engine was applying
+# it a SECOND time. Measured on the live board — projection lift over each player's own
+# historical ppr_points, by group:
+#     beneficiary+departed   n=50   mean +27.9%   median +14.4%   76% above history
+#     displaced+active       n=90   mean  -9.4%   median -11.6%   30% above history
+#     unflagged (baseline)   n=267  mean  -6.4%   median  -6.6%   37% above history
+# Beneficiaries sit ~34 points above the unflagged baseline — almost exactly the +35% the
+# engine then re-applied. Josh Downs: historical 155.7 -> projected 198.4 (+27.4%), with
+# projection_reasoning naming the Pittman and Mitchell departures verbatim; the engine then
+# made it 337.3 and turned a $6-market receiver into the $33 WR1.
+#
+# The Python projection paths (nfl_history, college_comps, kicker_*, defense_history) never
+# see the flags, so for those the engine adjustment is the ONLY pricing of them and must
+# still apply. That is what this set discriminates.
+_PROJECTION_PRICES_FLAGS_SOURCES = frozenset({"sonnet_projection", "sonnet_rookie"})
+
+
+def _projection_prices_flags(player) -> bool:
+    """True when this player's projection already priced his dependency flags."""
+    profile = getattr(player, "profile", None)
+    return bool(profile) and getattr(profile, "profile_source", None) in _PROJECTION_PRICES_FLAGS_SOURCES
+
+
 def _build_credible_triggers(players: list) -> set:
     """Production keys for every player carrying a real forward projection.
 
@@ -1658,6 +1692,7 @@ def _apply_dependency_adjustment(
     prior_production: dict | None = None,
     suppressed_log: list | None = None,
     credible_triggers: set | None = None,
+    projection_prices_flags: bool = False,
 ) -> float:
     """
     Apply pre-draft dependency flag adjustments to projected PPR.
@@ -1684,8 +1719,17 @@ def _apply_dependency_adjustment(
             impact /= 100.0
 
         if flag == "beneficiary" and trigger == "departed_team":
+            # Skip when the projection already priced it — see
+            # _PROJECTION_PRICES_FLAGS_SOURCES. Applying it here too was a double-count.
+            if projection_prices_flags:
+                continue
             total_adj += impact
         elif flag == "displaced" and trigger == "active_and_healthy":
+            # Same double-count in the negative direction, and the larger half of it:
+            # 238 displaced rows in the DB against 63 beneficiary rows. The guards below
+            # still run for the Python-projection players who reach them.
+            if projection_prices_flags:
+                continue
             trigger_name = dep.trigger_player_name
             # Only a real str name is keyable — anything else (None, a mock) leaves the
             # key empty, which makes BOTH guards inert for this flag rather than raising.

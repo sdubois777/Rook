@@ -24,6 +24,7 @@ class DependencyResolver:
         self,
         dependencies: list[dict],
         drafted_player_ids: set[str],
+        projection_prices_flags: bool = False,
     ) -> tuple[list[dict], float]:
         """
         Check all dependency flags for a player against who has been drafted.
@@ -33,6 +34,13 @@ class DependencyResolver:
                 flag_type, trigger_yahoo_player_id, trigger_player_name,
                 trigger_condition, value_impact_pct, confidence
             drafted_player_ids: Set of yahoo_player_id strings already drafted.
+            projection_prices_flags: True when this player's PROJECTION already priced
+                his dependency flags (a Sonnet profile source). The flags are still
+                surfaced as active for the UI, but they contribute NOTHING to
+                total_value_modifier -- adding them would re-apply an effect the
+                projection the bid ceiling derives from already contains. Same
+                double-count the pre-draft engine had; see
+                _PROJECTION_PRICES_FLAGS_SOURCES in engines/valuation.py.
 
         Returns:
             (active_flags, total_value_modifier)
@@ -69,7 +77,8 @@ class DependencyResolver:
                     "active": True,
                     "reason": f"{flag.get('trigger_player_name', '?')} already drafted",
                 })
-                total_modifier += impact
+                if not projection_prices_flags:
+                    total_modifier += impact
 
             # BENEFICIARY with departed_team: always active (trade already happened)
             elif (
@@ -81,7 +90,8 @@ class DependencyResolver:
                     "active": True,
                     "reason": f"{flag.get('trigger_player_name', '?')} departed team",
                 })
-                total_modifier += impact
+                if not projection_prices_flags:
+                    total_modifier += impact
 
             # CONTINGENT: surface as info but not "active" during auction
             # (can't determine injury status during a live draft)

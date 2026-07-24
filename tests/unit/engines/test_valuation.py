@@ -1197,6 +1197,44 @@ def test_dependency_adjustment_multiple_flags():
     assert result == pytest.approx(300.0)  # 250 × (1 + 0.35 - 0.15)
 
 
+def test_dependency_adjustment_skipped_when_projection_already_priced_flags():
+    """A Sonnet-projected player's flags are NOT re-applied by the engine.
+
+    player_profiles runs last in the pipeline and its prompt tells the model to project
+    higher for beneficiary+departed_team and lower for displaced+active_and_healthy, so
+    projected_ppr_season already contains the effect. Applying it again here double-counted
+    it: Josh Downs' 198.4 projection (already +27.4% over his history, with the Pittman and
+    Mitchell departures named in his projection_reasoning) became 337.3 and made a $6-market
+    receiver the $33 WR1.
+    """
+    ben = _make_dep("beneficiary", "departed_team", 0.35)
+    dis = _make_dep("displaced", "active_and_healthy", -0.30)
+
+    # Gated: the projection already priced both directions → engine is a no-op.
+    assert _apply_dependency_adjustment(
+        250.0, [ben], projection_prices_flags=True) == pytest.approx(250.0)
+    assert _apply_dependency_adjustment(
+        250.0, [dis], projection_prices_flags=True) == pytest.approx(250.0)
+    assert _apply_dependency_adjustment(
+        250.0, [ben, dis], projection_prices_flags=True) == pytest.approx(250.0)
+
+    # Ungated (a Python projection path — nfl_history/college_comps never saw the flags):
+    # the engine adjustment is the ONLY pricing of them and must still apply.
+    assert _apply_dependency_adjustment(250.0, [ben]) == pytest.approx(337.5)
+    assert _apply_dependency_adjustment(250.0, [dis]) == pytest.approx(175.0)
+
+
+def test_scheme_fit_still_applies_when_projection_prices_flags():
+    """Only the two double-counted branches are gated; scheme_fit is untouched.
+
+    The projection prompt names beneficiary and displaced explicitly. It says nothing
+    about scheme_fit, so that adjustment is still the engine's alone to make.
+    """
+    dep = _make_dep("scheme_fit", "active_and_healthy", 0.20)
+    assert _apply_dependency_adjustment(
+        300.0, [dep], projection_prices_flags=True) == pytest.approx(330.0)  # half weight
+
+
 def test_dependency_adjustment_no_dependencies():
     """Empty dependency list returns PPR unchanged."""
     result = _apply_dependency_adjustment(300.0, [])
