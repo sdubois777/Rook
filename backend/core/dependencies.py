@@ -21,7 +21,9 @@ Dependency graph:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import Annotated, Optional
 
@@ -63,8 +65,18 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 
 
 # ── Clerk JWKS cache ────────────────────────────────────
-
+#
+# Per-process, in-memory. A cached JWKS is treated as fresh for _JWKS_TTL_SECONDS;
+# _jwks_lock serializes the (rare) fetch so a burst of concurrent cache-misses
+# can't stampede Clerk with N outbound requests. Crucially (F12): a bad *token*
+# (expired / bad signature / malformed / missing sub) NEVER invalidates this cache
+# — that's a client error. Keys are re-fetched only when they are actually stale:
+# the TTL lapses, or a token's `kid` is absent from the cached JWKS (genuine key
+# rotation), which forces exactly one refetch-and-retry.
 _jwks_cache: dict | None = None
+_jwks_fetched_at: float = 0.0
+_jwks_lock = asyncio.Lock()
+_JWKS_TTL_SECONDS = 600  # 10 min — picks up rotation without per-request fetches
 
 
 async def _get_clerk_jwks() -> dict:
@@ -96,40 +108,107 @@ async def _get_clerk_jwks() -> dict:
         return resp.json()
 
 
+async def _get_jwks(*, seen_at: float | None = None) -> tuple[dict, float]:
+    """Return ``(jwks, fetched_at)``, fetching under ``_jwks_lock`` only when the
+    cache is empty, past its TTL, or ``seen_at`` is given (a forced rotation
+    refresh) and nobody else has refreshed since ``seen_at``.
+
+    The common (valid-token) path returns the cached JWKS with NO outbound fetch.
+    A failed fetch leaves the previous cache intact (assignment happens only on
+    success) — it never nulls the cache.
+    """
+    global _jwks_cache, _jwks_fetched_at
+
+    now = time.monotonic()
+    forced = seen_at is not None
+    if (
+        not forced
+        and _jwks_cache is not None
+        and (now - _jwks_fetched_at) < _JWKS_TTL_SECONDS
+    ):
+        return _jwks_cache, _jwks_fetched_at
+
+    async with _jwks_lock:
+        # Re-check inside the lock so a burst of concurrent misses / a rotation
+        # stampede fetches ONCE, not once per waiter.
+        now = time.monotonic()
+        if forced:
+            # A concurrent waiter already refreshed after we saw the stale keys.
+            if _jwks_cache is not None and _jwks_fetched_at > seen_at:
+                return _jwks_cache, _jwks_fetched_at
+        elif _jwks_cache is not None and (now - _jwks_fetched_at) < _JWKS_TTL_SECONDS:
+            return _jwks_cache, _jwks_fetched_at
+
+        _jwks_cache = await _get_clerk_jwks()
+        _jwks_fetched_at = time.monotonic()
+        return _jwks_cache, _jwks_fetched_at
+
+
+def _token_kid_missing(token: str, jwks: dict) -> bool:
+    """True only if the token carries a `kid` that is absent from ``jwks`` — the
+    genuine key-rotation signal. A malformed token whose header can't be read is
+    NOT a kid-miss (it's a client error), so it returns False → no refetch."""
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except Exception:
+        return False
+    if not kid:
+        return False
+    return kid not in {k.get("kid") for k in jwks.get("keys", [])}
+
+
+def _decode_clerk(token: str, jwks: dict) -> dict:
+    return jwt.decode(
+        token,
+        jwks,
+        algorithms=["RS256"],
+        options={"verify_aud": False},
+    )
+
+
 async def _verify_clerk_jwt(token: str) -> dict:
     """
     Verify a Clerk JWT token and return decoded payload dict.
     Raises UnauthorizedError on invalid token.
+
+    A routine bad token (expired / bad signature / malformed / missing sub) is a
+    CLIENT error and NEVER invalidates the shared JWKS cache (F12). Keys are
+    re-fetched only on genuine rotation — a token whose `kid` is not in the cached
+    JWKS — and then exactly once (guarded by the fetch timestamp).
     """
-    global _jwks_cache
+    try:
+        jwks, fetched_at = await _get_jwks()
+    except Exception as e:
+        # JWKS unreachable (network / Clerk). Cache is untouched; next request
+        # retries. Surface as an auth failure without corrupting shared state.
+        logger.error("JWKS fetch failed: %s", e)
+        raise UnauthorizedError("Authentication failed")
 
     try:
-        if _jwks_cache is None:
-            _jwks_cache = await _get_clerk_jwks()
-
-        payload = jwt.decode(
-            token,
-            _jwks_cache,
-            algorithms=["RS256"],
-            options={"verify_aud": False},
-        )
-
-        user_id = payload.get("sub")
-        if not user_id:
-            raise UnauthorizedError("Token missing sub claim")
-
-        return payload
-
+        payload = _decode_clerk(token, jwks)
     except JWTError as e:
-        _jwks_cache = None
-        logger.warning("JWT verification failed: %s", e)
-        raise UnauthorizedError("Invalid or expired token")
-    except UnauthorizedError:
-        raise
-    except Exception as e:
-        _jwks_cache = None
-        logger.error("JWT verification error: %s", e)
-        raise UnauthorizedError("Authentication failed")
+        if _token_kid_missing(token, jwks):
+            # Genuine key rotation — our cached keys are stale. Refetch ONCE and
+            # retry; a still-failing decode is a bad token, not a stale cache.
+            try:
+                jwks, _ = await _get_jwks(seen_at=fetched_at)
+                payload = _decode_clerk(token, jwks)
+            except JWTError:
+                logger.warning("JWT verification failed after key refresh")
+                raise UnauthorizedError("Invalid or expired token")
+            except UnauthorizedError:
+                raise
+            except Exception as inner:
+                logger.error("JWKS refresh failed: %s", inner)
+                raise UnauthorizedError("Authentication failed")
+        else:
+            logger.warning("JWT verification failed: %s", e)
+            raise UnauthorizedError("Invalid or expired token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise UnauthorizedError("Token missing sub claim")
+    return payload
 
 
 # ── Clerk user email lookup ────────────────────────────────

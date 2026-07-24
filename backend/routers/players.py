@@ -299,6 +299,7 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
 async def search_players(
     q: str = Query(..., min_length=2),
     scoring_format: str = "ppr",
+    _user=Depends(get_current_user),
     db=Depends(get_db),
 ) -> list[PlayerSummary]:
     """Search players by name. Returns top 20 matches by bid ceiling. Per-format tier
@@ -319,6 +320,7 @@ async def search_players(
 @router.get("/summary", response_model=PlayerSummaryResponse)
 async def player_summary(
     scoring_format: str = "ppr",
+    _user=Depends(get_current_user),
     db=Depends(get_db),
 ) -> PlayerSummaryResponse:
     """Position counts by tier for the scarcity panel. PPR reads the players-table tier
@@ -355,7 +357,10 @@ async def player_summary(
 
 @router.get("/{player_id}", response_model=PlayerDetail)
 async def get_player(
-    player_id: uuid.UUID, scoring_format: str = "ppr", db=Depends(get_db),
+    player_id: uuid.UUID,
+    scoring_format: str = "ppr",
+    _user=Depends(get_current_user),
+    db=Depends(get_db),
 ) -> PlayerDetail:
     """Full player detail with all related data. Per-format TIER + projected points from
     player_format_values (pre-draft basis); $ figures stay PPR (dark)."""
