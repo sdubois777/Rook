@@ -912,6 +912,8 @@ async def run_valuation_pass(
         # passed in by the pipeline (pure data load, no AI); when absent the guard is inert
         # so existing callers/tests are unaffected. suppressions are collected for the report.
         displaced_suppressed: list[dict] = []
+        # STEP 4b — who counts as a real displacer. Built once over the whole pool.
+        credible_triggers = _build_credible_triggers(players)
 
         for player in players:
             pos = player.position
@@ -934,6 +936,7 @@ async def run_valuation_pass(
                     player_name=player.name,
                     prior_production=prior_production,
                     suppressed_log=displaced_suppressed,
+                    credible_triggers=credible_triggers,
                 )
             adjusted_ppr = max(0.0, adjusted_ppr)
             pos_groups[pos].append((player, raw_ppr, adjusted_ppr))
@@ -1245,6 +1248,8 @@ async def write_format_value_sets(
                 selectinload(Player.dependencies),
             )
         )).scalars().all()
+        # STEP 4b — who counts as a real displacer. Same pool every format.
+        credible_triggers = _build_credible_triggers(players)
 
         async def _upsert(row: dict) -> None:
             nonlocal written
@@ -1284,6 +1289,7 @@ async def write_format_value_sets(
                         prior_production=prior_production,
                         # collect firings once (ppr pass) — the same players suppress every format
                         suppressed_log=suppressed if fmt == "ppr" else None,
+                        credible_triggers=credible_triggers,
                     )
                 pos_groups[pos].append((player, raw_ppr, max(0.0, adjusted_ppr)))
             for pos in pos_groups:
@@ -1521,10 +1527,45 @@ def _apply_injury_discount(
 # guard — that displaced flag (Corum) is legitimate and must stand.
 _DISPLACED_GUARD_MIN_GAMES = 8
 
+# STEP 4b — displaced SUBSTANTIATION guard. The direction check above can only fire when
+# the trigger HAS prior production to compare against, so the most obviously bogus triggers
+# — players who do not exist as NFL contributors at all — sailed straight through it. That
+# is how Ja'Marr Chase and Tee Higgins both carried a -30% "displaced by Dohnte Meyers"
+# (a CIN camp body: no profile, no projection, no depth-chart order, no draft capital),
+# which alone cut Chase's PPR anchor from ~$28 to $12.91.
+#
+# A displaced flag asserts the trigger is a SUPERIOR player. That claim needs the trigger to
+# be SOMEBODY: either he produced in the NFL last season (prior_production), or he carries a
+# real forward projection in our own pool (credible_triggers — which a genuine rookie
+# displacer gets via the rookie projection path). A trigger in neither set is unsubstantiated
+# and its NEGATIVE adjustment is dropped.
+#
+# Direction of error is deliberate: suppressing means declining to apply a haircut we cannot
+# substantiate. A name we simply failed to match costs us a legitimate penalty; a hallucinated
+# trigger we honor costs an elite player 30% of his value. The former is far cheaper.
+# Both guards are inert when their data is absent, so existing callers/tests are unaffected.
+
+
+# Generational suffixes must be stripped BEFORE taking the surname. Without this
+# _prod_key_full('Kenneth Walker III') keyed to 'kiii' and 'Deebo Samuel Sr.' to 'dsr',
+# so no suffixed player ever matched prior_production — silently disabling the displaced
+# direction guard for every one of them. Worse, the garbage keys COLLIDE: 'Marvin Harrison
+# Jr.' and 'Michael Pittman Jr.' both produced 'mjr', so one could answer for the other.
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
 
 def _prod_key_full(name: str) -> str:
-    """'Puka Nacua' -> 'pnacua' (first initial + surname, punctuation-stripped)."""
+    """'Puka Nacua' -> 'pnacua' (first initial + surname, punctuation- and suffix-stripped).
+
+    'Kenneth Walker III' -> 'kwalker', matching _prod_key_abbr('K.Walker').
+    """
     parts = re.sub(r"[.']", "", (name or "").lower()).split()
+    while len(parts) > 2 and parts[-1] in _NAME_SUFFIXES:
+        parts.pop()
+    # A 2-token name that is first + suffix ('Deebo Sr.') has no surname to key on;
+    # keep it as-is rather than inventing one.
+    if len(parts) == 2 and parts[-1] in _NAME_SUFFIXES:
+        return "".join(parts)
     return (parts[0][0] + parts[-1]) if len(parts) >= 2 else "".join(parts)
 
 
@@ -1544,16 +1585,59 @@ def _load_prior_production() -> dict:
         out: dict = {}
         if df is None or df.empty:
             return out
+        collisions = 0
         for _, r in df.iterrows():
             games = int(r.get("games", 0) or 0)
             if games <= 0:
                 continue
             ppg = float(r.get("fantasy_points_ppr", 0) or 0) / games
-            out[_prod_key_abbr(str(r.get("player_name", "")))] = (ppg, games)
+            key = _prod_key_abbr(str(r.get("player_name", "")))
+            # first-initial+surname is NOT unique (15 colliding keys in a typical season:
+            # two T.Etiennes, three J.Williamses, ...). A plain assignment kept whichever
+            # row happened to land last, so the guard could compare against a phantom —
+            # it judged Alvin Kamara against a 1.5 ppg / 8 g "T.Etienne" instead of the
+            # real 14.9 ppg / 17 g one. Keep the MOST-GAMES row, the established tiebreak
+            # for this codebase's name fallbacks (see _get_player_season_stats).
+            prev = out.get(key)
+            if prev is not None:
+                collisions += 1
+                if prev[1] >= games:
+                    continue
+            out[key] = (ppg, games)
+        if collisions:
+            logger.info(
+                "Displaced guard: %d colliding name keys in prior production — kept the "
+                "most-games row for each. Name keys are ambiguous by construction; an "
+                "ID-first join (rule #7) would remove the ambiguity entirely.",
+                collisions,
+            )
         return out
     except Exception as exc:  # noqa: BLE001 — guard must never abort the valuation pass
         logger.warning("Displaced guard: prior production load failed (%s); guard inert", exc)
         return {}
+
+
+def _build_credible_triggers(players: list) -> set:
+    """Production keys for every player carrying a real forward projection.
+
+    A displaced trigger present here is SOMEBODY — he has a clean_season_baseline with
+    positive projected points, which is what a genuine rookie displacer earns through the
+    rookie projection path. Camp bodies and hallucinated names have no profile and so never
+    appear. Feeds the STEP 4b substantiation guard in _apply_dependency_adjustment.
+    """
+    out: set = set()
+    for p in players:
+        profile = getattr(p, "profile", None)
+        baseline = getattr(profile, "clean_season_baseline", None) if profile else None
+        if not baseline:
+            continue
+        val = baseline.get("projected_ppr_season") or baseline.get("ppr_points") or 0
+        try:
+            if float(val or 0) > 0:
+                out.add(_prod_key_full(p.name or ""))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _apply_dependency_adjustment(
@@ -1562,6 +1646,7 @@ def _apply_dependency_adjustment(
     player_name: str | None = None,
     prior_production: dict | None = None,
     suppressed_log: list | None = None,
+    credible_triggers: set | None = None,
 ) -> float:
     """
     Apply pre-draft dependency flag adjustments to projected PPR.
@@ -1590,11 +1675,39 @@ def _apply_dependency_adjustment(
         if flag == "beneficiary" and trigger == "departed_team":
             total_adj += impact
         elif flag == "displaced" and trigger == "active_and_healthy":
+            trigger_name = dep.trigger_player_name
+            # Only a real str name is keyable — anything else (None, a mock) leaves the
+            # key empty, which makes BOTH guards inert for this flag rather than raising.
+            trigger_key = _prod_key_full(trigger_name) if isinstance(trigger_name, str) else ""
+            # STEP 4b substantiation guard — skip a NEGATIVE displaced adj whose trigger is
+            # not an NFL contributor at all (no prior production AND no forward projection).
+            # Runs BEFORE the direction guard: that one needs the trigger's production to
+            # compare against, so it can never catch this case.
+            if (
+                impact < 0
+                and credible_triggers is not None
+                and trigger_key
+                and trigger_key not in (prior_production or {})
+                and trigger_key not in credible_triggers
+            ):
+                logger.warning(
+                    "DISPLACED SUBSTANTIATION GUARD suppressed %+.0f%% on %s — trigger %r "
+                    "has no prior production and no projection (not an NFL contributor)",
+                    impact * 100, player_name, dep.trigger_player_name,
+                )
+                if suppressed_log is not None:
+                    suppressed_log.append({
+                        "player": player_name, "trigger": dep.trigger_player_name,
+                        "player_ppg": None, "trigger_ppg": None,
+                        "suppressed_pct": round(impact * 100, 0),
+                        "reason": "unsubstantiated_trigger",
+                    })
+                continue  # trigger does not exist → do NOT apply the negative adj
             # STEP 4 direction guard — skip a NEGATIVE displaced adj when the flagged
             # player out-produced the trigger per-game last season (both real samples).
-            if impact < 0 and prior_production and isinstance(player_name, str):
+            if impact < 0 and prior_production and isinstance(player_name, str) and trigger_key:
                 fp = prior_production.get(_prod_key_full(player_name))
-                tp = prior_production.get(_prod_key_full(dep.trigger_player_name or ""))
+                tp = prior_production.get(trigger_key)
                 if (
                     fp and tp
                     and fp[1] >= _DISPLACED_GUARD_MIN_GAMES
@@ -1612,6 +1725,7 @@ def _apply_dependency_adjustment(
                             "player": player_name, "trigger": dep.trigger_player_name,
                             "player_ppg": round(fp[0], 1), "trigger_ppg": round(tp[0], 1),
                             "suppressed_pct": round(impact * 100, 0),
+                            "reason": "backwards_direction",
                         })
                     continue  # direction backwards — do NOT apply the negative adj
             total_adj += impact
