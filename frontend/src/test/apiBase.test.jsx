@@ -28,14 +28,17 @@ describe('API served under /api', () => {
     expect(src).toMatch(/const WS_PATH = '\/api\/draft\/ws\/draft'/)
   })
 
-  it('LeagueSetup reuses the shared API_BASE (single source of truth)', () => {
+  it('LeagueSetup never hardcodes the API base (delegates to the api client)', () => {
+    // The Yahoo OAuth initiation now goes through fetchYahooConnectUrl() on the
+    // shared axios client (which owns baseURL), so LeagueSetup builds no raw API
+    // URLs itself. The invariant that still matters: it must not reach past the
+    // client to read the API base from the environment directly.
     let src
     try {
       src = readFileSync('src/pages/LeagueSetup.jsx', 'utf-8')
     } catch {
       src = readFileSync('frontend/src/pages/LeagueSetup.jsx', 'utf-8')
     }
-    expect(src).toMatch(/import\s*\{[^}]*API_BASE[^}]*\}\s*from\s*'\.\.\/api\/client'/)
     expect(src).not.toMatch(/import\.meta\.env\.VITE_API_URL/)
   })
 })
