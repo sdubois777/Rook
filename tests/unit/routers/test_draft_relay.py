@@ -24,6 +24,11 @@ from backend.routers import draft as draft_mod
 def _fake_user():
     user = MagicMock()
     user.id = uuid.uuid4()
+    # A live draft is a Standard+ entitlement — the event path is now gated
+    # (F4/F8/F11). Give this relay-fixture a paid tier so these tests exercise the
+    # broadcast path rather than tripping the 403. tier_expires_at=None → no expiry.
+    user.tier = "standard"
+    user.tier_expires_at = None
     return user
 
 
