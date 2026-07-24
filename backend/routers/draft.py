@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.core.dependencies import _verify_clerk_jwt, get_current_user, get_db, require_feature
@@ -46,6 +47,23 @@ router = APIRouter(prefix="/draft", tags=["draft"])
 # hiccups while still expiring a genuinely abandoned one; the explicit "End Draft"
 # button is the immediate-forget signal. Env-overridable. Default 6h.
 RESUME_WINDOW_SECONDS = int(os.environ.get("DRAFT_RESUME_WINDOW_SECONDS", 6 * 60 * 60))
+
+# Hard cap on any relayed player_name before it reaches the name resolvers /
+# dedupe keys (F5/F7). DraftEventPayload.payload is an untyped dict, so a crafted
+# event could carry a huge (hundreds-of-KB) whitespace name straight into the
+# `\s+...$` suffix regexes (_norm_name, _pick_key) — O(N^2) on the single event
+# loop. Real NFL names are well under 100 chars; anything longer is junk and is
+# truncated (silently → degrades to "no match", never a 500). Truncating at the
+# ingress boundary protects every downstream call site (all event types) at once.
+MAX_PLAYER_NAME_LEN = 100
+
+
+def _bounded_name(value):
+    """Truncate an inbound player_name to MAX_PLAYER_NAME_LEN. Non-str / falsy
+    values pass through unchanged (downstream already handles empty/missing)."""
+    if isinstance(value, str) and len(value) > MAX_PLAYER_NAME_LEN:
+        return value[:MAX_PLAYER_NAME_LEN]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +197,43 @@ async def relay_draft_event(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
+    # ── Live-draft entitlement gate (F4/F8/F11) ──────────────────────────
+    # POST /draft/start is gated by require_feature("live_draft"); this event path
+    # was not. A free user could mint a draft token (GET /account/draft-token is
+    # gated only by get_current_user), skip /draft/start entirely, and POST a
+    # your_turn/nomination event here — which lazily creates a session and runs the
+    # Sonnet-backed live-draft engine, i.e. paid AI + uncapped model spend on our
+    # key. Re-check entitlement LIVE on every event: draft_token persists on the
+    # user row forever, so a lapsed subscriber must not keep a working token.
+    # This route authenticates by header (not a Clerk JWT), so we call the service
+    # directly on the already-resolved user instead of the require_feature()
+    # dependency. check_feature_access uses effective_tier() internally, so expired
+    # season passes / lapsed subs correctly evaluate as free.
+    from backend.core.exceptions import FeatureNotAvailableError
+    from backend.services.feature_service import FeatureService
+
+    try:
+        FeatureService.check_feature_access(user, "live_draft")
+    except FeatureNotAvailableError:
+        # Flat body (not HTTPException's nested {"detail": {...}}) so the extension
+        # / web app can read a top-level machine-readable `code`.
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Live draft requires a Standard or Pro plan.",
+                "code": "live_draft_requires_paid_plan",
+            },
+        )
+
     session_key = str(user.id)
+
+    # ── Bound the relayed player_name at the ingress (F5/F7) ──────────────
+    # payload is an untyped dict; cap player_name here, before any resolver /
+    # dedupe key / broadcast sees it, so a giant crafted name can't drive the
+    # O(N^2) suffix regexes on the event loop (and can't be broadcast/stored
+    # verbatim either). Applies to every request-body event type in one place.
+    if isinstance(event.payload, dict) and "player_name" in event.payload:
+        event.payload["player_name"] = _bounded_name(event.payload["player_name"])
 
     # FULL-STATE SYNC (Sleeper) — reconcile the engine against the platform's
     # authoritative draft state and broadcast any recovered picks. Handled apart
@@ -315,6 +369,12 @@ async def _resolve_player(player_name: str, sleeper_id: str | None = None):
     name-fuzzy path (`name_backstop`), so they're unaffected.
     """
     from backend.repositories.player_repo import PlayerRepository
+
+    # Second layer of the F5/F7 bound: the draft_sync path builds internal events
+    # from Sleeper REST names that never pass through the /event ingress cap, and
+    # every name-fuzzy resolution funnels through here — so cap once more before
+    # the resolver's `\s+...$` normalization.
+    player_name = _bounded_name(player_name)
 
     async with AsyncSessionLocal() as session:
         repo = PlayerRepository(session)
@@ -748,8 +808,15 @@ async def inject_frame(req: FrameRequest, user: User = Depends(get_current_user)
 
 
 @router.get("/recommendation", summary="Last AI recommendation")
-async def get_recommendation(user: User = Depends(get_current_user)):
-    """Return the most recent recommendation from the current user's engine."""
+async def get_recommendation(
+    user: User = Depends(get_current_user),
+    _gate: None = Depends(require_feature("live_draft")),
+):
+    """Return the most recent recommendation from the current user's engine.
+
+    Live draft is a Standard+ entitlement — the require_feature("live_draft")
+    dependency raises 403 feature_not_available for free users, so the web app
+    can surface an upgrade prompt instead of a stale/empty recommendation."""
     session = await _require_session(user)
     if session.engine.last_recommendation is None:
         return {"status": "no_recommendation", "message": "No nomination processed yet"}

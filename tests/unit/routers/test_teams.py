@@ -1,12 +1,14 @@
 """Tests for backend/routers/teams.py"""
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.core.dependencies import get_db
+from backend.core.dependencies import get_current_user, get_db
+from backend.core.exceptions import UnauthorizedError
 from backend.main import app
 
 
@@ -17,13 +19,32 @@ def _override_db(session):
     return _get_db
 
 
+def _mock_user():
+    m = MagicMock()
+    m.id = uuid.uuid4()
+    m.external_id = "test-user"
+    m.email = "test@test.com"
+    m.tier = "intro"
+    return m
+
+
+async def _raise_unauthorized():
+    """get_current_user override simulating a missing/invalid token → 401.
+    Matches the house pattern (test_admin.py / test_pipeline.py)."""
+    raise UnauthorizedError("no token")
+
+
 async def _request(session, url):
-    """Issue one GET with the db override installed."""
+    """Issue one GET with an authenticated user + the db override installed.
+    Teams routes are now Depends(get_current_user) (F10/F14); the happy-path
+    tests authenticate so they exercise the 200 path, not the new 401 gate."""
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             return await ac.get(url)
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
 
@@ -117,3 +138,23 @@ async def test_get_team_not_found():
     resp = await _request(session, "/api/teams/XXX")
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Auth gate (F10/F14) — both teams routes leaked system-grade / per-player
+# valuation IP unauthenticated. /teams/{abbr} is the enumeration key (it hands
+# out player UUIDs). Now Depends(get_current_user).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/teams", "/api/teams/KC"])
+async def test_teams_routes_require_auth(path):
+    """No/invalid token → 401 on both gated teams routes."""
+    app.dependency_overrides[get_current_user] = _raise_unauthorized
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(path)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert resp.status_code == 401

@@ -1174,3 +1174,153 @@ async def test_sync_platform_syncs_all_user_leagues():
             mock_sync.sync_league.assert_called_once_with(mock_league.id)
         finally:
             app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Live-draft entitlement gate on the event path (F4/F8/F11)
+#
+# POST /draft/start is gated by require_feature("live_draft"), but the extension
+# event path (POST /draft/event) authenticates by X-Draft-Token and was NOT gated.
+# A free user could mint a token (GET /account/draft-token has no tier check),
+# skip /draft/start, and POST a your_turn/nomination event — lazily creating a
+# session and running the Sonnet-backed engine (paid AI + uncapped model spend).
+# The gate now runs immediately after the token resolves the user, BEFORE any
+# session create / engine work, using effective_tier() so lapsed entitlements
+# evaluate as free.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_draft_event_free_tier_blocked_before_engine_and_session():
+    """Free tier + valid OWN token → 403 with a machine-readable code, and NO
+    session is created and the Sonnet engine chain is never reached."""
+    user = _make_user(draft_token="valid-token", tier="free")
+    # A manager whose calls we assert are NEVER made — proves no session create
+    # and no engine entry (get_or_rehydrate is the first step of engine processing).
+    mgr = _fake_manager(session=_fake_session())
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._trigger_your_turn", AsyncMock()
+    ) as trig, patch(
+        "backend.engines.live_draft.LiveDraftEngine._call_sonnet_explain", AsyncMock()
+    ) as sonnet:
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={"type": "your_turn", "platform": "sleeper", "payload": {}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 403
+            body = resp.json()
+            assert body["code"] == "live_draft_requires_paid_plan"
+            # No session created / rehydrated, engine never entered, Sonnet never called.
+            mgr.get_or_rehydrate.assert_not_awaited()
+            mgr.create.assert_not_awaited()
+            trig.assert_not_awaited()
+            sonnet.assert_not_awaited()
+            mock_ws.broadcast_to_session.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["standard", "pro"])
+async def test_draft_event_paid_tier_proceeds(tier):
+    """Standard / Pro tier → the event passes the gate and reaches engine
+    processing (get_or_rehydrate) and the raw broadcast, returning 'relayed'."""
+    user = _make_user(draft_token="valid-token", tier=tier)
+    session = _fake_session()
+    mgr = _fake_manager(session=session)
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._trigger_your_turn", AsyncMock()
+    ) as trig:
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={"type": "your_turn", "platform": "sleeper", "payload": {}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "relayed"
+            mgr.get_or_rehydrate.assert_awaited_once_with(user.id)
+            trig.assert_awaited_once()
+            mock_ws.broadcast_to_session.assert_awaited_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_draft_event_expired_pro_blocked_via_effective_tier():
+    """tier='pro' but a PAST tier_expires_at → effective_tier() resolves to free,
+    so the event path 403s. Proves the gate uses effective_tier(), not raw tier."""
+    from datetime import datetime, timedelta, timezone
+
+    user = _make_user(draft_token="valid-token", tier="pro")
+    user.tier_expires_at = datetime.now(timezone.utc) - timedelta(days=1)  # lapsed
+    mgr = _fake_manager(session=_fake_session())
+    from backend.core.dependencies import get_db
+
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+    mock_ws = MagicMock()
+    mock_ws.broadcast_to_session = AsyncMock()
+
+    with patch("backend.repositories.user_repo.UserRepository") as MockRepo, patch(
+        "backend.routers.draft.ws_manager", mock_ws
+    ), patch("backend.routers.draft.session_manager", mgr), patch(
+        "backend.routers.draft._trigger_your_turn", AsyncMock()
+    ) as trig:
+        MockRepo.return_value = _mock_user_repo(user)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/draft/event",
+                    json={"type": "your_turn", "platform": "sleeper", "payload": {}},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 403
+            assert resp.json()["code"] == "live_draft_requires_paid_plan"
+            mgr.get_or_rehydrate.assert_not_awaited()
+            trig.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_recommendation_free_tier_blocked():
+    """GET /draft/recommendation is gated by require_feature('live_draft') so the
+    web app can surface an upgrade prompt — free tier gets 403 feature_not_available."""
+    user = _make_user(tier="free")
+    mgr = _fake_manager(session=_fake_session(), resumable=True)
+    from backend.core.dependencies import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: user
+
+    with patch("backend.routers.draft.session_manager", mgr):
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.get("/api/draft/recommendation")
+            assert resp.status_code == 403
+            assert resp.json()["error"] == "feature_not_available"
+            # The gate rejects before the route body touches the session.
+            mgr.get_or_rehydrate.assert_not_awaited()
+        finally:
+            app.dependency_overrides.clear()

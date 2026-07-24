@@ -63,6 +63,9 @@ htmlcov/
 # Claude Code auto-memory
 .claude/
 
+# Local MCP server config (contains a dev-DB DSN via env expansion; keep local)
+.mcp.json
+
 # Backtest output
 backtest_results_*.csv
 backtest_results_2025.csv
