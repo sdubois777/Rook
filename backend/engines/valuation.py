@@ -848,7 +848,12 @@ def _value_fields_for(
 
     return {
         "tier": tier,
-        "baseline_value": sv,
+        # Capped to the SAME position maximum as recommended_bid_ceiling above. These two
+        # are rendered side by side ("System" and "Bid Ceiling" on the detail panel), and
+        # an uncapped baseline read as a system opinion the ceiling was overriding: Josh
+        # Allen showed System $73.38 against a $50 QB cap. The cap is a league-rules bound
+        # on what any player can cost, so it applies to both or neither.
+        "baseline_value": min(sv, max_bid_dec),
         "ceiling_value": ceiling_val,
         "floor_value": floor_val,
         "risk_adjusted_value": _to_dec(max(Decimal("1.00"), risk_adj)),
@@ -1503,8 +1508,10 @@ def _apply_injury_discount(
     Discount sources (applied multiplicatively, capped at 0.60):
     - post_acl_flag:      25% discount (POST_MAJOR_INJURY_DISCOUNT)
     - workload_cliff_flag: 15% discount
-    - career_trajectory = "declining": 15% discount (AI model assessment)
-    - clean_season_baseline "declining" flag: 15% discount (Python-computed)
+    - decline: 15% — ONLY when the projection is backward-looking. A forward Sonnet
+      projection has already priced the decline (see below), so re-applying it there
+      double-counts. Sources: the model's career_trajectory label, or the
+      Python-computed clean_season_baseline["declining"] flag.
     """
     discount = 1.0
 
@@ -1515,11 +1522,31 @@ def _apply_injury_discount(
         elif injury_profile.workload_cliff_flag:
             discount *= 0.85  # 15% discount for workload cliff
 
-    # Check profile for career decline — two sources:
-    # 1. AI model's career_trajectory assessment (catches cases like Chubb
-    #    where only peak seasons are "clean" but model sees overall decline)
-    # 2. Python-computed declining flag in clean_season_baseline
-    if profile:
+    # Career decline. Both sources are gated on the SAME condition that gates the
+    # dependency flags: a forward Sonnet projection has already priced this in.
+    #
+    # career_trajectory is written by the same Sonnet call that writes
+    # projected_ppr_season, so a "declining" label and a lowered projection are two
+    # renderings of one judgement. Measured on the live board as projection / the
+    # player's OWN historical ppr_points:
+    #     label only         n=91   mean 0.678   median 0.668   <- already cut 32%
+    #     label + py flag    n=59   mean 0.973   median 0.848
+    #     python flag only   n=20   mean 1.305   median 1.215   <- projected UP
+    #     neither            n=237  mean 1.056   median 1.005
+    # The labelled group is already projected down a third; the engine then took
+    # another 15%. Josh Allen 393.8 -> 368.0 -> 312.8; Travis Kelce 217.3 -> 182.4 ->
+    # 155.0. With the QB replacement floor at 289 this was a cliff: Lamar Jackson and
+    # Patrick Mahomes fell below replacement to a $1.00 anchor on the second cut alone.
+    #
+    # The python-flag-only row is the same error in reverse — those players were
+    # projected UP 30%, and the historical flag discounted them anyway. When a forward
+    # projection exists it supersedes the backward-looking flag, so both branches are
+    # gated together rather than trading one for the other.
+    #
+    # A backward-looking profile (nfl_history / college_comps / the K/DEF paths) never
+    # made that judgement, so for those the discount is the only pricing of decline and
+    # still applies.
+    if profile and not _projection_prices_decline(profile):
         if profile.career_trajectory == "declining":
             discount *= 0.85  # 15% decline discount
         elif profile.clean_season_baseline and profile.clean_season_baseline.get("declining"):
@@ -1660,6 +1687,25 @@ def _projection_prices_flags(player) -> bool:
     """True when this player's projection already priced his dependency flags."""
     profile = getattr(player, "profile", None)
     return bool(profile) and getattr(profile, "profile_source", None) in _PROJECTION_PRICES_FLAGS_SOURCES
+
+
+def _projection_prices_decline(profile) -> bool:
+    """True when this PROFILE's projection already priced a career decline.
+
+    Takes the profile directly (not the player) because _apply_injury_discount is handed
+    a profile. Requires BOTH a Sonnet source and an actual forward projection: the source
+    alone is not enough, because _extract_ppr falls back to the historical ppr_points when
+    projected_ppr_season is absent or zero, and in that case nothing has priced the
+    decline. Note the falsy check rather than `is None` — it must match _extract_ppr's
+    `or`, which treats a 0.0 projection as absent.
+    """
+    if getattr(profile, "profile_source", None) not in _PROJECTION_PRICES_FLAGS_SOURCES:
+        return False
+    baseline = getattr(profile, "clean_season_baseline", None) or {}
+    try:
+        return float(baseline.get("projected_ppr_season") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _build_credible_triggers(players: list) -> set:

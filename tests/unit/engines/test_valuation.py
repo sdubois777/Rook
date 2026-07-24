@@ -628,6 +628,79 @@ def test_career_trajectory_declining_discount():
     assert result == 280.0 * 0.85  # 238
 
 
+def test_decline_discount_skipped_when_forward_projection_priced_it():
+    """A forward Sonnet projection already prices the decline — do not cut it twice.
+
+    career_trajectory is written by the same Sonnet call that writes
+    projected_ppr_season, so a "declining" label and a lowered projection are one
+    judgement rendered twice. Live board: label-only players project at 0.678x their own
+    history before the engine touches them. Josh Allen 393.8 -> 368.0 -> 312.8 was the
+    double cut; with the QB replacement floor at 289 it dropped Lamar Jackson and
+    Patrick Mahomes below replacement to a $1.00 anchor.
+    """
+    profile = MagicMock()
+    profile.profile_source = "sonnet_projection"
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 393.8, "projected_ppr_season": 368.0}
+
+    assert _apply_injury_discount(368.0, None, profile) == pytest.approx(368.0)
+
+    # The python-computed flag is gated on the same condition: those players were
+    # projected UP 30% on average, so discounting them contradicts the projection.
+    profile2 = MagicMock()
+    profile2.profile_source = "sonnet_rookie"
+    profile2.career_trajectory = "volatile"
+    profile2.clean_season_baseline = {"ppr_points": 100.0, "projected_ppr_season": 130.0,
+                                      "declining": True}
+    assert _apply_injury_discount(130.0, None, profile2) == pytest.approx(130.0)
+
+
+def test_decline_discount_still_applies_without_a_forward_projection():
+    """Backward-looking profiles never made the judgement, so the discount is the only
+    pricing of decline and must survive.
+
+    Covers both halves of the gate: a non-Sonnet source, and a Sonnet source whose
+    projection is missing/zero (where _extract_ppr falls back to historical points, so
+    nothing has priced the decline — the falsy check must match that `or`).
+    """
+    # (a) python projection path — no Sonnet judgement at all
+    hist = MagicMock()
+    hist.profile_source = "nfl_history"
+    hist.career_trajectory = "declining"
+    hist.clean_season_baseline = {"ppr_points": 280.0}
+    assert _apply_injury_discount(280.0, None, hist) == pytest.approx(280.0 * 0.85)
+
+    # (b) Sonnet source but NO forward projection — prices off history, so still discount
+    nofwd = MagicMock()
+    nofwd.profile_source = "sonnet_projection"
+    nofwd.career_trajectory = "declining"
+    nofwd.clean_season_baseline = {"ppr_points": 280.0}
+    assert _apply_injury_discount(280.0, None, nofwd) == pytest.approx(280.0 * 0.85)
+
+    # (c) Sonnet source with a ZERO projection — falsy, same as absent
+    zero = MagicMock()
+    zero.profile_source = "sonnet_projection"
+    zero.career_trajectory = "declining"
+    zero.clean_season_baseline = {"ppr_points": 280.0, "projected_ppr_season": 0.0}
+    assert _apply_injury_discount(280.0, None, zero) == pytest.approx(280.0 * 0.85)
+
+
+def test_injury_flags_still_apply_to_sonnet_projected_players():
+    """Only DECLINE is gated. post_acl / workload_cliff are injury facts the projection
+    prompt is not given, so they must still cut a Sonnet-projected player."""
+    inj = MagicMock()
+    inj.post_acl_flag = True
+    inj.workload_cliff_flag = False
+
+    profile = MagicMock()
+    profile.profile_source = "sonnet_projection"
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 300.0, "projected_ppr_season": 280.0}
+
+    # post_acl still applies; the decline discount does not (0.75, not 0.6375)
+    assert _apply_injury_discount(280.0, inj, profile) == pytest.approx(280.0 * 0.75)
+
+
 def test_post_acl_plus_declining_stacks():
     """POST_ACL (25%) + declining (15%) stack multiplicatively, floored at 0.60."""
     inj = MagicMock()
