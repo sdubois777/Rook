@@ -8,7 +8,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.core.dependencies import get_current_user, get_db
+from backend.core.exceptions import UnauthorizedError
 from backend.main import app
+
+
+async def _raise_unauthorized():
+    """get_current_user override simulating a missing/invalid token → 401.
+    Matches the house pattern (test_admin.py / test_pipeline.py)."""
+    raise UnauthorizedError("no token")
 
 
 def _mock_user():
@@ -124,11 +131,13 @@ async def test_search_players():
     result_mock.scalars.return_value = scalars_mock
     session.execute = AsyncMock(return_value=result_mock)
 
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/api/players/search?q=chase")
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
@@ -139,9 +148,14 @@ async def test_search_players():
 
 @pytest.mark.asyncio
 async def test_search_players_requires_query():
-    """GET /players/search without q returns 422."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.get("/api/players/search")
+    """GET /players/search without q returns 422 (authed, so the failure is
+    purely the missing query param, not the new auth gate)."""
+    app.dependency_overrides[get_current_user] = _mock_user
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/api/players/search")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 422
 
@@ -166,11 +180,13 @@ async def test_player_summary():
 
     session.execute = AsyncMock(side_effect=[grouped_result, total_result])
 
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/api/players/summary")
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
@@ -195,11 +211,13 @@ async def test_player_summary_non_ppr_reads_per_format_tiers():
     total_result.scalar.return_value = 121
     session.execute = AsyncMock(side_effect=[grouped_result, total_result])
 
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get("/api/players/summary", params={"scoring_format": "standard"})
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
@@ -245,11 +263,13 @@ async def test_get_player_detail():
 
     session.execute = AsyncMock(side_effect=[player_result, ts_result])
 
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(f"/api/players/{player_id}")
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
@@ -268,11 +288,40 @@ async def test_get_player_not_found():
     session.execute = AsyncMock(return_value=result)
 
     fake_id = str(uuid.uuid4())
+    app.dependency_overrides[get_current_user] = _mock_user
     app.dependency_overrides[get_db] = _override_db(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.get(f"/api/players/{fake_id}")
     finally:
+        app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Auth gate (F10/F14) — these three routes leaked valuation IP unauthenticated.
+# Now Depends(get_current_user), matching the GET /players (list) sibling.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/players/search?q=chase",
+        "/api/players/summary",
+        f"/api/players/{uuid.uuid4()}",
+    ],
+)
+async def test_players_routes_require_auth(path):
+    """No/invalid token → 401 on each gated players route. Valid params are
+    supplied so the ONLY failure is the auth gate (not a 422/404)."""
+    app.dependency_overrides[get_current_user] = _raise_unauthorized
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get(path)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert resp.status_code == 401

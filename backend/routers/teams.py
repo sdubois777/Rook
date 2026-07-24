@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-from backend.core.dependencies import get_db
+from backend.core.dependencies import get_current_user, get_db
 from backend.models.team_system import TeamSystem
 from backend.repositories.player_repo import PlayerRepository
 from backend.schemas.player_badges import PlayerBadgeFields
@@ -129,6 +129,7 @@ def _calculate_qb_wr_trust_score(ts: TeamSystem) -> int:
 async def list_teams(
     sort: str = "system_grade",
     order: str = "desc",
+    _user=Depends(get_current_user),
     db=Depends(get_db),
 ) -> TeamListResponse:
     """All 32 teams with latest system grades and player counts."""
@@ -165,7 +166,12 @@ async def list_teams(
 
 
 @router.get("/{abbr}", response_model=TeamDetail)
-async def get_team(abbr: str, scoring_format: str = "ppr", db=Depends(get_db)) -> TeamDetail:
+async def get_team(
+    abbr: str,
+    scoring_format: str = "ppr",
+    _user=Depends(get_current_user),
+    db=Depends(get_db),
+) -> TeamDetail:
     """Team detail with full system context and skill position players. Per-format TIER
     overlaid from player_format_values (pre-draft basis); $ figures stay PPR (dark)."""
     from backend.services.format_display import (
