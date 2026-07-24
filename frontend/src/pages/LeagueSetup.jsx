@@ -1,11 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { apiClient, API_BASE } from '../api/client'
+import { apiClient } from '../api/client'
 import { fetchYahooConnectUrl, fetchUserLeagues } from '../api/league'
 import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
-
-// Single source of truth for the API base (includes /api) — see api/client.js.
-const API_URL = API_BASE
 
 const PLATFORMS = [
   { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },
@@ -672,15 +669,27 @@ export default function LeagueSetup() {
       setRetryMessage('Account is setting up — retrying automatically...')
       setPlatform(p || 'yahoo')
       setStep(1)
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         setRetryMessage('')
-        window.location.href = `${API_URL}/auth/yahoo/connect`
+        try {
+          // Re-initiate through the authenticated connect-url flow so the
+          // browser-binding nonce cookie is re-issued. The old top-level
+          // /auth/yahoo/connect navigation could not carry the Clerk bearer and
+          // has been removed.
+          const url = await fetchYahooConnectUrl()
+          window.location.href = url
+        } catch {
+          setRetryMessage('Could not reconnect to Yahoo. Please try connecting again.')
+        }
       }, 2000)
       return () => clearTimeout(timer)
     }
 
-    if (error === 'invalid_state') {
-      setRetryMessage('OAuth session expired. Please try connecting again.')
+    // OAuth callback rejections (state binding: F1/F2/F6). Distinct codes come
+    // back from the backend; they all mean "start the connect flow over".
+    if (['invalid_state', 'invalid_signature', 'expired_state',
+         'missing_binding', 'binding_mismatch'].includes(error)) {
+      setRetryMessage('Your Yahoo connection could not be verified. Please try connecting again.')
       setPlatform(p || 'yahoo')
       setStep(1)
       return

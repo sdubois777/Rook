@@ -13,6 +13,9 @@ export async function fetchUserLeagues() {
 }
 
 export async function fetchYahooConnectUrl() {
-  const { data } = await api.get('/auth/yahoo/connect-url')
+  // credentials must be included so the browser stores the HttpOnly nonce
+  // cookie the backend sets here — it binds the OAuth callback to THIS browser.
+  // Prod is same-origin (sent either way); this is for split-origin dev parity.
+  const { data } = await api.get('/auth/yahoo/connect-url', { withCredentials: true })
   return data.url
 }
