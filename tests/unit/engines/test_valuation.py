@@ -1021,6 +1021,95 @@ async def test_tier_from_raw_ppr_not_adjusted():
     assert amon_ra.baseline_value is not None
 
 
+@pytest.mark.asyncio
+async def test_adjusted_points_persisted_and_dollars_monotone_in_it():
+    """The points the DOLLARS derive from are persisted, and $ is monotone in them.
+
+    Regression lock for the ordering bug: the board displayed RAW projected points beside
+    dollars computed from raw x injury x dependency, so a player projected fewer points
+    could be priced higher (146 inverted WR pairs in the PPR top 40). players.adjusted_points
+    is the quantity the dollars actually use; displaying it makes the board monotone by
+    construction because ppr_to_system_value is affine in it.
+    """
+    mock_players = []
+    for i in range(10):
+        p = _make_player("WR", ppr_points=300 - i * 5)   # 300, 295, ... 255
+        p.name = f"WR_{i + 1}"
+        if i == 2:      # a big DOWNWARD adjustment on a high-raw player
+            p.name = "Discounted"
+            p.dependencies = [_make_dep("displaced", "active_and_healthy", -0.30)]
+        if i == 8:      # a big UPWARD adjustment on a low-raw player
+            p.name = "Boosted"
+            p.dependencies = [_make_dep("beneficiary", "departed_team", 0.35)]
+        mock_players.append(p)
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    valued = [p for p in mock_players if p.baseline_value is not None]
+    assert valued, "expected the pass to value the mock pool"
+
+    # 1. The column is populated for every valued player.
+    for p in valued:
+        assert p.adjusted_points is not None, f"{p.name} has no adjusted_points"
+
+    # 2. It is the ADJUSTED quantity, not the raw projection.
+    disc = [p for p in mock_players if p.name == "Discounted"][0]
+    boost = [p for p in mock_players if p.name == "Boosted"][0]
+    assert float(disc.adjusted_points) == pytest.approx(290 * 0.70, abs=0.05)
+    assert float(boost.adjusted_points) == pytest.approx(260 * 1.35, abs=0.05)
+
+    # 3. The boosted player out-earns the discounted one DESPITE a lower raw projection —
+    #    and adjusted_points reflects that, so the two columns agree.
+    assert boost.adjusted_points > disc.adjusted_points
+    assert boost.baseline_value > disc.baseline_value
+
+    # 4. THE INVARIANT: within a position, dollars are monotone in adjusted_points.
+    ordered = sorted(valued, key=lambda p: float(p.adjusted_points), reverse=True)
+    for hi, lo in zip(ordered, ordered[1:]):
+        if float(hi.adjusted_points) == float(lo.adjusted_points):
+            continue
+        assert hi.baseline_value >= lo.baseline_value, (
+            f"{lo.name} ({lo.adjusted_points} pts) priced ${lo.baseline_value} above "
+            f"{hi.name} ({hi.adjusted_points} pts) at ${hi.baseline_value}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_adjusted_points_cleared_by_stale_value_sweep():
+    """A player who loses his projection must not keep last run's adjusted_points."""
+    stale = _make_player("WR", ppr_points=0)      # no usable projection → skipped
+    stale.name = "Stale"
+    stale.baseline_value = Decimal("25.00")       # left over from a previous run
+    stale.adjusted_points = Decimal("250.0")
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=[stale]))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    assert stale.adjusted_points is None, "stale sweep must clear adjusted_points"
+    assert stale.baseline_value is None
+
+
 def test_risk_modifier_capped_at_40pct():
     """Risk modifier worse than -0.40 is capped to -0.40."""
     inj = MagicMock()

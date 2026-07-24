@@ -59,6 +59,24 @@ class Player(Base):
 
     # Top-level valuation (computed from pipeline agents)
     tier: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # The points the DOLLARS were actually computed from: raw projected PPR after the
+    # injury discount and the dependency adjustment. Distinct from the RAW projection in
+    # player_profiles.clean_season_baseline["projected_ppr_season"], which stays raw
+    # everywhere (tiering, the agent context, backtests and value snapshots all depend on
+    # that meaning — do NOT overload it).
+    #
+    # Exists because the board displayed RAW next to dollars derived from ADJUSTED, so a
+    # receiver projected fewer points could be priced higher. Measured on the PPR top-40:
+    # 146 inverted WR pairs, 134 RB, 40 TE, 13 QB. Displaying THIS column instead takes
+    # every one of those to zero — ppr_to_system_value is affine in adjusted points, so
+    # dollars are monotone in it within a position by construction.
+    #
+    # PPR surfaces only. Half-PPR and Standard price off _compute_tier_band_sv, which
+    # ranks within tier by RAW by deliberate design, so those boards are already monotone
+    # in the raw points they display and must keep doing so.
+    adjusted_points: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+
     baseline_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     ceiling_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     floor_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))

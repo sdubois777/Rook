@@ -230,6 +230,14 @@ async def get_draftboard(
         eff_tier = ov.tier if ov.tier is not None else p.tier
         if ov.projected_points is not None:
             _raw_proj = ov.projected_points   # already the format's SEASON total
+        elif p.adjusted_points is not None:
+            # PPR only (non-PPR always has an overlay above). Show the points the DOLLARS
+            # were computed from, not the raw projection. Without this the column is raw
+            # while recommended_bid_ceiling/ai_bid_ceiling derive from raw x injury x
+            # dependency, so a player projected fewer points can be priced higher — 146
+            # inverted WR pairs in the top 40 alone. ppr_to_system_value is affine in this
+            # quantity, so displaying it makes the board monotone by construction.
+            _raw_proj = float(p.adjusted_points)
         if scoring_format != "ppr" and ov.adp_defaulted:
             adp_format_defaulted = True
         eff_ai_ceiling = ov.ai_bid_ceiling if ov.ai_bid_ceiling is not None else p.ai_bid_ceiling

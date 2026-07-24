@@ -385,6 +385,10 @@ def value_kdef(player: Player) -> None:
     adp = Decimal(str(range_start))
 
     player.tier                         = _KDEF_TIER
+    # K/DEF have no clean_season_baseline and no projection chain, so there is no priced
+    # points quantity to show. Written explicitly (not just left alone) to keep the
+    # function idempotent for a player who changed position into K/DEF.
+    player.adjusted_points              = None
     player.baseline_value               = bid_dec
     player.ceiling_value                = bid_dec
     player.floor_value                  = bid_dec
@@ -1057,6 +1061,10 @@ async def run_valuation_pass(
                 # Update in-session player object — set values BEFORE gap
                 # so compute_value_gap_from_player sees current ceiling
                 player.tier                       = vf["tier"]
+                # The points the dollars below were computed from. Persisted so the PPR
+                # surfaces can display the priced quantity instead of the raw projection
+                # (see the column docstring on Player.adjusted_points).
+                player.adjusted_points            = _to_dec(round(adjusted_ppr, 1))
                 player.baseline_value             = vf["baseline_value"]
                 player.ceiling_value              = vf["ceiling_value"]
                 player.floor_value                = vf["floor_value"]
@@ -1084,6 +1092,9 @@ async def run_valuation_pass(
             if player.position in DRAFTABLE_POSITIONS and player.id not in valued_player_ids:
                 if player.baseline_value is not None:
                     player.tier                       = None
+                    # Must be cleared with the rest — a player who loses his profile would
+                    # otherwise display last run's points forever.
+                    player.adjusted_points            = None
                     player.baseline_value             = None
                     player.risk_adjusted_value        = None
                     player.recommended_bid_ceiling    = None
