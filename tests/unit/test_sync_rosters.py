@@ -507,9 +507,15 @@ import types  # noqa: E402
 from scripts.sync_rosters import is_relevant_player  # noqa: E402
 
 
-def _gate_warehouse(depth_sleeper_ids=(), stats_gsis_by_season=None):
-    """Mock warehouse: a 2026 depth-chart frame (sleeper_id keyed) and
-    per-season seasonal-stats frames (player_id == gsis)."""
+def _gate_warehouse(depth_sleeper_ids=(), stats_gsis_by_season=None, current_season=2026):
+    """Mock warehouse: a depth-chart frame (sleeper_id keyed) and per-season
+    seasonal-stats frames (player_id == gsis).
+
+    current_season is explicit and the depth_charts dict is keyed by it, mirroring the
+    real warehouse. is_relevant_player looks up warehouse.depth_charts[current_season];
+    it used to hardcode 2026, which would silently return an empty frame the moment the
+    season rolled over or an as-of clock was set.
+    """
     stats_gsis_by_season = stats_gsis_by_season or {}
     dc = pd.DataFrame({"sleeper_id": [str(s) for s in depth_sleeper_ids]})
     frames = {
@@ -517,7 +523,8 @@ def _gate_warehouse(depth_sleeper_ids=(), stats_gsis_by_season=None):
         for season, gsis_list in stats_gsis_by_season.items()
     }
     return types.SimpleNamespace(
-        depth_charts={2026: dc},
+        current_season=current_season,
+        depth_charts={current_season: dc},
         get_seasonal_stats=lambda s: frames.get(s, pd.DataFrame()),
     )
 
@@ -592,3 +599,24 @@ def test_free_agent_kicker_filtered():
     fa_k_nan = {"player_id": "5839", "gsis_id": "", "full_name": "Practice Kicker 2",
                 "position": "K", "team": float("nan")}
     assert is_relevant_player(fa_k_nan, wh) is False
+
+
+def test_depth_chart_gate_follows_the_warehouse_season():
+    """The relevance gate must track warehouse.current_season, not a literal year.
+
+    Regression for a hardcoded `depth_charts.get(2026, ...)`. With a literal, a
+    warehouse built for any other season (a rollover, or an as-of rebuild) returns an
+    empty depth frame, the depth-chart check silently stops firing, and players are
+    judged on the game-appearance path alone — no error, just a quieter gate.
+    """
+    from scripts.sync_rosters import is_relevant_player
+
+    player = {"player_id": "4046", "gsis_id": "00-0033873", "full_name": "Depth Only"}
+
+    # Warehouse built for 2025: the player sits on ITS depth chart and must be kept.
+    wh_2025 = _gate_warehouse(depth_sleeper_ids=["4046"], current_season=2025)
+    assert is_relevant_player(player, wh_2025) is True
+
+    # Same player, warehouse built for 2026 where he has no slot and no games — dropped.
+    wh_2026 = _gate_warehouse(depth_sleeper_ids=["9999"], current_season=2026)
+    assert is_relevant_player(player, wh_2026) is False

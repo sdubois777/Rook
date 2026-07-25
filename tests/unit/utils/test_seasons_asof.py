@@ -195,3 +195,60 @@ def test_depth_chart_cache_key_separates_asof_from_real_time(asof, monkeypatch, 
     assert "depth_charts_2025_asof_2025-08-15" in written
     assert "depth_charts_2025" in written
     assert len(set(written)) == 2, f"cache keys collided: {written}"
+
+
+def test_sync_rosters_refuses_under_asof(asof, capsys):
+    """sync_rosters must skip under as-of, or it stamps today's roster on a past board.
+
+    Sleeper serves CURRENT state only. Running it during an as-of rebuild would write
+    2026 teams, depth order and injury flags over the as-of roster — A.J. Brown on NE
+    instead of PHI, an IND receiver room with Pittman and Mitchell already departed.
+    Measured: 138 of 539 valued players changed team between the 2025 roster and today,
+    so a quarter of the board would be silently wrong.
+
+    Nothing is lost: seed_nfl_data.py:160 writes team_abbr from
+    fetch_rosters(get_current_season()), which under the as-of clock IS the as-of
+    season's roster.
+    """
+    import asyncio
+    import importlib.util
+    import sys
+    from pathlib import Path
+    from unittest.mock import AsyncMock, patch
+
+    script = Path(__file__).resolve().parents[3] / "scripts" / "sync_rosters.py"
+    spec = importlib.util.spec_from_file_location("sync_rosters_under_test", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    asof("2025-08-15")
+    with patch.object(mod, "sync_players_from_sleeper", AsyncMock()) as synced:
+        with patch.object(sys, "argv", ["sync_rosters.py", "--dry-run"]):
+            asyncio.run(mod.main())
+    synced.assert_not_awaited()
+    assert "SKIPPED" in capsys.readouterr().out
+
+    # Without the override it must still run normally.
+    asof(None)
+    with patch.object(mod, "sync_players_from_sleeper", AsyncMock(return_value={
+        "updated": 0, "inserted": 0, "skipped": 0, "filtered": 0,
+    })) as synced:
+        with patch.object(sys, "argv", ["sync_rosters.py", "--dry-run"]):
+            asyncio.run(mod.main())
+    synced.assert_awaited_once()
+
+
+def test_sync_rosters_depth_lookup_is_not_a_hardcoded_year():
+    """The depth-chart relevance check must key off warehouse.current_season.
+
+    It was `warehouse.depth_charts.get(2026, ...)`. A literal year silently returns an
+    empty frame the moment the season rolls over or an as-of clock is set, dropping the
+    check with no error — the player is then judged only on the game-appearance path.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3] / "scripts" / "sync_rosters.py").read_text(
+        encoding="utf-8"
+    )
+    assert "depth_charts.get(2026" not in src
+    assert "depth_charts.get(warehouse.current_season" in src
