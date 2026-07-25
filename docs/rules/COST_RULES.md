@@ -3,8 +3,13 @@
 Every rule here is mandatory. Build them in from the start.
 Retrofitting cost controls after a 30-minute pipeline run is painful.
 
-The goal: a full pre-draft pipeline run costs under $1.50.
-A full season's API usage (pipeline + weekly refreshes + draft day) costs under $20.
+The goal WAS: a full pre-draft pipeline run under $1.50, a full season under $20.
+**MEASURED REALITY (July 2026, from `api_usage_log`): a full sweep costs $9-$72.**
+The three most recent multi-agent sweeps came in at $9.03, $15.95 and $17.04; the
+heaviest observed day was $71.77. Lifetime spend across all runs is ~$404.
+Treat the numbers below as TARGETS THAT ARE NOT BEING MET, not as descriptions.
+Query `api_usage_log` (agent_name, model, input_tokens, output_tokens,
+estimated_cost_usd, cache_hit, called_at) before quoting any figure from this file.
 
 ---
 
@@ -198,13 +203,23 @@ SONNET_OUTPUT_PER_MTK = 15.00
 
 If your agent run significantly exceeds these, something is wrong:
 
-| Agent | Calls | Model | Expected cost |
-|-------|-------|-------|--------------|
-| Team Systems (32 teams) | 32 | Haiku | ~$0.05 |
-| Roster Changes (32 teams) | 32 | Sonnet | ~$0.40 |
-| Player Profiles (32 batch + ~90 Sonnet) | ~120 | Mixed | ~$1.20 |
-| Injury Risk (32 batches) | 32 | Haiku | ~$0.08 |
-| Schedule (32 batches) | 32 | Haiku | ~$0.06 |
-| Beat Reporter (daily) | 10-20 | Haiku | ~$0.02/day |
-| **Full pipeline** | ~280 | Mixed | **~$2.00** |
-| Weekly in-season refresh | 20-40 | Mixed | ~$0.20/week |
+DESIGN TARGET (left) vs MEASURED per-non-cached-call cost from `api_usage_log` (right):
+
+| Agent | Target calls | Model | Target cost | Measured $/call |
+|-------|-------|-------|--------------|--------------|
+| Team Systems (32 teams) | 32 | Haiku | ~$0.05 | $0.0032 |
+| Roster Changes (32 teams) | 32 | Sonnet | ~$0.40 | $0.0690 |
+| Player Profiles (32 batch + ~90 Sonnet) | ~120 | Mixed | ~$1.20 | $0.0118 |
+| Injury Risk (32 batches) | 32 | Haiku | ~$0.08 | $0.0125 |
+| Schedule (32 batches) | 32 | Haiku | ~$0.06 | $0.0070 |
+| Beat Reporter (daily) | 10-20 | Haiku | ~$0.02/day | $0.0005 |
+| Valuation Agent | 60 | Mixed | — | $0.0126 |
+| **Full pipeline** | ~280 | Mixed | **~$2.00** | **$9-$72 observed** |
+
+**The "~90 Sonnet" figure for Player Profiles is the big miss.** Measured on a real
+board: **584 of 653 valued players** took a per-player Sonnet call — roughly 6.5x the
+assumption, and the reason a full sweep lands an order of magnitude over target. The
+routing trigger (`needs_sonnet_reasoning`) sends the entire low-usage tail to Sonnet,
+which is exactly where the model has least to say. This is the single biggest cost lever
+in the system and it is also implicated in projection quality (see the bucketed-output
+problem in the projection layer).
