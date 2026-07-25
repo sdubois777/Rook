@@ -117,3 +117,81 @@ def test_warehouse_build_inputs_follow_the_override(asof):
     assert S.get_analysis_seasons(6) == [2019, 2020, 2021, 2022, 2023, 2024]
     assert S.get_current_season() == 2025
     assert S.get_analysis_year() == 2025
+
+
+# ---------------------------------------------------------------------------
+# Depth charts — the input most likely to silently contaminate an as-of board
+# ---------------------------------------------------------------------------
+
+def test_depth_chart_snapshot_is_bounded_by_the_asof_clock(asof, monkeypatch, tmp_path):
+    """nflverse depth charts are a TIME SERIES; taking the global latest leaks the future.
+
+    import_depth_charts([2025]) returns 554,215 rows across 219 distinct dates running
+    from 2025-08-03 into the following March. The unbounded "latest snapshot" is
+    therefore a MARCH 2026 depth chart labelled 2025 — Jacoby Brissett as ARI QB1
+    instead of Kyler Murray, and an IND receiver room with Pittman and Mitchell already
+    gone. Those are the exact departures that inflated Josh Downs to the $33 WR1, so an
+    as-of 2025 board built on it would measure nothing.
+    """
+    import pandas as pd
+    from backend.integrations import nfl_data
+
+    frame = pd.DataFrame({
+        "dt": ["2025-08-14T07:00:00Z", "2026-03-14T07:00:00Z",
+               "2025-08-14T07:00:00Z", "2026-03-14T07:00:00Z"],
+        "team": ["ARI", "ARI", "IND", "IND"],
+        "player_name": ["Kyler Murray", "Jacoby Brissett",
+                        "Michael Pittman Jr.", "Josh Downs"],
+        "gsis_id": ["00-1", "00-2", "00-3", "00-4"],
+        "pos_abb": ["QB", "QB", "WR", "WR"],
+        "pos_grp": ["Base Offense"] * 4,
+        "pos_rank": [1, 1, 1, 1],
+    })
+    monkeypatch.setattr(nfl_data, "_cache_path", lambda name: tmp_path / f"{name}.parquet")
+    monkeypatch.setattr(nfl_data.nfl, "import_depth_charts", lambda seasons: frame.copy())
+
+    asof("2025-08-15")
+    got = nfl_data.fetch_depth_charts(2025)
+    names = set(got["full_name"])
+    assert "Kyler Murray" in names
+    assert "Michael Pittman Jr." in names
+    assert "Jacoby Brissett" not in names, "leaked a post-as-of snapshot into a 2025 board"
+
+    asof(None)
+    got_now = nfl_data.fetch_depth_charts(2025)
+    assert "Jacoby Brissett" in set(got_now["full_name"]), (
+        "real-time behaviour must be unchanged — latest snapshot wins"
+    )
+
+
+def test_depth_chart_cache_key_separates_asof_from_real_time(asof, monkeypatch, tmp_path):
+    """Same season, different clock, different answer — so they cannot share a file.
+
+    Without the as-of suffix an as-of run would either read back the real-time snapshot
+    or overwrite it, poisoning normal runs with a past-season depth chart.
+    """
+    import pandas as pd
+    from backend.integrations import nfl_data
+
+    written = []
+    monkeypatch.setattr(
+        nfl_data, "_cache_path",
+        lambda name: (written.append(name) or (tmp_path / f"{name}.parquet")),
+    )
+    monkeypatch.setattr(
+        nfl_data.nfl, "import_depth_charts",
+        lambda seasons: pd.DataFrame({
+            "dt": ["2025-08-14T07:00:00Z"], "team": ["ARI"],
+            "player_name": ["Kyler Murray"], "gsis_id": ["00-1"],
+            "pos_abb": ["QB"], "pos_grp": ["Base Offense"], "pos_rank": [1],
+        }),
+    )
+
+    asof("2025-08-15")
+    nfl_data.fetch_depth_charts(2025)
+    asof(None)
+    nfl_data.fetch_depth_charts(2025)
+
+    assert "depth_charts_2025_asof_2025-08-15" in written
+    assert "depth_charts_2025" in written
+    assert len(set(written)) == 2, f"cache keys collided: {written}"
