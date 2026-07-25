@@ -1416,13 +1416,24 @@ class PlayerProfilesAgent(BaseAgent):
 
         One DB query per team — no N+1.
         """
+        # Under an as-of run, exclude anything flagged AFTER the as-of date. The beat
+        # feed is live RSS with no archive, so signals sitting in the table are current
+        # news; letting them through would hand a past-season board tomorrow's
+        # information, and these signals feed the projection prose directly. Skipping the
+        # beat_reporter STAGE is not sufficient on its own — this read is what actually
+        # leaks, because it has no date filter of any kind.
+        from backend.utils.seasons import asof_active, asof_now
+
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
+                stmt = (
                     select(BeatReporterSignal, Player.name)
                     .join(Player, BeatReporterSignal.player_id == Player.id)
                     .where(Player.team_abbr == team)
                 )
+                if asof_active():
+                    stmt = stmt.where(BeatReporterSignal.flagged_at <= asof_now())
+                result = await session.execute(stmt)
                 rows = result.all()
         except Exception as exc:
             logger.debug("Could not load beat signals for %s: %s", team, exc)

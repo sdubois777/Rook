@@ -293,3 +293,47 @@ def test_warehouse_skips_sleeper_rosters_under_asof(asof, monkeypatch):
     # Both sides of the offseason diff come from nflverse, one season apart.
     assert 2025 in called["nflverse"], "current rosters must be the as-of season"
     assert 2024 in called["nflverse"], "prev rosters must be as-of minus one"
+
+
+@pytest.mark.asyncio
+async def test_beat_reporter_stage_skipped_under_asof(asof, capsys):
+    """Live RSS has no archive, so an as-of run must not ingest present-day news."""
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    script = Path(__file__).resolve().parents[3] / "scripts" / "run_predraft_pipeline.py"
+    spec = importlib.util.spec_from_file_location("rpp_beat_under_test", script)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=0)
+
+    asof("2025-08-15")
+    with patch("backend.agents.beat_reporter.BeatReporterAgent", return_value=agent):
+        await m.run_agent("beat_reporter", None, warehouse=MagicMock())
+    agent.run.assert_not_awaited()
+    assert "SKIPPED" in capsys.readouterr().out
+
+    asof(None)
+    with patch("backend.agents.beat_reporter.BeatReporterAgent", return_value=agent):
+        await m.run_agent("beat_reporter", None, warehouse=MagicMock())
+    agent.run.assert_awaited_once()
+
+
+def test_beat_signal_read_is_date_bounded_under_asof():
+    """Skipping the stage is NOT enough — the READ is what leaks.
+
+    _get_team_beat_signals had no date filter of any kind, so signals already sitting in
+    beat_reporter_signals would reach a past-dated board regardless of whether the
+    ingestion stage ran. These feed the projection prose directly.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3]
+           / "backend" / "agents" / "player_profiles.py").read_text(encoding="utf-8")
+    fn = src[src.index("async def _get_team_beat_signals"):]
+    fn = fn[:fn.index("\n    async def ", 10)]
+    assert "asof_active()" in fn, "beat-signal read is not as-of aware"
+    assert "flagged_at" in fn, "beat-signal read does not bound by flagged_at"
