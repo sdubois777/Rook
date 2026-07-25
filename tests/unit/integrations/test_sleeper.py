@@ -304,8 +304,17 @@ def _mock_stats_response_2025():
 
 
 @pytest.fixture
-def mock_sleeper_api():
-    """Patch requests.get to return mock Sleeper data."""
+def mock_sleeper_api(tmp_path):
+    """Patch requests.get to return mock Sleeper data.
+
+    CACHE_DIR is redirected to a per-test tmp_path. Without that this fixture
+    CORRUPTED THE REAL CACHE: it patches _cache_valid to False to force a refetch, the
+    fetch succeeds against the mock, and then the real write path
+    (sleeper.py:217 df.to_parquet(_cache_path(...))) persists the 3-row fixture into
+    data/cache/sleeper/. Observed damage before this fix — stats_2023/2024/2025.parquet
+    held 3 rows each against 8121/8208/8194 in the untouched 2020-2022 files, i.e. the
+    unit suite had silently replaced the analysis seasons the pipeline reads.
+    """
     def _side_effect(url, **kwargs):
         resp = MagicMock()
         resp.status_code = 200
@@ -323,10 +332,15 @@ def mock_sleeper_api():
         resp.raise_for_status = MagicMock()
         return resp
 
+    sleeper_cache = tmp_path / "sleeper"
+    sleeper_cache.mkdir(parents=True, exist_ok=True)
+
     with patch("backend.integrations.sleeper.requests.get", side_effect=_side_effect):
         # Also bypass cache
         with patch("backend.integrations.sleeper._cache_valid", return_value=False):
-            yield
+            # Writes land in tmp_path, never in the repo's data/cache/sleeper.
+            with patch("backend.integrations.sleeper.CACHE_DIR", sleeper_cache):
+                yield
 
 
 # ---------------------------------------------------------------------------
