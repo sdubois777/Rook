@@ -385,6 +385,10 @@ def value_kdef(player: Player) -> None:
     adp = Decimal(str(range_start))
 
     player.tier                         = _KDEF_TIER
+    # K/DEF have no clean_season_baseline and no projection chain, so there is no priced
+    # points quantity to show. Written explicitly (not just left alone) to keep the
+    # function idempotent for a player who changed position into K/DEF.
+    player.adjusted_points              = None
     player.baseline_value               = bid_dec
     player.ceiling_value                = bid_dec
     player.floor_value                  = bid_dec
@@ -844,7 +848,12 @@ def _value_fields_for(
 
     return {
         "tier": tier,
-        "baseline_value": sv,
+        # Capped to the SAME position maximum as recommended_bid_ceiling above. These two
+        # are rendered side by side ("System" and "Bid Ceiling" on the detail panel), and
+        # an uncapped baseline read as a system opinion the ceiling was overriding: Josh
+        # Allen showed System $73.38 against a $50 QB cap. The cap is a league-rules bound
+        # on what any player can cost, so it applies to both or neither.
+        "baseline_value": min(sv, max_bid_dec),
         "ceiling_value": ceiling_val,
         "floor_value": floor_val,
         "risk_adjusted_value": _to_dec(max(Decimal("1.00"), risk_adj)),
@@ -912,6 +921,8 @@ async def run_valuation_pass(
         # passed in by the pipeline (pure data load, no AI); when absent the guard is inert
         # so existing callers/tests are unaffected. suppressions are collected for the report.
         displaced_suppressed: list[dict] = []
+        # STEP 4b — who counts as a real displacer. Built once over the whole pool.
+        credible_triggers = _build_credible_triggers(players)
 
         for player in players:
             pos = player.position
@@ -934,6 +945,8 @@ async def run_valuation_pass(
                     player_name=player.name,
                     prior_production=prior_production,
                     suppressed_log=displaced_suppressed,
+                    credible_triggers=credible_triggers,
+                    projection_prices_flags=_projection_prices_flags(player),
                 )
             adjusted_ppr = max(0.0, adjusted_ppr)
             pos_groups[pos].append((player, raw_ppr, adjusted_ppr))
@@ -1054,6 +1067,10 @@ async def run_valuation_pass(
                 # Update in-session player object — set values BEFORE gap
                 # so compute_value_gap_from_player sees current ceiling
                 player.tier                       = vf["tier"]
+                # The points the dollars below were computed from. Persisted so the PPR
+                # surfaces can display the priced quantity instead of the raw projection
+                # (see the column docstring on Player.adjusted_points).
+                player.adjusted_points            = _to_dec(round(adjusted_ppr, 1))
                 player.baseline_value             = vf["baseline_value"]
                 player.ceiling_value              = vf["ceiling_value"]
                 player.floor_value                = vf["floor_value"]
@@ -1081,6 +1098,9 @@ async def run_valuation_pass(
             if player.position in DRAFTABLE_POSITIONS and player.id not in valued_player_ids:
                 if player.baseline_value is not None:
                     player.tier                       = None
+                    # Must be cleared with the rest — a player who loses his profile would
+                    # otherwise display last run's points forever.
+                    player.adjusted_points            = None
                     player.baseline_value             = None
                     player.risk_adjusted_value        = None
                     player.recommended_bid_ceiling    = None
@@ -1245,6 +1265,8 @@ async def write_format_value_sets(
                 selectinload(Player.dependencies),
             )
         )).scalars().all()
+        # STEP 4b — who counts as a real displacer. Same pool every format.
+        credible_triggers = _build_credible_triggers(players)
 
         async def _upsert(row: dict) -> None:
             nonlocal written
@@ -1284,6 +1306,8 @@ async def write_format_value_sets(
                         prior_production=prior_production,
                         # collect firings once (ppr pass) — the same players suppress every format
                         suppressed_log=suppressed if fmt == "ppr" else None,
+                        credible_triggers=credible_triggers,
+                        projection_prices_flags=_projection_prices_flags(player),
                     )
                 pos_groups[pos].append((player, raw_ppr, max(0.0, adjusted_ppr)))
             for pos in pos_groups:
@@ -1484,8 +1508,10 @@ def _apply_injury_discount(
     Discount sources (applied multiplicatively, capped at 0.60):
     - post_acl_flag:      25% discount (POST_MAJOR_INJURY_DISCOUNT)
     - workload_cliff_flag: 15% discount
-    - career_trajectory = "declining": 15% discount (AI model assessment)
-    - clean_season_baseline "declining" flag: 15% discount (Python-computed)
+    - decline: 15% — ONLY when the projection is backward-looking. A forward Sonnet
+      projection has already priced the decline (see below), so re-applying it there
+      double-counts. Sources: the model's career_trajectory label, or the
+      Python-computed clean_season_baseline["declining"] flag.
     """
     discount = 1.0
 
@@ -1496,11 +1522,31 @@ def _apply_injury_discount(
         elif injury_profile.workload_cliff_flag:
             discount *= 0.85  # 15% discount for workload cliff
 
-    # Check profile for career decline — two sources:
-    # 1. AI model's career_trajectory assessment (catches cases like Chubb
-    #    where only peak seasons are "clean" but model sees overall decline)
-    # 2. Python-computed declining flag in clean_season_baseline
-    if profile:
+    # Career decline. Both sources are gated on the SAME condition that gates the
+    # dependency flags: a forward Sonnet projection has already priced this in.
+    #
+    # career_trajectory is written by the same Sonnet call that writes
+    # projected_ppr_season, so a "declining" label and a lowered projection are two
+    # renderings of one judgement. Measured on the live board as projection / the
+    # player's OWN historical ppr_points:
+    #     label only         n=91   mean 0.678   median 0.668   <- already cut 32%
+    #     label + py flag    n=59   mean 0.973   median 0.848
+    #     python flag only   n=20   mean 1.305   median 1.215   <- projected UP
+    #     neither            n=237  mean 1.056   median 1.005
+    # The labelled group is already projected down a third; the engine then took
+    # another 15%. Josh Allen 393.8 -> 368.0 -> 312.8; Travis Kelce 217.3 -> 182.4 ->
+    # 155.0. With the QB replacement floor at 289 this was a cliff: Lamar Jackson and
+    # Patrick Mahomes fell below replacement to a $1.00 anchor on the second cut alone.
+    #
+    # The python-flag-only row is the same error in reverse — those players were
+    # projected UP 30%, and the historical flag discounted them anyway. When a forward
+    # projection exists it supersedes the backward-looking flag, so both branches are
+    # gated together rather than trading one for the other.
+    #
+    # A backward-looking profile (nfl_history / college_comps / the K/DEF paths) never
+    # made that judgement, so for those the discount is the only pricing of decline and
+    # still applies.
+    if profile and not _projection_prices_decline(profile):
         if profile.career_trajectory == "declining":
             discount *= 0.85  # 15% decline discount
         elif profile.clean_season_baseline and profile.clean_season_baseline.get("declining"):
@@ -1521,10 +1567,45 @@ def _apply_injury_discount(
 # guard — that displaced flag (Corum) is legitimate and must stand.
 _DISPLACED_GUARD_MIN_GAMES = 8
 
+# STEP 4b — displaced SUBSTANTIATION guard. The direction check above can only fire when
+# the trigger HAS prior production to compare against, so the most obviously bogus triggers
+# — players who do not exist as NFL contributors at all — sailed straight through it. That
+# is how Ja'Marr Chase and Tee Higgins both carried a -30% "displaced by Dohnte Meyers"
+# (a CIN camp body: no profile, no projection, no depth-chart order, no draft capital),
+# which alone cut Chase's PPR anchor from ~$28 to $12.91.
+#
+# A displaced flag asserts the trigger is a SUPERIOR player. That claim needs the trigger to
+# be SOMEBODY: either he produced in the NFL last season (prior_production), or he carries a
+# real forward projection in our own pool (credible_triggers — which a genuine rookie
+# displacer gets via the rookie projection path). A trigger in neither set is unsubstantiated
+# and its NEGATIVE adjustment is dropped.
+#
+# Direction of error is deliberate: suppressing means declining to apply a haircut we cannot
+# substantiate. A name we simply failed to match costs us a legitimate penalty; a hallucinated
+# trigger we honor costs an elite player 30% of his value. The former is far cheaper.
+# Both guards are inert when their data is absent, so existing callers/tests are unaffected.
+
+
+# Generational suffixes must be stripped BEFORE taking the surname. Without this
+# _prod_key_full('Kenneth Walker III') keyed to 'kiii' and 'Deebo Samuel Sr.' to 'dsr',
+# so no suffixed player ever matched prior_production — silently disabling the displaced
+# direction guard for every one of them. Worse, the garbage keys COLLIDE: 'Marvin Harrison
+# Jr.' and 'Michael Pittman Jr.' both produced 'mjr', so one could answer for the other.
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
 
 def _prod_key_full(name: str) -> str:
-    """'Puka Nacua' -> 'pnacua' (first initial + surname, punctuation-stripped)."""
+    """'Puka Nacua' -> 'pnacua' (first initial + surname, punctuation- and suffix-stripped).
+
+    'Kenneth Walker III' -> 'kwalker', matching _prod_key_abbr('K.Walker').
+    """
     parts = re.sub(r"[.']", "", (name or "").lower()).split()
+    while len(parts) > 2 and parts[-1] in _NAME_SUFFIXES:
+        parts.pop()
+    # A 2-token name that is first + suffix ('Deebo Sr.') has no surname to key on;
+    # keep it as-is rather than inventing one.
+    if len(parts) == 2 and parts[-1] in _NAME_SUFFIXES:
+        return "".join(parts)
     return (parts[0][0] + parts[-1]) if len(parts) >= 2 else "".join(parts)
 
 
@@ -1544,16 +1625,110 @@ def _load_prior_production() -> dict:
         out: dict = {}
         if df is None or df.empty:
             return out
+        collisions = 0
         for _, r in df.iterrows():
             games = int(r.get("games", 0) or 0)
             if games <= 0:
                 continue
             ppg = float(r.get("fantasy_points_ppr", 0) or 0) / games
-            out[_prod_key_abbr(str(r.get("player_name", "")))] = (ppg, games)
+            key = _prod_key_abbr(str(r.get("player_name", "")))
+            # first-initial+surname is NOT unique (15 colliding keys in a typical season:
+            # two T.Etiennes, three J.Williamses, ...). A plain assignment kept whichever
+            # row happened to land last, so the guard could compare against a phantom —
+            # it judged Alvin Kamara against a 1.5 ppg / 8 g "T.Etienne" instead of the
+            # real 14.9 ppg / 17 g one. Keep the MOST-GAMES row, the established tiebreak
+            # for this codebase's name fallbacks (see _get_player_season_stats).
+            prev = out.get(key)
+            if prev is not None:
+                collisions += 1
+                if prev[1] >= games:
+                    continue
+            out[key] = (ppg, games)
+        if collisions:
+            logger.info(
+                "Displaced guard: %d colliding name keys in prior production — kept the "
+                "most-games row for each. Name keys are ambiguous by construction; an "
+                "ID-first join (rule #7) would remove the ambiguity entirely.",
+                collisions,
+            )
         return out
     except Exception as exc:  # noqa: BLE001 — guard must never abort the valuation pass
         logger.warning("Displaced guard: prior production load failed (%s); guard inert", exc)
         return {}
+
+
+# Profile sources whose PROJECTION ALREADY PRICES the dependency flags.
+#
+# player_profiles runs LAST in the pipeline (CLAUDE.md step 7, after roster_changes at
+# step 3) and both Sonnet prompts are handed the flags and told what to do with them:
+#   "A beneficiary flag with departed_team trigger = MORE opportunity -> project HIGHER
+#    than historical baseline"
+#   "A displaced flag with active_and_healthy trigger = LESS opportunity -> project LOWER"
+# (backend/agents/player_profiles.py; the rookie prompt gets a DEPENDENCY FLAGS block too.)
+#
+# So projected_ppr_season already contains the flag's effect, and the engine was applying
+# it a SECOND time. Measured on the live board — projection lift over each player's own
+# historical ppr_points, by group:
+#     beneficiary+departed   n=50   mean +27.9%   median +14.4%   76% above history
+#     displaced+active       n=90   mean  -9.4%   median -11.6%   30% above history
+#     unflagged (baseline)   n=267  mean  -6.4%   median  -6.6%   37% above history
+# Beneficiaries sit ~34 points above the unflagged baseline — almost exactly the +35% the
+# engine then re-applied. Josh Downs: historical 155.7 -> projected 198.4 (+27.4%), with
+# projection_reasoning naming the Pittman and Mitchell departures verbatim; the engine then
+# made it 337.3 and turned a $6-market receiver into the $33 WR1.
+#
+# The Python projection paths (nfl_history, college_comps, kicker_*, defense_history) never
+# see the flags, so for those the engine adjustment is the ONLY pricing of them and must
+# still apply. That is what this set discriminates.
+_PROJECTION_PRICES_FLAGS_SOURCES = frozenset({"sonnet_projection", "sonnet_rookie"})
+
+
+def _projection_prices_flags(player) -> bool:
+    """True when this player's projection already priced his dependency flags."""
+    profile = getattr(player, "profile", None)
+    return bool(profile) and getattr(profile, "profile_source", None) in _PROJECTION_PRICES_FLAGS_SOURCES
+
+
+def _projection_prices_decline(profile) -> bool:
+    """True when this PROFILE's projection already priced a career decline.
+
+    Takes the profile directly (not the player) because _apply_injury_discount is handed
+    a profile. Requires BOTH a Sonnet source and an actual forward projection: the source
+    alone is not enough, because _extract_ppr falls back to the historical ppr_points when
+    projected_ppr_season is absent or zero, and in that case nothing has priced the
+    decline. Note the falsy check rather than `is None` — it must match _extract_ppr's
+    `or`, which treats a 0.0 projection as absent.
+    """
+    if getattr(profile, "profile_source", None) not in _PROJECTION_PRICES_FLAGS_SOURCES:
+        return False
+    baseline = getattr(profile, "clean_season_baseline", None) or {}
+    try:
+        return float(baseline.get("projected_ppr_season") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _build_credible_triggers(players: list) -> set:
+    """Production keys for every player carrying a real forward projection.
+
+    A displaced trigger present here is SOMEBODY — he has a clean_season_baseline with
+    positive projected points, which is what a genuine rookie displacer earns through the
+    rookie projection path. Camp bodies and hallucinated names have no profile and so never
+    appear. Feeds the STEP 4b substantiation guard in _apply_dependency_adjustment.
+    """
+    out: set = set()
+    for p in players:
+        profile = getattr(p, "profile", None)
+        baseline = getattr(profile, "clean_season_baseline", None) if profile else None
+        if not baseline:
+            continue
+        val = baseline.get("projected_ppr_season") or baseline.get("ppr_points") or 0
+        try:
+            if float(val or 0) > 0:
+                out.add(_prod_key_full(p.name or ""))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _apply_dependency_adjustment(
@@ -1562,6 +1737,8 @@ def _apply_dependency_adjustment(
     player_name: str | None = None,
     prior_production: dict | None = None,
     suppressed_log: list | None = None,
+    credible_triggers: set | None = None,
+    projection_prices_flags: bool = False,
 ) -> float:
     """
     Apply pre-draft dependency flag adjustments to projected PPR.
@@ -1588,13 +1765,50 @@ def _apply_dependency_adjustment(
             impact /= 100.0
 
         if flag == "beneficiary" and trigger == "departed_team":
+            # Skip when the projection already priced it — see
+            # _PROJECTION_PRICES_FLAGS_SOURCES. Applying it here too was a double-count.
+            if projection_prices_flags:
+                continue
             total_adj += impact
         elif flag == "displaced" and trigger == "active_and_healthy":
+            # Same double-count in the negative direction, and the larger half of it:
+            # 238 displaced rows in the DB against 63 beneficiary rows. The guards below
+            # still run for the Python-projection players who reach them.
+            if projection_prices_flags:
+                continue
+            trigger_name = dep.trigger_player_name
+            # Only a real str name is keyable — anything else (None, a mock) leaves the
+            # key empty, which makes BOTH guards inert for this flag rather than raising.
+            trigger_key = _prod_key_full(trigger_name) if isinstance(trigger_name, str) else ""
+            # STEP 4b substantiation guard — skip a NEGATIVE displaced adj whose trigger is
+            # not an NFL contributor at all (no prior production AND no forward projection).
+            # Runs BEFORE the direction guard: that one needs the trigger's production to
+            # compare against, so it can never catch this case.
+            if (
+                impact < 0
+                and credible_triggers is not None
+                and trigger_key
+                and trigger_key not in (prior_production or {})
+                and trigger_key not in credible_triggers
+            ):
+                logger.warning(
+                    "DISPLACED SUBSTANTIATION GUARD suppressed %+.0f%% on %s — trigger %r "
+                    "has no prior production and no projection (not an NFL contributor)",
+                    impact * 100, player_name, dep.trigger_player_name,
+                )
+                if suppressed_log is not None:
+                    suppressed_log.append({
+                        "player": player_name, "trigger": dep.trigger_player_name,
+                        "player_ppg": None, "trigger_ppg": None,
+                        "suppressed_pct": round(impact * 100, 0),
+                        "reason": "unsubstantiated_trigger",
+                    })
+                continue  # trigger does not exist → do NOT apply the negative adj
             # STEP 4 direction guard — skip a NEGATIVE displaced adj when the flagged
             # player out-produced the trigger per-game last season (both real samples).
-            if impact < 0 and prior_production and isinstance(player_name, str):
+            if impact < 0 and prior_production and isinstance(player_name, str) and trigger_key:
                 fp = prior_production.get(_prod_key_full(player_name))
-                tp = prior_production.get(_prod_key_full(dep.trigger_player_name or ""))
+                tp = prior_production.get(trigger_key)
                 if (
                     fp and tp
                     and fp[1] >= _DISPLACED_GUARD_MIN_GAMES
@@ -1612,6 +1826,7 @@ def _apply_dependency_adjustment(
                             "player": player_name, "trigger": dep.trigger_player_name,
                             "player_ppg": round(fp[0], 1), "trigger_ppg": round(tp[0], 1),
                             "suppressed_pct": round(impact * 100, 0),
+                            "reason": "backwards_direction",
                         })
                     continue  # direction backwards — do NOT apply the negative adj
             total_adj += impact

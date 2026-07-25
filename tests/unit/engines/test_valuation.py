@@ -628,6 +628,79 @@ def test_career_trajectory_declining_discount():
     assert result == 280.0 * 0.85  # 238
 
 
+def test_decline_discount_skipped_when_forward_projection_priced_it():
+    """A forward Sonnet projection already prices the decline — do not cut it twice.
+
+    career_trajectory is written by the same Sonnet call that writes
+    projected_ppr_season, so a "declining" label and a lowered projection are one
+    judgement rendered twice. Live board: label-only players project at 0.678x their own
+    history before the engine touches them. Josh Allen 393.8 -> 368.0 -> 312.8 was the
+    double cut; with the QB replacement floor at 289 it dropped Lamar Jackson and
+    Patrick Mahomes below replacement to a $1.00 anchor.
+    """
+    profile = MagicMock()
+    profile.profile_source = "sonnet_projection"
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 393.8, "projected_ppr_season": 368.0}
+
+    assert _apply_injury_discount(368.0, None, profile) == pytest.approx(368.0)
+
+    # The python-computed flag is gated on the same condition: those players were
+    # projected UP 30% on average, so discounting them contradicts the projection.
+    profile2 = MagicMock()
+    profile2.profile_source = "sonnet_rookie"
+    profile2.career_trajectory = "volatile"
+    profile2.clean_season_baseline = {"ppr_points": 100.0, "projected_ppr_season": 130.0,
+                                      "declining": True}
+    assert _apply_injury_discount(130.0, None, profile2) == pytest.approx(130.0)
+
+
+def test_decline_discount_still_applies_without_a_forward_projection():
+    """Backward-looking profiles never made the judgement, so the discount is the only
+    pricing of decline and must survive.
+
+    Covers both halves of the gate: a non-Sonnet source, and a Sonnet source whose
+    projection is missing/zero (where _extract_ppr falls back to historical points, so
+    nothing has priced the decline — the falsy check must match that `or`).
+    """
+    # (a) python projection path — no Sonnet judgement at all
+    hist = MagicMock()
+    hist.profile_source = "nfl_history"
+    hist.career_trajectory = "declining"
+    hist.clean_season_baseline = {"ppr_points": 280.0}
+    assert _apply_injury_discount(280.0, None, hist) == pytest.approx(280.0 * 0.85)
+
+    # (b) Sonnet source but NO forward projection — prices off history, so still discount
+    nofwd = MagicMock()
+    nofwd.profile_source = "sonnet_projection"
+    nofwd.career_trajectory = "declining"
+    nofwd.clean_season_baseline = {"ppr_points": 280.0}
+    assert _apply_injury_discount(280.0, None, nofwd) == pytest.approx(280.0 * 0.85)
+
+    # (c) Sonnet source with a ZERO projection — falsy, same as absent
+    zero = MagicMock()
+    zero.profile_source = "sonnet_projection"
+    zero.career_trajectory = "declining"
+    zero.clean_season_baseline = {"ppr_points": 280.0, "projected_ppr_season": 0.0}
+    assert _apply_injury_discount(280.0, None, zero) == pytest.approx(280.0 * 0.85)
+
+
+def test_injury_flags_still_apply_to_sonnet_projected_players():
+    """Only DECLINE is gated. post_acl / workload_cliff are injury facts the projection
+    prompt is not given, so they must still cut a Sonnet-projected player."""
+    inj = MagicMock()
+    inj.post_acl_flag = True
+    inj.workload_cliff_flag = False
+
+    profile = MagicMock()
+    profile.profile_source = "sonnet_projection"
+    profile.career_trajectory = "declining"
+    profile.clean_season_baseline = {"ppr_points": 300.0, "projected_ppr_season": 280.0}
+
+    # post_acl still applies; the decline discount does not (0.75, not 0.6375)
+    assert _apply_injury_discount(280.0, inj, profile) == pytest.approx(280.0 * 0.75)
+
+
 def test_post_acl_plus_declining_stacks():
     """POST_ACL (25%) + declining (15%) stack multiplicatively, floored at 0.60."""
     inj = MagicMock()
@@ -1021,6 +1094,95 @@ async def test_tier_from_raw_ppr_not_adjusted():
     assert amon_ra.baseline_value is not None
 
 
+@pytest.mark.asyncio
+async def test_adjusted_points_persisted_and_dollars_monotone_in_it():
+    """The points the DOLLARS derive from are persisted, and $ is monotone in them.
+
+    Regression lock for the ordering bug: the board displayed RAW projected points beside
+    dollars computed from raw x injury x dependency, so a player projected fewer points
+    could be priced higher (146 inverted WR pairs in the PPR top 40). players.adjusted_points
+    is the quantity the dollars actually use; displaying it makes the board monotone by
+    construction because ppr_to_system_value is affine in it.
+    """
+    mock_players = []
+    for i in range(10):
+        p = _make_player("WR", ppr_points=300 - i * 5)   # 300, 295, ... 255
+        p.name = f"WR_{i + 1}"
+        if i == 2:      # a big DOWNWARD adjustment on a high-raw player
+            p.name = "Discounted"
+            p.dependencies = [_make_dep("displaced", "active_and_healthy", -0.30)]
+        if i == 8:      # a big UPWARD adjustment on a low-raw player
+            p.name = "Boosted"
+            p.dependencies = [_make_dep("beneficiary", "departed_team", 0.35)]
+        mock_players.append(p)
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=mock_players))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    valued = [p for p in mock_players if p.baseline_value is not None]
+    assert valued, "expected the pass to value the mock pool"
+
+    # 1. The column is populated for every valued player.
+    for p in valued:
+        assert p.adjusted_points is not None, f"{p.name} has no adjusted_points"
+
+    # 2. It is the ADJUSTED quantity, not the raw projection.
+    disc = [p for p in mock_players if p.name == "Discounted"][0]
+    boost = [p for p in mock_players if p.name == "Boosted"][0]
+    assert float(disc.adjusted_points) == pytest.approx(290 * 0.70, abs=0.05)
+    assert float(boost.adjusted_points) == pytest.approx(260 * 1.35, abs=0.05)
+
+    # 3. The boosted player out-earns the discounted one DESPITE a lower raw projection —
+    #    and adjusted_points reflects that, so the two columns agree.
+    assert boost.adjusted_points > disc.adjusted_points
+    assert boost.baseline_value > disc.baseline_value
+
+    # 4. THE INVARIANT: within a position, dollars are monotone in adjusted_points.
+    ordered = sorted(valued, key=lambda p: float(p.adjusted_points), reverse=True)
+    for hi, lo in zip(ordered, ordered[1:]):
+        if float(hi.adjusted_points) == float(lo.adjusted_points):
+            continue
+        assert hi.baseline_value >= lo.baseline_value, (
+            f"{lo.name} ({lo.adjusted_points} pts) priced ${lo.baseline_value} above "
+            f"{hi.name} ({hi.adjusted_points} pts) at ${hi.baseline_value}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_adjusted_points_cleared_by_stale_value_sweep():
+    """A player who loses his projection must not keep last run's adjusted_points."""
+    stale = _make_player("WR", ppr_points=0)      # no usable projection → skipped
+    stale.name = "Stale"
+    stale.baseline_value = Decimal("25.00")       # left over from a previous run
+    stale.adjusted_points = Decimal("250.0")
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(
+            return_value=MagicMock(all=MagicMock(return_value=[stale]))))
+    )
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
+        await run_valuation_pass()
+
+    assert stale.adjusted_points is None, "stale sweep must clear adjusted_points"
+    assert stale.baseline_value is None
+
+
 def test_risk_modifier_capped_at_40pct():
     """Risk modifier worse than -0.40 is capped to -0.40."""
     inj = MagicMock()
@@ -1106,6 +1268,44 @@ def test_dependency_adjustment_multiple_flags():
     dep2 = _make_dep("displaced", "active_and_healthy", -0.15)
     result = _apply_dependency_adjustment(250.0, [dep1, dep2])
     assert result == pytest.approx(300.0)  # 250 × (1 + 0.35 - 0.15)
+
+
+def test_dependency_adjustment_skipped_when_projection_already_priced_flags():
+    """A Sonnet-projected player's flags are NOT re-applied by the engine.
+
+    player_profiles runs last in the pipeline and its prompt tells the model to project
+    higher for beneficiary+departed_team and lower for displaced+active_and_healthy, so
+    projected_ppr_season already contains the effect. Applying it again here double-counted
+    it: Josh Downs' 198.4 projection (already +27.4% over his history, with the Pittman and
+    Mitchell departures named in his projection_reasoning) became 337.3 and made a $6-market
+    receiver the $33 WR1.
+    """
+    ben = _make_dep("beneficiary", "departed_team", 0.35)
+    dis = _make_dep("displaced", "active_and_healthy", -0.30)
+
+    # Gated: the projection already priced both directions → engine is a no-op.
+    assert _apply_dependency_adjustment(
+        250.0, [ben], projection_prices_flags=True) == pytest.approx(250.0)
+    assert _apply_dependency_adjustment(
+        250.0, [dis], projection_prices_flags=True) == pytest.approx(250.0)
+    assert _apply_dependency_adjustment(
+        250.0, [ben, dis], projection_prices_flags=True) == pytest.approx(250.0)
+
+    # Ungated (a Python projection path — nfl_history/college_comps never saw the flags):
+    # the engine adjustment is the ONLY pricing of them and must still apply.
+    assert _apply_dependency_adjustment(250.0, [ben]) == pytest.approx(337.5)
+    assert _apply_dependency_adjustment(250.0, [dis]) == pytest.approx(175.0)
+
+
+def test_scheme_fit_still_applies_when_projection_prices_flags():
+    """Only the two double-counted branches are gated; scheme_fit is untouched.
+
+    The projection prompt names beneficiary and displaced explicitly. It says nothing
+    about scheme_fit, so that adjustment is still the engine's alone to make.
+    """
+    dep = _make_dep("scheme_fit", "active_and_healthy", 0.20)
+    assert _apply_dependency_adjustment(
+        300.0, [dep], projection_prices_flags=True) == pytest.approx(330.0)  # half weight
 
 
 def test_dependency_adjustment_no_dependencies():
