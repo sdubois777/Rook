@@ -58,6 +58,23 @@ ARRIVAL_DILUTION_DEFAULT = 0.622
 # emits an implausible claim like "-140% of his value".
 _MAX_ABS_IMPACT_PCT = 60.0
 
+# UNITS: everything here is a PERCENT (12.0 means 12%), matching the column name and the
+# model-generated flags. The deterministic paths in roster_changes previously wrote
+# FRACTIONS (0.35) into the same column, so ~60% of stored rows were ~100x smaller than
+# the rest — measured on the live board: contingent ranged 0.12 to 70.00 with 140 rows
+# under |1| and 99 over. That mixture is the likeliest reason dep_net_impact measured
+# t = -0.09 (pure noise) while flag PRESENCE was significant.
+
+# Fallbacks for when share data is unavailable. Derived from the SAME fits, evaluated at
+# the median observed shares, so they sit on the same scale as the computed values rather
+# than being invented:
+#   beneficiary: 0.258 * 0.246 (median vacated) / 0.50 (typical incumbent room) ~= 12.7%
+#   displaced:   0.622 * 0.246 ~= 15.3%
+# Used so a flag keeps its PRESENCE (which is the part that measured as informative)
+# instead of being dropped when shares cannot be computed.
+DEFAULT_BENEFICIARY_PCT = 12.7
+DEFAULT_DISPLACED_PCT = -15.3
+
 
 def _clamp(pct: float) -> float:
     return round(max(-_MAX_ABS_IMPACT_PCT, min(_MAX_ABS_IMPACT_PCT, pct)), 2)

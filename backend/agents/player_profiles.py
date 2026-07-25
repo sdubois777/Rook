@@ -2647,6 +2647,11 @@ _MINIMUM_QB_GAMES = 10  # minimum career games for QB projection
 
 # Recency weights: most recent season weighted most heavily
 _RECENCY_WEIGHTS = {0: 0.50, 1: 0.30, 2: 0.20}
+
+# Baselines are built as a per-game RATE and scaled to a full season by this. Season
+# totals are deliberately not used: they penalise anyone who has missed time, and the
+# pipeline already prices missed games once, separately (engines/availability_pass).
+FULL_SEASON_GAMES = 17
 # 0 = most recent, 1 = one year ago, 2 = two years ago
 # Older than 2 years back gets 10% each
 
@@ -2755,8 +2760,20 @@ def _compute_qb_baseline(seasons: list[dict]) -> dict:
             games = s.get("games", 1)
             season_ppr_totals[yr] = ppg * games if games > 0 else 0.0
         weighted_total = _compute_weighted_baseline(season_ppr_totals, injury_shortened)
-        # Convert back to PPG using average games from clean seasons
-        avg_games = sum(s.get("games", 1) for s in sorted_clean) / len(sorted_clean)
+        # Convert back to PPG using the games from the SAME seasons the weighted total was
+        # built from.
+        #
+        # BUG THIS FIXES: avg_games used to average over every clean season while
+        # _compute_weighted_baseline had already DROPPED the injury-shortened ones from the
+        # numerator. So a short season pulled the denominator down without contributing to
+        # the top, inflating PPG for exactly the players whose history is hardest to read.
+        # Worked example — 17g/250, 8g/100, 17g/270: the old path returned 18.8 PPG
+        # against a true clean rate of ~15.3, a ~22% overstatement that then multiplied
+        # straight into the 17-game projection.
+        used = [s for s in sorted_clean if s.get("year") not in injury_shortened]
+        if not used:
+            used = sorted_clean          # every season was short — mirror the fallback
+        avg_games = sum(s.get("games", 1) for s in used) / len(used)
         avg_ppg = weighted_total / avg_games if avg_games > 0 else 0.0
 
     ppr_points = round(avg_ppg * 17, 1)  # 17-game projection
@@ -2825,13 +2842,35 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     if not clean:
         return {}
 
+    # RATE, NOT TOTAL. Every season is converted to per-game before weighting and scaled
+    # back to a full 17 afterwards.
+    #
+    # WHY. This used raw season totals, so a player with three 12-game seasons projected
+    # at 12 games of production — roughly 30% under his own rate — while a 17-game player
+    # at the same per-game level projected correctly. It silently penalised anyone who had
+    # ever missed time.
+    #
+    # It also DOUBLE-COUNTED availability: the pipeline already applies a separate
+    # games-missed discount (engines/availability_pass, phase 7), so missed games were
+    # charged twice. Worse, the implicit "he will play as many games as he used to" is not
+    # supported — games played is not forecastable among drafted players (measured R^2
+    # 0.0006-0.029 against every available feature), so baking it into the projection bakes
+    # in noise.
+    #
+    # The clean decomposition is projection = rate x full season, availability priced
+    # separately and once.
+    def _pg(s: dict, key: str) -> float:
+        games = s.get("games", 0) or 0
+        if games <= 0:
+            return 0.0
+        return (s.get(key, 0) or 0) / games
+
     def _season_ppr(s: dict) -> float:
-        rec = s.get("receptions", 0)
-        rec_yds = s.get("rec_yards", 0)
-        rec_td = s.get("rec_tds", 0)
-        rush_yds = s.get("rush_yards", 0)
-        rush_td = s.get("rush_tds", 0)
-        return rec * 1.0 + (rec_yds + rush_yds) * 0.1 + (rec_td + rush_td) * 6.0
+        """Full-season-equivalent PPR at this season's per-game rate."""
+        rec = _pg(s, "receptions")
+        yds = _pg(s, "rec_yards") + _pg(s, "rush_yards")
+        tds = _pg(s, "rec_tds") + _pg(s, "rush_tds")
+        return (rec * 1.0 + yds * 0.1 + tds * 6.0) * FULL_SEASON_GAMES
 
     # --- Career decline detection ---
     # Sort by year (most recent last) to identify recent vs peak
@@ -2846,17 +2885,19 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         # Weight recent season 60%, career average 40%
         recent = sorted_clean[-1]
         career_n = len(sorted_clean)
-        career_rec = sum(s.get("receptions", 0) for s in sorted_clean) / career_n
-        career_rec_yards = sum(s.get("rec_yards", 0) for s in sorted_clean) / career_n
-        career_rec_tds = sum(s.get("rec_tds", 0) for s in sorted_clean) / career_n
-        career_rush_yards = sum(s.get("rush_yards", 0) for s in sorted_clean) / career_n
-        career_rush_tds = sum(s.get("rush_tds", 0) for s in sorted_clean) / career_n
+        # Per-game throughout, scaled to a full season at the end — same reason as
+        # _season_ppr above.
+        career_rec = sum(_pg(s, "receptions") for s in sorted_clean) / career_n
+        career_rec_yards = sum(_pg(s, "rec_yards") for s in sorted_clean) / career_n
+        career_rec_tds = sum(_pg(s, "rec_tds") for s in sorted_clean) / career_n
+        career_rush_yards = sum(_pg(s, "rush_yards") for s in sorted_clean) / career_n
+        career_rush_tds = sum(_pg(s, "rush_tds") for s in sorted_clean) / career_n
 
-        rec = recent.get("receptions", 0) * 0.6 + career_rec * 0.4
-        rec_yards = recent.get("rec_yards", 0) * 0.6 + career_rec_yards * 0.4
-        rec_tds = recent.get("rec_tds", 0) * 0.6 + career_rec_tds * 0.4
-        rush_yards = recent.get("rush_yards", 0) * 0.6 + career_rush_yards * 0.4
-        rush_tds = recent.get("rush_tds", 0) * 0.6 + career_rush_tds * 0.4
+        rec = (_pg(recent, "receptions") * 0.6 + career_rec * 0.4) * FULL_SEASON_GAMES
+        rec_yards = (_pg(recent, "rec_yards") * 0.6 + career_rec_yards * 0.4) * FULL_SEASON_GAMES
+        rec_tds = (_pg(recent, "rec_tds") * 0.6 + career_rec_tds * 0.4) * FULL_SEASON_GAMES
+        rush_yards = (_pg(recent, "rush_yards") * 0.6 + career_rush_yards * 0.4) * FULL_SEASON_GAMES
+        rush_tds = (_pg(recent, "rush_tds") * 0.6 + career_rush_tds * 0.4) * FULL_SEASON_GAMES
     else:
         # Recency-weighted average: most recent season counts most
         # Sort descending by year (most recent first) for weight assignment
@@ -2865,18 +2906,18 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         rec = rec_yards = rec_tds = rush_yards = rush_tds = 0.0
         for i, s in enumerate(desc_clean):
             w = _RECENCY_WEIGHTS.get(i, 0.10)
-            rec += s.get("receptions", 0) * w
-            rec_yards += s.get("rec_yards", 0) * w
-            rec_tds += s.get("rec_tds", 0) * w
-            rush_yards += s.get("rush_yards", 0) * w
-            rush_tds += s.get("rush_tds", 0) * w
+            rec += _pg(s, "receptions") * w
+            rec_yards += _pg(s, "rec_yards") * w
+            rec_tds += _pg(s, "rec_tds") * w
+            rush_yards += _pg(s, "rush_yards") * w
+            rush_tds += _pg(s, "rush_tds") * w
             total_weight += w
         if total_weight > 0:
-            rec /= total_weight
-            rec_yards /= total_weight
-            rec_tds /= total_weight
-            rush_yards /= total_weight
-            rush_tds /= total_weight
+            rec = rec / total_weight * FULL_SEASON_GAMES
+            rec_yards = rec_yards / total_weight * FULL_SEASON_GAMES
+            rec_tds = rec_tds / total_weight * FULL_SEASON_GAMES
+            rush_yards = rush_yards / total_weight * FULL_SEASON_GAMES
+            rush_tds = rush_tds / total_weight * FULL_SEASON_GAMES
 
     yards = rec_yards + rush_yards
     tds   = rec_tds + rush_tds

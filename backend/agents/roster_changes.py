@@ -31,6 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.base_agent import BaseAgent, parse_json_output, SONNET
 from backend.database import AsyncSessionLocal
+from backend.engines.share_transfer import (
+    DEFAULT_BENEFICIARY_PCT,
+    DEFAULT_DISPLACED_PCT,
+    beneficiary_impact_pct,
+    displaced_impact_pct,
+)
 from backend.integrations import cfb_data, nfl_comp_builder, nfl_data, overthecap
 from backend.models.dependency import PlayerDependency
 from backend.models.player import Player
@@ -62,6 +68,52 @@ def _norm_name(name: str) -> str:
     relayed-name resolver as well as off-hot-path callers. Real names are well
     under 100, so normal matching is unchanged; only junk input is truncated."""
     return _SUFFIX_RE.sub("", (name or "")[:100]).strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# Target share, for sizing dependency flags (backend/engines/share_transfer.py)
+# ---------------------------------------------------------------------------
+# The share coefficients were fitted with share = a player's season targets over his
+# TEAM's season targets. That per-team denominator is not available here: the production
+# lookups are built GLOBALLY on purpose, because nfl_data files a departed player's prior
+# production under his NEW team, so grouping by recent_team would mis-assign exactly the
+# players these flags are about.
+#
+# League-average team targets is used instead. It is correctly SCALED (team pass volume
+# varies roughly 550-650 a season, so the error is well under the spread the coefficients
+# were fitted across), unlike `avg_target_share` — that column is a mean of per-game
+# shares, sums to ~1.47 per team rather than 1.00, and would inflate every impact by
+# nearly half.
+_NFL_TEAM_COUNT = 32
+
+
+def _league_avg_team_targets(ts_df) -> float:
+    """Mean season targets per team, from the league-wide target-share frame.
+
+    Returns 0.0 when the frame is unusable, which makes _target_share return None and the
+    caller fall back to the documented default rather than dividing by zero.
+    """
+    if ts_df is None or getattr(ts_df, "empty", True):
+        return 0.0
+    if "total_targets" not in ts_df.columns:
+        return 0.0
+    try:
+        total = float(ts_df["total_targets"].fillna(0).sum())
+    except Exception:  # noqa: BLE001 — a malformed frame must not sink flag generation
+        return 0.0
+    return total / _NFL_TEAM_COUNT if total > 0 else 0.0
+
+
+def _target_share(targets, league_avg_team_targets: float) -> float | None:
+    """A player's targets as a fraction of an average team's. None when unknowable."""
+    if not league_avg_team_targets or league_avg_team_targets <= 0:
+        return None
+    try:
+        t = float(targets or 0)
+    except (TypeError, ValueError):
+        return None
+    return t / league_avg_team_targets if t > 0 else None
+
 
 # ---------------------------------------------------------------------------
 # System prompt — dynamic year, no hardcoded integers
@@ -853,7 +905,12 @@ class RosterChangesAgent(BaseAgent):
             if incumbent.get("name") == pick.get("player_name"):
                 continue
 
-            impact_pct  = -0.25 if capital_signal == "high" else -0.15
+            # A rookie has no prior NFL target share, so this cannot be share-sized like a
+            # veteran arrival. It is expressed as a fraction of the measured default
+            # instead of a fresh magic number — and in PERCENT, matching the column and
+            # every other path (it was -0.25/-0.15, i.e. a fraction, which is the unit
+            # mixture share_transfer documents).
+            impact_pct  = DEFAULT_DISPLACED_PCT if capital_signal == "high" else DEFAULT_DISPLACED_PCT * 0.6
             confidence  = "medium" if capital_signal == "high" else "low"
             player_name = pick.get("player_name", "")
             inc_name    = incumbent.get("name", "")
@@ -1091,6 +1148,7 @@ class RosterChangesAgent(BaseAgent):
         # updated departure (Evans -> SF); the 12 prior flags only fired because nfl_data
         # hadn't yet repointed those players' recent_team. A departed player's own
         # production is what we want, wherever recent_team now points.
+        league_avg_team_targets = _league_avg_team_targets(ts_df)
         prod_by_id: dict[str, tuple[int, int, float]] = {}
         prod_by_name: dict[str, tuple[int, int, float]] = {}
         if ts_df is not None:
@@ -1165,9 +1223,30 @@ class RosterChangesAgent(BaseAgent):
                 if inc_tgts == 0 and inc_carries == 0:
                     inc_tgts, inc_carries, _ = prod_by_name.get(_norm_name(inc_name), (0, 0, 0.0))
                 inc["_prod_sort"] = inc_tgts + inc_carries
+                # Kept separately from _prod_sort: the share fit is on TARGETS, so a
+                # target count is what sizes the flag, while ranking still uses touches.
+                inc["_prod_targets"] = inc_tgts
             same_pos.sort(key=lambda x: x.get("_prod_sort", 0), reverse=True)
 
-            for inc in same_pos[:3]:  # top-3 beneficiaries only
+            # SIZE THE FLAG FROM REAL SHARE, not a flat constant. The old value was
+            # 0.35/0.25 for every departure, so Metcalf's vacated share and a WR4's were
+            # worth the same — and those were FRACTIONS written into a percent column
+            # (see share_transfer for the unit mixture that caused).
+            top3 = same_pos[:3]
+            vacated_share = _target_share(tgts, league_avg_team_targets)
+            # None means "unknowable for this player" (no targets, or no league frame);
+            # it contributes nothing to the room's total rather than blowing up the sum.
+            incumbent_total_share = sum(
+                _target_share(inc.get("_prod_targets", 0), league_avg_team_targets) or 0.0
+                for inc in top3
+            )
+            beneficiary_pct = beneficiary_impact_pct(
+                vacated_share, incumbent_total_share,
+            )
+            if beneficiary_pct is None:
+                beneficiary_pct = DEFAULT_BENEFICIARY_PCT
+
+            for inc in top3:  # top-3 beneficiaries only
                 flags.append({
                     "player_name": inc["name"],
                     "player_team": team,
@@ -1177,7 +1256,7 @@ class RosterChangesAgent(BaseAgent):
                     "trigger_player_team": team,
                     "trigger_condition": "departed_team",
                     "effect_on_value": "positive",
-                    "value_impact_pct": 0.35 if departed_pos == "WR" else 0.25,
+                    "value_impact_pct": beneficiary_pct,
                     "confidence": "high",
                     "reasoning": (
                         f"{departed_name} departed {team} — "
@@ -1252,6 +1331,7 @@ class RosterChangesAgent(BaseAgent):
         # Load target share for production filter from warehouse (ALL teams — arrival was elsewhere)
         ts_df = self._warehouse.get_target_share(prev_season)
 
+        league_avg_team_targets = _league_avg_team_targets(ts_df)
         # Build production lookups: by player_id (gsis_id), sleeper_id, and name
         prod_by_id: dict[str, tuple[int, int]] = {}
         prod_by_name: dict[str, tuple[int, int]] = {}
@@ -1353,7 +1433,19 @@ class RosterChangesAgent(BaseAgent):
                 and inc.get("name") != arrival_name
             ]
 
-            impact_pct = -0.30 if arrival_pos in ("WR", "TE") else -0.25
+            # SIZE THE DILUTION FROM REAL SHARE. Was a flat -0.30/-0.25 for every arrival,
+            # so a signed WR1 and a depth signing displaced incumbents identically — and
+            # again as a FRACTION in a percent column.
+            #
+            # PROXY, stated plainly: the coefficient was fitted on the arrival's realised
+            # share ON HIS NEW TEAM, which is unknowable preseason. His prior-season target
+            # count is the best available stand-in. Directionally right; the magnitude is
+            # approximate for a player changing role or offence.
+            impact_pct = displaced_impact_pct(
+                _target_share(tgts, league_avg_team_targets), arrival_pos,
+            )
+            if impact_pct is None:
+                impact_pct = DEFAULT_DISPLACED_PCT
 
             for inc in same_pos:
                 inc_name = inc.get("name", "")
