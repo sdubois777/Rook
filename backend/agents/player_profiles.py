@@ -338,7 +338,7 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     # --- Market signals ---
     # League thinks this player is worth almost nothing — don't trust
     # historical average, force Sonnet to reason about the discrepancy
-    league_price = player.get("market_value_league")
+    league_price = player.get("market_value")
     if league_price is not None and league_price <= 5:
         return True
 
@@ -1462,8 +1462,22 @@ class PlayerProfilesAgent(BaseAgent):
                         )
                     )
                 )
+                # max(), not `league or fp`. `or` short-circuits on the FIRST truthy
+                # value, so any non-zero league price MASKS a higher FantasyPros
+                # consensus. Measured on the live board: 61 of 145 players with both
+                # values had the higher one hidden --
+                #     Rashee Rice        league $5  fp $43  -> prompt saw $5
+                #     Drake Maye         league $1  fp $15  -> prompt saw $1
+                #     Colston Loveland   league $1  fp $16  -> prompt saw $1
+                # This number is serialized into the Sonnet prompt as the model's only
+                # view of what the market thinks a player is worth, AND it drives the
+                # `market_value_league <= 5` routing trigger. Rashee Rice anchored at
+                # $1.00 against a $43 market having been told he was a $5 player.
+                #
+                # A single stale league price should never be able to hide the broader
+                # consensus; taking the max keeps whichever signal is stronger.
                 return {
-                    name: float(league or fp or 0)
+                    name: max(float(league or 0), float(fp or 0))
                     for name, league, fp in result.all()
                 }
         except Exception as exc:
@@ -1666,7 +1680,11 @@ class PlayerProfilesAgent(BaseAgent):
                 "_team_system":     team_system,
                 # Sonnet routing signals
                 "team_changed_this_offseason": team_changed,
-                "market_value_league": market_values.get(pname),
+                # Named market_value, not market_value_league: it holds
+                # max(league, FantasyPros), so labelling it "league" would state a
+                # falsehood to the model for the 61 players whose FP consensus is the
+                # higher of the two. This dict is serialized verbatim into the prompt.
+                "market_value": market_values.get(pname),
             }
             # Merge rookie evaluation fields from Agent 2 (if applicable)
             if pname in rookie_fields:
