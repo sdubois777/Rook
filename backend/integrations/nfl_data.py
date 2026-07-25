@@ -1349,7 +1349,34 @@ class NflDataWarehouse:
 
         if self.rosters is None or getattr(self.rosters, "empty", True):
             try:
-                self.rosters = fetch_rosters(self.current_season)
+                raw_rosters = fetch_rosters(self.current_season)
+                # DEDUPE TO ONE ROW PER PLAYER. nflverse rosters are WEEKLY (46,849 rows
+                # / 3,134 players = ~15 rows each); Sleeper's frame -- what every consumer
+                # was written against -- is one row per player. Handing the weekly frame
+                # through unchanged multiplied every roster ~15x, and
+                # roster_changes._fetch_qb_histories does a QB x receiver cartesian
+                # product over it, so the blowup squared: its prompt went from ~7,800
+                # input tokens to 394,188, i.e. $0.07 -> $1.22 per team. That drained the
+                # API credit balance mid-run and timed out 11 more teams, leaving 17 of 32
+                # with any dependency flags at all.
+                #
+                # Week choice mirrors seed_nfl_data.py: EARLIEST under an as-of clock (the
+                # roster as it stood before any in-season trade — taking the last week
+                # hands an August board a player's post-deadline team), latest otherwise.
+                if "week" in raw_rosters.columns and "player_id" in raw_rosters.columns:
+                    from backend.utils.seasons import asof_active
+
+                    before = len(raw_rosters)
+                    raw_rosters = (
+                        raw_rosters.sort_values("week", ascending=asof_active())
+                        .drop_duplicates(subset=["player_id"])
+                        .copy()
+                    )
+                    logger.info(
+                        "Rosters deduped weekly->per-player: %d -> %d rows (%s week)",
+                        before, len(raw_rosters), "earliest" if asof_active() else "latest",
+                    )
+                self.rosters = raw_rosters
                 if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
                     self.rosters["player_name"] = self.rosters["full_name"]
                 logger.info("Rosters (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
