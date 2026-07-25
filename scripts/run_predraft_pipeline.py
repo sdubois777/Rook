@@ -168,22 +168,33 @@ AGENT_SPECS: dict[str, dict] = {
     },
 }
 
-PIPELINE_ORDER = [
-    "team_systems",
-    "roster_changes",
-    "injury_risk",
-    "schedule",
-    "beat_reporter",
-    "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
-    "kicker_baseline",   # dedicated K prior (offense profiler is skill-only)
-    "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
-    "valuation",
-    "valuation_agent",   # AI ceiling calibration — runs after math valuation
-    "format_market",     # per-format ADP + auction re-scrape into player_format_values
-    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier + bell)
-    "team_notes",        # regenerate system-notes prose from the real stored stats
-    "availability",      # LAST: deterministic games-missed availability discount
+# Pipeline dependency phases — the SINGLE source of truth for execution order.
+# Inner lists run in parallel (independent agents); the outer list is sequential.
+PHASES = [
+    ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
+    ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
+    ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
+    ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
+    ["player_profiles"],                           # Phase 4: needs all above
+    ["kicker_baseline"],                           # Phase 4b: dedicated K prior
+    ["defense_baseline"],                          # Phase 4c: dedicated DST prior
+    ["valuation"],                                 # Phase 5: needs profiles
+    ["valuation_agent"],                           # Phase 6: needs valuation
+    ["format_market"],                             # Phase 6b: re-scrape per-format ADP + auction (every run)
+    ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
+    ["availability"],                              # Phase 7: LAST — availability discount
 ]
+
+# DERIVED, never hand-maintained. PIPELINE_ORDER is the membership set for `--agent all`
+# and the row order of the dry-run table.
+#
+# It used to be a separate hand-written list, and it had DRIFTED: it placed team_metrics
+# 12th and team_notes 13th, while PHASES runs them at 1b and 6c. Two ways that bites --
+# the dry-run advertised an execution order the pipeline does not follow, and because the
+# phase loop filters each phase by `a in agents`, any stage present in PHASES but missing
+# from this list would be SILENTLY SKIPPED under `--agent all` with no error. Deriving it
+# makes both classes of divergence impossible.
+PIPELINE_ORDER = [agent for phase in PHASES for agent in phase]
 
 # Cost per million tokens
 _RATES = {
@@ -304,7 +315,21 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams(warehouse=warehouse)
+            # force MUST be threaded here. run_all_teams passes skip_if_fresh=not force
+            # (roster_changes.py:1617), so without it every team analyzed inside
+            # ROSTER_CHANGES_STALENESS_DAYS (7) is skipped even under --full-sweep, whose
+            # own docstring calls force "required for a deliberate full-sweep regen".
+            #
+            # The silent-corruption case this fixes: replace_team() wipes a team's rows
+            # before writing (roster_changes.py:1790), so a deliberate regen against a
+            # cleared player_dependencies table would skip all 32 teams and repopulate
+            # NOTHING -- every player left with zero dependency flags, no error raised,
+            # and a board that still looks plausible.
+            #
+            # roster_changes is the only one of these agents that takes force at all;
+            # team_systems / injury_risk / schedule have no staleness skip and rely on
+            # the agent_cache fingerprint, so omitting it there is correct.
+            await agent.run_all_teams(warehouse=warehouse, force=force)
 
     elif name == "player_profiles":
         from backend.agents.player_profiles import PlayerProfilesAgent
@@ -679,23 +704,7 @@ async def main() -> None:
 
     teams = [team_filter] if team_filter else None
 
-    # Pipeline dependency phases — independent agents run in parallel
-    _PHASES = [
-        ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
-        ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
-        ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
-        ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
-        ["player_profiles"],                           # Phase 4: needs all above
-        ["kicker_baseline"],                           # Phase 4b: dedicated K prior
-        ["defense_baseline"],                          # Phase 4c: dedicated DST prior
-        ["valuation"],                                 # Phase 5: needs profiles
-        ["valuation_agent"],                           # Phase 6: needs valuation
-        ["format_market"],                             # Phase 6b: re-scrape per-format ADP + auction (every run)
-        ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
-        ["availability"],                              # Phase 7: LAST — availability discount
-    ]
-
-    for phase in _PHASES:
+    for phase in PHASES:
         phase_agents = [a for a in phase if a in agents]
         if not phase_agents:
             continue
