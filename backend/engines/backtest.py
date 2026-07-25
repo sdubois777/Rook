@@ -152,6 +152,93 @@ class BacktestMetrics:
         }
 
 
+def apply_price_relative_outcome(df: pd.DataFrame) -> pd.DataFrame:
+    """Rewrite `was_good_buy` as "did he beat the slot you paid for", within position.
+
+    WHY THE FLAT BAR HAD TO GO. The previous rule was
+    ``was_good_buy = actual_ppr / price >= 3.8``. Value-per-dollar is mechanically
+    larger at low prices, so a flat bar across a $1-$65 auction is close to
+    unfalsifiable at the bottom. Measured on the real 2025 board:
+
+        price bucket   n    % clearing 3.8   median vpd
+        $1-3          64          98%             80.0
+        $4-10         32         100%             23.4
+        $11-25        24          88%             11.3
+        $26-45        24          83%              5.8
+        $46+          13          54%              4.8
+
+    So the metric mostly reported which price band a call landed in. It scored our
+    top opportunities 38/38 — but those have a median price of $3, where 98% of ALL
+    players "hit". Buys skewed cheap and passed automatically (94.9%); avoids landed
+    on players who cleared the bar anyway (39.3%, worse than a coin flip).
+
+    THE REPLACEMENT. Within each position, fit what the market's price actually bought
+    — actual points against log(price) — and take the sign of the residual:
+
+        was_good_buy := actual_ppr > (a + b * ln(price))
+
+    A player is a good buy when he out-scored what his own price predicted. Least
+    squares puts the residuals symmetrically about the fit, so the base rate is ~50% at
+    EVERY price level by construction and any accuracy above it is real discrimination
+    rather than a reflection of what we happened to call cheap.
+
+    A RANK-VS-RANK VERSION WAS TRIED FIRST AND IS WRONG. `actual_rank <= price_rank`
+    looks price-neutral but is not: the cheapest player has price_rank = N, so his
+    condition is satisfied automatically, while the most expensive must finish outright
+    first. Measured base rate ran 59% at $1-3 down to 15% at $46+ — the same artifact
+    inverted, not removed.
+
+    log(price) because auction prices are heavily right-skewed ($1 to $65 here, with 38
+    players at exactly $1); a linear fit would let the handful of expensive players set
+    the slope for the whole board.
+
+    Fitted WITHIN POSITION on purpose: QBs out-score RBs in raw PPR, so one pooled fit
+    would mark most QBs good buys and most RBs bad ones.
+
+    Only drafted players with a real result are scored; everyone else keeps
+    ``was_good_buy = False`` and is excluded from signal scoring by the caller.
+    The legacy flat-bar verdict is preserved as `was_good_buy_flat_vpd`.
+    """
+    import numpy as np
+
+    if df.empty or "was_good_buy" not in df.columns:
+        return df
+
+    df = df.copy()
+    df["was_good_buy_flat_vpd"] = df["was_good_buy"]
+    df["price_implied_ppr"] = np.nan
+    # system_correct is tri-state (True / False / None for "not scoreable"). When every
+    # row happened to be scoreable pandas infers a bool column, and writing None back
+    # into it raises LossySetitemError — so pin it to object before the writes below.
+    df["system_correct"] = df["system_correct"].astype(object)
+
+    scoreable = df["actual_ppr"].notna() & (df["league_price"] > 0)
+    for pos in df.loc[scoreable, "position"].dropna().unique():
+        sel = scoreable & (df["position"] == pos)
+        # Need enough spread to fit a line; below that a residual is meaningless.
+        if sel.sum() < 4 or df.loc[sel, "league_price"].nunique() < 2:
+            df.loc[sel, "was_good_buy"] = False
+            continue
+        x = np.log(df.loc[sel, "league_price"].astype(float).to_numpy())
+        y = df.loc[sel, "actual_ppr"].astype(float).to_numpy()
+        b, a = np.polyfit(x, y, 1)
+        predicted = a + b * x
+        df.loc[sel, "price_implied_ppr"] = np.round(predicted, 1)
+        df.loc[sel, "was_good_buy"] = y > predicted
+
+    df.loc[~scoreable, "was_good_buy"] = False
+
+    # system_correct is derived from was_good_buy, so it must be recomputed. An avoid
+    # is correct when the player did NOT beat his slot; both directions require a real
+    # result, so unscoreable rows go back to None and drop out of the metrics.
+    buy = df["system_signal"].isin(["strong_buy", "buy"])
+    avoid = df["system_signal"].isin(["avoid", "strong_avoid"])
+    df.loc[buy & scoreable, "system_correct"] = df.loc[buy & scoreable, "was_good_buy"]
+    df.loc[avoid & scoreable, "system_correct"] = ~df.loc[avoid & scoreable, "was_good_buy"]
+    df.loc[~scoreable, "system_correct"] = None
+    return df
+
+
 def _load_actual_season(season: int) -> pd.DataFrame:
     """Load actual season results via get_seasonal_stats (PBP fallback)."""
     return get_seasonal_stats(season)
@@ -354,6 +441,11 @@ async def run_backtest(
         value_gap = ai_ceiling - price if price > 0 else 0.0
 
         actual_vpd = actual_ppr / price if actual_ppr and price > 0 else None
+        # Provisional, on the legacy flat value-per-dollar bar. OVERWRITTEN below by
+        # apply_price_relative_outcome() once the whole population is known — a
+        # rank-against-draft-slot measure needs every priced player, so it cannot be
+        # computed inside this per-player loop. Kept here so `was_good_buy_flat_vpd`
+        # can be reported alongside for comparison.
         was_good_buy = actual_vpd is not None and actual_vpd >= fair_value_per_dollar
 
         # Only compute signals for players with a meaningful price
@@ -401,6 +493,7 @@ async def run_backtest(
 
     metrics.players_matched = matched
     df = pd.DataFrame(results)
+    df = apply_price_relative_outcome(df)
 
     # ── PPR accuracy (most reliable — no price dependency) ──
     proj_df = df[df["proj_ppr"].notna() & df["actual_ppr"].notna()].copy()
