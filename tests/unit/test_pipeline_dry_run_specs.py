@@ -85,3 +85,37 @@ async def test_force_defaults_false_leaves_incremental_skip_intact():
         await m.run_agent("roster_changes", None, warehouse=MagicMock())
 
     assert agent.run_all_teams.await_args.kwargs.get("force") is False
+
+
+def test_pipeline_order_is_derived_from_phases():
+    """PIPELINE_ORDER must be a pure flatten of PHASES, never hand-maintained.
+
+    The phase loop filters each phase by `a in agents`, where agents is PIPELINE_ORDER
+    under --agent all. So a stage present in PHASES but missing from PIPELINE_ORDER is
+    SILENTLY SKIPPED with no error. The two lists were previously maintained separately
+    and had already drifted — PIPELINE_ORDER listed team_metrics 12th and team_notes
+    13th while PHASES runs them at 1b and 6c, so the dry-run advertised an execution
+    order the pipeline does not follow.
+    """
+    m = _load()
+    assert m.PIPELINE_ORDER == [a for phase in m.PHASES for a in phase]
+
+
+def test_pipeline_order_has_no_duplicates():
+    """A stage listed twice would run twice under --agent all."""
+    m = _load()
+    assert len(m.PIPELINE_ORDER) == len(set(m.PIPELINE_ORDER))
+
+
+def test_grade_owner_runs_before_its_consumers():
+    """team_metrics is the SOLE owner of the deterministic grades and must precede
+    roster_changes and player_profiles, which read them."""
+    m = _load()
+    order = m.PIPELINE_ORDER
+    assert order.index("team_metrics") < order.index("roster_changes")
+    assert order.index("team_metrics") < order.index("player_profiles")
+    assert order.index("team_systems") < order.index("team_metrics")
+    # valuation chain
+    assert order.index("player_profiles") < order.index("valuation")
+    assert order.index("valuation") < order.index("valuation_agent")
+    assert order[-1] == "availability", "availability must run last"
