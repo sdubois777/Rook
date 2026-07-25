@@ -337,3 +337,41 @@ def test_beat_signal_read_is_date_bounded_under_asof():
     fn = fn[:fn.index("\n    async def ", 10)]
     assert "asof_active()" in fn, "beat-signal read is not as-of aware"
     assert "flagged_at" in fn, "beat-signal read does not bound by flagged_at"
+
+
+def test_nflverse_rosters_are_deduped_to_one_row_per_player(asof, monkeypatch):
+    """The nflverse roster frame is WEEKLY; every consumer expects Sleeper's shape.
+
+    Regression for a 64x prompt blowup. nflverse returns ~15 rows per player
+    (46,849 rows / 3,134 players). Passing that through unchanged multiplied every
+    roster, and roster_changes._fetch_qb_histories does a QB x receiver cartesian
+    product over it, so the inflation squared: its prompt went 7,800 -> 394,188 input
+    tokens, $0.07 -> $1.22 per team. That drained the API credit balance mid-run and
+    timed out 11 more teams, leaving 17 of 32 with any dependency flags.
+    """
+    import pandas as pd
+    from backend.integrations import nfl_data
+
+    weekly = pd.DataFrame({
+        "player_id": ["a", "a", "a", "b", "b"],
+        "week": [1, 2, 3, 1, 2],
+        "team": ["PHI", "PHI", "NE", "IND", "IND"],
+        "full_name": ["Mover", "Mover", "Mover", "Stayer", "Stayer"],
+        "position": ["WR", "WR", "WR", "RB", "RB"],
+    })
+    monkeypatch.setattr(nfl_data, "fetch_rosters", lambda s: weekly.copy())
+    monkeypatch.setattr(nfl_data, "fetch_seasonal_rosters", lambda s: pd.DataFrame())
+    monkeypatch.setattr(nfl_data.NflDataWarehouse, "_load_depth_charts", lambda self: None)
+
+    asof("2025-08-15")
+    wh = nfl_data.NflDataWarehouse(
+        analysis_seasons=[2022, 2023, 2024], current_season=2025, analysis_year=2025,
+    )
+    wh._load_infrastructure()
+
+    assert len(wh.rosters) == 2, f"expected one row per player, got {len(wh.rosters)}"
+    # Under as-of the EARLIEST week wins, so a mid-season mover keeps his week-1 team.
+    mover = wh.rosters[wh.rosters["player_id"] == "a"].iloc[0]
+    assert mover["team"] == "PHI", "as-of must take the pre-trade team, not the final one"
+    # The player_name alias every downstream consumer reads must survive this path.
+    assert "player_name" in wh.rosters.columns
