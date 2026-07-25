@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.nfl_data import get_seasonal_stats
 from backend.models.league_auction_history import LeagueAuctionHistory
+from backend.models.market_value_historic import MarketValueHistoric
 from backend.models.player import Player, PlayerProfile
 from backend.utils.seasons import get_current_season
 
@@ -159,10 +160,19 @@ def _load_actual_season(season: int) -> pd.DataFrame:
 async def _load_historical_prices(
     session: AsyncSession, season: int,
 ) -> tuple[dict[str, float], str]:
-    """Load historical auction prices from league_auction_history.
+    """Load historical auction prices for `season`.
 
-    Returns (name_to_price dict, source_label).
-    Falls back to market_value_league if auction history has < 50 players.
+    Sources are tried in descending order of trustworthiness, and the one actually used
+    is reported in the label so a run can never quietly grade itself against the wrong
+    number:
+      1. league_auction_history, matched by player_name
+      2. league_auction_history, matched by player_id
+      3. market_value_historic, the season-keyed price reference
+      4. nothing — caller falls back to market_value_league, which is CURRENT-season ADP
+         and makes every signal metric meaningless
+
+    Returns (name_to_price dict, source_label). A source must supply >= 50 players to
+    win; below that the sample cannot support the buy/avoid rates the caller computes.
     """
     # Try league_auction_history first
     result = await session.execute(
@@ -206,6 +216,32 @@ async def _load_historical_prices(
 
     if len(history_prices) >= 50:
         return history_prices, f"league_auction_history ({season}, N={len(history_prices)})"
+
+    # market_value_historic — the season-keyed price reference the league-sync path
+    # writes. On this deployment it holds the REAL 2025 auction: 159 players summing to
+    # $2340 against a 12 x $200 = $2400 budget (97.5% spend), 38 players at exactly $1,
+    # and a 24-QB count that is exactly 12 teams x 2. Consensus AAV cannot produce those
+    # signatures. league_auction_history is empty here, so without this branch the
+    # backtest silently fell through to current-season ADP and scored every signal
+    # against the wrong number.
+    result3 = await session.execute(
+        select(
+            Player.name,
+            func.avg(MarketValueHistoric.price).label("avg_price"),
+        )
+        .join(Player, MarketValueHistoric.player_id == Player.id)
+        .where(
+            MarketValueHistoric.season_year == season,
+            MarketValueHistoric.price > 0,
+        )
+        .group_by(Player.name)
+    )
+    for row in result3.fetchall():
+        if row.name not in history_prices:
+            history_prices[row.name] = float(row.avg_price)
+
+    if len(history_prices) >= 50:
+        return history_prices, f"market_value_historic ({season}, N={len(history_prices)})"
 
     # Fallback: use market_value_league from players table
     # This may contain current ADP data rather than historical prices —
