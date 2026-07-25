@@ -127,6 +127,7 @@ class LeagueSyncService:
             "platform": user_league.platform,
             "league_id": user_league.league_id,
             "picks_imported": 0,
+            "players_resolved": 0,
             "seasons_imported": 0,
             "managers_found": 0,
             "free_agents_cached": 0,
@@ -198,6 +199,7 @@ class LeagueSyncService:
 
         # 3. Import draft history — up to HISTORY_SEASONS, best-effort
         picks_total = 0
+        resolved_total = 0
         seasons_ok = 0
         for offset in range(HISTORY_SEASONS):
             season = current_season - offset - 1  # completed seasons only
@@ -225,11 +227,22 @@ class LeagueSyncService:
                     "Got %d picks for season %d", len(picks), season
                 )
                 if picks:
-                    stored = await self._store_picks(
+                    res = await self._store_picks(
                         picks, user_league.id, season
                     )
-                    picks_total += stored
+                    picks_total += res["stored"]
+                    resolved_total += res["resolved"]
                     seasons_ok += 1
+                    # A draft whose players we could not identify is unusable downstream
+                    # (the backtest matches on name then player_id), so say so loudly
+                    # rather than reporting a healthy-looking pick count.
+                    if res["stored"] and res["resolved"] < res["stored"] * 0.5:
+                        msg = (
+                            f"{season}: only {res['resolved']}/{res['stored']} picks "
+                            "matched a known player — prices will not be usable"
+                        )
+                        logger.warning("league_sync: %s", msg)
+                        summary["warnings"].append(msg)
             except Exception as exc:
                 logger.warning(
                     "Could not import %s season %d: %s",
@@ -242,6 +255,7 @@ class LeagueSyncService:
                 await self._db.rollback()
 
         summary["picks_imported"] = picks_total
+        summary["players_resolved"] = resolved_total
         summary["seasons_imported"] = seasons_ok
 
         # 4. Cache free agents count — best-effort
@@ -342,31 +356,99 @@ class LeagueSyncService:
         except Exception as exc:
             logger.warning("Could not fetch Yahoo league settings: %s", exc)
 
+    async def _resolve_pick_identities(self, picks: list) -> dict[str, tuple]:
+        """Map each pick's platform player key to a real player row.
+
+        WHY THIS EXISTS. Yahoo's ``draftresults`` endpoint returns only ``player_key``,
+        ``pick``, ``round``, ``team_key`` and ``cost`` — no name, no position. The adapter
+        therefore hands us ``player_name=""`` and ``position=""`` (yahoo_league_api.py,
+        "Resolved separately if needed"), and nothing ever resolved them. The result was a
+        ``league_auction_history`` that no consumer could use: the backtest matches by
+        player_name, then by player_id, and BOTH were empty on every row of every season,
+        so it silently fell through to ``market_value_historic`` — a table whose only
+        writer snapshots FantasyPros consensus. A real auction sat unused for two months.
+
+        Keys look like ``461.p.33963``; the suffix is the Yahoo player id, which is what
+        ``players.yahoo_id`` stores. One query for the whole draft, never one per pick.
+
+        AMBIGUOUS KEYS ARE DROPPED, NOT GUESSED. There are duplicate player rows in this
+        database (18 yahoo_ids map to more than one row), and binding a price to the wrong
+        one is worse than leaving it unresolved — it would silently attribute a real
+        auction price to the wrong player. Consistent with the ID-first matching rule:
+        never resolve on a key that does not identify exactly one player.
+        """
+        from sqlalchemy import select
+
+        from backend.models.player import Player
+
+        ids = {
+            key.rsplit(".p.", 1)[-1]
+            for key in (p.platform_player_id or "" for p in picks)
+            if ".p." in key
+        }
+        if not ids:
+            return {}
+
+        rows = (await self._db.execute(
+            select(Player.id, Player.yahoo_id, Player.name, Player.position)
+            .where(Player.yahoo_id.in_(ids))
+        )).all()
+
+        seen: dict[str, tuple] = {}
+        ambiguous: set[str] = set()
+        for row in rows:
+            if row.yahoo_id in seen:
+                ambiguous.add(row.yahoo_id)
+                continue
+            seen[row.yahoo_id] = (row.id, row.name, row.position)
+        for dup in ambiguous:
+            seen.pop(dup, None)
+        if ambiguous:
+            logger.warning(
+                "league_sync: %d yahoo_id(s) matched multiple player rows — left "
+                "unresolved rather than bound to a guess: %s",
+                len(ambiguous), sorted(ambiguous)[:5],
+            )
+        return seen
+
     async def _store_picks(
         self,
         picks: list,
         user_league_id: uuid.UUID,
         season: int,
-    ) -> int:
+    ) -> dict:
         """
-        Store historical draft picks.
+        Store historical draft picks, resolving player identity as we go.
         All picks scoped to user_id + user_league_id.
         Deduplication via on_conflict_do_nothing.
+
+        Returns {"stored": n, "resolved": n} — the resolved count is reported by the
+        caller because a silent 0% is the exact failure this method used to have.
         """
         from backend.models.league_auction_history import LeagueAuctionHistory
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+        identities = await self._resolve_pick_identities(picks)
+
         count = 0
+        resolved = 0
         for pick in picks:
             if not pick.player_name and not pick.platform_player_id:
                 continue
+            key = pick.platform_player_id or ""
+            player_id, name, position = identities.get(key.rsplit(".p.", 1)[-1], (None, "", ""))
+            if player_id is not None:
+                resolved += 1
             await self._db.execute(
                 pg_insert(LeagueAuctionHistory)
                 .values(
                     user_id=self._user_id,
                     user_league_id=user_league_id,
-                    player_name=pick.player_name or "",
-                    position=pick.position or "",
+                    player_id=player_id,
+                    # The platform's own value still wins when it supplies one; the
+                    # resolved row is a fallback, not an override.
+                    player_name=pick.player_name or name or "",
+                    position=pick.position or position or "",
                     price=pick.auction_price or 0,
                     manager_name=pick.manager_name or "",
                     draft_pick_number=pick.pick_number,
@@ -379,4 +461,4 @@ class LeagueSyncService:
             count += 1
 
         await self._db.commit()
-        return count
+        return {"stored": count, "resolved": resolved}
