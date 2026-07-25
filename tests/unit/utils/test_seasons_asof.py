@@ -252,3 +252,44 @@ def test_sync_rosters_depth_lookup_is_not_a_hardcoded_year():
     )
     assert "depth_charts.get(2026" not in src
     assert "depth_charts.get(warehouse.current_season" in src
+
+
+def test_warehouse_skips_sleeper_rosters_under_asof(asof, monkeypatch):
+    """warehouse.rosters must come from nflverse under as-of, not Sleeper.
+
+    roster_changes diffs warehouse.rosters against warehouse.prev_rosters to detect
+    arrivals and departures. prev_rosters is season-keyed (current_season - 1), but
+    rosters defaulted to Sleeper, which serves CURRENT state only. Pairing a 2026
+    Sleeper roster with a 2024 nflverse one would manufacture the WRONG offseason —
+    two years of moves collapsed into one — and every dependency flag on the board is
+    built from that diff.
+    """
+    import pandas as pd
+    from backend.integrations import nfl_data
+
+    called = {"sleeper": 0, "nflverse": []}
+
+    def fake_sleeper():
+        called["sleeper"] += 1
+        return pd.DataFrame({"full_name": ["Someone Current"], "team": ["NE"]})
+
+    def fake_rosters(season):
+        called["nflverse"].append(season)
+        return pd.DataFrame({"full_name": [f"Player {season}"], "team": ["PHI"]})
+
+    import backend.integrations.sleeper as sleeper_mod
+    monkeypatch.setattr(sleeper_mod, "fetch_sleeper_players", fake_sleeper)
+    monkeypatch.setattr(nfl_data, "fetch_rosters", fake_rosters)
+    monkeypatch.setattr(nfl_data, "fetch_seasonal_rosters", lambda s: pd.DataFrame())
+    monkeypatch.setattr(nfl_data.NflDataWarehouse, "_load_depth_charts", lambda self: None)
+
+    asof("2025-08-15")
+    wh = nfl_data.NflDataWarehouse(
+        analysis_seasons=[2022, 2023, 2024], current_season=2025, analysis_year=2025,
+    )
+    wh._load_infrastructure()
+
+    assert called["sleeper"] == 0, "Sleeper must not be consulted during an as-of run"
+    # Both sides of the offseason diff come from nflverse, one season apart.
+    assert 2025 in called["nflverse"], "current rosters must be the as-of season"
+    assert 2024 in called["nflverse"], "prev rosters must be as-of minus one"
