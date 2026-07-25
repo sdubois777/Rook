@@ -359,6 +359,24 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "beat_reporter":
+        # AS-OF RUNS SKIP THIS STAGE. It ingests LIVE RSS (ESPN, Rotowire, NFL.com) with
+        # no season parameter, no date filter and no archive, so there is no way to fetch
+        # the news as it stood on a past date — running it would inject present-day
+        # reporting into a past-season board, and beat signals feed the projection prose.
+        #
+        # This is a KNOWN, DELIBERATE difference from a real board of that vintage: the
+        # as-of board has no beat signals at all rather than the wrong ones. The
+        # complementary half is in player_profiles._get_team_beat_signals, which bounds
+        # its read by flagged_at — skipping the stage alone would still leak any signals
+        # already sitting in the table.
+        from backend.utils.seasons import asof_active, asof_date
+
+        if asof_active():
+            print(f"[{name}] SKIPPED — as-of run ({asof_date()}). Live RSS has no "
+                  f"archive, so a past-dated board gets no beat signals rather than "
+                  f"present-day ones.")
+            return
+
         from backend.agents.beat_reporter import BeatReporterAgent
         agent = BeatReporterAgent(dry_run=False)
         # Beat reporter is not team-batched — ignores --team flag, runs all feeds
