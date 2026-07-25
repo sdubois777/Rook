@@ -462,6 +462,16 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         # re-scraped LIVE every run and written to player_format_values. NOT cached — the
         # inputs drift daily before draft day. Independent of the agents; failure is
         # non-fatal (leaves the prior per-format market rows in place). Own DB session.
+        #
+        # Skipped under an as-of clock for the same reason as sync_adp: the scrape is
+        # current-season only, so it would write NEXT year's per-format market onto a
+        # past-season board. The as-of market comes from _seed_asof_market() instead.
+        from backend.utils.seasons import asof_active as _aa
+
+        if _aa():
+            print(f"[{name}] SKIPPED — as-of run. Live per-format market is current-season only.")
+            return
+
         from backend.services.format_market_ingest import run_format_market_ingest_stage
         try:
             result = await run_format_market_ingest_stage()
@@ -590,6 +600,41 @@ async def run_targeted_cli(args) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+async def _seed_asof_market() -> None:
+    """Copy the as-of season's real auction prices into the market columns.
+
+    Live FantasyPros is current-season only, so under an as-of run the market columns
+    would otherwise hold NEXT year's consensus. market_value_historic holds what the
+    league actually paid that season, which is both the correct market for the board and
+    the series the backtest scores against.
+
+    KNOWN RESIDUAL — this only OVERWRITES the players the as-of season priced; it does
+    not clear the rest. A player absent from that season's auction keeps whatever market
+    value the previous (real-time) run left behind. Measured on the 2025-08-15 board: 159
+    priced, 28 skill players outside them still carrying a stale value, all <= $15. It
+    does not reach the backtest — run_backtest() prices from market_value_historic
+    directly and assigns signal=None to anyone it cannot price, so those 28 are never
+    scored — but their on-board value_assessment is computed against the wrong market.
+    Clearing them would be the stricter behaviour; it is deliberately NOT done here so
+    this function stays faithful to the run that produced the reported numbers.
+    """
+    from sqlalchemy import text as _text
+
+    from backend.database import AsyncSessionLocal as _Session
+    from backend.utils.seasons import get_current_season as _season
+
+    season = _season()
+    async with _Session() as s:
+        res = await s.execute(_text(
+            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "       market_value_league = h.price "
+            "FROM market_value_historic h "
+            "WHERE h.player_id = p.id AND h.season_year = :yr AND h.price > 0"
+        ), {"yr": season})
+        await s.commit()
+    print(f"[asof_market] {res.rowcount} player(s) priced from the real {season} auction.")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the pre-draft AI pipeline")
     parser.add_argument(
@@ -698,13 +743,31 @@ async def main() -> None:
 
     # Sync FantasyPros ADP (snake-draft support) — populates adp_fantasypros
     # before the agent phases. Independent of the agents; a failure is non-fatal.
-    print("[sync_adp] Syncing ADP from FantasyPros...")
-    adp_result = subprocess.run(
-        [sys.executable, "scripts/sync_adp.py"],
-    )
-    if adp_result.returncode != 0:
-        print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
+    # Live FantasyPros scrape — CURRENT consensus, with no historical equivalent. Under
+    # an as-of run it would put next year's market on a past-season board: measured, 2026
+    # FP had Nico Collins at $31 and Saquon at $31 while the real 2025 auction paid $62
+    # and $61. Signals compare our value against "the market" and are then scored against
+    # the as-of season's price, so a mismatched market makes those metrics meaningless.
+    # The as-of market comes from market_value_historic instead (see _seed_asof_market).
+    from backend.utils.seasons import asof_active as _asof_active
+
+    if _asof_active():
+        print("[sync_adp] SKIPPED — as-of run. Live FantasyPros ADP is current-season only.")
+    else:
+        print("[sync_adp] Syncing ADP from FantasyPros...")
+        adp_result = subprocess.run(
+            [sys.executable, "scripts/sync_adp.py"],
+        )
+        if adp_result.returncode != 0:
+            print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
     print()
+
+    # As-of market: the season's REAL auction, from market_value_historic. That is what
+    # "the market" actually was on the as-of date, and it is the same series the backtest
+    # scores against — so a "we are above market" signal and its scoring finally refer to
+    # one market instead of two.
+    if _asof_active():
+        await _seed_asof_market()
 
     # Build warehouse once — all agents read from this shared data store
     from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
