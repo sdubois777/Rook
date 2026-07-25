@@ -1166,14 +1166,60 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
     suppressed). market_value_fantasypros is the sole market basis (consensus ADP, shared
     across users); the client chip's cheap/small-gap guards read league price separately and
     are unaffected.
+
+    BASIS CHANGE (signal accuracy work). The judgement fields no longer derive from the
+    dollar gap ``ai_bid_ceiling - market``. That basis was measured WORSE than the
+    projection underneath it on the as-of prospective backtest — 55.6% vs 60.3% over 151
+    priced players, with the ceiling itself at 51.7% (paired McNemar p = 0.029) and adding
+    +0.0005 R² beyond the projection. They now derive from the standardised within-position
+    residual of the projection against the market's own points-vs-price curve
+    (``backend/engines/signal_basis.py``), which is price-neutral (corr with ln price
+    +0.017, against −0.581 for the dollar gap). Full write-up:
+    ``docs/recon/signal_accuracy_recon.md``.
+
+    ``ai_bid_ceiling`` is UNCHANGED and remains the auction bid surface — bidding, budget
+    maths and the live-draft engine are untouched. ``value_gap`` is still a dollar figure
+    for display and is guaranteed to carry the same SIGN as the assessment. Ranking of
+    "top opportunities" must use ``signal_conviction``, never ``value_gap``: the dollar
+    magnitude is price-biased and the top 20% of the board by dollar gap scored 46.7%.
+
+    Still a pure DB pass — the curve fit is arithmetic over rows already loaded. NO API
+    calls, no extra queries per player, no cache invalidation.
     """
+    from backend.engines.signal_basis import (
+        conviction_to_gap_signal,
+        derive_signals_from_conviction,
+        fit_price_curve,
+    )
+
     updated = 0
     flag_counts = {"pay_up": 0, "nomination_target": 0}
+    curve_stats: dict[str, int] = {}
+    legacy_fallbacks = 0
     report: list[dict] = []
     async with AsyncSessionLocal() as session:
         players = (await session.execute(
-            select(Player).where(Player.ai_bid_ceiling.isnot(None))
+            select(Player)
+            .options(selectinload(Player.profile))
+            .where(Player.ai_bid_ceiling.isnot(None))
         )).scalars().all()
+
+        # ---- Fit the market's points-vs-price curve, once per position -------------
+        # Pure arithmetic over rows already in memory: no query per player, no API call.
+        by_pos: dict[str, list[tuple[float, float]]] = {}
+        for p in players:
+            pts = _extract_ppr(p.profile)
+            mkt = getattr(p, "market_value_fantasypros", None)
+            if pts and pts > 0 and mkt and float(mkt) > 0:
+                by_pos.setdefault(p.position or "", []).append((pts, float(mkt)))
+        curves = {
+            pos: fit_price_curve([pt for pt, _ in rows], [pr for _, pr in rows])
+            for pos, rows in by_pos.items()
+        }
+        curve_stats = {
+            pos: (c.n if c is not None else 0) for pos, c in curves.items()
+        }
+
         for p in players:
             old = (
                 float(p.value_gap) if p.value_gap is not None else None,
@@ -1183,8 +1229,29 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
                 bool(p.nomination_target_flag),
             )
 
-            gap, sig = compute_value_gap_from_player(p)
-            assessment, pay_up, nomination = derive_market_relative_signals(gap)
+            curve = curves.get(p.position or "")
+            pts = _extract_ppr(p.profile)
+            mkt = getattr(p, "market_value_fantasypros", None)
+            conviction = (
+                curve.conviction(pts, float(mkt))
+                if (curve is not None and pts and pts > 0 and mkt and float(mkt) > 0)
+                else None
+            )
+
+            if conviction is not None:
+                # PRIMARY PATH — price-neutral projection residual (signal_basis).
+                assessment, pay_up, nomination = derive_signals_from_conviction(conviction)
+                sig = conviction_to_gap_signal(conviction)
+                dollar = curve.dollar_edge(pts, float(mkt))
+                gap = _to_dec(dollar) if dollar is not None else None
+            else:
+                # FALLBACK — no curve for this position (K/DEF, too few priced players)
+                # or no projection/market for this player. Degrade to the legacy
+                # dollar-gap basis rather than emitting nothing: never worse than before.
+                legacy_fallbacks += 1
+                gap, sig = compute_value_gap_from_player(p)
+                assessment, pay_up, nomination = derive_market_relative_signals(gap)
+
             new_gap = float(gap) if gap is not None else None
             new = (new_gap, sig, assessment, pay_up, nomination)
 
@@ -1211,6 +1278,7 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
                 p.value_assessment = assessment
                 p.pay_up_flag = pay_up
                 p.nomination_target_flag = nomination
+                p.signal_conviction = conviction
                 session.add(p)
                 updated += 1
 
@@ -1222,6 +1290,8 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
     return {
         "updated": updated,
         "flag_counts": flag_counts,
+        "price_curves": curve_stats,
+        "legacy_fallbacks": legacy_fallbacks,
         # Back-compat: the pipeline prints len(payup_suppressed); pay_up is now GENERATED
         # (only ever true at gap >= +15, never contradictory), so nothing is "suppressed".
         "payup_suppressed": [],

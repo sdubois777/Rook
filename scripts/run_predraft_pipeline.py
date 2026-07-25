@@ -449,6 +449,16 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"pay_up={rec['flag_counts']['pay_up']}, "
             f"nomination_target={rec['flag_counts']['nomination_target']}."
         )
+        # Surface the signal basis actually used. A position showing 0 fell back to the
+        # legacy dollar gap (too few priced players, or a non-positive price curve) —
+        # worth noticing, because that position's signals are then the weaker basis.
+        _curves = ", ".join(
+            f"{pos}={n}" for pos, n in sorted(rec.get("price_curves", {}).items()) if pos
+        )
+        print(
+            f"[{name}] price curves fitted: {_curves or 'none'}; "
+            f"{rec.get('legacy_fallbacks', 0)} player(s) on the legacy dollar-gap basis."
+        )
         # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
         # Half/Standard regenerate format-appropriate prose into player_format_values.
         copied = await agent.copy_ppr_prose_to_format_rows()

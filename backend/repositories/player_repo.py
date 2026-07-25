@@ -57,6 +57,11 @@ SORTABLE_COLUMNS = {
     "system_value": Player.baseline_value,
     "market_value": Player.market_value,
     "value_gap": Player.value_gap,
+    # The correct basis for "best opportunities". value_gap is a DOLLAR figure and is
+    # price-biased — ranking the board by it put the most expensive players on top and
+    # scored 46.7% in the top 20% on the as-of 2025 backtest, against 66.7% for this
+    # column. See backend/engines/signal_basis.py.
+    "signal_conviction": Player.signal_conviction,
     "name": Player.name,
     "tier": Player.tier,
     "adp_diff": Player.adp_diff,
