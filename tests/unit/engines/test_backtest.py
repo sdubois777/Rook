@@ -166,6 +166,13 @@ async def test_run_backtest_returns_metrics_and_df():
             mock_r = MagicMock()
             mock_r.fetchall.return_value = []
             return mock_r
+        if call_count["n"] == 4:
+            # _load_historical_prices: market_value_historic — empty here, so the
+            # loader still falls through to the market_value_league path this test
+            # is exercising
+            mock_r = MagicMock()
+            mock_r.fetchall.return_value = []
+            return mock_r
         # Fallback player SELECT (market_value_league path)
         mock_r = MagicMock()
         mock_r.fetchall.return_value = [(player1, profile1)]
