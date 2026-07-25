@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import String, Integer, Boolean, DateTime, Numeric, Text, ForeignKey, func
+from sqlalchemy import String, Integer, Boolean, DateTime, Numeric, Text, ForeignKey, Float, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
@@ -109,6 +109,11 @@ class Player(Base):
     # Derived fields — gap between system value and market value
     value_gap: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     value_gap_signal: Mapped[Optional[str]] = mapped_column(String(30))  # market_overvalues / market_undervalues / aligned
+    # Standardised within-position projection residual vs the market price curve — the
+    # price-neutral basis the assessment is derived from and the ONLY correct thing to
+    # rank "top opportunities" on. Ranking by the dollar value_gap is price-biased and
+    # measured 46.7% in the top 20% of the board. See backend/engines/signal_basis.py.
+    signal_conviction: Mapped[Optional[float]] = mapped_column(Float, index=True)
 
     # Bid strategy
     recommended_bid_ceiling: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
