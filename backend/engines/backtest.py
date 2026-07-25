@@ -122,6 +122,11 @@ class BacktestMetrics:
     price_source: str = ""
     price_coverage: int = 0
     orthogonality: list = field(default_factory=list)
+    # Rate-based scoring — see score_on_rate(). Reported ALONGSIDE the totals-based
+    # figures above, never instead of them.
+    model_accuracy: float | None = None
+    model_calls: int = 0
+    model_edge_r: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -154,6 +159,16 @@ class BacktestMetrics:
             # Which candidate signals carry information the price does not. Anything that
             # fails here cannot improve signal accuracy, however good it looks alone.
             "orthogonality": self.orthogonality,
+            # TWO DIFFERENT QUESTIONS — see score_on_rate(). `signals.accuracy` above is
+            # DECISION accuracy (did the money call land, availability included, ceiling
+            # ~74.6%). This is MODEL accuracy (was the per-game read right, ceiling
+            # ~93.7%). Improvement shows up here first; only the other one is the money.
+            "model": {
+                "accuracy": self.model_accuracy,
+                "calls": self.model_calls,
+                "edge_r": self.model_edge_r,
+                "basis": "per-game rate extrapolated to a full 17-game season",
+            },
         }
 
 
@@ -463,6 +478,83 @@ def measure_orthogonality(
 
     out.sort(key=lambda r: abs(r["t"]) if r.get("t") is not None else -1, reverse=True)
     return out
+
+
+# A player must have played at least this many games before his per-game rate is
+# extrapolated. Below it the rate is a 1-3 game sample and extrapolating it 17x
+# manufactures noise rather than removing it.
+RATE_MIN_GAMES = 4
+FULL_SEASON_GAMES = 17
+
+
+def score_on_rate(df: pd.DataFrame) -> tuple[float | None, int, float | None]:
+    """MODEL accuracy: was the per-game read right, with availability taken out?
+
+    TWO METRICS, ON PURPOSE — this does NOT replace the headline number.
+
+    ``signals.accuracy`` scores season TOTALS, so it answers "did the money call land".
+    That is the economically honest question: if you paid $50 for a player who missed
+    half the year, you lost, however good he was per snap. But ~51% of the variance in
+    that outcome is games played, and games played is not forecastable among drafted
+    players (measured R^2 of 0.0006-0.029 against every feature available). So half of
+    that metric is noise, it caps out around 74.6%, and a genuine 3-point projection
+    improvement is invisible inside its +/-8 point season-to-season swing.
+
+    This scores the same calls against points-per-game extrapolated to a full season.
+    Availability's share of the residual variance falls from 0.513 to 0.039 and the
+    ceiling rises to ~93.7%, so real projection improvement is actually detectable.
+
+    WHAT IT IS NOT. It is not a better number to quote. Our measured edge barely moves
+    between the two (r 0.220 vs ~0.24), because this removes noise from the OUTCOME, not
+    error from the model. Quoting only this would be marking our own homework.
+
+    Deliberately NOT done: dropping injury-shortened players entirely. That conditions on
+    the outcome, and it is asymmetric here — of 12 injury-shortened calls on the as-of
+    board, 8 were buys and 4 avoids and only 4 were right, so excluding them removes more
+    wrong buys than right avoids and flatters us by ~5 points. Extrapolation keeps every
+    player and uses his real production instead.
+
+    Returns (accuracy_pct, n_calls, edge_correlation).
+    """
+    import numpy as np
+
+    need = {"actual_ppr", "actual_games", "league_price", "proj_ppr", "position"}
+    if df.empty or not need.issubset(df.columns):
+        return None, 0, None
+
+    d = df[
+        df["actual_ppr"].notna() & df["actual_games"].notna()
+        & (df["actual_games"] >= RATE_MIN_GAMES)
+        & df["league_price"].notna() & (df["league_price"] > 0)
+        & df["proj_ppr"].notna()
+    ].copy()
+    if len(d) < 10:
+        return None, 0, None
+
+    d["_lnp"] = np.log(d["league_price"].astype(float))
+    d["_rate"] = (d["actual_ppr"].astype(float) / d["actual_games"].astype(float)) * FULL_SEASON_GAMES
+
+    outcome_resid = pd.Series(np.nan, index=d.index, dtype=float)
+    pred_resid = pd.Series(np.nan, index=d.index, dtype=float)
+    for _, sel in d.groupby("position").groups.items():
+        g = d.loc[sel]
+        if len(g) < 4 or g["_lnp"].nunique() < 2:
+            continue
+        ob, oa = np.polyfit(g["_lnp"], g["_rate"], 1)
+        outcome_resid.loc[sel] = g["_rate"] - (oa + ob * g["_lnp"])
+        pb, pa = np.polyfit(g["_lnp"], g["proj_ppr"].astype(float), 1)
+        pred_resid.loc[sel] = g["proj_ppr"].astype(float) - (pa + pb * g["_lnp"])
+
+    m = outcome_resid.notna() & pred_resid.notna()
+    if m.sum() < 10:
+        return None, 0, None
+    correct = (pred_resid[m] > 0) == (outcome_resid[m] > 0)
+    r = pred_resid[m].corr(outcome_resid[m])
+    return (
+        round(float(correct.mean()) * 100, 1),
+        int(m.sum()),
+        round(float(r), 3) if pd.notna(r) else None,
+    )
 
 
 def _load_actual_season(season: int) -> pd.DataFrame:
@@ -853,6 +945,10 @@ async def run_backtest(
     # Which candidate signals know something the price does not. Pure arithmetic over the
     # frame just built — no extra query, no API call.
     metrics.orthogonality = measure_orthogonality(df, CANDIDATE_SIGNALS)
+
+    # Model accuracy alongside decision accuracy — the improvement metric, not the money
+    # metric. See score_on_rate() for why both are reported.
+    metrics.model_accuracy, metrics.model_calls, metrics.model_edge_r = score_on_rate(df)
 
     if metrics.signal_accuracy is not None and metrics.signal_accuracy >= 65:
         metrics.grade = "STRONG"
