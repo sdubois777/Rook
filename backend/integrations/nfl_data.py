@@ -1325,18 +1325,34 @@ class NflDataWarehouse:
         Previous rosters from nfl_data_py (2025 season baseline for departure/arrival detection).
         Depth charts and injuries also from Sleeper.
         """
-        try:
-            from backend.integrations.sleeper import fetch_sleeper_players
-            self.rosters = fetch_sleeper_players()
-            # Add backward-compat alias: team_systems uses "player_name"
-            if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
-                self.rosters["player_name"] = self.rosters["full_name"]
-            logger.info("Rosters (Sleeper): %d active skill players", len(self.rosters))
-        except Exception as e:
-            logger.warning("Sleeper rosters failed, falling back to nfl_data_py: %s", e)
+        # UNDER AN AS-OF RUN, skip Sleeper for the same reason depth charts do: it serves
+        # CURRENT state only. warehouse.rosters is what roster_changes diffs against
+        # prev_rosters to detect arrivals, so a current roster paired with a historical
+        # previous one would manufacture the WRONG offseason -- comparing 2024 against
+        # 2026 and flagging two years of moves as one. nfl_data_py's fetch_rosters is
+        # season-keyed and already the fallback, so it becomes the only source in as-of
+        # mode and the diff is a true (as_of - 1) -> as_of comparison.
+        from backend.utils.seasons import asof_active
+
+        if asof_active():
+            logger.info("As-of run: skipping Sleeper rosters (current-state only)")
+        else:
+            try:
+                from backend.integrations.sleeper import fetch_sleeper_players
+                self.rosters = fetch_sleeper_players()
+                # Add backward-compat alias: team_systems uses "player_name"
+                if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
+                    self.rosters["player_name"] = self.rosters["full_name"]
+                logger.info("Rosters (Sleeper): %d active skill players", len(self.rosters))
+            except Exception as e:
+                logger.warning("Sleeper rosters failed, falling back to nfl_data_py: %s", e)
+
+        if self.rosters is None or getattr(self.rosters, "empty", True):
             try:
                 self.rosters = fetch_rosters(self.current_season)
-                logger.info("Rosters fallback (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
+                if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
+                    self.rosters["player_name"] = self.rosters["full_name"]
+                logger.info("Rosters (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
             except Exception as e2:
                 logger.warning("Rosters %d failed: %s", self.current_season, e2)
 
