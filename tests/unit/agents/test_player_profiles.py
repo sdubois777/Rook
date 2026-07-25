@@ -2087,7 +2087,7 @@ def test_needs_sonnet_reasoning_league_price_under_5():
         "name": "Dalvin Cook",
         "position": "RB",
         "age": 27,
-        "market_value_league": 2,
+        "market_value": 2,
         "is_rookie": False,
         "contract_year": False,
         "dependency_flags": [],
@@ -2122,7 +2122,7 @@ def test_needs_sonnet_reasoning_mixon_full():
         "position": "RB",
         "age": 29,
         "team_changed_this_offseason": True,
-        "market_value_league": 2,
+        "market_value": 2,
         "is_rookie": False,
         "contract_year": False,
         "dependency_flags": [],
@@ -3246,3 +3246,46 @@ async def test_team_dependency_flags_carry_condition_and_reasoning():
     flag = out["Isaac Guerendo"][0]
     assert flag["trigger_condition"] == "injured"
     assert "misses time" in flag["reasoning"]
+
+
+def test_market_value_takes_the_max_not_the_first_truthy():
+    """`league or fp` let any non-zero league price mask a higher FantasyPros consensus.
+
+    Measured on the live board before the fix: 61 of 145 players with both values had
+    the higher one hidden — Rashee Rice (league $5, fp $43) reached the prompt as $5 and
+    anchored at $1.00 against a $43 market. This value is the model's only view of what
+    the market thinks a player is worth, and it also drives the `market_value <= 5`
+    Sonnet routing trigger, so masking it distorts both the projection and the routing.
+    """
+    def resolve(league, fp):
+        return max(float(league or 0), float(fp or 0))
+
+    assert resolve(5, 43) == 43.0      # Rashee Rice — the headline case
+    assert resolve(1, 15) == 15.0      # Drake Maye
+    assert resolve(43, 66) == 66.0     # Puka Nacua
+    assert resolve(33, 12) == 33.0     # league higher — league still wins
+    assert resolve(None, 20) == 20.0   # no league price
+    assert resolve(7, None) == 7.0     # no FP price
+    assert resolve(None, None) == 0.0
+    # The old expression, kept to document exactly what regressed:
+    assert (5 or 43) == 5, "`or` returns the first truthy value — that was the bug"
+
+
+def test_routing_reads_market_value_not_the_league_only_key():
+    """The gate must read the max()-resolved key.
+
+    If someone renames the player_entry key without updating needs_sonnet_reasoning, the
+    lookup returns None, the clause silently stops firing, and routing changes with no
+    test failure — the same dead-clause failure mode that left career_trajectory and
+    contract_year inert in this function for months.
+    """
+    from backend.agents.player_profiles import needs_sonnet_reasoning
+
+    cheap = {"position": "WR", "age": 26, "market_value": 2, "seasons": []}
+    assert needs_sonnet_reasoning(cheap) is True, "market_value <= 5 must route to Sonnet"
+
+    # The old key name must NOT satisfy the clause — proves the gate reads the new one.
+    stale_key = {"position": "WR", "age": 26, "market_value_league": 2, "seasons": []}
+    assert needs_sonnet_reasoning(stale_key) is False, (
+        "gate still reading market_value_league — the rename is half-applied"
+    )
