@@ -16,6 +16,7 @@ METHODOLOGY NOTES:
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -120,6 +121,7 @@ class BacktestMetrics:
     position_mae: dict = field(default_factory=dict)
     price_source: str = ""
     price_coverage: int = 0
+    orthogonality: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -149,6 +151,9 @@ class BacktestMetrics:
             "grade": self.grade,
             "price_source": self.price_source,
             "price_coverage": self.price_coverage,
+            # Which candidate signals carry information the price does not. Anything that
+            # fails here cannot improve signal accuracy, however good it looks alone.
+            "orthogonality": self.orthogonality,
         }
 
 
@@ -237,6 +242,227 @@ def apply_price_relative_outcome(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[avoid & scoreable, "system_correct"] = ~df.loc[avoid & scoreable, "was_good_buy"]
     df.loc[~scoreable, "system_correct"] = None
     return df
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ORTHOGONALITY — does a candidate signal know anything the PRICE does not?
+# ═══════════════════════════════════════════════════════════════════════════
+# THE RULE THIS ENFORCES. `was_good_buy` is a residual against a within-position
+# ln(price) fit, so any information the market already holds is worth EXACTLY zero
+# against it. That is not a modelling opinion, it is algebra: adding any multiple of
+# ln(price) to the projection is absorbed by the very fit that defines the residual.
+#
+# Measured on the as-of prospective backtest — blending our projection with the market
+# price raised within-position correlation with realised per-game rate from 0.566 to
+# 0.630 while signal accuracy stayed at 60.3% at EVERY blend weight from 0.0 to 0.8.
+# Projection accuracy improved a lot; the signal did not move one basis point.
+#
+# So "improve the projection" is not a goal on its own. Only PRICE-ORTHOGONAL skill
+# moves the signal: +0.3 sd of it takes accuracy to 67.5%, +0.5 sd to 69.5%.
+#
+# Run every candidate signal through this before building on it. A candidate that
+# cannot clear it — dependency flags, beat-reporter signals, schedule grades, whatever —
+# cannot improve the signal no matter how good it looks in isolation.
+
+# t-statistic magnitude above which a candidate is treated as carrying real orthogonal
+# information. ~2 is the conventional 5% two-sided cut at these sample sizes.
+ORTHOGONALITY_T_THRESHOLD = 2.0
+
+# A middle tier exists because a hard t>=2 cut is too blunt on ~150 players. The
+# dependency flags measured |t| = 1.76-1.83 on the first season — under the bar — yet
+# their coefficient was negative in 97-98% of bootstrap resamples, held within BOTH
+# positions with enough players, and survived trimming the five largest residuals. Calling
+# that "no signal" would have thrown away the most promising candidate found so far.
+ORTHOGONALITY_T_SUGGESTIVE = 1.5
+
+# Share of bootstrap resamples that must agree on the SIGN before the direction is
+# reported as stable. Sign stability is the more robust read at this sample size: it is
+# insensitive to a few extreme residuals, which a t-stat is not.
+ORTHOGONALITY_STABLE_SHARE = 0.95
+
+# Bootstrap resamples used for that sign check. Small data, so this is cheap.
+ORTHOGONALITY_BOOTSTRAP = 400
+
+# Below this many usable rows a t-stat is not worth reporting as a verdict.
+ORTHOGONALITY_MIN_N = 30
+
+# Minimum share of a candidate's variance that must survive regressing it on price and the
+# projection. Below this it IS one of them rewritten, and the fit becomes singular.
+ORTHOGONALITY_MIN_INDEPENDENT_SHARE = 0.01
+
+
+def _zscore_within(frame: pd.DataFrame, col: str, by: str = "position") -> pd.Series:
+    """Standardise `col` within each `by` group.
+
+    Within-position on purpose: pooling positions produces Simpson's paradox here —
+    QBs out-score RBs in raw PPR, so a pooled fit mostly measures position.
+    """
+    import numpy as np
+
+    out = pd.Series(np.nan, index=frame.index, dtype=float)
+    for _, sel in frame.groupby(by).groups.items():
+        d = pd.to_numeric(frame.loc[sel, col], errors="coerce")
+        sd = d.std()
+        if sd and sd > 0:
+            out.loc[sel] = (d - d.mean()) / sd
+        else:
+            out.loc[sel] = 0.0
+    return out
+
+
+def _ols_t(X, y) -> tuple[list[float], list[float], list[float], int]:
+    """Least squares with standard errors and t-stats. Returns (beta, se, t, dof)."""
+    import numpy as np
+
+    n, k = X.shape
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ beta
+    dof = n - k
+    if dof <= 0:
+        return list(beta), [float("nan")] * k, [float("nan")] * k, dof
+    s2 = float((resid ** 2).sum()) / dof
+    cov = s2 * np.linalg.pinv(X.T @ X)
+    se = np.sqrt(np.abs(np.diag(cov)))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(se > 0, beta / se, np.nan)
+    return list(beta), list(se), list(t), dof
+
+
+def measure_orthogonality(
+    df: pd.DataFrame,
+    candidates: Sequence[str],
+    *,
+    min_n: int = ORTHOGONALITY_MIN_N,
+) -> list[dict]:
+    """For each candidate column, does it predict the outcome beyond price AND projection?
+
+    Specification, all variables standardised WITHIN POSITION::
+
+        actual_ppr ~ ln(league_price) + proj_ppr + candidate
+
+    ``ln(price)`` controls for everything the market already knows. ``proj_ppr`` controls
+    for what we already have. A non-zero coefficient on the candidate is therefore new,
+    price-orthogonal information — the only kind that can move signal accuracy.
+
+    Deliberately a REGRESSION rather than an accuracy delta: the continuous outcome over
+    every priced player has far more statistical power than a binary hit-rate over the
+    subset the system chose to call. A single season gives roughly ±8 points of noise on
+    accuracy, but a usable t-stat here.
+
+    Returns one dict per candidate sorted by descending |t|, each with n, beta, se, t and
+    a verdict. Read-only and pure — no I/O.
+    """
+    import numpy as np
+
+    if df.empty:
+        return []
+
+    base = df[
+        df["league_price"].notna() & (df["league_price"] > 0)
+        & df["actual_ppr"].notna() & df["proj_ppr"].notna()
+    ].copy()
+    if base.empty:
+        return []
+    base["_lnp"] = np.log(base["league_price"].astype(float))
+
+    out: list[dict] = []
+    for name in candidates:
+        if name not in base.columns:
+            continue
+        d = base[pd.to_numeric(base[name], errors="coerce").notna()].copy()
+        # A constant candidate carries no information and would make the design singular.
+        vals = pd.to_numeric(d[name], errors="coerce")
+        if len(d) < 4 or vals.nunique() < 2:
+            out.append({
+                "candidate": name, "n": len(d), "beta": None, "se": None, "t": None,
+                "verdict": "not enough variation to test",
+            })
+            continue
+
+        y = _zscore_within(d, "actual_ppr").to_numpy(dtype=float)
+        x_price = _zscore_within(d, "_lnp").to_numpy(dtype=float)
+        x_proj = _zscore_within(d, "proj_ppr").to_numpy(dtype=float)
+        x_cand = _zscore_within(d, name).to_numpy(dtype=float)
+        X = np.column_stack([x_price, x_proj, x_cand, np.ones(len(d))])
+        ok = np.isfinite(X).all(axis=1) & np.isfinite(y)
+        X, y = X[ok], y[ok]
+        if len(y) < 4:
+            out.append({
+                "candidate": name, "n": int(len(y)), "beta": None, "se": None,
+                "t": None, "verdict": "not enough usable rows",
+            })
+            continue
+
+        # COLLINEARITY GUARD — must precede the fit.
+        # A candidate that is a linear restatement of price or of the projection carries
+        # no independent variation, so it cannot help. But lstsq solves such a design with
+        # the pseudo-inverse, which SPLITS the coefficient across the collinear columns
+        # and reports a large, confident t (measured t = 14.2 for `projection * 2 - 5`).
+        # Without this guard the harness would enthusiastically greenlight restating a
+        # column we already have — the precise mistake it exists to prevent.
+        Z = np.column_stack([X[:, 0], X[:, 1], np.ones(len(y))])
+        cb, *_ = np.linalg.lstsq(Z, x_cand[ok], rcond=None)
+        cres = x_cand[ok] - Z @ cb
+        denom = float(((x_cand[ok] - x_cand[ok].mean()) ** 2).sum())
+        indep = float((cres ** 2).sum()) / denom if denom > 0 else 0.0
+        if indep < ORTHOGONALITY_MIN_INDEPENDENT_SHARE:
+            out.append({
+                "candidate": name, "n": int(len(y)), "beta": None, "se": None,
+                "t": None, "direction_stability": None,
+                "verdict": (
+                    f"collinear with price/projection ({indep*100:.1f}% independent "
+                    "variation) — a restatement of what we already have"
+                ),
+            })
+            continue
+
+        beta, se, t, _dof = _ols_t(X, y)
+        tc = t[2]
+
+        # Bootstrap the SIGN. At ~150 players a t-stat is swayed by a handful of extreme
+        # residuals; how often the coefficient keeps its sign under resampling is not.
+        stability = None
+        if len(y) >= min_n and np.isfinite(tc):
+            rng = np.random.default_rng(0)      # fixed seed: a metric must be reproducible
+            same = 0
+            total = 0
+            sign = 1.0 if beta[2] >= 0 else -1.0
+            for _ in range(ORTHOGONALITY_BOOTSTRAP):
+                idx = rng.integers(0, len(y), len(y))
+                Xb, yb = X[idx], y[idx]
+                try:
+                    bb, *_ = np.linalg.lstsq(Xb, yb, rcond=None)
+                except np.linalg.LinAlgError:
+                    continue
+                total += 1
+                if np.sign(bb[2]) == sign:
+                    same += 1
+            stability = round(same / total, 3) if total else None
+
+        if len(y) < min_n:
+            verdict = f"inconclusive (n={len(y)} < {min_n})"
+        elif not np.isfinite(tc):
+            verdict = "inconclusive (degenerate fit)"
+        elif abs(tc) >= ORTHOGONALITY_T_THRESHOLD:
+            verdict = "ORTHOGONAL — carries information price and projection lack"
+        elif (abs(tc) >= ORTHOGONALITY_T_SUGGESTIVE
+              and stability is not None and stability >= ORTHOGONALITY_STABLE_SHARE):
+            verdict = ("SUGGESTIVE — direction is stable but under the bar; "
+                       "needs another season to confirm")
+        else:
+            verdict = "no orthogonal signal — cannot improve accuracy"
+        out.append({
+            "candidate": name,
+            "n": int(len(y)),
+            "beta": round(float(beta[2]), 4),
+            "se": round(float(se[2]), 4),
+            "t": round(float(tc), 2) if np.isfinite(tc) else None,
+            "direction_stability": stability,
+            "verdict": verdict,
+        })
+
+    out.sort(key=lambda r: abs(r["t"]) if r.get("t") is not None else -1, reverse=True)
+    return out
 
 
 def _load_actual_season(season: int) -> pd.DataFrame:
@@ -336,6 +562,78 @@ async def _load_historical_prices(
     return {}, "market_value_league (fallback — auction history insufficient)"
 
 
+# Candidate signals attached to every backtest frame so measure_orthogonality() has
+# something to test. Each is a plausible source of PRICE-ORTHOGONAL information — the
+# only kind that can move signal accuracy. None had ever been measured before this.
+CANDIDATE_SIGNALS = (
+    "dep_net_impact",        # signed sum of dependency value_impact_pct — the system's
+    "dep_flag_count",        # stated reason for existing (Keenan Allen -> McConkey)
+    "dep_displaced",
+    "dep_contingent",
+    "dep_beneficiary",
+    "beat_signal_count",     # late-breaking news, plausibly ahead of consensus
+    "injury_risk_modifier",  # durability history
+    "injury_projected_games",
+    "tier",
+)
+
+
+async def _load_candidate_signals(session: AsyncSession) -> dict:
+    """Per-player candidate signal features, keyed by player id.
+
+    Three grouped queries, not one per player. Read-only. Every field is optional — a
+    board that never ran a stage simply yields zeros/None and the candidate reports as
+    "not enough variation to test" rather than silently looking uninformative.
+    """
+    feats: dict = {}
+
+    def _slot(pid):
+        return feats.setdefault(pid, {
+            "dep_net_impact": 0.0, "dep_flag_count": 0, "dep_displaced": 0,
+            "dep_contingent": 0, "dep_beneficiary": 0, "beat_signal_count": 0,
+            "injury_risk_modifier": None, "injury_projected_games": None,
+        })
+
+    try:
+        dep_rows = (await session.execute(text(
+            "SELECT player_id, flag_type, COALESCE(value_impact_pct, 0) AS impact "
+            "FROM player_dependencies"
+        ))).fetchall()
+        for pid, flag_type, impact in dep_rows:
+            s = _slot(pid)
+            s["dep_flag_count"] += 1
+            s["dep_net_impact"] += float(impact or 0)
+            key = f"dep_{(flag_type or '').lower()}"
+            if key in s:
+                s[key] += 1
+    except Exception as exc:  # noqa: BLE001 — instrumentation must never sink the backtest
+        logger.warning("backtest: could not load dependency flags (%s)", exc)
+
+    try:
+        beat_rows = (await session.execute(text(
+            "SELECT player_id, count(*) FROM beat_reporter_signals "
+            "WHERE player_id IS NOT NULL GROUP BY player_id"
+        ))).fetchall()
+        for pid, cnt in beat_rows:
+            _slot(pid)["beat_signal_count"] = int(cnt)
+    except Exception as exc:  # noqa: BLE001 — a missing table must not sink the backtest
+        logger.warning("backtest: could not load beat signals (%s)", exc)
+
+    try:
+        inj_rows = (await session.execute(text(
+            "SELECT player_id, risk_adjusted_value_modifier, projected_games "
+            "FROM player_injury_profiles"
+        ))).fetchall()
+        for pid, modifier, proj_games in inj_rows:
+            s = _slot(pid)
+            s["injury_risk_modifier"] = float(modifier) if modifier is not None else None
+            s["injury_projected_games"] = float(proj_games) if proj_games is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("backtest: could not load injury profiles (%s)", exc)
+
+    return feats
+
+
 async def run_backtest(
     session: AsyncSession, season: int | None = None,
     fair_value_per_dollar: float = FAIR_VALUE_PPR_PER_DOLLAR,
@@ -389,6 +687,7 @@ async def run_backtest(
             .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
         )
     rows = result.fetchall()
+    candidate_feats = await _load_candidate_signals(session)
 
     metrics = BacktestMetrics(season=season)
     metrics.players_analyzed = len(rows)
@@ -472,7 +771,7 @@ async def run_backtest(
 
         injury_shortened = actual_games is not None and actual_games < 10
 
-        results.append({
+        row = {
             "name": player.name,
             "position": player.position,
             "tier": player.tier,
@@ -489,7 +788,21 @@ async def run_backtest(
             "was_good_buy": was_good_buy,
             "system_correct": system_correct,
             "injury_shortened": injury_shortened,
+        }
+        # Candidate signals for measure_orthogonality(). Absent player → the neutral
+        # defaults, so "no dependency flag" reads as 0 rather than dropping the row.
+        feats = candidate_feats.get(player.id) or {}
+        row.update({
+            "dep_net_impact": feats.get("dep_net_impact", 0.0),
+            "dep_flag_count": feats.get("dep_flag_count", 0),
+            "dep_displaced": feats.get("dep_displaced", 0),
+            "dep_contingent": feats.get("dep_contingent", 0),
+            "dep_beneficiary": feats.get("dep_beneficiary", 0),
+            "beat_signal_count": feats.get("beat_signal_count", 0),
+            "injury_risk_modifier": feats.get("injury_risk_modifier"),
+            "injury_projected_games": feats.get("injury_projected_games"),
         })
+        results.append(row)
 
     metrics.players_matched = matched
     df = pd.DataFrame(results)
@@ -536,6 +849,10 @@ async def run_backtest(
     metrics.top_opportunities_hit = int(top_opps["was_good_buy"].sum())
 
     metrics.injury_excluded = int(df["injury_shortened"].sum())
+
+    # Which candidate signals know something the price does not. Pure arithmetic over the
+    # frame just built — no extra query, no API call.
+    metrics.orthogonality = measure_orthogonality(df, CANDIDATE_SIGNALS)
 
     if metrics.signal_accuracy is not None and metrics.signal_accuracy >= 65:
         metrics.grade = "STRONG"
