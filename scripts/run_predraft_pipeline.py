@@ -304,7 +304,21 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams(warehouse=warehouse)
+            # force MUST be threaded here. run_all_teams passes skip_if_fresh=not force
+            # (roster_changes.py:1617), so without it every team analyzed inside
+            # ROSTER_CHANGES_STALENESS_DAYS (7) is skipped even under --full-sweep, whose
+            # own docstring calls force "required for a deliberate full-sweep regen".
+            #
+            # The silent-corruption case this fixes: replace_team() wipes a team's rows
+            # before writing (roster_changes.py:1790), so a deliberate regen against a
+            # cleared player_dependencies table would skip all 32 teams and repopulate
+            # NOTHING -- every player left with zero dependency flags, no error raised,
+            # and a board that still looks plausible.
+            #
+            # roster_changes is the only one of these agents that takes force at all;
+            # team_systems / injury_risk / schedule have no staleness skip and rely on
+            # the agent_cache fingerprint, so omitting it there is correct.
+            await agent.run_all_teams(warehouse=warehouse, force=force)
 
     elif name == "player_profiles":
         from backend.agents.player_profiles import PlayerProfilesAgent
