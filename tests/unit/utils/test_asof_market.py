@@ -184,8 +184,10 @@ def test_seed_asof_market_prices_from_the_asof_season(asof, pipeline, monkeypatc
             return False
 
         async def execute(self, stmt, params=None):
-            captured["sql"] = str(stmt)
-            captured["params"] = params
+            captured.setdefault("all_sql", []).append(str(stmt))
+            if params and "yr" in params:
+                captured["sql"] = str(stmt)
+                captured["params"] = params
             return _Result()
 
         async def commit(self):
@@ -200,6 +202,16 @@ def test_seed_asof_market_prices_from_the_asof_season(asof, pipeline, monkeypatc
         f"seeded the wrong season: {captured['params']}"
     )
     assert captured.get("committed") is True, "the update was never committed"
+
+    joined = " ".join(captured["all_sql"]).lower()
+    # The stale market MUST be cleared before seeding, or a player the season did not
+    # price keeps another year's value and gets a confident wrong signal. On the 2024
+    # rebuild that put 2026 consensus on the whole board — Jaxon Smith-Njigba at $61
+    # against an actual $1.
+    assert "market_value_fantasypros = null" in joined, "stale market is not cleared"
+    # The league's own auction is the preferred source; run_backtest prefers it too, so
+    # the board and the scoring agree on what the market was.
+    assert "league_auction_history" in joined
 
     sql = captured["sql"].lower()
     # Both market columns must move together. reconcile_value_signals reads the MAX of
@@ -230,7 +242,10 @@ def test_seed_asof_market_year_tracks_the_clock(asof, pipeline, monkeypatch):
             return False
 
         async def execute(self, stmt, params=None):
-            years.append(params["yr"])
+            # The first statement CLEARS every market column and carries no params — a
+            # season-parameterised statement is only issued for the seeding writes.
+            if params and "yr" in params:
+                years.append(params["yr"])
             return _Result()
 
         async def commit(self):
@@ -247,7 +262,11 @@ def test_seed_asof_market_year_tracks_the_clock(asof, pipeline, monkeypatch):
 
     today = date.today()
     real = today.year if today.month >= 3 else today.year - 1
-    assert years == [2023, 2025, real], f"season did not track the clock: {years}"
+    # Each call issues TWO season-parameterised writes — the league's own auction first,
+    # then market_value_historic for anyone still unpriced — so collapse repeats.
+    distinct = [y for i, y in enumerate(years) if i == 0 or y != years[i - 1]]
+    assert distinct == [2023, 2025, real], f"season did not track the clock: {years}"
+    assert all(y == years[0] for y in years[:2]), "both sources must use the same season"
 
 
 def test_seed_asof_market_runs_only_under_asof(pipeline):

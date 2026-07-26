@@ -1214,12 +1214,31 @@ class PlayerProfilesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _get_team_system(self, team: str) -> dict:
+        """The team's system row for the season being analysed.
+
+        SEASON-SCOPED. team_systems holds one row per team per season_year, so a database
+        built for more than one season has several rows per team and an unfiltered
+        scalar_one_or_none() raises MultipleResultsFound. Not hypothetical: an as-of
+        rebuild writes its own season alongside the existing one.
+        """
         from backend.models.team_system import TeamSystem
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(TeamSystem).where(TeamSystem.team_abbr == team)
-            )
-            ts = result.scalar_one_or_none()
+            ts = (await session.execute(
+                select(TeamSystem)
+                .where(
+                    TeamSystem.team_abbr == team,
+                    TeamSystem.season_year == get_analysis_year(),
+                )
+                .limit(1)
+            )).scalars().first()
+            if ts is None:
+                # Fall back to the newest season rather than dropping the team's context.
+                ts = (await session.execute(
+                    select(TeamSystem)
+                    .where(TeamSystem.team_abbr == team)
+                    .order_by(TeamSystem.season_year.desc())
+                    .limit(1)
+                )).scalars().first()
             if not ts:
                 return {}
             return {

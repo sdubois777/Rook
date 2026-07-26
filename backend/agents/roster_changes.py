@@ -645,13 +645,42 @@ class RosterChangesAgent(BaseAgent):
         return histories
 
     async def _fetch_team_system(self, team: str) -> dict:
+        """The team's system row FOR THE SEASON BEING ANALYSED.
+
+        team_systems is season-scoped — one row per team per season_year — so a database
+        that has been built for more than one season holds several rows per team. This
+        used to select on team_abbr alone and call scalar_one_or_none(), which raises
+        MultipleResultsFound the moment a second season exists. That is not hypothetical:
+        an as-of rebuild writes its own season's rows alongside whatever was already
+        there, and every one of the 32 teams then failed to build a context, so
+        roster_changes produced ZERO dependency flags while still exiting 0.
+
+        Ordered by season_year DESC as a belt-and-braces fallback so a board missing the
+        exact analysis year degrades to the most recent row rather than to nothing.
+        """
         from backend.models.team_system import TeamSystem
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(TeamSystem).where(TeamSystem.team_abbr == team)
+                select(TeamSystem)
+                .where(
+                    TeamSystem.team_abbr == team,
+                    TeamSystem.season_year == get_analysis_year(),
+                )
+                .order_by(TeamSystem.season_year.desc())
+                .limit(1)
             )
-            system = result.scalar_one_or_none()
+            system = result.scalars().first()
+            if system is None:
+                # No row for this season — fall back to the newest available rather than
+                # silently returning {} and dropping every flag for the team.
+                result = await session.execute(
+                    select(TeamSystem)
+                    .where(TeamSystem.team_abbr == team)
+                    .order_by(TeamSystem.season_year.desc())
+                    .limit(1)
+                )
+                system = result.scalars().first()
             if system:
                 return {
                     "qb_tier": system.qb_tier,

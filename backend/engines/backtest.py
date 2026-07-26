@@ -670,7 +670,7 @@ CANDIDATE_SIGNALS = (
 )
 
 
-async def _load_candidate_signals(session: AsyncSession) -> dict:
+async def _load_candidate_signals(session: AsyncSession, season: int) -> dict:
     """Per-player candidate signal features, keyed by player id.
 
     Three grouped queries, not one per player. Read-only. Every field is optional — a
@@ -701,11 +701,20 @@ async def _load_candidate_signals(session: AsyncSession) -> dict:
     except Exception as exc:  # noqa: BLE001 — instrumentation must never sink the backtest
         logger.warning("backtest: could not load dependency flags (%s)", exc)
 
+    # DATE-BOUNDED. Beat signals are the one candidate with a timestamp, and without this
+    # filter the orthogonality test correlates news from AFTER the season with that
+    # season's outcome — look-ahead of the purest kind. Caught on the 2024 rebuild: all
+    # 239 stored signals were dated 2026, so `beat_signal_count` was silently scoring
+    # future news. The profiles themselves were never contaminated (player_profiles bounds
+    # its read by asof_now()); this was the instrumentation, not the board.
+    #
+    # The cut is the season's own start: a signal is usable only if it existed before the
+    # season being scored began.
     try:
         beat_rows = (await session.execute(text(
             "SELECT player_id, count(*) FROM beat_reporter_signals "
-            "WHERE player_id IS NOT NULL GROUP BY player_id"
-        ))).fetchall()
+            "WHERE player_id IS NOT NULL AND flagged_at < :cutoff GROUP BY player_id"
+        ), {"cutoff": f"{season}-09-01"})).fetchall()
         for pid, cnt in beat_rows:
             _slot(pid)["beat_signal_count"] = int(cnt)
     except Exception as exc:  # noqa: BLE001 — a missing table must not sink the backtest
@@ -779,7 +788,7 @@ async def run_backtest(
             .where(Player.position.in_(["QB", "RB", "WR", "TE"]))
         )
     rows = result.fetchall()
-    candidate_feats = await _load_candidate_signals(session)
+    candidate_feats = await _load_candidate_signals(session, season)
 
     metrics = BacktestMetrics(season=season)
     metrics.players_analyzed = len(rows)

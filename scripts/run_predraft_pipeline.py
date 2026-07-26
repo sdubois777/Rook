@@ -618,15 +618,20 @@ async def _seed_asof_market() -> None:
     league actually paid that season, which is both the correct market for the board and
     the series the backtest scores against.
 
-    KNOWN RESIDUAL — this only OVERWRITES the players the as-of season priced; it does
-    not clear the rest. A player absent from that season's auction keeps whatever market
-    value the previous (real-time) run left behind. Measured on the 2025-08-15 board: 159
-    priced, 28 skill players outside them still carrying a stale value, all <= $15. It
-    does not reach the backtest — run_backtest() prices from market_value_historic
-    directly and assigns signal=None to anyone it cannot price, so those 28 are never
-    scored — but their on-board value_assessment is computed against the wrong market.
-    Clearing them would be the stricter behaviour; it is deliberately NOT done here so
-    this function stays faithful to the run that produced the reported numbers.
+    SOURCES, in order: the league's own auction (``league_auction_history``, which both
+    the results importer and the league sync write, and which ``run_backtest`` also
+    prefers), then ``market_value_historic``. The board and the scoring therefore agree
+    on what "the market" was for that season.
+
+    THE STALE-MARKET RESIDUAL IS NOW CLEARED, not left. An earlier version only
+    overwrote the players the season had priced, so anyone absent from that auction kept
+    whatever the previous real-time run left behind. On the 2025 board that was mild — 28
+    skill players, all <= $15. On the 2024 rebuild it was not: ``market_value_historic``
+    holds no 2024 rows at all, so the entire board kept 2026 consensus and priced Jaxon
+    Smith-Njigba at $61 against his actual $1 and Rashee Rice at $43 against $12. Signals
+    are computed against the market, so that is a confident WRONG signal on every player
+    — the same class of error that voided an earlier backtest. Clearing first means an
+    unpriced player gets no market-relative claim, which is honest.
     """
     from sqlalchemy import text as _text
 
@@ -635,14 +640,54 @@ async def _seed_asof_market() -> None:
 
     season = _season()
     async with _Session() as s:
-        res = await s.execute(_text(
+        # 1. CLEAR FIRST. Without this, any player the as-of season did not price keeps
+        #    whatever the previous (real-time) run left behind, and his signals are then
+        #    computed against a market from another year. Measured on the 2024 rebuild
+        #    before this clear existed: the board carried 2026 consensus, pricing Jaxon
+        #    Smith-Njigba at $61 against his actual $1 and Rashee Rice at $43 against $12.
+        #    A wrong market is worse than no market — no market yields no signal, which is
+        #    honest; a wrong one yields a confident wrong signal, which is what voided an
+        #    earlier backtest run.
+        await s.execute(_text(
+            "UPDATE players SET market_value_fantasypros = NULL, market_value_league = NULL"
+        ))
+
+        # 2. The league's OWN auction first. league_auction_history is what the results
+        #    importer and the league sync write, and run_backtest prefers it too, so the
+        #    board and the scoring agree on what "the market" was.
+        league = await s.execute(_text(
+            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "       market_value_league = h.price "
+            "FROM (SELECT player_id, avg(price) AS price FROM league_auction_history "
+            "      WHERE season_year = :yr AND price > 0 AND player_id IS NOT NULL "
+            "      GROUP BY player_id) h "
+            "WHERE h.player_id = p.id"
+        ), {"yr": season})
+
+        # 3. Fall back to the season-keyed price reference for anyone still unpriced.
+        historic = await s.execute(_text(
             "UPDATE players p SET market_value_fantasypros = h.price, "
             "       market_value_league = h.price "
             "FROM market_value_historic h "
-            "WHERE h.player_id = p.id AND h.season_year = :yr AND h.price > 0"
+            "WHERE h.player_id = p.id AND h.season_year = :yr AND h.price > 0 "
+            "  AND p.market_value_fantasypros IS NULL"
         ), {"yr": season})
         await s.commit()
-    print(f"[asof_market] {res.rowcount} player(s) priced from the real {season} auction.")
+
+    total = league.rowcount + historic.rowcount
+    print(
+        f"[asof_market] {total} player(s) priced for {season} "
+        f"({league.rowcount} from the league's own auction, "
+        f"{historic.rowcount} from market_value_historic); "
+        "every other player's market was CLEARED."
+    )
+    if total < 50:
+        print(
+            f"[asof_market] WARNING — only {total} priced players for {season}. "
+            "Signals will be market-blind for most of the board, and a backtest of this "
+            "season cannot be scored. Import that season's auction results first "
+            "(scripts/import_auction_results.py)."
+        )
 
 
 async def main() -> None:
