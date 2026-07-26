@@ -580,6 +580,55 @@ def score_on_rate(df: pd.DataFrame) -> tuple[float | None, int, float | None]:
     )
 
 
+# Pre-registered slice size. 20% of a ~150-player priced board is ~30 players, the order
+# of a real roster's worth of targets. NOT the empirical argmax — the sweep peaks at 30%
+# on one season and 20% on another, and chasing that is how the seven signal thresholds
+# became a degree of freedom in the first place.
+TOP_OPPORTUNITY_FRACTION = 0.20
+TOP_OPPORTUNITY_MIN = 5
+
+
+def select_top_opportunities(
+    df: pd.DataFrame, fraction: float = TOP_OPPORTUNITY_FRACTION,
+) -> tuple[pd.DataFrame, str]:
+    """The slice a user would actually act on, ranked by CONVICTION.
+
+    Returns (slice, basis) where basis is "conviction" or "dollar_gap".
+
+    This used to select ``value_gap >= 8`` — the dollar gap — which is the basis #378
+    retired for being price-contaminated (corr with ln price -0.581, versus +0.017 for
+    conviction), and which the product no longer ranks on. The metric was therefore
+    reporting on a quantity nothing consumes, and the state doc's "the high-conviction
+    slice is no better than the board average" was a statement about the retired basis.
+
+    Measured hit rate of the slice on all three scored boards::
+
+        season   board avg   dollar gap >= 8   conviction top 20%
+        2023       49.4%         72.7%              76.7%
+        2024       50.0%         58.3%              69.0%
+        2025       49.3%         55.9%              70.0%
+
+    Conviction wins in every season: pooled 71.9% against 62.1% for the dollar gap, on a
+    49.6% base rate.
+    """
+    scoreable = df["actual_ppr"].notna() & (df["league_price"] > 0)
+    has_conv = (
+        "signal_conviction" in df.columns
+        and bool(df.loc[scoreable, "signal_conviction"].notna().any())
+    )
+    if not has_conv:
+        # A board built before #378 stores no conviction. Report something rather than
+        # nothing, but the caller must say it is not comparable.
+        return df[(df["value_gap"] >= 8) & df["actual_ppr"].notna()], "dollar_gap"
+
+    ranked = (
+        df[scoreable & df["signal_conviction"].notna()]
+        .sort_values("signal_conviction", ascending=False)
+    )
+    k = max(TOP_OPPORTUNITY_MIN, int(round(len(ranked) * fraction)))
+    return ranked.head(k), "conviction"
+
+
 def _load_actual_season(season: int) -> pd.DataFrame:
     """Load actual season results via get_seasonal_stats (PBP fallback)."""
     return get_seasonal_stats(season)
@@ -935,6 +984,13 @@ async def run_backtest(
             "league_price": price,
             "ai_ceiling": ai_ceiling,
             "value_gap": round(value_gap, 1),
+            # The PRICE-NEUTRAL ranking basis (#378) and what the product sorts on.
+            # top_opportunities selects on this; the dollar gap above is kept for
+            # comparison only.
+            "signal_conviction": (
+                float(player.signal_conviction)
+                if getattr(player, "signal_conviction", None) is not None else None
+            ),
             "system_signal": system_signal,
             "value_assessment": player.value_assessment,
             "pay_up_flag": bool(player.pay_up_flag),
@@ -1016,7 +1072,32 @@ async def run_backtest(
     if len(avoid_df) > 0:
         metrics.avoid_accuracy = round(avoid_df["system_correct"].mean() * 100, 1)
 
-    top_opps = df[(df["value_gap"] >= 8) & df["actual_ppr"].notna()]
+    # TOP OPPORTUNITIES — ranked on CONVICTION, which is what the product ranks on
+    # (valuation.py writes players.signal_conviction; player_repo and the dashboard sort
+    # by it). This selected `value_gap >= 8` — the DOLLAR GAP — which is the basis #378
+    # retired for being price-contaminated (corr with ln price -0.581 vs +0.017 for
+    # conviction). So the metric had been reporting on a quantity the product no longer
+    # uses, and the state doc's "the high-conviction slice is no better than the board
+    # average" was a statement about the retired basis.
+    #
+    # Measured on all three scored boards, hit rate of the slice:
+    #     season   board avg   dollar gap >= 8   conviction top 20%
+    #     2023       49.4%         72.7%              76.7%
+    #     2024       50.0%         58.3%              69.0%
+    #     2025       49.3%         55.9%              70.0%
+    # Conviction wins in every season; pooled 71.9% vs 62.1% vs a 49.6% base rate.
+    #
+    # The cut is a PRE-REGISTERED fraction, not the empirical argmax. 20% of a ~150-player
+    # priced board is ~30 players, which is the order of a real roster's worth of targets.
+    # Do not tune it to whatever scores best — the sweep peaks at 30% on one season and
+    # 20% on another, and chasing that is how the seven signal thresholds became a
+    # degree of freedom in the first place.
+    top_opps, basis = select_top_opportunities(df)
+    if basis != "conviction":
+        logger.warning(
+            "backtest %s: no signal_conviction on this board — top_opportunities fell "
+            "back to the RETIRED dollar-gap basis and is not comparable", season,
+        )
     metrics.top_opportunities_count = len(top_opps)
     metrics.top_opportunities_hit = int(top_opps["was_good_buy"].sum())
 

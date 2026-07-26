@@ -1,143 +1,186 @@
 # Signal accuracy — current state
 
-Written 2026-07-25, at the end of the as-of backtest + signal-accuracy work
-(PRs #367–#389). This is the authoritative summary; the other recon docs are the
-working detail behind it.
+Rewritten 2026-07-26 after the as-of 2023 run and the measurement audit (#392–#397).
+This supersedes the 2026-07-25 version, which reported a two-season 60.3% measured on
+contaminated boards with four broken instruments. **This is the authoritative summary.**
 
 ---
 
-## Where accuracy actually is
+## Where accuracy is
 
-**Decision accuracy: 60.3%** — 91 of 151 calls across two prospective seasons,
-p = 0.0059, 95% CI **52.3–67.7%**. Base rate is ~50%, so this is the first
-statistically significant evidence the system has an edge.
+**62.1% — 141 of 227 calls across three prospective as-of seasons.**
+Exact two-sided p = **0.00032**. 95% CI **55.7 – 68.2%**. Base rate ~50%.
 
-| season | decision | calls | model (per-game) | edge r | price source |
+| season | decision | calls | 95% CI | model (per-game) | edge r | price source |
+|---|---|---|---|---|---|---|
+| 2023 | **65.8%** | 76 | 54.6–75.5 | 61.5% | **0.481** | league_auction_history (N=175) |
+| 2024 | 64.1% | 78 | 53.0–73.9 | 60.1% | 0.282 | league_auction_history (N=177) |
+| 2025 | 56.2% | 73 | 44.8–67.0 | 63.8% | 0.213 | market_value_historic (N=159) |
+
+2023 was pre-registered before the board was built
+(`asof_2023_preregistration.md`) and reported standalone before pooling. It landed
+inside the predicted interval (60.3%, CI 52.3–67.7%).
+
+**Only 2023 is a clean board.** It is the first built without the snap leak, with working
+depth charts, correct team grades and an id-keyed price join. So 2023-vs-2024/2025
+differences confound board quality with season variance and **must not be attributed to
+code**. The standing rule holds: a between-season change is never evidence about code —
+re-run the SAME season on both versions.
+
+### Top opportunities — the slice you would act on
+
+Ranked on `signal_conviction`, a pre-registered top 20%:
+
+| season | board average | dollar gap ≥ 8 (retired) | **conviction top 20%** |
+|---|---|---|---|
+| 2023 | 49.4% | 72.7% (n=33) | **76.7%** (n=30) |
+| 2024 | 50.0% | 58.3% (n=36) | **69.0%** (n=29) |
+| 2025 | 49.3% | 55.9% (n=34) | **70.0%** (n=30) |
+
+**Pooled 71.9% vs 62.1% for the dollar gap, on a 49.6% base rate.** Conviction wins in
+every season. The previous version of this doc reported 56.1% and concluded the
+high-conviction slice was no better than the board average — that figure was measured on
+the **dollar gap**, the basis #378 retired, and mixed two code versions. The ~70% target
+was already being met; we were measuring the wrong slice.
+
+---
+
+## Projection accuracy — a separate axis
+
+Absolute points, not price-relative. These two do **not** move together: blending market
+price into the projection raised correlation with realised points 0.566 → 0.630 while
+signal accuracy stayed at 60.3% at *every* blend weight.
+
+| season | n | MAE | bias | corr | within 20% |
 |---|---|---|---|---|---|
-| 2025 | 56.2% | 73 | 63.8% | 0.222 | market_value_historic (N=159) |
-| 2024 | 64.1% | 78 | 60.1% | 0.296 | league_auction_history (N=177) |
+| 2023 | 427 | 44.5 | +16.7 | 0.775 | 26.7% |
+| 2024 | 461 | 43.7 | +12.6 | 0.799 | 23.4% |
+| 2025 | 429 | 45.8 | +19.2 | 0.774 | 24.0% |
 
-The two seasons disagree by 8 points, which is why the interval is 15 points wide.
-"60%" is the point estimate; the honest range is high-50s to mid-60s.
+**We over-project by +13 to +19 PPR every season, and it is entirely the Sonnet path:**
 
-`top_opportunities` — the calls you would actually act on — is **56.1% pooled**
-(37/66, p = 0.195). Not significant. The high-conviction slice is not yet better
-than the board average.
+```
+sonnet_projection   n=1261   bias +16.2   MAE 44.0
+nfl_history         n=  49   bias  -2.5   MAE 50.3
+```
+
+Calibration slope is 0.83–0.92, so it is multiplicative. An OLS recalibration takes
+pooled MAE 44.6 → 41.8 and helps every season individually (−2.48 / −2.65 / −3.48), so it
+transfers rather than overfits. **Not yet shipped** — projections feed `ai_bid_ceiling`
+and the frozen `projected_ppr < 80` signal threshold, so it propagates and needs a board
+rebuild to validate.
+
+By position, priced players, pooled: QB is the weak spot (MAE 75.9, bias +28.4,
+**corr 0.332**); RB best (corr 0.641); WR 0.522; TE 0.606.
+
+Against the market's price-implied projection on priced players we are roughly at parity
+— better in 2023 (MAE 53.2 vs 59.5), worse in 2024 and 2025. Note that benchmark is
+fitted on the outcome season, so it has hindsight our projection does not.
 
 ---
 
-## THE CODE CHANGES DID NOT IMPROVE ACCURACY
+## We have not shown we beat the market
 
-Controlled re-run, same season and same prices, code the only variable:
+Separate measurement: a budget-constrained draft simulation, exact knapsack, every
+strategy optimising its own projection under $200 and roster constraints, scored on
+actual points, against a **real preseason FantasyPros ADP control** (week 0, dated days
+before kickoff).
 
 ```
-2025 OLD code : 56.9% on 65 calls
-2025 NEW code : 56.2% on 73 calls
+2024   SYSTEM - MARKET  +218
+2025   SYSTEM - MARKET  -126        pooled +46 per season, null sd ~205
 ```
 
-So the 2024 figure is **season variance, not code**. Do not cite 64.1% as validation
-of anything shipped.
+Three different specifications of the control all reached the same verdict: **no
+detectable difference.** Resolving a ~50-point effect needs roughly 10 seasons.
 
-What did ship is real but not an accuracy gain: working instrumentation, correct
-units, a price-neutral conviction basis, and several silent-failure fixes.
-
-**Rule this bought:** never attribute a between-season accuracy change to code —
-re-run the SAME season on both versions. And check any projection change against MAE
-and bias, not just accuracy: the signal is sign-based and scale-invariant, so a level
-regression is invisible to it. That is exactly how the ×17 scaling regression hid.
-
----
-
-## The ceiling, and what 75% would need
-
-Availability is **51.3%** of the price-residual variance and is unforecastable among
-drafted players (R² 0.0006–0.029 against every feature tried). That caps edge
-correlation at 0.698:
-
-| coverage | accuracy needed for 75% | r required |
-|---|---|---|
-| every call (~155) | — | **impossible** (needs r > 0.71 vs a 0.70 max) |
-| top 30% (~46 calls) | 75% | r = 0.40 |
-| top 20% (~31 calls) | 75% | r = 0.36 |
-
-We are at **r ≈ 0.22–0.30**. The best measured candidate (dependency flags) moves it
-to at most 0.238 in-sample, which is an upper bound. **There is no known path to 75%
-with current signals.**
-
-Realistic near-term target: ~70% on the top 20%, which needs r ≈ 0.30.
+Signal accuracy says our *calls* discriminate against price. It does not say we would
+have drafted a better team. Those are different claims.
 
 ---
 
 ## The orthogonality rule
 
 The outcome is a residual against a within-position `ln(price)` fit, so anything the
-market already knows is worth **exactly zero**. Measured: blending our projection with
-market price raises correlation with realised per-game rate 0.566 → 0.630 while signal
-accuracy stays at 60.3% **at every blend weight**. That is algebra, not noise.
+market already knows is worth **exactly zero**. That is algebra, not opinion.
 
-`measure_orthogonality()` in `backend/engines/backtest.py` runs on every backtest. Put
-any new signal through it before building on it.
+`measure_orthogonality()` now controls for price **nonlinearly** — `ln(price)`,
+`ln(price)²` and within-position price rank — in both the fit and the collinearity
+guard. Before #394 it controlled only for linear `ln(price)`, and `ln(price)²` — a pure
+function of the price — scored t = 1.80 with 96.3% sign stability and was reported as
+SUGGESTIVE. Every verdict predating #394 was computed on the weaker control.
 
-Results so far (two seasons, and they disagree):
+Results under the corrected harness:
 
-| candidate | 2025 | 2024 |
-|---|---|---|
-| `dep_displaced` / `dep_contingent` | t −1.83 / −1.76, 97–98% stable | t −1.48, 94% |
-| `injury_projected_games` | t −0.39 (nothing) | **t −2.49, 99% — cleared the bar** |
-| `dep_net_impact` | t −0.09 → t −1.81 after the unit fix | t +0.79 |
-| `beat_signal_count` | untestable (no signals) | ~0 |
+| candidate | 2023 | 2024 | 2025 |
+|---|---|---|---|
+| `dep_displaced` | **+2.46 ORTHOGONAL** | −1.54 | −0.69 |
+| `dep_flag_count` | **+2.10 ORTHOGONAL** | — | — |
+| `injury_projected_games` | −1.47 | **−2.15 ORTHOGONAL** | −0.83 |
+| `dep_net_impact` | −1.20 | +0.89 | −1.67 |
 
-Nothing is established. `injury_projected_games` clearing in one season and measuring
-nothing in the other is the clearest example of why one season is not enough.
+**Nothing clears in more than one season, and `dep_displaced` reverses sign.** A negative
+coefficient means displaced players underperform their price — the founding thesis. 2023
+says the opposite. Clearing the bar in one season with the reverse sign to the other two
+is noise, not a lead. `dep_contingent` was dropped from `CANDIDATE_SIGNALS`: it is the
+same column as `dep_displaced` (corr 1.0000 / 0.9665) and reporting both made one signal
+look like two agreeing.
+
+---
+
+## The ceiling
+
+Availability is ~51% of price-residual variance and is unforecastable among drafted
+players (R² 0.0006–0.029 against every feature tried), capping decision accuracy near
+**74.6%**. We are at 62.1%. Note the bound is 2025-only (2024 computes to 75.9%) and
+assumes the predictor is uncorrelated with realised games.
 
 ---
 
 ## Refuted — do not re-propose
 
-- **Availability / games-missed modelling.** Prior games predicts next-season games at
-  r = +0.633 across all skill players (+0.617 with no survivorship) but **−0.019** among
-  the 94 priced players. Range restriction, and the market already prices it. Applied
-  end to end it made accuracy WORSE: 60.3% → 54.3%.
-- **Expanding projection spread.** The "compression" diagnosis was regression to the
-  mean — conditioning on actual finish makes any unbiased forecast look like it
-  under-projects the top. Calibration slope is 0.688 (≤1 everywhere), so projections
-  are already OVER-dispersed. Expanding worsens MAE and cannot move a sign-based signal
-  (60.3% at every multiplier 0.6×–1.77×). A nonlinear quantile version made it worse.
-- **Blending in consensus/ADP/expert ranks** — measured zero, see the orthogonality rule.
-- **Anchor-and-multiplier projection rewrite**, **value-at-stake Sonnet routing gate**,
-  **full duplicate-player dedupe as a migration** — all rejected earlier; see
-  `docs/HANDOFF_asof_backtest.md`.
+- **Availability / games-missed modelling.** End to end 60.3% → 54.3%; confirmed as a
+  projection multiplier on both seasons (McNemar p = 0.041 / 0.049).
+- **Expanding projection spread.** Sign-invariant by algebra at every multiplier
+  0.6×–1.77×; MAE worsens. Calibration slope ≤ 1 everywhere — already over-dispersed.
+- **Blending in consensus / ADP / expert ranks.** Exactly zero for anything affine in
+  `ln(price)`, verified in both seasons.
+- **Anchor-and-multiplier projection rewrite**; **value-at-stake Sonnet routing gate**
+  (demotion deletes the forward projection); **full duplicate dedupe as a migration**
+  (Railway runs `alembic upgrade head` at boot — guarded script only).
+- **Beating random rosters as evidence of skill.** Trivial: any sensible ranking under a
+  budget beats random allocation, and the market's own projection does it too.
+- **A 4-thesis, 18-candidate adversarial search for new edge sources** returned zero
+  survivors. Late-information, causal-structure, market-microstructure and
+  measurement-power theses were all searched; every candidate failed orthogonality,
+  existence, testability or power.
 
 ---
 
-## What shipped (#367–#389)
+## Instrument defects fixed (#392–#397)
 
-- **As-of prospective backtesting** via `ROOK_ASOF_DATE`, end to end.
-- **Signals from the projection, not the dollar ceiling** (#378). The ceiling scored
-  51.7% vs the projection's 60.3% (paired McNemar p = 0.029) and added +0.0005 R².
-  New `players.signal_conviction` is price-neutral (corr with ln price +0.017 vs −0.581)
-  and is what opportunity ranking sorts on — the dollar gap scored 46.7% in the top 20%.
-- **Orthogonality harness** (#379).
-- **Model vs decision accuracy** reported separately (#382). Rate-based scoring drops
-  availability's share of residual variance 0.513 → 0.039, ceiling 74.6% → 93.7%, so
-  projection improvement is actually detectable. Reported alongside, never instead.
-- **Dependency flags sized from measured share** (#383, #386): 0.258 × vacated share
-  (t +2.91), 0.622 × arrival share for dilution (t −10.84, proportional not flat).
-  Fixed a unit bug where `value_impact_pct` held fractions and percentages in the same
-  column, ~100× apart.
-- **Projections scale to EXPECTED games (14.6), not 17** (#386) — see the regression note.
-- **Auction history usable again** (#381) + an importer; 2023/2024 are now scoreable.
-- **Three silent as-of failures** (#384) and **a pipeline-aborting KeyError** (#388).
+Each exited 0 and produced a plausible-looking board:
+
+| defect | effect |
+|---|---|
+| price join keyed by name | 4 skill prices lost in 2024 (Marvin Harrison $40, Deebo Samuel $29); a duplicate "Kenneth Walker" row took the RB's price AND his actuals, emitted avoid, scored **correct** |
+| depth charts | 0 rows for 2023/2024 — the 2024 board had no depth signal at all |
+| as-of snap leak | outcome-season snap share in the projection prompt, 92.4% / 92.8% coverage |
+| orthogonality guard | credited nonlinear transforms of price as new information |
+| team grades | all 32 written to leftover 2026 rows via `max(season_year)` |
+
+**The snap leak was not inflating the result.** The pre-registration predicted, in
+advance, that removing it should *lower* accuracy. 2023 came in at 65.8%, the highest of
+the three.
 
 ---
 
-## Highest-value next steps
+## Next
 
-1. **A third priced season.** Everything above rests on two seasons that disagree by 8
-   points. 2023 prices are imported and scoreable; the board is a ~$10, ~75 min run.
-2. **Make the high-conviction slice actually better.** `top_opportunities` at 56.1%
-   pooled is the gap between "has an edge" and "is useful" — you act on ~16 roster
-   spots, not 155.
-3. **Find price-orthogonal information.** Nothing currently measured clears the bar
-   in both seasons. Beat-reporter signals remain the only wholly untested candidate and
-   probably cannot be tested retrospectively — there is no archive.
+1. **Build the as-of 2022 board.** Prices imported (174 rows, 154 scoreable, $2309).
+   Breaks the `dep_displaced` sign tie and gives two directly comparable clean boards.
+   ~$15–18, ~2.5h.
+2. **Ship the projection recalibration** — pooled MAE −2.9, consistent across seasons.
+   Needs a rebuild to validate because it propagates into dollars and a frozen threshold.
+3. **Re-run 2024/2025 orthogonality** under the corrected nonlinear control and replace
+   any remaining pre-#394 t-values quoted elsewhere.
