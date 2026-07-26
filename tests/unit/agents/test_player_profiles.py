@@ -1604,7 +1604,9 @@ def test_rookie_profile_uses_comp_data_not_nfl_history():
     player = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=1.0)
     result = _build_rookie_profile(player, {})
     discount = _ROOKIE_CONFIDENCE_DISCOUNT["WR"]  # 0.75
-    expected_baseline = round(12.0 * 17 * discount, 1)
+    # Projections scale to EXPECTED games, not a full 17 — see EXPECTED_SEASON_GAMES.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    expected_baseline = round(12.0 * EXPECTED_SEASON_GAMES * discount, 1)
     assert abs(result["clean_season_baseline"]["ppr_points"] - expected_baseline) < 1.0
 
 
@@ -1806,8 +1808,11 @@ def test_qb_baseline_uses_fantasy_points_not_targets():
     baseline = _compute_qb_baseline(seasons)
     assert baseline != {}
     # PPR should be ~390 (avg of 380 and 400) mapped to 17 games via ppg
-    # avg_ppg = (22.4 + 23.5) / 2 = 22.95 → ppr_points = 22.95 * 17 = 390.15
-    assert baseline["ppr_points"] > 350, (
+    # avg_ppg = (22.4 + 23.5) / 2 = 22.95, scaled by EXPECTED_SEASON_GAMES
+    # Threshold scaled by EXPECTED_SEASON_GAMES/17 — the point is that PASSING is
+    # counted, not the absolute season length.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    assert baseline["ppr_points"] > 350 * EXPECTED_SEASON_GAMES / 17, (
         f"QB baseline {baseline['ppr_points']} should reflect passing (>350)"
     )
     assert baseline["ppg"] > 20
@@ -1839,8 +1844,10 @@ def test_qb_ppr_scoring_uses_correct_formula():
     ]
     baseline = _compute_qb_baseline(seasons)
     assert baseline != {}
-    # Should be close to 345 (ppr_per_game * 17 = 20.3*17 = 345.1)
-    assert abs(baseline["ppr_points"] - 345.0) < 5
+    # 20.3 ppg scaled by EXPECTED_SEASON_GAMES (not 17 — a healthy player is still not
+    # expected to play every game).
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    assert abs(baseline["ppr_points"] - 20.3 * EXPECTED_SEASON_GAMES) < 6
 
 
 def test_qb_baseline_with_decline():
@@ -2208,7 +2215,9 @@ async def test_sonnet_projection_stored_as_projected_ppr_season():
     baseline = record.clean_season_baseline
     # Historical ppr_points preserved from Python baseline (receptions*1 + yards*0.1 + tds*6)
     # 90*1 + 1200*0.1 + 6*6 = 90 + 120 + 36 = 246.0
-    assert baseline["ppr_points"] == 246.0
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    # Was 246.0 when projections scaled to a full 17 games.
+    assert baseline["ppr_points"] == pytest.approx(246.0 * EXPECTED_SEASON_GAMES / 17, abs=0.2)
     # Sonnet projection stored separately
     assert baseline["projected_ppr_season"] == 310.5
     assert baseline["upside_ppr"] == 360.0
@@ -2260,7 +2269,9 @@ def test_haiku_batch_uses_python_baseline():
     baseline = _compute_clean_baseline(seasons)
     assert baseline["ppr_points"] > 0
     # Verify formula: 80*1 + 1000*0.1 + 7*6 = 80 + 100 + 42 = 222
-    assert baseline["ppr_points"] == 222.0
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    # Was 222.0 when projections scaled to a full 17 games.
+    assert baseline["ppr_points"] == pytest.approx(222.0 * EXPECTED_SEASON_GAMES / 17, abs=0.2)
 
 
 # ===========================================================================
@@ -2309,8 +2320,9 @@ def test_rookie_profile_uses_comp_data_not_nfl_history():
     """Rookie baseline derived from comp_yr1_avg_ppg * confidence_discount."""
     player = _make_rookie(position="WR", comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
     result = _build_rookie_profile(player, {})
-    # WR discount = 0.75, so: 12.0 * 17 * 0.75 = 153.0
-    expected = 12.0 * 17 * _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+    # WR discount = 0.75, scaled by EXPECTED_SEASON_GAMES rather than a full 17.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    expected = 12.0 * EXPECTED_SEASON_GAMES * _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
     assert result["clean_season_baseline"]["ppr_points"] == round(expected, 1)
     assert result["clean_season_baseline"]["note"] == "Derived from historical comp average — not NFL history"
 
@@ -2390,7 +2402,7 @@ def test_elite_profile_high_capital_is_breakout_candidate():
 def test_landing_spot_modifier_applied_to_projection():
     """
     Rookie with comp_yr1_avg_ppg=12.0 and landing_modifier=0.75
-    -> adjusted baseline < 12.0 * 17 games.
+    -> adjusted baseline < 12.0 * EXPECTED_SEASON_GAMES.
     """
     player_good = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
     player_bad = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=0.75)
