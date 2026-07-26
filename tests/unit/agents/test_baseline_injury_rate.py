@@ -31,15 +31,19 @@ def _season(year, games, ppr):
 
 
 def _ppg(seasons):
-    """Run the real skill-position baseline builder, return implied points per game."""
+    """Run the real skill-position baseline builder, return implied points per game.
+
+    Divides by the SAME constant the builder scales by, so this measures the per-game
+    rate rather than drifting whenever the season-length assumption changes.
+    """
     out = pp._compute_clean_baseline(seasons)
-    return (out or {}).get("ppr_points", 0.0) / 17.0
+    return (out or {}).get("ppr_points", 0.0) / pp.EXPECTED_SEASON_GAMES
 
 
 def _qb_ppg(seasons):
     """Same, for the QB path."""
     out = pp._compute_qb_baseline(seasons)
-    return (out or {}).get("ppr_points", 0.0) / 17.0
+    return (out or {}).get("ppr_points", 0.0) / pp.EXPECTED_SEASON_GAMES
 
 
 def test_short_season_does_not_inflate_the_rate():
@@ -105,3 +109,30 @@ def test_qb_path_also_normalises_for_games():
                 "rush_yards": 0, "rush_tds": 0, "receptions": 0}
     ppg = _qb_ppg([qb(2022, 17, 250.0), qb(2023, 8, 100.0), qb(2024, 17, 270.0)])
     assert 13.0 <= ppg <= 17.0, f"{ppg:.1f} PPG — old path returned ~18.8"
+
+
+def test_projection_scales_to_expected_games_not_a_full_season():
+    """Scaling to 17 assumes perfect availability for everyone and was a measured
+    regression — projection bias went +14.0 -> +19.2 on the as-of 2025 rebuild.
+
+    availability_pass does NOT compensate: it only prorates a KNOWN current absence and
+    touched 5 of 919 valued players on that board, so for the other 914 this constant is
+    the only availability adjustment there is.
+
+    14.6 is the mean games played by the top 200 PPR scorers over 2021-2024. The bar
+    below is deliberately loose — it pins the INTENT (materially under a full season, and
+    not a value tuned to one season's error) rather than the exact figure.
+    """
+    assert 13.5 <= pp.EXPECTED_SEASON_GAMES <= 15.5, (
+        f"{pp.EXPECTED_SEASON_GAMES} is not a plausible expected-games figure"
+    )
+    assert pp.EXPECTED_SEASON_GAMES < 17, "scaling to a full season over-projects everyone"
+
+
+def test_a_full_season_player_projects_at_expected_games_not_his_own_17():
+    """A player who has played every game still projects at EXPECTED games, because the
+    question is how many he will play NEXT season, not how many he played last."""
+    seasons = [_season(y, 17, 255.0) for y in (2022, 2023, 2024)]   # 15.0 ppg
+    out = pp._compute_clean_baseline(seasons)
+    assert out["ppr_points"] < 15.0 * 17, "projected a full 17 games for a healthy player"
+    assert out["ppr_points"] == pytest.approx(15.0 * pp.EXPECTED_SEASON_GAMES, rel=0.06)

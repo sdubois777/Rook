@@ -2667,10 +2667,30 @@ _MINIMUM_QB_GAMES = 10  # minimum career games for QB projection
 # Recency weights: most recent season weighted most heavily
 _RECENCY_WEIGHTS = {0: 0.50, 1: 0.30, 2: 0.20}
 
-# Baselines are built as a per-game RATE and scaled to a full season by this. Season
-# totals are deliberately not used: they penalise anyone who has missed time, and the
-# pipeline already prices missed games once, separately (engines/availability_pass).
-FULL_SEASON_GAMES = 17
+# Baselines are built as a per-game RATE and scaled by this. Season totals are
+# deliberately not used: they penalise anyone who has ever missed time, so a player with
+# three 12-game seasons projected ~30% under his own rate while a 17-game player at the
+# same level projected correctly.
+#
+# THE SCALE IS EXPECTED GAMES, NOT 17. Scaling to a full 17 assumes perfect availability
+# for everyone, which is wrong on average and was a real regression: measured on an as-of
+# rebuild, projection bias went from +14.0 (old season-totals code) to +19.2.
+#
+# The reasoning that produced 17 was that engines/availability_pass would price missed
+# games separately. It does not — it only prorates a KNOWN CURRENT absence (PUP, long-term
+# IR, suspension), and on that board it touched 5 of 919 valued players. For the other 914
+# the baseline's implicit games-scaling was the ONLY availability adjustment, so removing
+# it left nothing.
+#
+# 14.6 is measured, not tuned: the mean games played by the top 200 PPR scorers across
+# the last four completed seasons (14.5, 14.4, 14.7, 14.8). Deliberately NOT the value
+# that minimises error on one season - 14.0 scores marginally better there, which is
+# exactly the overfit to avoid.
+#
+# Verified offline against that board: MAE 45.8 -> 42.5, bias +19.2 -> +3.7, both
+# better than the old season-totals code (43.7 / +14.0). Correlation is scale-invariant,
+# so signal accuracy is unaffected either way.
+EXPECTED_SEASON_GAMES = 14.6
 # 0 = most recent, 1 = one year ago, 2 = two years ago
 # Older than 2 years back gets 10% each
 
@@ -2795,7 +2815,9 @@ def _compute_qb_baseline(seasons: list[dict]) -> dict:
         avg_games = sum(s.get("games", 1) for s in used) / len(used)
         avg_ppg = weighted_total / avg_games if avg_games > 0 else 0.0
 
-    ppr_points = round(avg_ppg * 17, 1)  # 17-game projection
+    # Expected games, not 17 — same reasoning as the skill baseline (see
+    # EXPECTED_SEASON_GAMES). Scaling to a full season assumes perfect availability.
+    ppr_points = round(avg_ppg * EXPECTED_SEASON_GAMES, 1)
 
     # Passing stats averages
     pass_yds_pg = sum(
@@ -2889,7 +2911,7 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         rec = _pg(s, "receptions")
         yds = _pg(s, "rec_yards") + _pg(s, "rush_yards")
         tds = _pg(s, "rec_tds") + _pg(s, "rush_tds")
-        return (rec * 1.0 + yds * 0.1 + tds * 6.0) * FULL_SEASON_GAMES
+        return (rec * 1.0 + yds * 0.1 + tds * 6.0) * EXPECTED_SEASON_GAMES
 
     # --- Career decline detection ---
     # Sort by year (most recent last) to identify recent vs peak
@@ -2912,11 +2934,11 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         career_rush_yards = sum(_pg(s, "rush_yards") for s in sorted_clean) / career_n
         career_rush_tds = sum(_pg(s, "rush_tds") for s in sorted_clean) / career_n
 
-        rec = (_pg(recent, "receptions") * 0.6 + career_rec * 0.4) * FULL_SEASON_GAMES
-        rec_yards = (_pg(recent, "rec_yards") * 0.6 + career_rec_yards * 0.4) * FULL_SEASON_GAMES
-        rec_tds = (_pg(recent, "rec_tds") * 0.6 + career_rec_tds * 0.4) * FULL_SEASON_GAMES
-        rush_yards = (_pg(recent, "rush_yards") * 0.6 + career_rush_yards * 0.4) * FULL_SEASON_GAMES
-        rush_tds = (_pg(recent, "rush_tds") * 0.6 + career_rush_tds * 0.4) * FULL_SEASON_GAMES
+        rec = (_pg(recent, "receptions") * 0.6 + career_rec * 0.4) * EXPECTED_SEASON_GAMES
+        rec_yards = (_pg(recent, "rec_yards") * 0.6 + career_rec_yards * 0.4) * EXPECTED_SEASON_GAMES
+        rec_tds = (_pg(recent, "rec_tds") * 0.6 + career_rec_tds * 0.4) * EXPECTED_SEASON_GAMES
+        rush_yards = (_pg(recent, "rush_yards") * 0.6 + career_rush_yards * 0.4) * EXPECTED_SEASON_GAMES
+        rush_tds = (_pg(recent, "rush_tds") * 0.6 + career_rush_tds * 0.4) * EXPECTED_SEASON_GAMES
     else:
         # Recency-weighted average: most recent season counts most
         # Sort descending by year (most recent first) for weight assignment
@@ -2932,11 +2954,11 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
             rush_tds += _pg(s, "rush_tds") * w
             total_weight += w
         if total_weight > 0:
-            rec = rec / total_weight * FULL_SEASON_GAMES
-            rec_yards = rec_yards / total_weight * FULL_SEASON_GAMES
-            rec_tds = rec_tds / total_weight * FULL_SEASON_GAMES
-            rush_yards = rush_yards / total_weight * FULL_SEASON_GAMES
-            rush_tds = rush_tds / total_weight * FULL_SEASON_GAMES
+            rec = rec / total_weight * EXPECTED_SEASON_GAMES
+            rec_yards = rec_yards / total_weight * EXPECTED_SEASON_GAMES
+            rec_tds = rec_tds / total_weight * EXPECTED_SEASON_GAMES
+            rush_yards = rush_yards / total_weight * EXPECTED_SEASON_GAMES
+            rush_tds = rush_tds / total_weight * EXPECTED_SEASON_GAMES
 
     yards = rec_yards + rush_yards
     tds   = rec_tds + rush_tds
@@ -3030,8 +3052,9 @@ def _build_rookie_profile(player: dict, team_context: dict) -> dict:
     landing_modifier = float(player.get("landing_spot_modifier") or 1.0)
     adjusted_ppg     = base_ppg * landing_modifier
 
-    # Season projection at 17 games, then apply confidence discount
-    projected_season = adjusted_ppg * 17
+    # Season projection at EXPECTED games, then apply confidence discount. A rookie is
+    # no more durable than a veteran, so the same availability reasoning applies.
+    projected_season = adjusted_ppg * EXPECTED_SEASON_GAMES
     discount         = _ROOKIE_CONFIDENCE_DISCOUNT.get(position, 0.75)
     discounted       = projected_season * discount
 
