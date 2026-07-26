@@ -80,7 +80,7 @@ Monetization: free-to-play-style **subscription tiers** (intro/standard/pro) gat
 |------|-----------|
 | Any agent | `docs/rules/COST_RULES.md` + `docs/rules/PATTERNS.md` |
 | Any agent | `docs/AGENTS.md` for that agent's spec |
-| Database work | `docs/SCHEMA.md` |
+| Database work | the ORM models in `backend/models/` (there is NO docs/SCHEMA.md) |
 | Live-draft extension (any platform) | the "Live Draft — Browser Extension Architecture" section below |
 | ESPN / Sleeper resolvers | `docs/espn_resolver_design.md` · `docs/sleeper_resolver_design.md` |
 | Stripe / billing | `docs/stripe_billing_design.md` (decisions locked) |
@@ -99,12 +99,19 @@ Monetization: free-to-play-style **subscription tiers** (intro/standard/pro) gat
 
 **Haiku** (`claude-haiku-4-5-20251001`) for:
 - Team Systems agent
-- Player Profiles agent
 - Injury Risk agent
 - Schedule agent
 - Beat Reporter agent
+- Team Notes agent
 - Waiver Wire agent
 - Any data extraction or formatting task
+
+**MIXED** — these run BOTH models and the split is deliberate:
+- **Player Profiles** — Haiku for the per-team batch, plus a per-player **Sonnet** call
+  (800 tok) for complex players. Previously listed as Haiku-only, which understated its
+  cost by roughly an order of magnitude: this is the single most expensive stage.
+- **Valuation Agent** — tier-batched. T1 per-player Sonnet, T2-3 batches of 5 Sonnet,
+  T4-5 batches of 10 Haiku.
 
 **Sonnet** (`claude-sonnet-4-6`) for:
 - Roster Changes agent (chain-of-reasoning)
@@ -139,23 +146,77 @@ ANALYSIS_YEAR    = get_analysis_year()       # e.g. 2026 — season we're drafti
 
 If you see `CURRENT_SEASON = 2024` or `for season in [2022, 2023, 2024]` anywhere in the codebase, that is a bug. Fix it.
 
+**AS-OF RUNS (`ROOK_ASOF_DATE`).** Set `ROOK_ASOF_DATE=YYYY-MM-DD` to make the whole
+system behave as if it were that date — used to rebuild a board for a past preseason
+(prospective backtesting). Unset means real time, so forgetting keeps you in the present;
+a malformed value raises rather than silently falling back.
+
+```
+ROOK_ASOF_DATE=2025-08-15  →  current=2025  analysis=[2022,2023,2024]  latest_with_data=2024
+unset                      →  current=2026  analysis=[2023,2024,2025]  latest_with_data=2025
+```
+
+It is an **env var, not a parameter**, because the pipeline shells out to `seed`,
+`sync_rosters` and `sync_adp` via `subprocess.run` — an in-process override would not
+reach the three stages that write `players.team_abbr` and `depth_chart_order`.
+
+If you add a new clock read, derive it from `asof_date()` / `asof_now()` in
+`backend/utils/seasons.py`, never `date.today()` or `datetime.now()`. Both must move
+together: `latest_season_with_data()` ceilings at `get_current_season()` but PROBES via
+`get_current_nfl_week()`, so a date-only override would return the very season being
+projected — and `team_metrics` **writes** that value to `team_systems`.
+
+**Rolling the clock back does NOT roll back roster state.** Sleeper serves current data
+only, so an as-of run still needs 2025-vintage rosters/depth charts from nflverse.
+Measured: 138 of 539 valued players changed teams between the 2025 roster and today.
+
 ---
 
 ## Architecture Rules (Full Detail in docs/rules/PATTERNS.md)
 
-1. **One API call per team** — pre-aggregate all data in Python first, then call the model once
-2. **No iterative tool-use loops** in pre-draft pipeline agents — `run_agent()` is only for live draft
-3. **No polling** anywhere in the live draft event chain — event-driven only
-4. **All agents go through BaseAgent** — never call `client.messages.create()` directly in agent files
-5. **Batch by team, never by player** — never loop over players calling the API inside the loop
-6. **All data flows through NflDataWarehouse** — agents never fetch data independently.
-   Built once at pipeline start, passed to every agent.
-   `grep _data_cache backend/agents/` must return zero results.
+These are **design intent**. Several are currently violated by shipped code. Each is
+marked with its real status as of July 2026 so you can tell "this is the rule, follow it
+in new code" from "this is already true everywhere". Do not assume a rule holds because
+it is listed here — that assumption has cost real debugging time.
+
+1. **One API call per team** — pre-aggregate in Python first, then call the model once.
+   ⚠️ **VIOLATED by `player_profiles`**, which additionally makes a per-player Sonnet call
+   for complex players (`call_once` at player_profiles.py:1932). Measured: 584 of 653
+   valued players took a per-player call. This is both the dominant pipeline cost and the
+   source of the bucketed projections. Hold the line in new agents.
+2. **No iterative tool-use loops** in pre-draft pipeline agents — `run_agent()` is only for
+   live draft. ✅ Holds.
+3. **No polling** anywhere in the live draft event chain — event-driven only.
+   Sleeper's primary path is a WebSocket interception; some poll intervals exist as gap
+   recovery. Verify per platform before relying on this.
+4. **All agents go through BaseAgent** — never call `client.messages.create()` directly.
+   ⚠️ **VIOLATED by `team_notes.py:81`**, a real generation call that bypasses BaseAgent
+   (so it is uncached, unlogged in `api_usage_log`, and unmetered).
+   Two sanctioned exceptions: `agent_loop.py:51` (live draft, explicitly carved out by
+   rule 2) and `player_profiles.py:857` (a 10-token "respond with OK" Sonnet health ping,
+   not a generation).
+5. **Batch by team, never by player** — never loop over players calling the API inside the
+   loop. ⚠️ **VIOLATED by `player_profiles`** — same path as rule 1.
+   `valuation_agent` is NOT a violation: it is tier-batched (T1 per-player Sonnet, T2-3
+   batches of 5 Sonnet, T4-5 batches of 10 Haiku).
+6. **All data flows through NflDataWarehouse** — agents never fetch independently.
+   ✅ The literal test passes: `grep _data_cache backend/agents/` returns zero.
+   ⚠️ But the spirit is violated — `team_systems` calls `import_draft_picks` directly, and
+   `roster_changes` pulls OverTheCap / college / comp data outside the warehouse. Also
+   note `valuation._load_prior_production()` builds a **second** warehouse.
 7. **Player identity uses ID-first matching** — always match by
    `sleeper_id` → `sportradar_id` → `gsis_id` → full name + position.
    Never match by last name alone. Never cross positions.
+   ⚠️ Note the name fallback is genuinely unsafe: first-initial+surname collides
+   (`Jonathan Taylor` and `J'mari Taylor` both key to `jtaylor`; `Frank Gore Sr` and
+   `Frank Gore Jr` are same-name/same-position different humans). There are ~54 duplicate
+   player-row clusters in the DB from exactly this. Never dedupe on a name key.
 8. **Sleeper is the primary data source** for player identity, rosters, depth charts,
    injuries, and season stats. nfl_data_py kept only for schedules, PBP, and NGS.
+   ⚠️ Partly aspirational: `get_seasonal_stats` (nfl_data_py) is what the warehouse
+   actually uses; `get_sleeper_seasonal_stats` has no non-test callers.
+   **Sleeper serves CURRENT state only** — it has no historical rosters or depth charts,
+   which is why an as-of rebuild needs nflverse for those.
 
 ---
 
@@ -217,19 +278,45 @@ Stat lookup priority in `_get_player_season_stats()`:
 
 ## Pipeline Dependency Order (CRITICAL)
 
-Always run in this order — agents depend on upstream outputs:
+**The authoritative order is `PHASES` in `scripts/run_predraft_pipeline.py`.** Read it
+there — this block is a summary and can go stale. `PIPELINE_ORDER` is DERIVED from
+`PHASES` (a flatten), so the two cannot drift; do not hand-edit it.
+
+Three stages run **unconditionally as subprocesses before any agent**, regardless of
+`--agent`. They are not in `PHASES` and `--dry-run` skips them entirely:
 
 ```
-1. sync_rosters      ← Sleeper sync, always first
-2. team_systems      ← no deps, runs first
-3. roster_changes    ← needs team_systems
-4. injury_risk       ← no deps on other agents
-5. schedule          ← no deps on other agents
-6. beat_reporter     ← no deps on other agents
-7. player_profiles   ← runs LAST, synthesizes all above
-8. valuation         ← needs profiles
-9. valuation_agent   ← needs valuation pass
+seed         (scripts/seed_nfl_data.py)  → upserts players, writes data/cache/*.parquet
+sync_rosters (scripts/sync_rosters.py)   → CURRENT Sleeper state onto players;
+                                            DESTRUCTIVE: deletes agent_cache rows for
+                                            teams whose roster changed
+sync_adp     (scripts/sync_adp.py)       → live Playwright FantasyPros ADP scrape
+then: NflDataWarehouse.build()           → 6 seasons, built once, passed to every agent
 ```
+
+Because these are **subprocesses**, an in-process override does not reach them. That is
+why the as-of clock is an env var (`ROOK_ASOF_DATE`) — see backend/utils/seasons.py.
+
+Then the agent phases (inner lists run in parallel):
+
+```
+1.  team_systems       ← identity + inputs (QB id, sack_rate, rookie flag) — NOT grades
+1b. team_metrics       ← deterministic grades + composite; the SOLE grade owner. Pure
+                         Python. Runs EARLY (roster_changes and player_profiles read it)
+2.  roster_changes     ← needs team_systems + the grades above
+3.  injury_risk | schedule | beat_reporter   ← independent, run in parallel
+4.  player_profiles    ← needs all above; synthesizes them
+4b. kicker_baseline    ← K prior (pure Python)
+4c. defense_baseline   ← DST prior (pure Python)
+5.  valuation          ← needs profiles. Pure Python, no API calls
+6.  valuation_agent    ← needs valuation
+6b. format_market      ← per-format ADP + auction re-scrape
+6c. team_notes         ← narrates from the stored grades/stats
+7.  availability       ← LAST: deterministic games-missed discount
+```
+
+`team_metrics` at 1b and `team_notes` at 6c are the two most commonly mis-remembered —
+an earlier version of this file listed them 12th and 13th, which was wrong.
 
 ---
 
@@ -288,3 +375,23 @@ signature-verified webhook entitlements (incl. season expiry + monthly-sub
 cancel-at-period-end on season purchase), league-cap reconciliation, test-mode
 seeder deriving all amounts from user.py. Design doc: `docs/stripe_billing_design.md`
 (decision #3 UPDATED — seasonal is IN as a one-time entitlement).
+
+---
+
+## gstack
+
+gstack is installed globally at `~/.claude/skills/gstack`.
+
+**Web browsing — non-negotiable.** Use the **`/browse`** skill from gstack for
+ALL web browsing. **Never** use the `mcp__claude-in-chrome__*` tools.
+
+**Available skills:**
+
+`/office-hours` · `/plan-ceo-review` · `/plan-eng-review` · `/plan-design-review` ·
+`/design-consultation` · `/design-shotgun` · `/design-html` · `/review` · `/ship` ·
+`/land-and-deploy` · `/canary` · `/benchmark` · `/browse` · `/connect-chrome` ·
+`/qa` · `/qa-only` · `/design-review` · `/setup-browser-cookies` · `/setup-deploy` ·
+`/setup-gbrain` · `/retro` · `/investigate` · `/document-release` ·
+`/document-generate` · `/codex` · `/cso` · `/autoplan` · `/plan-devex-review` ·
+`/devex-review` · `/careful` · `/freeze` · `/guard` · `/unfreeze` ·
+`/gstack-upgrade` · `/learn`

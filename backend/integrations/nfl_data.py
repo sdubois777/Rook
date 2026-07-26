@@ -174,7 +174,17 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
       - 2025+: team, pos_abb, pos_rank, pos_grp, player_name, dt
     Returns DataFrame with columns: team, position, full_name, gsis_id, depth_rank.
     """
-    cache_name = f"depth_charts_{season}"
+    # The cache key carries the as-of date, because the SAME season yields a DIFFERENT
+    # depth chart depending on which snapshot the clock selects (see the time-series note
+    # in the snapshot filter below). Without this an as-of run would read back the
+    # real-time file, or worse, poison it for normal runs.
+    from backend.utils.seasons import asof_active, asof_date
+
+    cache_name = (
+        f"depth_charts_{season}_asof_{asof_date().isoformat()}"
+        if asof_active()
+        else f"depth_charts_{season}"
+    )
     path = _cache_path(cache_name)
     if path.exists():
         return pd.read_parquet(path)
@@ -220,13 +230,41 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
         _OFFENSE_POS = {"QB", "RB", "WR", "TE", "LT", "LG", "C", "RG", "RT", "FB"}
         raw = raw[raw["position"].str.upper().isin(_OFFENSE_POS)].copy()
 
-    # --- Filter to latest snapshot per team ---
+    # --- Filter to the latest snapshot per team, AS OF the current clock ---
+    # The 2025+ feed is a TIME SERIES, not one snapshot: import_depth_charts([2025])
+    # returns 554,215 rows across 219 distinct dates running from 2025-08-03 into the
+    # following March. Taking the global latest therefore hands you a MARCH 2026 depth
+    # chart labelled "2025" -- Jacoby Brissett as the ARI QB1 instead of Kyler Murray,
+    # and an IND receiver room with Pittman and Mitchell already departed.
+    #
+    # That is fatal to an as-of run, which needs the roster state as it stood at the
+    # time. Bounding by asof_date() gives the real thing: at 2025-08-15 the snapshot is
+    # 2025-08-14, ARI QB1 is Kyler Murray, and IND still reads Pittman 1 / Downs 2 /
+    # Pierce 3 / Mitchell 4 -- the very players whose 2026 departure inflated Downs.
+    #
+    # With no override asof_date() is real today, so every date passes the bound and the
+    # behaviour is exactly as before.
     if "week" in raw.columns:
         max_week = raw.groupby("team")["week"].transform("max")
         raw = raw[raw["week"] == max_week].copy()
     elif "dt" in raw.columns:
-        # 2025+ schema: dt is a datetime string, use latest date per team
-        raw["_dt_parsed"] = pd.to_datetime(raw["dt"], errors="coerce")
+        from backend.utils.seasons import asof_date
+
+        raw["_dt_parsed"] = pd.to_datetime(raw["dt"], errors="coerce", utc=True)
+        cutoff = pd.Timestamp(asof_date(), tz="UTC") + pd.Timedelta(days=1)
+        bounded = raw[raw["_dt_parsed"] < cutoff]
+        if bounded.empty:
+            # Nothing at or before the as-of date (e.g. asking for a season that had not
+            # started yet). Fall back to the unbounded frame rather than returning an
+            # empty depth chart, and say so -- a silently empty depth chart would strip
+            # every starter signal.
+            logger.warning(
+                "Depth charts %d: no snapshot on/before %s — falling back to the latest "
+                "available, which may be AFTER the as-of date",
+                season, asof_date(),
+            )
+            bounded = raw
+        raw = bounded.copy()
         max_dt = raw.groupby("team")["_dt_parsed"].transform("max")
         raw = raw[raw["_dt_parsed"] == max_dt].copy()
         raw = raw.drop(columns=["_dt_parsed"])
@@ -1287,18 +1325,61 @@ class NflDataWarehouse:
         Previous rosters from nfl_data_py (2025 season baseline for departure/arrival detection).
         Depth charts and injuries also from Sleeper.
         """
-        try:
-            from backend.integrations.sleeper import fetch_sleeper_players
-            self.rosters = fetch_sleeper_players()
-            # Add backward-compat alias: team_systems uses "player_name"
-            if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
-                self.rosters["player_name"] = self.rosters["full_name"]
-            logger.info("Rosters (Sleeper): %d active skill players", len(self.rosters))
-        except Exception as e:
-            logger.warning("Sleeper rosters failed, falling back to nfl_data_py: %s", e)
+        # UNDER AN AS-OF RUN, skip Sleeper for the same reason depth charts do: it serves
+        # CURRENT state only. warehouse.rosters is what roster_changes diffs against
+        # prev_rosters to detect arrivals, so a current roster paired with a historical
+        # previous one would manufacture the WRONG offseason -- comparing 2024 against
+        # 2026 and flagging two years of moves as one. nfl_data_py's fetch_rosters is
+        # season-keyed and already the fallback, so it becomes the only source in as-of
+        # mode and the diff is a true (as_of - 1) -> as_of comparison.
+        from backend.utils.seasons import asof_active
+
+        if asof_active():
+            logger.info("As-of run: skipping Sleeper rosters (current-state only)")
+        else:
             try:
-                self.rosters = fetch_rosters(self.current_season)
-                logger.info("Rosters fallback (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
+                from backend.integrations.sleeper import fetch_sleeper_players
+                self.rosters = fetch_sleeper_players()
+                # Add backward-compat alias: team_systems uses "player_name"
+                if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
+                    self.rosters["player_name"] = self.rosters["full_name"]
+                logger.info("Rosters (Sleeper): %d active skill players", len(self.rosters))
+            except Exception as e:
+                logger.warning("Sleeper rosters failed, falling back to nfl_data_py: %s", e)
+
+        if self.rosters is None or getattr(self.rosters, "empty", True):
+            try:
+                raw_rosters = fetch_rosters(self.current_season)
+                # DEDUPE TO ONE ROW PER PLAYER. nflverse rosters are WEEKLY (46,849 rows
+                # / 3,134 players = ~15 rows each); Sleeper's frame -- what every consumer
+                # was written against -- is one row per player. Handing the weekly frame
+                # through unchanged multiplied every roster ~15x, and
+                # roster_changes._fetch_qb_histories does a QB x receiver cartesian
+                # product over it, so the blowup squared: its prompt went from ~7,800
+                # input tokens to 394,188, i.e. $0.07 -> $1.22 per team. That drained the
+                # API credit balance mid-run and timed out 11 more teams, leaving 17 of 32
+                # with any dependency flags at all.
+                #
+                # Week choice mirrors seed_nfl_data.py: EARLIEST under an as-of clock (the
+                # roster as it stood before any in-season trade — taking the last week
+                # hands an August board a player's post-deadline team), latest otherwise.
+                if "week" in raw_rosters.columns and "player_id" in raw_rosters.columns:
+                    from backend.utils.seasons import asof_active
+
+                    before = len(raw_rosters)
+                    raw_rosters = (
+                        raw_rosters.sort_values("week", ascending=asof_active())
+                        .drop_duplicates(subset=["player_id"])
+                        .copy()
+                    )
+                    logger.info(
+                        "Rosters deduped weekly->per-player: %d -> %d rows (%s week)",
+                        before, len(raw_rosters), "earliest" if asof_active() else "latest",
+                    )
+                self.rosters = raw_rosters
+                if "full_name" in self.rosters.columns and "player_name" not in self.rosters.columns:
+                    self.rosters["player_name"] = self.rosters["full_name"]
+                logger.info("Rosters (nfl_data_py %d): %d rows", self.current_season, len(self.rosters))
             except Exception as e2:
                 logger.warning("Rosters %d failed: %s", self.current_season, e2)
 
@@ -1320,26 +1401,39 @@ class NflDataWarehouse:
         self._load_depth_charts()
 
     def _load_depth_charts(self) -> None:
-        """Load depth charts from Sleeper API. Fall back to nfl_data_py if Sleeper fails."""
-        try:
-            from backend.integrations.sleeper import get_sleeper_depth_charts
-            dc = get_sleeper_depth_charts()
-            if not dc.empty:
-                # Normalize column names to match warehouse schema
-                col_map = {}
-                if "pos_abb" in dc.columns and "position" not in dc.columns:
-                    col_map["pos_abb"] = "position"
-                if "pos_rank" in dc.columns and "depth_rank" not in dc.columns:
-                    col_map["pos_rank"] = "depth_rank"
-                if "player_name" in dc.columns and "full_name" not in dc.columns:
-                    col_map["player_name"] = "full_name"
-                if col_map:
-                    dc = dc.rename(columns=col_map)
-                self.depth_charts[self.current_season] = dc
-                logger.info("Depth charts from Sleeper: %d entries", len(dc))
-                return
-        except Exception as e:
-            logger.warning("Sleeper depth charts failed: %s", e)
+        """Load depth charts from Sleeper API. Fall back to nfl_data_py if Sleeper fails.
+
+        UNDER AN AS-OF RUN Sleeper is skipped entirely. It serves CURRENT state only --
+        there is no historical Sleeper depth chart -- so consulting it would silently
+        stamp today's depth order onto a past-season board, which is precisely the
+        contamination an as-of run exists to avoid. nflverse carries a dated time series
+        and fetch_depth_charts() bounds it by the as-of clock, so it is the correct (and
+        only) source in that mode.
+        """
+        from backend.utils.seasons import asof_active
+
+        if asof_active():
+            logger.info("As-of run: skipping Sleeper depth charts (current-state only)")
+        else:
+            try:
+                from backend.integrations.sleeper import get_sleeper_depth_charts
+                dc = get_sleeper_depth_charts()
+                if not dc.empty:
+                    # Normalize column names to match warehouse schema
+                    col_map = {}
+                    if "pos_abb" in dc.columns and "position" not in dc.columns:
+                        col_map["pos_abb"] = "position"
+                    if "pos_rank" in dc.columns and "depth_rank" not in dc.columns:
+                        col_map["pos_rank"] = "depth_rank"
+                    if "player_name" in dc.columns and "full_name" not in dc.columns:
+                        col_map["player_name"] = "full_name"
+                    if col_map:
+                        dc = dc.rename(columns=col_map)
+                    self.depth_charts[self.current_season] = dc
+                    logger.info("Depth charts from Sleeper: %d entries", len(dc))
+                    return
+            except Exception as e:
+                logger.warning("Sleeper depth charts failed: %s", e)
 
         # Fallback to nfl_data_py
         raw_dc = pd.DataFrame()

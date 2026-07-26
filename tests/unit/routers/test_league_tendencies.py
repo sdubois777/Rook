@@ -180,9 +180,11 @@ async def test_new_picks_stored_with_user_id():
          patch("backend.services.league_sync.get_current_season", return_value=2026), \
          patch("backend.services.league_sync.LeagueRepository"):
         service = LeagueSyncService(mock_db, user_id)
-        count = await service._store_picks(picks, user_league_id, 2025)
+        result = await service._store_picks(picks, user_league_id, 2025)
 
-    assert count == 1
+    # _store_picks now reports {"stored", "resolved"} rather than a bare count — the
+    # resolved figure is what makes a 0%-identity sync visible instead of silent.
+    assert result["stored"] == 1
     # Verify execute was called with values containing user_id
     call_args = mock_db.execute.await_args
     insert_stmt = call_args[0][0]
@@ -224,9 +226,9 @@ async def test_new_picks_stored_with_user_league_id():
          patch("backend.services.league_sync.get_current_season", return_value=2026), \
          patch("backend.services.league_sync.LeagueRepository"):
         service = LeagueSyncService(mock_db, user_id)
-        count = await service._store_picks(picks, user_league_id, 2025)
+        result = await service._store_picks(picks, user_league_id, 2025)
 
-    assert count == 1
+    assert result["stored"] == 1
     call_args = mock_db.execute.await_args
     insert_stmt = call_args[0][0]
     compiled = insert_stmt.compile()

@@ -168,22 +168,33 @@ AGENT_SPECS: dict[str, dict] = {
     },
 }
 
-PIPELINE_ORDER = [
-    "team_systems",
-    "roster_changes",
-    "injury_risk",
-    "schedule",
-    "beat_reporter",
-    "player_profiles",   # runs LAST — synthesizes all upstream agent outputs
-    "kicker_baseline",   # dedicated K prior (offense profiler is skill-only)
-    "defense_baseline",  # dedicated DST prior (crude historical, team-keyed)
-    "valuation",
-    "valuation_agent",   # AI ceiling calibration — runs after math valuation
-    "format_market",     # per-format ADP + auction re-scrape into player_format_values
-    "team_metrics",      # deterministic Teams-page fields (scheme/pass-pro/qb_tier + bell)
-    "team_notes",        # regenerate system-notes prose from the real stored stats
-    "availability",      # LAST: deterministic games-missed availability discount
+# Pipeline dependency phases — the SINGLE source of truth for execution order.
+# Inner lists run in parallel (independent agents); the outer list is sequential.
+PHASES = [
+    ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
+    ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
+    ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
+    ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
+    ["player_profiles"],                           # Phase 4: needs all above
+    ["kicker_baseline"],                           # Phase 4b: dedicated K prior
+    ["defense_baseline"],                          # Phase 4c: dedicated DST prior
+    ["valuation"],                                 # Phase 5: needs profiles
+    ["valuation_agent"],                           # Phase 6: needs valuation
+    ["format_market"],                             # Phase 6b: re-scrape per-format ADP + auction (every run)
+    ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
+    ["availability"],                              # Phase 7: LAST — availability discount
 ]
+
+# DERIVED, never hand-maintained. PIPELINE_ORDER is the membership set for `--agent all`
+# and the row order of the dry-run table.
+#
+# It used to be a separate hand-written list, and it had DRIFTED: it placed team_metrics
+# 12th and team_notes 13th, while PHASES runs them at 1b and 6c. Two ways that bites --
+# the dry-run advertised an execution order the pipeline does not follow, and because the
+# phase loop filters each phase by `a in agents`, any stage present in PHASES but missing
+# from this list would be SILENTLY SKIPPED under `--agent all` with no error. Deriving it
+# makes both classes of divergence impossible.
+PIPELINE_ORDER = [agent for phase in PHASES for agent in phase]
 
 # Cost per million tokens
 _RATES = {
@@ -304,7 +315,21 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             for team in teams:
                 await agent.run_for_team(team)
         else:
-            await agent.run_all_teams(warehouse=warehouse)
+            # force MUST be threaded here. run_all_teams passes skip_if_fresh=not force
+            # (roster_changes.py:1617), so without it every team analyzed inside
+            # ROSTER_CHANGES_STALENESS_DAYS (7) is skipped even under --full-sweep, whose
+            # own docstring calls force "required for a deliberate full-sweep regen".
+            #
+            # The silent-corruption case this fixes: replace_team() wipes a team's rows
+            # before writing (roster_changes.py:1790), so a deliberate regen against a
+            # cleared player_dependencies table would skip all 32 teams and repopulate
+            # NOTHING -- every player left with zero dependency flags, no error raised,
+            # and a board that still looks plausible.
+            #
+            # roster_changes is the only one of these agents that takes force at all;
+            # team_systems / injury_risk / schedule have no staleness skip and rely on
+            # the agent_cache fingerprint, so omitting it there is correct.
+            await agent.run_all_teams(warehouse=warehouse, force=force)
 
     elif name == "player_profiles":
         from backend.agents.player_profiles import PlayerProfilesAgent
@@ -334,6 +359,24 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             await agent.run_all_teams(warehouse=warehouse)
 
     elif name == "beat_reporter":
+        # AS-OF RUNS SKIP THIS STAGE. It ingests LIVE RSS (ESPN, Rotowire, NFL.com) with
+        # no season parameter, no date filter and no archive, so there is no way to fetch
+        # the news as it stood on a past date — running it would inject present-day
+        # reporting into a past-season board, and beat signals feed the projection prose.
+        #
+        # This is a KNOWN, DELIBERATE difference from a real board of that vintage: the
+        # as-of board has no beat signals at all rather than the wrong ones. The
+        # complementary half is in player_profiles._get_team_beat_signals, which bounds
+        # its read by flagged_at — skipping the stage alone would still leak any signals
+        # already sitting in the table.
+        from backend.utils.seasons import asof_active, asof_date
+
+        if asof_active():
+            print(f"[{name}] SKIPPED — as-of run ({asof_date()}). Live RSS has no "
+                  f"archive, so a past-dated board gets no beat signals rather than "
+                  f"present-day ones.")
+            return
+
         from backend.agents.beat_reporter import BeatReporterAgent
         agent = BeatReporterAgent(dry_run=False)
         # Beat reporter is not team-batched — ignores --team flag, runs all feeds
@@ -406,6 +449,16 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"pay_up={rec['flag_counts']['pay_up']}, "
             f"nomination_target={rec['flag_counts']['nomination_target']}."
         )
+        # Surface the signal basis actually used. A position showing 0 fell back to the
+        # legacy dollar gap (too few priced players, or a non-positive price curve) —
+        # worth noticing, because that position's signals are then the weaker basis.
+        _curves = ", ".join(
+            f"{pos}={n}" for pos, n in sorted(rec.get("price_curves", {}).items()) if pos
+        )
+        print(
+            f"[{name}] price curves fitted: {_curves or 'none'}; "
+            f"{rec.get('legacy_fallbacks', 0)} player(s) on the legacy dollar-gap basis."
+        )
         # Per-format prose (G2): PPR copies the players-table narrative (byte-identical);
         # Half/Standard regenerate format-appropriate prose into player_format_values.
         copied = await agent.copy_ppr_prose_to_format_rows()
@@ -419,6 +472,16 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         # re-scraped LIVE every run and written to player_format_values. NOT cached — the
         # inputs drift daily before draft day. Independent of the agents; failure is
         # non-fatal (leaves the prior per-format market rows in place). Own DB session.
+        #
+        # Skipped under an as-of clock for the same reason as sync_adp: the scrape is
+        # current-season only, so it would write NEXT year's per-format market onto a
+        # past-season board. The as-of market comes from _seed_asof_market() instead.
+        from backend.utils.seasons import asof_active as _aa
+
+        if _aa():
+            print(f"[{name}] SKIPPED — as-of run. Live per-format market is current-season only.")
+            return
+
         from backend.services.format_market_ingest import run_format_market_ingest_stage
         try:
             result = await run_format_market_ingest_stage()
@@ -547,6 +610,86 @@ async def run_targeted_cli(args) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+async def _seed_asof_market() -> None:
+    """Copy the as-of season's real auction prices into the market columns.
+
+    Live FantasyPros is current-season only, so under an as-of run the market columns
+    would otherwise hold NEXT year's consensus. market_value_historic holds what the
+    league actually paid that season, which is both the correct market for the board and
+    the series the backtest scores against.
+
+    SOURCES, in order: the league's own auction (``league_auction_history``, which both
+    the results importer and the league sync write, and which ``run_backtest`` also
+    prefers), then ``market_value_historic``. The board and the scoring therefore agree
+    on what "the market" was for that season.
+
+    THE STALE-MARKET RESIDUAL IS NOW CLEARED, not left. An earlier version only
+    overwrote the players the season had priced, so anyone absent from that auction kept
+    whatever the previous real-time run left behind. On the 2025 board that was mild — 28
+    skill players, all <= $15. On the 2024 rebuild it was not: ``market_value_historic``
+    holds no 2024 rows at all, so the entire board kept 2026 consensus and priced Jaxon
+    Smith-Njigba at $61 against his actual $1 and Rashee Rice at $43 against $12. Signals
+    are computed against the market, so that is a confident WRONG signal on every player
+    — the same class of error that voided an earlier backtest. Clearing first means an
+    unpriced player gets no market-relative claim, which is honest.
+    """
+    from sqlalchemy import text as _text
+
+    from backend.database import AsyncSessionLocal as _Session
+    from backend.utils.seasons import get_current_season as _season
+
+    season = _season()
+    async with _Session() as s:
+        # 1. CLEAR FIRST. Without this, any player the as-of season did not price keeps
+        #    whatever the previous (real-time) run left behind, and his signals are then
+        #    computed against a market from another year. Measured on the 2024 rebuild
+        #    before this clear existed: the board carried 2026 consensus, pricing Jaxon
+        #    Smith-Njigba at $61 against his actual $1 and Rashee Rice at $43 against $12.
+        #    A wrong market is worse than no market — no market yields no signal, which is
+        #    honest; a wrong one yields a confident wrong signal, which is what voided an
+        #    earlier backtest run.
+        await s.execute(_text(
+            "UPDATE players SET market_value_fantasypros = NULL, market_value_league = NULL"
+        ))
+
+        # 2. The league's OWN auction first. league_auction_history is what the results
+        #    importer and the league sync write, and run_backtest prefers it too, so the
+        #    board and the scoring agree on what "the market" was.
+        league = await s.execute(_text(
+            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "       market_value_league = h.price "
+            "FROM (SELECT player_id, avg(price) AS price FROM league_auction_history "
+            "      WHERE season_year = :yr AND price > 0 AND player_id IS NOT NULL "
+            "      GROUP BY player_id) h "
+            "WHERE h.player_id = p.id"
+        ), {"yr": season})
+
+        # 3. Fall back to the season-keyed price reference for anyone still unpriced.
+        historic = await s.execute(_text(
+            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "       market_value_league = h.price "
+            "FROM market_value_historic h "
+            "WHERE h.player_id = p.id AND h.season_year = :yr AND h.price > 0 "
+            "  AND p.market_value_fantasypros IS NULL"
+        ), {"yr": season})
+        await s.commit()
+
+    total = league.rowcount + historic.rowcount
+    print(
+        f"[asof_market] {total} player(s) priced for {season} "
+        f"({league.rowcount} from the league's own auction, "
+        f"{historic.rowcount} from market_value_historic); "
+        "every other player's market was CLEARED."
+    )
+    if total < 50:
+        print(
+            f"[asof_market] WARNING — only {total} priced players for {season}. "
+            "Signals will be market-blind for most of the board, and a backtest of this "
+            "season cannot be scored. Import that season's auction results first "
+            "(scripts/import_auction_results.py)."
+        )
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the pre-draft AI pipeline")
     parser.add_argument(
@@ -655,13 +798,31 @@ async def main() -> None:
 
     # Sync FantasyPros ADP (snake-draft support) — populates adp_fantasypros
     # before the agent phases. Independent of the agents; a failure is non-fatal.
-    print("[sync_adp] Syncing ADP from FantasyPros...")
-    adp_result = subprocess.run(
-        [sys.executable, "scripts/sync_adp.py"],
-    )
-    if adp_result.returncode != 0:
-        print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
+    # Live FantasyPros scrape — CURRENT consensus, with no historical equivalent. Under
+    # an as-of run it would put next year's market on a past-season board: measured, 2026
+    # FP had Nico Collins at $31 and Saquon at $31 while the real 2025 auction paid $62
+    # and $61. Signals compare our value against "the market" and are then scored against
+    # the as-of season's price, so a mismatched market makes those metrics meaningless.
+    # The as-of market comes from market_value_historic instead (see _seed_asof_market).
+    from backend.utils.seasons import asof_active as _asof_active
+
+    if _asof_active():
+        print("[sync_adp] SKIPPED — as-of run. Live FantasyPros ADP is current-season only.")
+    else:
+        print("[sync_adp] Syncing ADP from FantasyPros...")
+        adp_result = subprocess.run(
+            [sys.executable, "scripts/sync_adp.py"],
+        )
+        if adp_result.returncode != 0:
+            print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
     print()
+
+    # As-of market: the season's REAL auction, from market_value_historic. That is what
+    # "the market" actually was on the as-of date, and it is the same series the backtest
+    # scores against — so a "we are above market" signal and its scoring finally refer to
+    # one market instead of two.
+    if _asof_active():
+        await _seed_asof_market()
 
     # Build warehouse once — all agents read from this shared data store
     from backend.integrations.nfl_data import NflDataWarehouse, populate_gsis_from_depth_charts
@@ -679,23 +840,7 @@ async def main() -> None:
 
     teams = [team_filter] if team_filter else None
 
-    # Pipeline dependency phases — independent agents run in parallel
-    _PHASES = [
-        ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
-        ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
-        ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
-        ["injury_risk", "schedule", "beat_reporter"],  # Phase 3: independent, parallel
-        ["player_profiles"],                           # Phase 4: needs all above
-        ["kicker_baseline"],                           # Phase 4b: dedicated K prior
-        ["defense_baseline"],                          # Phase 4c: dedicated DST prior
-        ["valuation"],                                 # Phase 5: needs profiles
-        ["valuation_agent"],                           # Phase 6: needs valuation
-        ["format_market"],                             # Phase 6b: re-scrape per-format ADP + auction (every run)
-        ["team_notes"],                                # Phase 6c: grounded NARRATOR — narrate from the real grades/stats
-        ["availability"],                              # Phase 7: LAST — availability discount
-    ]
-
-    for phase in _PHASES:
+    for phase in PHASES:
         phase_agents = [a for a in phase if a in agents]
         if not phase_agents:
             continue

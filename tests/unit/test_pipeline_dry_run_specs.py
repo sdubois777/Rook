@@ -41,3 +41,81 @@ def test_agent_specs_have_required_fields():
     required = {"model", "max_tokens", "est_input_tokens", "api_calls", "status", "description"}
     for name, spec in m.AGENT_SPECS.items():
         assert required <= spec.keys(), f"{name} missing fields: {required - spec.keys()}"
+
+
+@pytest.mark.asyncio
+async def test_full_sweep_force_is_threaded_to_roster_changes():
+    """--full-sweep must reach roster_changes, or a deliberate regen is a silent no-op.
+
+    run_all_teams passes skip_if_fresh=not force (roster_changes.py:1617), so a call
+    that omits force skips every team analyzed inside ROSTER_CHANGES_STALENESS_DAYS (7)
+    even under --full-sweep. Because replace_team() wipes a team's rows before writing,
+    a regen against a cleared player_dependencies table would then repopulate NOTHING —
+    no error, no flags, and a board that still looks plausible.
+
+    This regression existed because player_profiles threaded force and roster_changes,
+    two lines above it, did not.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    m = _load()
+    agent = MagicMock()
+    agent.run_all_teams = AsyncMock(return_value={})
+
+    with patch("backend.agents.roster_changes.RosterChangesAgent", return_value=agent):
+        await m.run_agent("roster_changes", None, force=True, warehouse=MagicMock())
+
+    agent.run_all_teams.assert_awaited_once()
+    assert agent.run_all_teams.await_args.kwargs.get("force") is True, (
+        "run_agent must pass force through to RosterChangesAgent.run_all_teams; "
+        "without it --full-sweep silently skips every fresh team"
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_defaults_false_leaves_incremental_skip_intact():
+    """The incremental path is the cost model — force must not be forced on."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    m = _load()
+    agent = MagicMock()
+    agent.run_all_teams = AsyncMock(return_value={})
+
+    with patch("backend.agents.roster_changes.RosterChangesAgent", return_value=agent):
+        await m.run_agent("roster_changes", None, warehouse=MagicMock())
+
+    assert agent.run_all_teams.await_args.kwargs.get("force") is False
+
+
+def test_pipeline_order_is_derived_from_phases():
+    """PIPELINE_ORDER must be a pure flatten of PHASES, never hand-maintained.
+
+    The phase loop filters each phase by `a in agents`, where agents is PIPELINE_ORDER
+    under --agent all. So a stage present in PHASES but missing from PIPELINE_ORDER is
+    SILENTLY SKIPPED with no error. The two lists were previously maintained separately
+    and had already drifted — PIPELINE_ORDER listed team_metrics 12th and team_notes
+    13th while PHASES runs them at 1b and 6c, so the dry-run advertised an execution
+    order the pipeline does not follow.
+    """
+    m = _load()
+    assert m.PIPELINE_ORDER == [a for phase in m.PHASES for a in phase]
+
+
+def test_pipeline_order_has_no_duplicates():
+    """A stage listed twice would run twice under --agent all."""
+    m = _load()
+    assert len(m.PIPELINE_ORDER) == len(set(m.PIPELINE_ORDER))
+
+
+def test_grade_owner_runs_before_its_consumers():
+    """team_metrics is the SOLE owner of the deterministic grades and must precede
+    roster_changes and player_profiles, which read them."""
+    m = _load()
+    order = m.PIPELINE_ORDER
+    assert order.index("team_metrics") < order.index("roster_changes")
+    assert order.index("team_metrics") < order.index("player_profiles")
+    assert order.index("team_systems") < order.index("team_metrics")
+    # valuation chain
+    assert order.index("player_profiles") < order.index("valuation")
+    assert order.index("valuation") < order.index("valuation_agent")
+    assert order[-1] == "availability", "availability must run last"

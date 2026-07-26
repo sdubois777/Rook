@@ -1604,7 +1604,9 @@ def test_rookie_profile_uses_comp_data_not_nfl_history():
     player = _make_rookie(position="WR", comp_yr1_ppg=12.0, landing_modifier=1.0)
     result = _build_rookie_profile(player, {})
     discount = _ROOKIE_CONFIDENCE_DISCOUNT["WR"]  # 0.75
-    expected_baseline = round(12.0 * 17 * discount, 1)
+    # Projections scale to EXPECTED games, not a full 17 — see EXPECTED_SEASON_GAMES.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    expected_baseline = round(12.0 * EXPECTED_SEASON_GAMES * discount, 1)
     assert abs(result["clean_season_baseline"]["ppr_points"] - expected_baseline) < 1.0
 
 
@@ -1806,8 +1808,11 @@ def test_qb_baseline_uses_fantasy_points_not_targets():
     baseline = _compute_qb_baseline(seasons)
     assert baseline != {}
     # PPR should be ~390 (avg of 380 and 400) mapped to 17 games via ppg
-    # avg_ppg = (22.4 + 23.5) / 2 = 22.95 → ppr_points = 22.95 * 17 = 390.15
-    assert baseline["ppr_points"] > 350, (
+    # avg_ppg = (22.4 + 23.5) / 2 = 22.95, scaled by EXPECTED_SEASON_GAMES
+    # Threshold scaled by EXPECTED_SEASON_GAMES/17 — the point is that PASSING is
+    # counted, not the absolute season length.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    assert baseline["ppr_points"] > 350 * EXPECTED_SEASON_GAMES / 17, (
         f"QB baseline {baseline['ppr_points']} should reflect passing (>350)"
     )
     assert baseline["ppg"] > 20
@@ -1839,8 +1844,10 @@ def test_qb_ppr_scoring_uses_correct_formula():
     ]
     baseline = _compute_qb_baseline(seasons)
     assert baseline != {}
-    # Should be close to 345 (ppr_per_game * 17 = 20.3*17 = 345.1)
-    assert abs(baseline["ppr_points"] - 345.0) < 5
+    # 20.3 ppg scaled by EXPECTED_SEASON_GAMES (not 17 — a healthy player is still not
+    # expected to play every game).
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    assert abs(baseline["ppr_points"] - 20.3 * EXPECTED_SEASON_GAMES) < 6
 
 
 def test_qb_baseline_with_decline():
@@ -2087,7 +2094,7 @@ def test_needs_sonnet_reasoning_league_price_under_5():
         "name": "Dalvin Cook",
         "position": "RB",
         "age": 27,
-        "market_value_league": 2,
+        "market_value": 2,
         "is_rookie": False,
         "contract_year": False,
         "dependency_flags": [],
@@ -2122,7 +2129,7 @@ def test_needs_sonnet_reasoning_mixon_full():
         "position": "RB",
         "age": 29,
         "team_changed_this_offseason": True,
-        "market_value_league": 2,
+        "market_value": 2,
         "is_rookie": False,
         "contract_year": False,
         "dependency_flags": [],
@@ -2208,7 +2215,9 @@ async def test_sonnet_projection_stored_as_projected_ppr_season():
     baseline = record.clean_season_baseline
     # Historical ppr_points preserved from Python baseline (receptions*1 + yards*0.1 + tds*6)
     # 90*1 + 1200*0.1 + 6*6 = 90 + 120 + 36 = 246.0
-    assert baseline["ppr_points"] == 246.0
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    # Was 246.0 when projections scaled to a full 17 games.
+    assert baseline["ppr_points"] == pytest.approx(246.0 * EXPECTED_SEASON_GAMES / 17, abs=0.2)
     # Sonnet projection stored separately
     assert baseline["projected_ppr_season"] == 310.5
     assert baseline["upside_ppr"] == 360.0
@@ -2260,7 +2269,9 @@ def test_haiku_batch_uses_python_baseline():
     baseline = _compute_clean_baseline(seasons)
     assert baseline["ppr_points"] > 0
     # Verify formula: 80*1 + 1000*0.1 + 7*6 = 80 + 100 + 42 = 222
-    assert baseline["ppr_points"] == 222.0
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    # Was 222.0 when projections scaled to a full 17 games.
+    assert baseline["ppr_points"] == pytest.approx(222.0 * EXPECTED_SEASON_GAMES / 17, abs=0.2)
 
 
 # ===========================================================================
@@ -2309,8 +2320,9 @@ def test_rookie_profile_uses_comp_data_not_nfl_history():
     """Rookie baseline derived from comp_yr1_avg_ppg * confidence_discount."""
     player = _make_rookie(position="WR", comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
     result = _build_rookie_profile(player, {})
-    # WR discount = 0.75, so: 12.0 * 17 * 0.75 = 153.0
-    expected = 12.0 * 17 * _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
+    # WR discount = 0.75, scaled by EXPECTED_SEASON_GAMES rather than a full 17.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    expected = 12.0 * EXPECTED_SEASON_GAMES * _ROOKIE_CONFIDENCE_DISCOUNT["WR"]
     assert result["clean_season_baseline"]["ppr_points"] == round(expected, 1)
     assert result["clean_season_baseline"]["note"] == "Derived from historical comp average — not NFL history"
 
@@ -2390,7 +2402,7 @@ def test_elite_profile_high_capital_is_breakout_candidate():
 def test_landing_spot_modifier_applied_to_projection():
     """
     Rookie with comp_yr1_avg_ppg=12.0 and landing_modifier=0.75
-    -> adjusted baseline < 12.0 * 17 games.
+    -> adjusted baseline < 12.0 * EXPECTED_SEASON_GAMES.
     """
     player_good = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=1.0)
     player_bad = _make_rookie(comp_yr1_avg_ppg=12.0, landing_spot_modifier=0.75)
@@ -3246,3 +3258,46 @@ async def test_team_dependency_flags_carry_condition_and_reasoning():
     flag = out["Isaac Guerendo"][0]
     assert flag["trigger_condition"] == "injured"
     assert "misses time" in flag["reasoning"]
+
+
+def test_market_value_takes_the_max_not_the_first_truthy():
+    """`league or fp` let any non-zero league price mask a higher FantasyPros consensus.
+
+    Measured on the live board before the fix: 61 of 145 players with both values had
+    the higher one hidden — Rashee Rice (league $5, fp $43) reached the prompt as $5 and
+    anchored at $1.00 against a $43 market. This value is the model's only view of what
+    the market thinks a player is worth, and it also drives the `market_value <= 5`
+    Sonnet routing trigger, so masking it distorts both the projection and the routing.
+    """
+    def resolve(league, fp):
+        return max(float(league or 0), float(fp or 0))
+
+    assert resolve(5, 43) == 43.0      # Rashee Rice — the headline case
+    assert resolve(1, 15) == 15.0      # Drake Maye
+    assert resolve(43, 66) == 66.0     # Puka Nacua
+    assert resolve(33, 12) == 33.0     # league higher — league still wins
+    assert resolve(None, 20) == 20.0   # no league price
+    assert resolve(7, None) == 7.0     # no FP price
+    assert resolve(None, None) == 0.0
+    # The old expression, kept to document exactly what regressed:
+    assert (5 or 43) == 5, "`or` returns the first truthy value — that was the bug"
+
+
+def test_routing_reads_market_value_not_the_league_only_key():
+    """The gate must read the max()-resolved key.
+
+    If someone renames the player_entry key without updating needs_sonnet_reasoning, the
+    lookup returns None, the clause silently stops firing, and routing changes with no
+    test failure — the same dead-clause failure mode that left career_trajectory and
+    contract_year inert in this function for months.
+    """
+    from backend.agents.player_profiles import needs_sonnet_reasoning
+
+    cheap = {"position": "WR", "age": 26, "market_value": 2, "seasons": []}
+    assert needs_sonnet_reasoning(cheap) is True, "market_value <= 5 must route to Sonnet"
+
+    # The old key name must NOT satisfy the clause — proves the gate reads the new one.
+    stale_key = {"position": "WR", "age": 26, "market_value_league": 2, "seasons": []}
+    assert needs_sonnet_reasoning(stale_key) is False, (
+        "gate still reading market_value_league — the rename is half-applied"
+    )

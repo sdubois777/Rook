@@ -64,10 +64,14 @@ export default function Dashboard() {
   const draftDate = bannerLeague?.draft_date ? new Date(bannerLeague.draft_date) : null
   const countdown = draftBanner(draftDate)
 
-  // Top value gaps (undervalued) — auction
+  // Top value gaps (undervalued) — auction.
+  // Sorted by signal_conviction, NOT value_gap. value_gap is a dollar figure and dollars
+  // are price-biased: ranking the board by it surfaces the priciest players and scored
+  // 46.7% in the top 20% on the as-of 2025 backtest, against 66.7% for conviction.
+  // See backend/engines/signal_basis.py.
   const { data: valueData } = useQuery({
     queryKey: ['dashboard-values', scoringFormat],
-    queryFn: () => fetchPlayers({ value_gap_dir: 'undervalued', sort: 'value_gap', order: 'desc', per_page: 10, scoring_format: scoringFormat }),
+    queryFn: () => fetchPlayers({ value_gap_dir: 'undervalued', sort: 'signal_conviction', order: 'desc', per_page: 10, scoring_format: scoringFormat }),
     enabled: !isSnake,
   })
 

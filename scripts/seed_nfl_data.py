@@ -159,13 +159,26 @@ async def seed_players():
 
     rosters_df = nfl_data.fetch_rosters(get_current_season())
 
-    # Deduplicate to one row per player (weekly rosters repeat per week)
+    # Deduplicate to one row per player (weekly rosters repeat per week).
+    #
+    # WHICH week matters. Normally the most recent is right — it is the current state.
+    # Under an AS-OF run it is a look-ahead leak: 422 players changed team during 2025,
+    # so taking the final week hands an August board the player's POST-TRADE team.
+    # Measured: 136 players resolved to a team they had not joined yet (Mecole Hardman
+    # GB -> BUF, Nick Vannett MIN -> LA), 97% of them mid-season trades.
+    #
+    # An as-of preseason date precedes week 1, so the earliest week is the roster as it
+    # stood. Ascending sort for as-of, descending otherwise.
+    from backend.utils.seasons import asof_active
+
     roster_skill = (
         rosters_df[rosters_df["position"].isin(SKILL_POSITIONS)]
-        .sort_values("week", ascending=False)  # keep most recent week
+        .sort_values("week", ascending=asof_active())
         .drop_duplicates(subset=["player_id"])
         .copy()
     )
+    if asof_active():
+        print("  as-of run: using the EARLIEST roster week (pre-trade state)")
 
     # Build records list
     records: list[dict] = []

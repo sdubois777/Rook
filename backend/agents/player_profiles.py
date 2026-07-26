@@ -338,7 +338,7 @@ def needs_sonnet_reasoning(player: dict) -> bool:
     # --- Market signals ---
     # League thinks this player is worth almost nothing — don't trust
     # historical average, force Sonnet to reason about the discrepancy
-    league_price = player.get("market_value_league")
+    league_price = player.get("market_value")
     if league_price is not None and league_price <= 5:
         return True
 
@@ -1214,12 +1214,31 @@ class PlayerProfilesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _get_team_system(self, team: str) -> dict:
+        """The team's system row for the season being analysed.
+
+        SEASON-SCOPED. team_systems holds one row per team per season_year, so a database
+        built for more than one season has several rows per team and an unfiltered
+        scalar_one_or_none() raises MultipleResultsFound. Not hypothetical: an as-of
+        rebuild writes its own season alongside the existing one.
+        """
         from backend.models.team_system import TeamSystem
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(TeamSystem).where(TeamSystem.team_abbr == team)
-            )
-            ts = result.scalar_one_or_none()
+            ts = (await session.execute(
+                select(TeamSystem)
+                .where(
+                    TeamSystem.team_abbr == team,
+                    TeamSystem.season_year == get_analysis_year(),
+                )
+                .limit(1)
+            )).scalars().first()
+            if ts is None:
+                # Fall back to the newest season rather than dropping the team's context.
+                ts = (await session.execute(
+                    select(TeamSystem)
+                    .where(TeamSystem.team_abbr == team)
+                    .order_by(TeamSystem.season_year.desc())
+                    .limit(1)
+                )).scalars().first()
             if not ts:
                 return {}
             return {
@@ -1416,13 +1435,24 @@ class PlayerProfilesAgent(BaseAgent):
 
         One DB query per team — no N+1.
         """
+        # Under an as-of run, exclude anything flagged AFTER the as-of date. The beat
+        # feed is live RSS with no archive, so signals sitting in the table are current
+        # news; letting them through would hand a past-season board tomorrow's
+        # information, and these signals feed the projection prose directly. Skipping the
+        # beat_reporter STAGE is not sufficient on its own — this read is what actually
+        # leaks, because it has no date filter of any kind.
+        from backend.utils.seasons import asof_active, asof_now
+
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
+                stmt = (
                     select(BeatReporterSignal, Player.name)
                     .join(Player, BeatReporterSignal.player_id == Player.id)
                     .where(Player.team_abbr == team)
                 )
+                if asof_active():
+                    stmt = stmt.where(BeatReporterSignal.flagged_at <= asof_now())
+                result = await session.execute(stmt)
                 rows = result.all()
         except Exception as exc:
             logger.debug("Could not load beat signals for %s: %s", team, exc)
@@ -1462,8 +1492,22 @@ class PlayerProfilesAgent(BaseAgent):
                         )
                     )
                 )
+                # max(), not `league or fp`. `or` short-circuits on the FIRST truthy
+                # value, so any non-zero league price MASKS a higher FantasyPros
+                # consensus. Measured on the live board: 61 of 145 players with both
+                # values had the higher one hidden --
+                #     Rashee Rice        league $5  fp $43  -> prompt saw $5
+                #     Drake Maye         league $1  fp $15  -> prompt saw $1
+                #     Colston Loveland   league $1  fp $16  -> prompt saw $1
+                # This number is serialized into the Sonnet prompt as the model's only
+                # view of what the market thinks a player is worth, AND it drives the
+                # `market_value_league <= 5` routing trigger. Rashee Rice anchored at
+                # $1.00 against a $43 market having been told he was a $5 player.
+                #
+                # A single stale league price should never be able to hide the broader
+                # consensus; taking the max keeps whichever signal is stronger.
                 return {
-                    name: float(league or fp or 0)
+                    name: max(float(league or 0), float(fp or 0))
                     for name, league, fp in result.all()
                 }
         except Exception as exc:
@@ -1666,7 +1710,11 @@ class PlayerProfilesAgent(BaseAgent):
                 "_team_system":     team_system,
                 # Sonnet routing signals
                 "team_changed_this_offseason": team_changed,
-                "market_value_league": market_values.get(pname),
+                # Named market_value, not market_value_league: it holds
+                # max(league, FantasyPros), so labelling it "league" would state a
+                # falsehood to the model for the 61 players whose FP consensus is the
+                # higher of the two. This dict is serialized verbatim into the prompt.
+                "market_value": market_values.get(pname),
             }
             # Merge rookie evaluation fields from Agent 2 (if applicable)
             if pname in rookie_fields:
@@ -2618,6 +2666,31 @@ _MINIMUM_QB_GAMES = 10  # minimum career games for QB projection
 
 # Recency weights: most recent season weighted most heavily
 _RECENCY_WEIGHTS = {0: 0.50, 1: 0.30, 2: 0.20}
+
+# Baselines are built as a per-game RATE and scaled by this. Season totals are
+# deliberately not used: they penalise anyone who has ever missed time, so a player with
+# three 12-game seasons projected ~30% under his own rate while a 17-game player at the
+# same level projected correctly.
+#
+# THE SCALE IS EXPECTED GAMES, NOT 17. Scaling to a full 17 assumes perfect availability
+# for everyone, which is wrong on average and was a real regression: measured on an as-of
+# rebuild, projection bias went from +14.0 (old season-totals code) to +19.2.
+#
+# The reasoning that produced 17 was that engines/availability_pass would price missed
+# games separately. It does not — it only prorates a KNOWN CURRENT absence (PUP, long-term
+# IR, suspension), and on that board it touched 5 of 919 valued players. For the other 914
+# the baseline's implicit games-scaling was the ONLY availability adjustment, so removing
+# it left nothing.
+#
+# 14.6 is measured, not tuned: the mean games played by the top 200 PPR scorers across
+# the last four completed seasons (14.5, 14.4, 14.7, 14.8). Deliberately NOT the value
+# that minimises error on one season - 14.0 scores marginally better there, which is
+# exactly the overfit to avoid.
+#
+# Verified offline against that board: MAE 45.8 -> 42.5, bias +19.2 -> +3.7, both
+# better than the old season-totals code (43.7 / +14.0). Correlation is scale-invariant,
+# so signal accuracy is unaffected either way.
+EXPECTED_SEASON_GAMES = 14.6
 # 0 = most recent, 1 = one year ago, 2 = two years ago
 # Older than 2 years back gets 10% each
 
@@ -2726,11 +2799,25 @@ def _compute_qb_baseline(seasons: list[dict]) -> dict:
             games = s.get("games", 1)
             season_ppr_totals[yr] = ppg * games if games > 0 else 0.0
         weighted_total = _compute_weighted_baseline(season_ppr_totals, injury_shortened)
-        # Convert back to PPG using average games from clean seasons
-        avg_games = sum(s.get("games", 1) for s in sorted_clean) / len(sorted_clean)
+        # Convert back to PPG using the games from the SAME seasons the weighted total was
+        # built from.
+        #
+        # BUG THIS FIXES: avg_games used to average over every clean season while
+        # _compute_weighted_baseline had already DROPPED the injury-shortened ones from the
+        # numerator. So a short season pulled the denominator down without contributing to
+        # the top, inflating PPG for exactly the players whose history is hardest to read.
+        # Worked example — 17g/250, 8g/100, 17g/270: the old path returned 18.8 PPG
+        # against a true clean rate of ~15.3, a ~22% overstatement that then multiplied
+        # straight into the 17-game projection.
+        used = [s for s in sorted_clean if s.get("year") not in injury_shortened]
+        if not used:
+            used = sorted_clean          # every season was short — mirror the fallback
+        avg_games = sum(s.get("games", 1) for s in used) / len(used)
         avg_ppg = weighted_total / avg_games if avg_games > 0 else 0.0
 
-    ppr_points = round(avg_ppg * 17, 1)  # 17-game projection
+    # Expected games, not 17 — same reasoning as the skill baseline (see
+    # EXPECTED_SEASON_GAMES). Scaling to a full season assumes perfect availability.
+    ppr_points = round(avg_ppg * EXPECTED_SEASON_GAMES, 1)
 
     # Passing stats averages
     pass_yds_pg = sum(
@@ -2796,13 +2883,35 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
     if not clean:
         return {}
 
+    # RATE, NOT TOTAL. Every season is converted to per-game before weighting and scaled
+    # back to a full 17 afterwards.
+    #
+    # WHY. This used raw season totals, so a player with three 12-game seasons projected
+    # at 12 games of production — roughly 30% under his own rate — while a 17-game player
+    # at the same per-game level projected correctly. It silently penalised anyone who had
+    # ever missed time.
+    #
+    # It also DOUBLE-COUNTED availability: the pipeline already applies a separate
+    # games-missed discount (engines/availability_pass, phase 7), so missed games were
+    # charged twice. Worse, the implicit "he will play as many games as he used to" is not
+    # supported — games played is not forecastable among drafted players (measured R^2
+    # 0.0006-0.029 against every available feature), so baking it into the projection bakes
+    # in noise.
+    #
+    # The clean decomposition is projection = rate x full season, availability priced
+    # separately and once.
+    def _pg(s: dict, key: str) -> float:
+        games = s.get("games", 0) or 0
+        if games <= 0:
+            return 0.0
+        return (s.get(key, 0) or 0) / games
+
     def _season_ppr(s: dict) -> float:
-        rec = s.get("receptions", 0)
-        rec_yds = s.get("rec_yards", 0)
-        rec_td = s.get("rec_tds", 0)
-        rush_yds = s.get("rush_yards", 0)
-        rush_td = s.get("rush_tds", 0)
-        return rec * 1.0 + (rec_yds + rush_yds) * 0.1 + (rec_td + rush_td) * 6.0
+        """Full-season-equivalent PPR at this season's per-game rate."""
+        rec = _pg(s, "receptions")
+        yds = _pg(s, "rec_yards") + _pg(s, "rush_yards")
+        tds = _pg(s, "rec_tds") + _pg(s, "rush_tds")
+        return (rec * 1.0 + yds * 0.1 + tds * 6.0) * EXPECTED_SEASON_GAMES
 
     # --- Career decline detection ---
     # Sort by year (most recent last) to identify recent vs peak
@@ -2817,17 +2926,19 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         # Weight recent season 60%, career average 40%
         recent = sorted_clean[-1]
         career_n = len(sorted_clean)
-        career_rec = sum(s.get("receptions", 0) for s in sorted_clean) / career_n
-        career_rec_yards = sum(s.get("rec_yards", 0) for s in sorted_clean) / career_n
-        career_rec_tds = sum(s.get("rec_tds", 0) for s in sorted_clean) / career_n
-        career_rush_yards = sum(s.get("rush_yards", 0) for s in sorted_clean) / career_n
-        career_rush_tds = sum(s.get("rush_tds", 0) for s in sorted_clean) / career_n
+        # Per-game throughout, scaled to a full season at the end — same reason as
+        # _season_ppr above.
+        career_rec = sum(_pg(s, "receptions") for s in sorted_clean) / career_n
+        career_rec_yards = sum(_pg(s, "rec_yards") for s in sorted_clean) / career_n
+        career_rec_tds = sum(_pg(s, "rec_tds") for s in sorted_clean) / career_n
+        career_rush_yards = sum(_pg(s, "rush_yards") for s in sorted_clean) / career_n
+        career_rush_tds = sum(_pg(s, "rush_tds") for s in sorted_clean) / career_n
 
-        rec = recent.get("receptions", 0) * 0.6 + career_rec * 0.4
-        rec_yards = recent.get("rec_yards", 0) * 0.6 + career_rec_yards * 0.4
-        rec_tds = recent.get("rec_tds", 0) * 0.6 + career_rec_tds * 0.4
-        rush_yards = recent.get("rush_yards", 0) * 0.6 + career_rush_yards * 0.4
-        rush_tds = recent.get("rush_tds", 0) * 0.6 + career_rush_tds * 0.4
+        rec = (_pg(recent, "receptions") * 0.6 + career_rec * 0.4) * EXPECTED_SEASON_GAMES
+        rec_yards = (_pg(recent, "rec_yards") * 0.6 + career_rec_yards * 0.4) * EXPECTED_SEASON_GAMES
+        rec_tds = (_pg(recent, "rec_tds") * 0.6 + career_rec_tds * 0.4) * EXPECTED_SEASON_GAMES
+        rush_yards = (_pg(recent, "rush_yards") * 0.6 + career_rush_yards * 0.4) * EXPECTED_SEASON_GAMES
+        rush_tds = (_pg(recent, "rush_tds") * 0.6 + career_rush_tds * 0.4) * EXPECTED_SEASON_GAMES
     else:
         # Recency-weighted average: most recent season counts most
         # Sort descending by year (most recent first) for weight assignment
@@ -2836,18 +2947,18 @@ def _compute_clean_baseline(seasons: list[dict]) -> dict:
         rec = rec_yards = rec_tds = rush_yards = rush_tds = 0.0
         for i, s in enumerate(desc_clean):
             w = _RECENCY_WEIGHTS.get(i, 0.10)
-            rec += s.get("receptions", 0) * w
-            rec_yards += s.get("rec_yards", 0) * w
-            rec_tds += s.get("rec_tds", 0) * w
-            rush_yards += s.get("rush_yards", 0) * w
-            rush_tds += s.get("rush_tds", 0) * w
+            rec += _pg(s, "receptions") * w
+            rec_yards += _pg(s, "rec_yards") * w
+            rec_tds += _pg(s, "rec_tds") * w
+            rush_yards += _pg(s, "rush_yards") * w
+            rush_tds += _pg(s, "rush_tds") * w
             total_weight += w
         if total_weight > 0:
-            rec /= total_weight
-            rec_yards /= total_weight
-            rec_tds /= total_weight
-            rush_yards /= total_weight
-            rush_tds /= total_weight
+            rec = rec / total_weight * EXPECTED_SEASON_GAMES
+            rec_yards = rec_yards / total_weight * EXPECTED_SEASON_GAMES
+            rec_tds = rec_tds / total_weight * EXPECTED_SEASON_GAMES
+            rush_yards = rush_yards / total_weight * EXPECTED_SEASON_GAMES
+            rush_tds = rush_tds / total_weight * EXPECTED_SEASON_GAMES
 
     yards = rec_yards + rush_yards
     tds   = rec_tds + rush_tds
@@ -2941,8 +3052,9 @@ def _build_rookie_profile(player: dict, team_context: dict) -> dict:
     landing_modifier = float(player.get("landing_spot_modifier") or 1.0)
     adjusted_ppg     = base_ppg * landing_modifier
 
-    # Season projection at 17 games, then apply confidence discount
-    projected_season = adjusted_ppg * 17
+    # Season projection at EXPECTED games, then apply confidence discount. A rookie is
+    # no more durable than a veteran, so the same availability reasoning applies.
+    projected_season = adjusted_ppg * EXPECTED_SEASON_GAMES
     discount         = _ROOKIE_CONFIDENCE_DISCOUNT.get(position, 0.75)
     discounted       = projected_season * discount
 

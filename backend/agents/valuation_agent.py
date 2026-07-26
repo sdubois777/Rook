@@ -1004,6 +1004,29 @@ class ValuationAgent(BaseAgent):
         max_bids = {"RB": 80, "WR": 70, "QB": 50, "TE": 45}
         written = 0
 
+        # RAILS — the same non-market leash the per-format hybrid path applies in
+        # run_prose_for_format. Without it this path clamped only to the position max, so a
+        # WR could be written anywhere in $1-70 regardless of his anchor: Ja'Marr Chase's
+        # PPR ceiling landed at $58 against a $12.91 anchor (+349%) while the prompt asks
+        # for ±25%. Half-PPR and Standard were already railed, which is exactly why they
+        # priced him sanely ($41/$40) and PPR did not.
+        #
+        # Scoped to _HYBRID_POSITIONS (RB/WR/TE) so this is byte-identical in construction
+        # to the per-format call — rail (2) rescales to the anchor aggregate, which is only
+        # meaningful over one budget pool. QB/K/DEF keep clamp-only behavior here (they are
+        # format-invariant and copy this value into the format rows); railing them is a
+        # separate, larger change.
+        rail_rows = [
+            {"name": name, "anchor": float(p.recommended_bid_ceiling),
+             "tier": p.tier, "position": p.position,
+             "ai_raw": (results_map.get(name) or {}).get("ai_bid_ceiling")}
+            for name, p in name_to_player.items()
+            if p.position in _HYBRID_POSITIONS
+            and p.recommended_bid_ceiling
+            and name in results_map
+        ]
+        railed_ai = _apply_hybrid_rails(rail_rows)
+
         async with AsyncSessionLocal() as session:
             for player_name, result in results_map.items():
                 player = name_to_player.get(player_name)
@@ -1016,11 +1039,16 @@ class ValuationAgent(BaseAgent):
                 if not db_player:
                     continue
 
-                # Clamp ai_bid_ceiling to position max
-                pos_max = max_bids.get(db_player.position, 80)
-                ai_ceiling = result.get("ai_bid_ceiling")
-                if ai_ceiling is not None:
-                    ai_ceiling = max(1, min(int(ai_ceiling), pos_max))
+                # Reception positions take the railed value (leash + budget rescale +
+                # tier-ordinal + position max, all applied in _apply_hybrid_rails).
+                # Everything else keeps the position-max clamp.
+                if player_name in railed_ai:
+                    ai_ceiling = railed_ai[player_name]
+                else:
+                    pos_max = max_bids.get(db_player.position, 80)
+                    ai_ceiling = result.get("ai_bid_ceiling")
+                    if ai_ceiling is not None:
+                        ai_ceiling = max(1, min(int(ai_ceiling), pos_max))
 
                 db_player.ai_bid_ceiling = ai_ceiling
 

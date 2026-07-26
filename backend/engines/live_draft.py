@@ -36,7 +36,7 @@ from backend.agents.base_agent import SONNET, get_client, parse_json_output
 from backend.engines.draft_state_manager import DraftPick, DraftStateManager
 from backend.engines.dependency_resolver import DependencyResolver
 from backend.engines.opponent_threat import OpponentThreatAnalyzer
-from backend.engines.valuation import MAX_REALISTIC_BID
+from backend.engines.valuation import MAX_REALISTIC_BID, _PROJECTION_PRICES_FLAGS_SOURCES
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile
 from backend.models.dependency import PlayerDependency
 from backend.models.player_format_values import PlayerFormatValues
@@ -305,7 +305,8 @@ class LiveDraftEngine:
         # Step 2: Apply dependency flags (pure Python)
         drafted_ids = self.state.get_drafted_player_ids()
         active_flags, flag_modifier = self.resolver.apply_active_flags(
-            record.get("dependencies", []), drafted_ids
+            record.get("dependencies", []), drafted_ids,
+            projection_prices_flags=record.get("projection_prices_flags", False),
         )
 
         # Step 3: Calculate budget constraints (pure Python)
@@ -635,6 +636,15 @@ class LiveDraftEngine:
             "adp_format_defaulted": fmt_adp_defaulted,
             "availability_risk": availability_risk,
             "projected_ppr": projected_ppr,
+            # True when this player's projection ALREADY priced his dependency flags, so
+            # the resolver must not re-apply them on top (the same double-count the
+            # pre-draft engine had — see _PROJECTION_PRICES_FLAGS_SOURCES in
+            # engines/valuation.py). Read from the profile the record is built from.
+            "projection_prices_flags": bool(
+                player.profile is not None
+                and getattr(player.profile, "profile_source", None)
+                in _PROJECTION_PRICES_FLAGS_SOURCES
+            ),
             "risk_level": risk_level,
             "notes": player.notes or "",
             "pay_up_flag": bool(player.pay_up_flag),
