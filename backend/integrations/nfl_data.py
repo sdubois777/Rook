@@ -222,13 +222,29 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     # --- Filter to offense only ---
-    if "depth_team" in raw.columns:
-        raw = raw[raw["depth_team"].str.lower() == "offense"].copy()
+    # THE UNIT LIVES IN `formation`, NOT `depth_team`. This tested
+    # `depth_team.str.lower() == "offense"`, but in the 2023/2024 schema `depth_team`
+    # holds the DEPTH RANK ("1", "2", "3") and `formation` holds the unit
+    # ("Offense" / "Defense" / "Special Teams"). The comparison therefore matched zero
+    # rows and the function returned an EMPTY depth chart for every pre-2025 season —
+    # silently, because the empty return below predates the cache write so there was
+    # not even a stale file to notice. The as-of 2024 board was built with no depth
+    # charts at all; its team_systems carries the 2023 passing leaders (Cousins on MIN,
+    # Ridder on ATL, Minshew on IND) as a result.
+    if "formation" in raw.columns:
+        raw = raw[raw["formation"].str.lower() == "offense"].copy()
     elif "pos_grp" in raw.columns:
         # 2025+ schema: pos_grp contains group names like "Base Offense"
         # Filter to offense by matching known offensive position abbreviations
         _OFFENSE_POS = {"QB", "RB", "WR", "TE", "LT", "LG", "C", "RG", "RT", "FB"}
         raw = raw[raw["position"].str.upper().isin(_OFFENSE_POS)].copy()
+    if raw.empty:
+        logger.error(
+            "Depth charts %d: offense filter matched NO rows (columns: %s). The board "
+            "will be built with no depth signal at all — do not trust a run past this.",
+            season, list(raw.columns),
+        )
+        return pd.DataFrame()
 
     # --- Filter to the latest snapshot per team, AS OF the current clock ---
     # The 2025+ feed is a TIME SERIES, not one snapshot: import_depth_charts([2025])
@@ -245,6 +261,24 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
     # With no override asof_date() is real today, so every date passes the bound and the
     # behaviour is exactly as before.
     if "week" in raw.columns:
+        # BOUND THE WEEK BY THE CLOCK FIRST. The 2023/2024 feed runs to week 22, so an
+        # unbounded `max` hands back a JANUARY/FEBRUARY playoff depth chart for a board
+        # that is meant to be preseason. Fixing the offense filter above without this
+        # would trade "no depth charts" for "next season's depth charts" — a worse bug,
+        # because it looks right.
+        #
+        # Only the CURRENT (as-of) season needs bounding; an earlier season is wholly
+        # historical relative to the clock and its full range is legitimate.
+        from backend.utils.seasons import get_current_season, get_current_nfl_week
+
+        if season == get_current_season():
+            # 0 is the offseason sentinel — preseason resolves to the week-1 chart, the
+            # earliest published snapshot and the right one for a pre-draft board.
+            wk = max(1, get_current_nfl_week(season))
+            bounded = raw[raw["week"] <= wk]
+            if bounded.empty:
+                bounded = raw[raw["week"] == raw["week"].min()]
+            raw = bounded.copy()
         max_week = raw.groupby("team")["week"].transform("max")
         raw = raw[raw["week"] == max_week].copy()
     elif "dt" in raw.columns:
@@ -281,8 +315,15 @@ def fetch_depth_charts(season: int) -> pd.DataFrame:
     if "pos_rank" in raw.columns:
         # 2025+ schema already has pos_rank
         raw["depth_rank"] = raw["pos_rank"].astype(int)
+    elif "depth_team" in raw.columns:
+        # 2023/2024 schema: `depth_team` IS the rank ("1", "2", "3"). Read it rather
+        # than inferring order — row order within (team, position) is not the depth
+        # order, so the cumcount fallback below invents a starter.
+        rank = pd.to_numeric(raw["depth_team"], errors="coerce")
+        raw = raw[rank.notna()].copy()
+        raw["depth_rank"] = rank[rank.notna()].astype(int)
     else:
-        # 2024 schema: compute from row order within (team, position)
+        # Unknown schema: infer from row order within (team, position)
         raw = raw.sort_values(["team", "position"]).copy()
         raw["depth_rank"] = raw.groupby(["team", "position"]).cumcount() + 1
 
