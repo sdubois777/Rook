@@ -405,6 +405,13 @@ async def get_player(
         _baseline = p.clean_season_baseline
         if overlay.projected_points is not None and isinstance(_baseline, dict):
             _baseline = {**_baseline, "projected_ppr_season": overlay.projected_points}
+        elif player.adjusted_points is not None and isinstance(_baseline, dict):
+            # PPR only (non-PPR takes the overlay above). Show the points the panel's
+            # dollar figures were computed from — the raw projection sitting next to
+            # ADJUSTED-derived dollars is what let a lower-projected player price higher.
+            # The upside/downside band below stays raw-derived and is relabelled in the
+            # response so the two bases are not silently mixed.
+            _baseline = {**_baseline, "projected_ppr_season": float(player.adjusted_points)}
         profile = ProfileDetail(
             role_classification=p.role_classification,
             target_share_3yr_avg=float(p.target_share_3yr_avg) if p.target_share_3yr_avg else None,

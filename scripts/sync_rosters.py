@@ -69,8 +69,12 @@ def is_relevant_player(player_row: dict, warehouse) -> bool:
     sleeper_id = str(player_row.get("player_id", "") or "").strip()
     gsis_id = str(player_row.get("gsis_id", "") or "").strip()
 
-    # Check 1 — current-season depth chart slot (Sleeper, by sleeper_id)
-    dc = warehouse.depth_charts.get(2026, pd.DataFrame())
+    # Check 1 — current-season depth chart slot (Sleeper, by sleeper_id).
+    # Keyed off warehouse.current_season, never a literal: the warehouse stores depth
+    # charts under whatever season it was built for, so a hardcoded year silently
+    # returns an empty frame the moment the season rolls over (or under an as-of run),
+    # which would drop this relevance check without any error.
+    dc = warehouse.depth_charts.get(warehouse.current_season, pd.DataFrame())
     if dc is not None and not dc.empty and sleeper_id:
         id_col = next((c for c in ("sleeper_id", "player_id") if c in dc.columns), None)
         if id_col and (dc[id_col].astype(str).str.strip() == sleeper_id).any():
@@ -291,6 +295,28 @@ async def main() -> None:
         help="Show changes without writing to DB",
     )
     args = parser.parse_args()
+
+    # AS-OF RUNS MUST NOT SYNC. Sleeper serves CURRENT state only, so this script would
+    # stamp today's teams, depth order and injury flags onto a past-season board --
+    # A.J. Brown on NE rather than PHI, an IND receiver room with Pittman and Mitchell
+    # already gone. Measured: 138 of 539 valued players changed team between the 2025
+    # roster and today, so a quarter of the board would be wrong.
+    #
+    # Nothing is lost by skipping. seed_nfl_data.py already writes team_abbr from
+    # nfl_data.fetch_rosters(get_current_season()) (seed_nfl_data.py:160), which under
+    # an as-of clock IS the as-of season's roster; and depth charts come from the
+    # warehouse, which bounds its snapshot by the same clock. This script's only unique
+    # contribution -- current Sleeper state -- is exactly what an as-of run must not have.
+    #
+    # Exit 0, not a failure: the pipeline invokes this via subprocess.run and treats a
+    # non-zero code as a warning, so a clean skip reads correctly in the log.
+    from backend.utils.seasons import asof_active, asof_date
+
+    if asof_active():
+        print(f"[sync_rosters] SKIPPED — as-of run ({asof_date()}). Sleeper serves "
+              f"current state only; syncing it would overwrite the as-of roster that "
+              f"seed_nfl_data.py already wrote.")
+        return
 
     result = await sync_players_from_sleeper(dry_run=args.dry_run)
     mode = "DRY-RUN" if args.dry_run else "DONE"

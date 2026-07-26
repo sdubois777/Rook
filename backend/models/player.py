@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import String, Integer, Boolean, DateTime, Numeric, Text, ForeignKey, func
+from sqlalchemy import String, Integer, Boolean, DateTime, Numeric, Text, ForeignKey, Float, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
@@ -59,6 +59,24 @@ class Player(Base):
 
     # Top-level valuation (computed from pipeline agents)
     tier: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # The points the DOLLARS were actually computed from: raw projected PPR after the
+    # injury discount and the dependency adjustment. Distinct from the RAW projection in
+    # player_profiles.clean_season_baseline["projected_ppr_season"], which stays raw
+    # everywhere (tiering, the agent context, backtests and value snapshots all depend on
+    # that meaning — do NOT overload it).
+    #
+    # Exists because the board displayed RAW next to dollars derived from ADJUSTED, so a
+    # receiver projected fewer points could be priced higher. Measured on the PPR top-40:
+    # 146 inverted WR pairs, 134 RB, 40 TE, 13 QB. Displaying THIS column instead takes
+    # every one of those to zero — ppr_to_system_value is affine in adjusted points, so
+    # dollars are monotone in it within a position by construction.
+    #
+    # PPR surfaces only. Half-PPR and Standard price off _compute_tier_band_sv, which
+    # ranks within tier by RAW by deliberate design, so those boards are already monotone
+    # in the raw points they display and must keep doing so.
+    adjusted_points: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 1))
+
     baseline_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     ceiling_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     floor_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
@@ -91,6 +109,11 @@ class Player(Base):
     # Derived fields — gap between system value and market value
     value_gap: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     value_gap_signal: Mapped[Optional[str]] = mapped_column(String(30))  # market_overvalues / market_undervalues / aligned
+    # Standardised within-position projection residual vs the market price curve — the
+    # price-neutral basis the assessment is derived from and the ONLY correct thing to
+    # rank "top opportunities" on. Ranking by the dollar value_gap is price-biased and
+    # measured 46.7% in the top 20% of the board. See backend/engines/signal_basis.py.
+    signal_conviction: Mapped[Optional[float]] = mapped_column(Float, index=True)
 
     # Bid strategy
     recommended_bid_ceiling: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))

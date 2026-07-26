@@ -30,9 +30,65 @@ Usage:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+import os
+from datetime import date, datetime, time, timezone
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# AS-OF CLOCK — the single point every season decision derives its "today" from
+# ---------------------------------------------------------------------------
+# Set ROOK_ASOF_DATE=YYYY-MM-DD to run the system as if it were that date. Unset (the
+# default) means real time, so FORGETTING KEEPS YOU IN THE PRESENT — the same failure
+# direction as the prod-write guard.
+#
+# Why an env var rather than a parameter or a contextvar: the pipeline shells out to
+# seed_nfl_data.py, sync_rosters.py and sync_adp.py via subprocess.run
+# (run_predraft_pipeline.py:269/663/673). An in-process override -- a module global, a
+# contextvar, a threaded parameter -- is NOT inherited by those children, so three of the
+# stages that write players.team_abbr and depth_chart_order would silently keep running
+# at real time. An env var is inherited automatically.
+#
+# It also means NflDataWarehouse.build() needs no change: it calls get_analysis_seasons /
+# get_current_season / get_analysis_year at CALL time (nfl_data.py:1163-1171), so it picks
+# the override up even though its own signature takes no season arguments.
+#
+# BOTH the date and the wall clock must move together. get_current_nfl_week() defaults
+# `now` to real UTC, and _default_season_has_data() probes it, so moving only the date
+# would leave latest_season_with_data() ceilinged at the as-of season while the probe
+# still saw that season as complete -- returning the very season being projected. That is
+# a look-ahead leak straight into team_metrics, which WRITES its result to team_systems.
+ASOF_ENV = "ROOK_ASOF_DATE"
+
+
+def asof_date() -> date:
+    """The date every season calculation treats as "today". Real today unless overridden."""
+    raw = os.environ.get(ASOF_ENV, "").strip()
+    if not raw:
+        return date.today()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        # Loud, and fail rather than silently running at the wrong time — a bad as-of
+        # value that fell back to today would produce a contaminated board that looks fine.
+        raise ValueError(
+            f"{ASOF_ENV}={raw!r} is not an ISO date (YYYY-MM-DD). "
+            "Unset it to run at real time."
+        ) from None
+
+
+def asof_now() -> datetime:
+    """The UTC instant matching asof_date(). Real now when no override is set."""
+    raw = os.environ.get(ASOF_ENV, "").strip()
+    if not raw:
+        return datetime.now(timezone.utc)
+    return datetime.combine(asof_date(), time(12, 0), tzinfo=timezone.utc)
+
+
+def asof_active() -> bool:
+    """True when an as-of override is in force. For assertions and log banners."""
+    return bool(os.environ.get(ASOF_ENV, "").strip())
 
 
 def get_current_season() -> int:
@@ -51,7 +107,7 @@ def get_current_season() -> int:
       August 2026   → 2026 (draft prep / training camp)
       December 2026 → 2026 (regular season week 14)
     """
-    today = date.today()
+    today = asof_date()   # real today unless ROOK_ASOF_DATE is set
     return today.year if today.month >= 3 else today.year - 1
 
 
@@ -140,7 +196,12 @@ def current_week_from_schedule(schedule_df, now: datetime | None = None) -> int:
     import pandas as pd
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        # asof_now(), not datetime.now(): _default_season_has_data() probes this to decide
+        # whether a season has data, and latest_season_with_data() ceilings at
+        # get_current_season(). If the date moved but the clock did not, the probe would
+        # still see the as-of season as complete and return it — handing every
+        # completed-data metric the season we are trying to project.
+        now = asof_now()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 

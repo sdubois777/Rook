@@ -468,6 +468,11 @@ def test_lamar_2025_13_games_included(mock_nfl):
     # Weighted: 212.9*0.5 + 430.4*0.3 + 331.2*0.2 = 106.45 + 129.12 + 66.24 = 301.8
     # Exact value depends on PPG normalization (avg games across clean seasons)
     # but must be in 280-320 range (2025 injury year pulls down from ~380 peak)
-    assert 280 < baseline["ppr_points"] < 320, (
+    # Bounds scaled by EXPECTED_SEASON_GAMES/17: projections no longer assume a full
+    # 17-game season. The point of the test is that a 13-game season is INCLUDED in
+    # the weighted baseline, not the absolute total.
+    from backend.agents.player_profiles import EXPECTED_SEASON_GAMES
+    _lo, _hi = 280 * EXPECTED_SEASON_GAMES / 17, 320 * EXPECTED_SEASON_GAMES / 17
+    assert _lo < baseline["ppr_points"] < _hi, (
         f"Expected ~300 weighted baseline, got {baseline['ppr_points']}"
     )

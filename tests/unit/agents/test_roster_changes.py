@@ -1315,7 +1315,7 @@ async def test_handle_departures_skips_low_production():
 
 @pytest.mark.asyncio
 async def test_handle_departures_impact_by_position():
-    """WR departure → 0.35 impact; RB departure → 0.25 impact."""
+    """Beneficiary uplift is share-sized, in percent — not a flat per-position fraction."""
     prev_season = get_current_season() - 1
 
     # WR scenario
@@ -1336,8 +1336,20 @@ async def test_handle_departures_impact_by_position():
     ))
     rb_flags = await rb_agent._handle_departures("NYG", rb_roster)
 
-    assert wr_flags[0]["value_impact_pct"] == 0.35
-    assert rb_flags[0]["value_impact_pct"] == 0.25
+    # Beneficiary uplift is now sized from real target share, not a flat per-position
+    # constant (see backend/engines/share_transfer.py). The departure fit was pooled
+    # across WR/TE/RB — 0.258 of vacated share absorbed, t +2.91 — so there is no
+    # position term to assert here; the old 0.35/0.25 split was never measured.
+    #
+    # These fixtures give the incumbents no targets, so the room's total share is
+    # unknowable and both fall back to the documented default. The units are PERCENT:
+    # the old 0.35 was a FRACTION written into a percent column, which is why ~60% of
+    # live rows were ~100x smaller than the rest.
+    from backend.engines.share_transfer import DEFAULT_BENEFICIARY_PCT
+
+    assert wr_flags[0]["value_impact_pct"] == DEFAULT_BENEFICIARY_PCT
+    assert rb_flags[0]["value_impact_pct"] == DEFAULT_BENEFICIARY_PCT
+    assert wr_flags[0]["value_impact_pct"] > 1.0, "percent units, not a fraction"
 
 
 # ---------------------------------------------------------------------------
