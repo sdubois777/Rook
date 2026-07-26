@@ -344,13 +344,29 @@ class ScheduleAgent(BaseAgent):
         }
 
     async def _get_team_system(self, team: str) -> dict:
-        """Pull team system context for OC scheme / coordinator adjustment hints."""
+        """Pull team system context for OC scheme / coordinator adjustment hints.
+
+        SEASON-SCOPED — see the same fix in roster_changes/player_profiles. team_systems
+        has one row per team per season_year, so an unfiltered scalar_one_or_none()
+        raises MultipleResultsFound once a second season exists.
+        """
         from backend.models.team_system import TeamSystem
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(TeamSystem).where(TeamSystem.team_abbr == team)
-            )
-            ts = result.scalar_one_or_none()
+            ts = (await session.execute(
+                select(TeamSystem)
+                .where(
+                    TeamSystem.team_abbr == team,
+                    TeamSystem.season_year == get_analysis_year(),
+                )
+                .limit(1)
+            )).scalars().first()
+            if ts is None:
+                ts = (await session.execute(
+                    select(TeamSystem)
+                    .where(TeamSystem.team_abbr == team)
+                    .order_by(TeamSystem.season_year.desc())
+                    .limit(1)
+                )).scalars().first()
             if not ts:
                 return {}
             return {
