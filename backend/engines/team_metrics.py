@@ -401,8 +401,27 @@ async def apply_team_deterministic_fields(
     personnel = compute_base_personnel(pbp)                  # slice 2
     red_zone = compute_red_zone_philosophy(pbp)              # slice 2
 
+    # CEILING "LATEST" AT THE CLOCK. team_systems is not cleared between runs, so an
+    # as-of run finds BOTH the season it is building and whatever season was on the
+    # board before it. A bare max() then picks the leftover: on the as-of 2023 build
+    # this wrote all 32 grades onto the 2026 rows and left the 2023 rows with
+    # system_grade NULL for every team — which roster_changes and player_profiles then
+    # read as "no grades", silently, on a run that exited 0.
+    #
+    # get_current_season() is the as-of season under an as-of clock and the real season
+    # otherwise, so production behaviour is unchanged.
+    from backend.utils.seasons import get_current_season
+
+    ceiling = get_current_season()
     rows = (await db.execute(select(TeamSystem))).scalars().all()
-    latest = max((r.season_year for r in rows), default=None)
+    latest = max((r.season_year for r in rows if r.season_year <= ceiling), default=None)
+    if latest is None:
+        logger.error(
+            "team_metrics: no team_systems row at or before season %d (found: %s) — "
+            "refusing to grade a board that has no rows for the season being built",
+            ceiling, sorted({r.season_year for r in rows}),
+        )
+        return {"teams_graded": 0, "season": ceiling}
     rows = [r for r in rows if r.season_year == latest]
 
     # Gather the league's values for the RELATIVE widened-bell rank per metric. The QB

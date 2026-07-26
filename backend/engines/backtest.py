@@ -121,6 +121,9 @@ class BacktestMetrics:
     position_mae: dict = field(default_factory=dict)
     price_source: str = ""
     price_coverage: int = 0
+    # Priced entries that never joined a player row. Non-zero means the board is
+    # missing calls it should have made — see _load_historical_prices.
+    price_rows_unmatched: int = 0
     orthogonality: list = field(default_factory=list)
     # Rate-based scoring — see score_on_rate(). Reported ALONGSIDE the totals-based
     # figures above, never instead of them.
@@ -156,6 +159,7 @@ class BacktestMetrics:
             "grade": self.grade,
             "price_source": self.price_source,
             "price_coverage": self.price_coverage,
+            "price_rows_unmatched": self.price_rows_unmatched,
             # Which candidate signals carry information the price does not. Anything that
             # fails here cannot improve signal accuracy, however good it looks alone.
             "orthogonality": self.orthogonality,
@@ -394,11 +398,30 @@ def measure_orthogonality(
             })
             continue
 
+        # PRICE IS CONTROLLED NONLINEARLY, not just linearly. Controlling only for
+        # z(ln price) lets any NONLINEAR transform of the price through: it is not
+        # collinear with the linear term, so it clears the guard below, and the fit then
+        # credits it with explaining outcome variance that the price already explains.
+        # Measured on the 2024 board before this change, `ln(price) ** 2` — a pure
+        # function of the price and nothing else — scored t = 1.80 with 96.3% sign
+        # stability and was reported as "SUGGESTIVE". Adding the quadratic and the
+        # within-position price rank closes that channel; both nulls fall to |t| < 0.7.
+        #
+        # Cost is two degrees of freedom out of ~150 rows, which is cheap insurance on
+        # the one measurement that adjudicates every signal decision in the project.
+        d["_lnp2"] = d["_lnp"] ** 2
+        d["_prank"] = d.groupby("position")["_lnp"].rank(ascending=False)
+
         y = _zscore_within(d, "actual_ppr").to_numpy(dtype=float)
-        x_price = _zscore_within(d, "_lnp").to_numpy(dtype=float)
         x_proj = _zscore_within(d, "proj_ppr").to_numpy(dtype=float)
         x_cand = _zscore_within(d, name).to_numpy(dtype=float)
-        X = np.column_stack([x_price, x_proj, x_cand, np.ones(len(d))])
+        price_basis = [
+            _zscore_within(d, c).to_numpy(dtype=float) for c in ("_lnp", "_lnp2", "_prank")
+        ]
+        # Candidate is the LAST regressor before the intercept; index it rather than
+        # hardcoding, so the basis can grow without silently reporting another column.
+        X = np.column_stack([*price_basis, x_proj, x_cand, np.ones(len(d))])
+        cand_ix = len(price_basis) + 1
         ok = np.isfinite(X).all(axis=1) & np.isfinite(y)
         X, y = X[ok], y[ok]
         if len(y) < 4:
@@ -415,7 +438,7 @@ def measure_orthogonality(
         # and reports a large, confident t (measured t = 14.2 for `projection * 2 - 5`).
         # Without this guard the harness would enthusiastically greenlight restating a
         # column we already have — the precise mistake it exists to prevent.
-        Z = np.column_stack([X[:, 0], X[:, 1], np.ones(len(y))])
+        Z = np.column_stack([X[:, :cand_ix], np.ones(len(y))])
         cb, *_ = np.linalg.lstsq(Z, x_cand[ok], rcond=None)
         cres = x_cand[ok] - Z @ cb
         denom = float(((x_cand[ok] - x_cand[ok].mean()) ** 2).sum())
@@ -432,7 +455,7 @@ def measure_orthogonality(
             continue
 
         beta, se, t, _dof = _ols_t(X, y)
-        tc = t[2]
+        tc = t[cand_ix]
 
         # Bootstrap the SIGN. At ~150 players a t-stat is swayed by a handful of extreme
         # residuals; how often the coefficient keeps its sign under resampling is not.
@@ -441,7 +464,7 @@ def measure_orthogonality(
             rng = np.random.default_rng(0)      # fixed seed: a metric must be reproducible
             same = 0
             total = 0
-            sign = 1.0 if beta[2] >= 0 else -1.0
+            sign = 1.0 if beta[cand_ix] >= 0 else -1.0
             for _ in range(ORTHOGONALITY_BOOTSTRAP):
                 idx = rng.integers(0, len(y), len(y))
                 Xb, yb = X[idx], y[idx]
@@ -450,7 +473,7 @@ def measure_orthogonality(
                 except np.linalg.LinAlgError:
                     continue
                 total += 1
-                if np.sign(bb[2]) == sign:
+                if np.sign(bb[cand_ix]) == sign:
                     same += 1
             stability = round(same / total, 3) if total else None
 
@@ -469,8 +492,8 @@ def measure_orthogonality(
         out.append({
             "candidate": name,
             "n": int(len(y)),
-            "beta": round(float(beta[2]), 4),
-            "se": round(float(se[2]), 4),
+            "beta": round(float(beta[cand_ix]), 4),
+            "se": round(float(se[cand_ix]), 4),
             "t": round(float(tc), 2) if np.isfinite(tc) else None,
             "direction_stability": stability,
             "verdict": verdict,
@@ -557,30 +580,116 @@ def score_on_rate(df: pd.DataFrame) -> tuple[float | None, int, float | None]:
     )
 
 
+# Pre-registered slice size. 20% of a ~150-player priced board is ~30 players, the order
+# of a real roster's worth of targets. NOT the empirical argmax — the sweep peaks at 30%
+# on one season and 20% on another, and chasing that is how the seven signal thresholds
+# became a degree of freedom in the first place.
+TOP_OPPORTUNITY_FRACTION = 0.20
+TOP_OPPORTUNITY_MIN = 5
+
+
+def select_top_opportunities(
+    df: pd.DataFrame, fraction: float = TOP_OPPORTUNITY_FRACTION,
+) -> tuple[pd.DataFrame, str]:
+    """The slice a user would actually act on, ranked by CONVICTION.
+
+    Returns (slice, basis) where basis is "conviction" or "dollar_gap".
+
+    This used to select ``value_gap >= 8`` — the dollar gap — which is the basis #378
+    retired for being price-contaminated (corr with ln price -0.581, versus +0.017 for
+    conviction), and which the product no longer ranks on. The metric was therefore
+    reporting on a quantity nothing consumes, and the state doc's "the high-conviction
+    slice is no better than the board average" was a statement about the retired basis.
+
+    Measured hit rate of the slice on all three scored boards::
+
+        season   board avg   dollar gap >= 8   conviction top 20%
+        2023       49.4%         72.7%              76.7%
+        2024       50.0%         58.3%              69.0%
+        2025       49.3%         55.9%              70.0%
+
+    Conviction wins in every season: pooled 71.9% against 62.1% for the dollar gap, on a
+    49.6% base rate.
+    """
+    scoreable = df["actual_ppr"].notna() & (df["league_price"] > 0)
+    has_conv = (
+        "signal_conviction" in df.columns
+        and bool(df.loc[scoreable, "signal_conviction"].notna().any())
+    )
+    if not has_conv:
+        # A board built before #378 stores no conviction. Report something rather than
+        # nothing, but the caller must say it is not comparable.
+        return df[(df["value_gap"] >= 8) & df["actual_ppr"].notna()], "dollar_gap"
+
+    ranked = (
+        df[scoreable & df["signal_conviction"].notna()]
+        .sort_values("signal_conviction", ascending=False)
+    )
+    k = max(TOP_OPPORTUNITY_MIN, int(round(len(ranked) * fraction)))
+    return ranked.head(k), "conviction"
+
+
 def _load_actual_season(season: int) -> pd.DataFrame:
     """Load actual season results via get_seasonal_stats (PBP fallback)."""
     return get_seasonal_stats(season)
 
 
+# A price source must supply at least this many players to win. Below it the sample
+# cannot support the buy/avoid rates the caller computes.
+MIN_PRICE_COVERAGE = 50
+
+
 async def _load_historical_prices(
     session: AsyncSession, season: int,
-) -> tuple[dict[str, float], str]:
-    """Load historical auction prices for `season`.
+) -> tuple[dict, dict[str, float], str]:
+    """Load historical auction prices for `season`, keyed by player id.
+
+    KEYED BY ID, NOT BY NAME — this is the whole point of the function's shape.
+    Matching a price to a player by name is the codebase's known-unsafe pattern and it
+    failed in both directions on the scored boards:
+
+      * SUFFIX DRIFT lost real prices. On the as-of 2024 board only 151 of 177 auction
+        rows landed, and four of the misses were live skill-position calls, including
+        Marvin Harrison ($40) and Deebo Samuel ($29). The board stored one spelling,
+        the auction another.
+      * DUPLICATE ROWS invented calls. `players` holds ~54 duplicate-name clusters.
+        A stray WR row named "Kenneth Walker" took the RB's $18 AND — because the
+        actuals join is also by name — the RB's season, produced an "avoid", and was
+        scored CORRECT inside the reported 64.1%.
+
+    `league_auction_history.player_id` is 100% populated for every priced season on this
+    deployment (2023: 175/175, 2024: 177/177), so the id key costs nothing and the name
+    map is a fallback for rows that predate it.
 
     Sources are tried in descending order of trustworthiness, and the one actually used
     is reported in the label so a run can never quietly grade itself against the wrong
     number:
-      1. league_auction_history, matched by player_name
-      2. league_auction_history, matched by player_id
-      3. market_value_historic, the season-keyed price reference
+      1. league_auction_history, keyed by player_id
+      2. league_auction_history, keyed by player_name — only for rows with no player_id
+      3. market_value_historic, the season-keyed price reference, keyed by player_id
       4. nothing — caller falls back to market_value_league, which is CURRENT-season ADP
          and makes every signal metric meaningless
 
-    Returns (name_to_price dict, source_label). A source must supply >= 50 players to
-    win; below that the sample cannot support the buy/avoid rates the caller computes.
+    Returns (id_to_price, name_to_price, source_label).
     """
-    # Try league_auction_history first
     result = await session.execute(
+        select(
+            LeagueAuctionHistory.player_id,
+            func.avg(LeagueAuctionHistory.price).label("avg_price"),
+        )
+        .where(
+            LeagueAuctionHistory.season_year == season,
+            LeagueAuctionHistory.price > 0,
+            LeagueAuctionHistory.player_id.isnot(None),
+        )
+        .group_by(LeagueAuctionHistory.player_id)
+    )
+    by_id: dict = {row.player_id: float(row.avg_price) for row in result.fetchall()}
+
+    # Name fallback ONLY for auction rows carrying no player_id. Restricting it this way
+    # is what stops a duplicate player row from collecting a price that already found
+    # its rightful owner above.
+    result2 = await session.execute(
         select(
             LeagueAuctionHistory.player_name,
             func.avg(LeagueAuctionHistory.price).label("avg_price"),
@@ -588,39 +697,19 @@ async def _load_historical_prices(
         .where(
             LeagueAuctionHistory.season_year == season,
             LeagueAuctionHistory.price > 0,
+            LeagueAuctionHistory.player_id.is_(None),
             LeagueAuctionHistory.player_name.isnot(None),
             LeagueAuctionHistory.player_name != "",
         )
         .group_by(LeagueAuctionHistory.player_name)
     )
-    rows = result.fetchall()
-    history_prices = {
-        row.player_name: float(row.avg_price) for row in rows
+    by_name: dict[str, float] = {
+        row.player_name: float(row.avg_price) for row in result2.fetchall()
     }
 
-    if len(history_prices) >= 50:
-        return history_prices, f"league_auction_history ({season}, N={len(history_prices)})"
-
-    # Also try matching via player_id (auction rows may have player_id but no name)
-    result2 = await session.execute(
-        select(
-            Player.name,
-            func.avg(LeagueAuctionHistory.price).label("avg_price"),
-        )
-        .join(Player, LeagueAuctionHistory.player_id == Player.id)
-        .where(
-            LeagueAuctionHistory.season_year == season,
-            LeagueAuctionHistory.price > 0,
-        )
-        .group_by(Player.name)
-    )
-    rows2 = result2.fetchall()
-    for row in rows2:
-        if row.name not in history_prices:
-            history_prices[row.name] = float(row.avg_price)
-
-    if len(history_prices) >= 50:
-        return history_prices, f"league_auction_history ({season}, N={len(history_prices)})"
+    if len(by_id) + len(by_name) >= MIN_PRICE_COVERAGE:
+        n = len(by_id) + len(by_name)
+        return by_id, by_name, f"league_auction_history ({season}, N={n})"
 
     # market_value_historic — the season-keyed price reference the league-sync path
     # writes. On this deployment it holds the REAL 2025 auction: 159 players summing to
@@ -631,27 +720,26 @@ async def _load_historical_prices(
     # against the wrong number.
     result3 = await session.execute(
         select(
-            Player.name,
+            MarketValueHistoric.player_id,
             func.avg(MarketValueHistoric.price).label("avg_price"),
         )
-        .join(Player, MarketValueHistoric.player_id == Player.id)
         .where(
             MarketValueHistoric.season_year == season,
             MarketValueHistoric.price > 0,
         )
-        .group_by(Player.name)
+        .group_by(MarketValueHistoric.player_id)
     )
     for row in result3.fetchall():
-        if row.name not in history_prices:
-            history_prices[row.name] = float(row.avg_price)
+        by_id.setdefault(row.player_id, float(row.avg_price))
 
-    if len(history_prices) >= 50:
-        return history_prices, f"market_value_historic ({season}, N={len(history_prices)})"
+    total = len(by_id) + len(by_name)
+    if total >= MIN_PRICE_COVERAGE:
+        return by_id, by_name, f"market_value_historic ({season}, N={total})"
 
     # Fallback: use market_value_league from players table
     # This may contain current ADP data rather than historical prices —
     # flag this clearly in the output
-    return {}, "market_value_league (fallback — auction history insufficient)"
+    return {}, {}, "market_value_league (fallback — auction history insufficient)"
 
 
 # Candidate signals attached to every backtest frame so measure_orthogonality() has
@@ -661,7 +749,11 @@ CANDIDATE_SIGNALS = (
     "dep_net_impact",        # signed sum of dependency value_impact_pct — the system's
     "dep_flag_count",        # stated reason for existing (Keenan Allen -> McConkey)
     "dep_displaced",
-    "dep_contingent",
+    # `dep_contingent` is DELIBERATELY ABSENT. It is the same column as dep_displaced by
+    # construction (roster_changes.py emits the pair together), measured corr 1.0000 on
+    # the 2024 board and 0.9665 on 2025. Testing both reported ONE signal TWICE and made
+    # two independent candidates look like they agreed — which is how the state doc came
+    # to cite -1.83 and -1.76 as mutual corroboration.
     "dep_beneficiary",
     "beat_signal_count",     # late-breaking news, plausibly ahead of consensus
     "injury_risk_modifier",  # durability history
@@ -765,9 +857,11 @@ async def run_backtest(
         actual_by_id[str(row["player_id"])] = entry
         actual_by_name[str(row[name_col]).lower()] = entry
 
-    # Load historical prices
-    historical_prices, price_source = await _load_historical_prices(session, season)
-    using_historical = len(historical_prices) >= 50
+    # Load historical prices — id-keyed, with a name map only for rows lacking an id
+    prices_by_id, prices_by_name, price_source = await _load_historical_prices(
+        session, season
+    )
+    using_historical = len(prices_by_id) + len(prices_by_name) >= MIN_PRICE_COVERAGE
 
     # Load system data — use market_value_league OR historical prices to determine
     # which players to include
@@ -793,14 +887,25 @@ async def run_backtest(
     metrics = BacktestMetrics(season=season)
     metrics.players_analyzed = len(rows)
     metrics.price_source = price_source
-    metrics.price_coverage = len(historical_prices) if using_historical else 0
     results = []
     matched = 0
+    # Ids/names that actually landed on a player. price_coverage used to report the
+    # SIZE OF THE PRICE DICT, which is a count of what was loaded, not of what was
+    # scored — so a run in which a quarter of the auction failed to join looked
+    # identical to a clean one. Counting the landings is what makes that visible.
+    price_hits: set = set()
 
     for player, profile in rows:
-        # Get price: historical auction price > market_value_league
+        # Get price: historical auction price > market_value_league.
+        # ID FIRST — see _load_historical_prices for what name-keying cost us.
         if using_historical:
-            price = historical_prices.get(player.name)
+            price = prices_by_id.get(player.id)
+            if price is not None:
+                price_hits.add(player.id)
+            else:
+                price = prices_by_name.get(player.name)
+                if price is not None:
+                    price_hits.add(player.name)
             if price is None:
                 # Player not in auction history — skip from price-based evaluation
                 # but still include for PPR accuracy
@@ -879,6 +984,13 @@ async def run_backtest(
             "league_price": price,
             "ai_ceiling": ai_ceiling,
             "value_gap": round(value_gap, 1),
+            # The PRICE-NEUTRAL ranking basis (#378) and what the product sorts on.
+            # top_opportunities selects on this; the dollar gap above is kept for
+            # comparison only.
+            "signal_conviction": (
+                float(player.signal_conviction)
+                if getattr(player, "signal_conviction", None) is not None else None
+            ),
             "system_signal": system_signal,
             "value_assessment": player.value_assessment,
             "pay_up_flag": bool(player.pay_up_flag),
@@ -906,6 +1018,21 @@ async def run_backtest(
         results.append(row)
 
     metrics.players_matched = matched
+    # What was SCORED, and what was loaded but never landed. A non-zero unmatched count
+    # means priced players did not join the board — the failure this function's id key
+    # exists to prevent, now reported instead of silent.
+    metrics.price_coverage = len(price_hits) if using_historical else 0
+    metrics.price_rows_unmatched = (
+        len(prices_by_id) + len(prices_by_name) - len(price_hits)
+        if using_historical else 0
+    )
+    if metrics.price_rows_unmatched:
+        logger.warning(
+            "backtest %s: %d of %d priced entries did not join a player row",
+            season, metrics.price_rows_unmatched,
+            len(prices_by_id) + len(prices_by_name),
+        )
+
     df = pd.DataFrame(results)
     df = apply_price_relative_outcome(df)
 
@@ -945,7 +1072,32 @@ async def run_backtest(
     if len(avoid_df) > 0:
         metrics.avoid_accuracy = round(avoid_df["system_correct"].mean() * 100, 1)
 
-    top_opps = df[(df["value_gap"] >= 8) & df["actual_ppr"].notna()]
+    # TOP OPPORTUNITIES — ranked on CONVICTION, which is what the product ranks on
+    # (valuation.py writes players.signal_conviction; player_repo and the dashboard sort
+    # by it). This selected `value_gap >= 8` — the DOLLAR GAP — which is the basis #378
+    # retired for being price-contaminated (corr with ln price -0.581 vs +0.017 for
+    # conviction). So the metric had been reporting on a quantity the product no longer
+    # uses, and the state doc's "the high-conviction slice is no better than the board
+    # average" was a statement about the retired basis.
+    #
+    # Measured on all three scored boards, hit rate of the slice:
+    #     season   board avg   dollar gap >= 8   conviction top 20%
+    #     2023       49.4%         72.7%              76.7%
+    #     2024       50.0%         58.3%              69.0%
+    #     2025       49.3%         55.9%              70.0%
+    # Conviction wins in every season; pooled 71.9% vs 62.1% vs a 49.6% base rate.
+    #
+    # The cut is a PRE-REGISTERED fraction, not the empirical argmax. 20% of a ~150-player
+    # priced board is ~30 players, which is the order of a real roster's worth of targets.
+    # Do not tune it to whatever scores best — the sweep peaks at 30% on one season and
+    # 20% on another, and chasing that is how the seven signal thresholds became a
+    # degree of freedom in the first place.
+    top_opps, basis = select_top_opportunities(df)
+    if basis != "conviction":
+        logger.warning(
+            "backtest %s: no signal_conviction on this board — top_opportunities fell "
+            "back to the RETIRED dollar-gap basis and is not comparable", season,
+        )
     metrics.top_opportunities_count = len(top_opps)
     metrics.top_opportunities_hit = int(top_opps["was_good_buy"].sum())
 

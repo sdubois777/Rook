@@ -1,6 +1,7 @@
 """Tests for backend.engines.backtest."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pandas as pd
@@ -8,8 +9,10 @@ import pytest
 
 from backend.engines.backtest import (
     FAIR_VALUE_PPR_PER_DOLLAR,
+    MIN_PRICE_COVERAGE,
     BacktestMetrics,
     _load_actual_season,
+    _load_historical_prices,
     derive_system_signal,
     run_backtest,
 )
@@ -157,12 +160,12 @@ async def test_run_backtest_returns_metrics_and_df():
             # SET TRANSACTION READ ONLY
             return MagicMock()
         if call_count["n"] == 2:
-            # _load_historical_prices: auction history by name — empty
+            # _load_historical_prices: auction history by player_id — empty
             mock_r = MagicMock()
             mock_r.fetchall.return_value = []
             return mock_r
         if call_count["n"] == 3:
-            # _load_historical_prices: auction history by player_id — empty
+            # _load_historical_prices: auction history by name (id-less rows) — empty
             mock_r = MagicMock()
             mock_r.fetchall.return_value = []
             return mock_r
@@ -191,6 +194,241 @@ async def test_run_backtest_returns_metrics_and_df():
     assert df.iloc[0]["actual_ppr"] == 250.0
     assert df.iloc[0]["value_gap"] == 10.0  # 30 - 20
     assert df.iloc[0]["system_signal"] == "strong_buy"
+
+
+# ---------------------------------------------------------------------------
+# Price join — keyed by player id, never by name
+# ---------------------------------------------------------------------------
+
+
+def _price_rows(rows):
+    r = MagicMock()
+    r.fetchall.return_value = rows
+    return r
+
+
+def _mock_player(pid, name, position, gsis, *, ceiling=30.0, assessment="good_value"):
+    p = MagicMock()
+    p.id = pid
+    p.name = name
+    p.position = position
+    p.yahoo_player_id = f"nfl_{gsis}" if gsis else None
+    p.ai_bid_ceiling = ceiling
+    p.recommended_bid_ceiling = ceiling
+    p.value_assessment = assessment
+    p.pay_up_flag = False          # MagicMock is truthy — must be set explicitly
+    p.tier = 2
+    return p
+
+
+def _profile(ppr):
+    prof = MagicMock()
+    prof.clean_season_baseline = {"projected_ppr_season": ppr}
+    return prof
+
+
+@pytest.mark.asyncio
+async def test_auction_prices_are_keyed_by_player_id():
+    """The primary auction lookup is keyed by player_id, not player_name.
+
+    Name keying is what lost real calls on the as-of 2024 board — 151 of 177 rows
+    landed, and the misses included Marvin Harrison ($40) and Deebo Samuel ($29).
+    """
+    id_rows = [
+        SimpleNamespace(player_id=f"id-{i}", avg_price=float(i + 1))
+        for i in range(MIN_PRICE_COVERAGE + 10)
+    ]
+
+    session = AsyncMock()
+    calls = {"n": 0}
+
+    async def execute(stmt, *a, **k):
+        calls["n"] += 1
+        return _price_rows(id_rows if calls["n"] == 1 else [])
+
+    session.execute = execute
+    by_id, by_name, source = await _load_historical_prices(session, 2024)
+
+    assert len(by_id) == MIN_PRICE_COVERAGE + 10
+    assert by_id["id-0"] == 1.0
+    assert by_name == {}
+    assert source.startswith("league_auction_history (2024")
+
+
+@pytest.mark.asyncio
+async def test_name_map_is_restricted_to_rows_with_no_player_id():
+    """THE mechanism that stops a duplicate row stealing a price.
+
+    If the name map held every auction row, a second `players` row sharing a name
+    would match it and collect a price that already found its rightful owner by id.
+    So the name query MUST be filtered to rows that have no player_id at all.
+    """
+    seen: list[str] = []
+
+    session = AsyncMock()
+
+    async def execute(stmt, *a, **k):
+        seen.append(str(stmt))
+        return _price_rows([])
+
+    session.execute = execute
+    await _load_historical_prices(session, 2024)
+
+    by_id_sql, by_name_sql = seen[0], seen[1]
+    assert "GROUP BY league_auction_history.player_id" in by_id_sql
+    assert "player_id IS NULL" in by_name_sql, (
+        "the name fallback must exclude rows that carry a player_id, or duplicate "
+        "player rows will collect prices belonging to somebody else"
+    )
+
+
+@pytest.mark.asyncio
+async def test_player_id_price_wins_over_a_name_collision():
+    """When both maps hold the player, the id price wins.
+
+    Reachable whenever the auction carries one id-bearing row and one id-less row
+    that happen to share a name — the id is the trustworthy key.
+    """
+    player = _mock_player("real-id", "Ambiguous Name", "RB", "00-001")
+
+    id_rows = [SimpleNamespace(player_id="real-id", avg_price=40.0)] + [
+        SimpleNamespace(player_id=f"filler-{i}", avg_price=5.0)
+        for i in range(MIN_PRICE_COVERAGE)
+    ]
+    name_rows = [SimpleNamespace(player_name="Ambiguous Name", avg_price=3.0)]
+
+    mock_seasonal = pd.DataFrame({
+        "player_id": ["00-001"],
+        "player_display_name": ["Ambiguous Name"],
+        "position": ["RB"],
+        "recent_team": ["NYG"],
+        "games": [17],
+        "fantasy_points_ppr": [250.0],
+    })
+
+    session = AsyncMock()
+    calls = {"n": 0}
+
+    async def execute(stmt, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return MagicMock()
+        if calls["n"] == 2:
+            return _price_rows(id_rows)
+        if calls["n"] == 3:
+            return _price_rows(name_rows)
+        return _price_rows([(player, _profile(240.0))])
+
+    session.execute = execute
+
+    with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_seasonal):
+        _metrics, df = await run_backtest(session, 2024)
+
+    assert df.iloc[0]["league_price"] == 40.0, "the name price shadowed the id price"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_name_row_never_collects_another_players_price():
+    """REGRESSION: a duplicate player row must not inherit the real player's price.
+
+    `players` holds ~54 duplicate-name clusters. A stray WR row named "Kenneth Walker"
+    took the RB's $18 and — because the actuals join is also by name — the RB's season
+    too, emitted an "avoid", and was scored CORRECT inside the reported 64.1%.
+    """
+    # ceiling well under the $18 price, so the RB is a real "strong_avoid" call —
+    # the duplicate must not become a second one.
+    rb = _mock_player("rb-id", "Kenneth Walker", "RB", "00-0038134",
+                      ceiling=3.0, assessment="avoid")
+    wr = _mock_player("wr-id", "Kenneth Walker", "WR", None,
+                      ceiling=3.0, assessment="avoid")
+
+    # The auction knows exactly one Kenneth Walker, and points at the RB.
+    id_rows = [SimpleNamespace(player_id="rb-id", avg_price=18.0)] + [
+        SimpleNamespace(player_id=f"filler-{i}", avg_price=5.0)
+        for i in range(MIN_PRICE_COVERAGE)
+    ]
+
+    mock_seasonal = pd.DataFrame({
+        "player_id": ["00-0038134"],
+        "player_display_name": ["Kenneth Walker"],
+        "position": ["RB"],
+        "recent_team": ["SEA"],
+        "games": [16],
+        "fantasy_points_ppr": [200.0],
+    })
+
+    session = AsyncMock()
+    calls = {"n": 0}
+
+    async def execute(stmt, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return MagicMock()                      # SET TRANSACTION READ ONLY
+        if calls["n"] == 2:
+            return _price_rows(id_rows)             # auction by player_id
+        if calls["n"] == 3:
+            return _price_rows([])                  # auction by name (id-less rows)
+        return _price_rows([(rb, _profile(190.0)), (wr, _profile(190.0))])
+
+    session.execute = execute
+
+    with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_seasonal):
+        metrics, df = await run_backtest(session, 2024)
+
+    rb_row = df[df["position"] == "RB"].iloc[0]
+    wr_row = df[df["position"] == "WR"].iloc[0]
+
+    assert rb_row["league_price"] == 18.0
+    assert rb_row["system_signal"] == "strong_avoid"
+    assert wr_row["league_price"] == 0.0, "duplicate row inherited a price it never had"
+    assert pd.isna(wr_row["system_signal"]), "duplicate row produced a signal"
+    assert metrics.total_calls == 1, "the duplicate was scored as a second call"
+
+
+@pytest.mark.asyncio
+async def test_price_coverage_counts_landed_prices_not_dict_size():
+    """price_coverage must report prices that reached a player, and unmatched ones.
+
+    It used to report the size of the loaded price dict, so a run in which a quarter of
+    the auction failed to join a player row looked identical to a clean one.
+    """
+    player = _mock_player("real-id", "Real Player", "RB", "00-001")
+
+    id_rows = [SimpleNamespace(player_id="real-id", avg_price=20.0)] + [
+        SimpleNamespace(player_id=f"orphan-{i}", avg_price=7.0)
+        for i in range(MIN_PRICE_COVERAGE)
+    ]
+
+    mock_seasonal = pd.DataFrame({
+        "player_id": ["00-001"],
+        "player_display_name": ["Real Player"],
+        "position": ["RB"],
+        "recent_team": ["NYG"],
+        "games": [17],
+        "fantasy_points_ppr": [250.0],
+    })
+
+    session = AsyncMock()
+    calls = {"n": 0}
+
+    async def execute(stmt, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return MagicMock()
+        if calls["n"] == 2:
+            return _price_rows(id_rows)
+        if calls["n"] == 3:
+            return _price_rows([])
+        return _price_rows([(player, _profile(240.0))])
+
+    session.execute = execute
+
+    with patch("backend.engines.backtest.get_seasonal_stats", return_value=mock_seasonal):
+        metrics, _df = await run_backtest(session, 2024)
+
+    assert metrics.price_coverage == 1, "only one price actually landed on a player"
+    assert metrics.price_rows_unmatched == MIN_PRICE_COVERAGE
+    assert metrics.to_dict()["price_rows_unmatched"] == MIN_PRICE_COVERAGE
 
 
 # ---------------------------------------------------------------------------
