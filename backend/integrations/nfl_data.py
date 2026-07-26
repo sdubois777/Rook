@@ -1503,12 +1503,40 @@ class NflDataWarehouse:
             except Exception as exc:
                 logger.warning("  %d ngs_passing unavailable: %s", season, exc)
 
-        # Snap pct for current season
+        # Snap share — MOST RECENT COMPLETED SEASON, never the season being projected.
+        #
+        # This read `compute_snap_pct(self.current_season)`. Under an as-of clock
+        # `current_season` IS the season being predicted, so it loaded that season's
+        # REALISED snap share — and player_profiles puts it straight into the model
+        # prompt (player_profiles.py serialises the player dict verbatim). Measured on
+        # the preserved as-of boards: 92.4% (2024) and 92.8% (2025) of profiles carried
+        # an exact match to the OUTCOME season's snap cache, including 2024 rookies who
+        # had never taken an NFL snap when the board was frozen — Bo Nix 0.989,
+        # Caleb Williams 0.988, Jayden Daniels 0.920, and Jonathon Brooks 0.110 (a torn
+        # ACL). That is the outcome leaking into the predictor.
+        #
+        # It was invisible in production because compute_snap_pct(2026) finds a season
+        # that has not been played: the live board has 0 of 872 profiles populated. So
+        # this fix CHANGES PRODUCTION — the 2026 board will now carry real 2025 snap
+        # share for the first time. That is the intended behaviour (prior-season usage
+        # is legitimate pre-draft context), but it is a behaviour change, not a no-op.
+        #
+        # min() of both terms, not either alone: latest_season_with_data() returns the
+        # CURRENT season once its games start, so under an in-season as-of clock
+        # (ROOK_ASOF_DATE=2026-11-01) it would hand back 2026 — the season being
+        # projected — and reopen the leak.
+        from backend.utils.seasons import latest_season_with_data
+
+        snap_season = min(latest_season_with_data(), self.current_season - 1)
         try:
-            self.snap_pct[self.current_season] = compute_snap_pct(self.current_season)
-            logger.info("Snap pct %d: %d players", self.current_season, len(self.snap_pct[self.current_season]))
+            # Keyed under current_season because that is what callers ask for; the VALUE
+            # is "the most recent snap share that existed when this board was built".
+            self.snap_pct[self.current_season] = compute_snap_pct(snap_season)
+            logger.info("Snap pct %d (prior completed season, board=%d): %d players",
+                        snap_season, self.current_season,
+                        len(self.snap_pct[self.current_season]))
         except Exception as exc:
-            logger.warning("Snap pct %d failed: %s", self.current_season, exc)
+            logger.warning("Snap pct %d failed: %s", snap_season, exc)
 
     # ----------------------------------------------------------
     # Clean accessors — return empty df, never raise
