@@ -121,6 +121,9 @@ class BacktestMetrics:
     position_mae: dict = field(default_factory=dict)
     price_source: str = ""
     price_coverage: int = 0
+    # Priced entries that never joined a player row. Non-zero means the board is
+    # missing calls it should have made — see _load_historical_prices.
+    price_rows_unmatched: int = 0
     orthogonality: list = field(default_factory=list)
     # Rate-based scoring — see score_on_rate(). Reported ALONGSIDE the totals-based
     # figures above, never instead of them.
@@ -156,6 +159,7 @@ class BacktestMetrics:
             "grade": self.grade,
             "price_source": self.price_source,
             "price_coverage": self.price_coverage,
+            "price_rows_unmatched": self.price_rows_unmatched,
             # Which candidate signals carry information the price does not. Anything that
             # fails here cannot improve signal accuracy, however good it looks alone.
             "orthogonality": self.orthogonality,
@@ -562,25 +566,62 @@ def _load_actual_season(season: int) -> pd.DataFrame:
     return get_seasonal_stats(season)
 
 
+# A price source must supply at least this many players to win. Below it the sample
+# cannot support the buy/avoid rates the caller computes.
+MIN_PRICE_COVERAGE = 50
+
+
 async def _load_historical_prices(
     session: AsyncSession, season: int,
-) -> tuple[dict[str, float], str]:
-    """Load historical auction prices for `season`.
+) -> tuple[dict, dict[str, float], str]:
+    """Load historical auction prices for `season`, keyed by player id.
+
+    KEYED BY ID, NOT BY NAME — this is the whole point of the function's shape.
+    Matching a price to a player by name is the codebase's known-unsafe pattern and it
+    failed in both directions on the scored boards:
+
+      * SUFFIX DRIFT lost real prices. On the as-of 2024 board only 151 of 177 auction
+        rows landed, and four of the misses were live skill-position calls, including
+        Marvin Harrison ($40) and Deebo Samuel ($29). The board stored one spelling,
+        the auction another.
+      * DUPLICATE ROWS invented calls. `players` holds ~54 duplicate-name clusters.
+        A stray WR row named "Kenneth Walker" took the RB's $18 AND — because the
+        actuals join is also by name — the RB's season, produced an "avoid", and was
+        scored CORRECT inside the reported 64.1%.
+
+    `league_auction_history.player_id` is 100% populated for every priced season on this
+    deployment (2023: 175/175, 2024: 177/177), so the id key costs nothing and the name
+    map is a fallback for rows that predate it.
 
     Sources are tried in descending order of trustworthiness, and the one actually used
     is reported in the label so a run can never quietly grade itself against the wrong
     number:
-      1. league_auction_history, matched by player_name
-      2. league_auction_history, matched by player_id
-      3. market_value_historic, the season-keyed price reference
+      1. league_auction_history, keyed by player_id
+      2. league_auction_history, keyed by player_name — only for rows with no player_id
+      3. market_value_historic, the season-keyed price reference, keyed by player_id
       4. nothing — caller falls back to market_value_league, which is CURRENT-season ADP
          and makes every signal metric meaningless
 
-    Returns (name_to_price dict, source_label). A source must supply >= 50 players to
-    win; below that the sample cannot support the buy/avoid rates the caller computes.
+    Returns (id_to_price, name_to_price, source_label).
     """
-    # Try league_auction_history first
     result = await session.execute(
+        select(
+            LeagueAuctionHistory.player_id,
+            func.avg(LeagueAuctionHistory.price).label("avg_price"),
+        )
+        .where(
+            LeagueAuctionHistory.season_year == season,
+            LeagueAuctionHistory.price > 0,
+            LeagueAuctionHistory.player_id.isnot(None),
+        )
+        .group_by(LeagueAuctionHistory.player_id)
+    )
+    by_id: dict = {row.player_id: float(row.avg_price) for row in result.fetchall()}
+
+    # Name fallback ONLY for auction rows carrying no player_id. Restricting it this way
+    # is what stops a duplicate player row from collecting a price that already found
+    # its rightful owner above.
+    result2 = await session.execute(
         select(
             LeagueAuctionHistory.player_name,
             func.avg(LeagueAuctionHistory.price).label("avg_price"),
@@ -588,39 +629,19 @@ async def _load_historical_prices(
         .where(
             LeagueAuctionHistory.season_year == season,
             LeagueAuctionHistory.price > 0,
+            LeagueAuctionHistory.player_id.is_(None),
             LeagueAuctionHistory.player_name.isnot(None),
             LeagueAuctionHistory.player_name != "",
         )
         .group_by(LeagueAuctionHistory.player_name)
     )
-    rows = result.fetchall()
-    history_prices = {
-        row.player_name: float(row.avg_price) for row in rows
+    by_name: dict[str, float] = {
+        row.player_name: float(row.avg_price) for row in result2.fetchall()
     }
 
-    if len(history_prices) >= 50:
-        return history_prices, f"league_auction_history ({season}, N={len(history_prices)})"
-
-    # Also try matching via player_id (auction rows may have player_id but no name)
-    result2 = await session.execute(
-        select(
-            Player.name,
-            func.avg(LeagueAuctionHistory.price).label("avg_price"),
-        )
-        .join(Player, LeagueAuctionHistory.player_id == Player.id)
-        .where(
-            LeagueAuctionHistory.season_year == season,
-            LeagueAuctionHistory.price > 0,
-        )
-        .group_by(Player.name)
-    )
-    rows2 = result2.fetchall()
-    for row in rows2:
-        if row.name not in history_prices:
-            history_prices[row.name] = float(row.avg_price)
-
-    if len(history_prices) >= 50:
-        return history_prices, f"league_auction_history ({season}, N={len(history_prices)})"
+    if len(by_id) + len(by_name) >= MIN_PRICE_COVERAGE:
+        n = len(by_id) + len(by_name)
+        return by_id, by_name, f"league_auction_history ({season}, N={n})"
 
     # market_value_historic — the season-keyed price reference the league-sync path
     # writes. On this deployment it holds the REAL 2025 auction: 159 players summing to
@@ -631,27 +652,26 @@ async def _load_historical_prices(
     # against the wrong number.
     result3 = await session.execute(
         select(
-            Player.name,
+            MarketValueHistoric.player_id,
             func.avg(MarketValueHistoric.price).label("avg_price"),
         )
-        .join(Player, MarketValueHistoric.player_id == Player.id)
         .where(
             MarketValueHistoric.season_year == season,
             MarketValueHistoric.price > 0,
         )
-        .group_by(Player.name)
+        .group_by(MarketValueHistoric.player_id)
     )
     for row in result3.fetchall():
-        if row.name not in history_prices:
-            history_prices[row.name] = float(row.avg_price)
+        by_id.setdefault(row.player_id, float(row.avg_price))
 
-    if len(history_prices) >= 50:
-        return history_prices, f"market_value_historic ({season}, N={len(history_prices)})"
+    total = len(by_id) + len(by_name)
+    if total >= MIN_PRICE_COVERAGE:
+        return by_id, by_name, f"market_value_historic ({season}, N={total})"
 
     # Fallback: use market_value_league from players table
     # This may contain current ADP data rather than historical prices —
     # flag this clearly in the output
-    return {}, "market_value_league (fallback — auction history insufficient)"
+    return {}, {}, "market_value_league (fallback — auction history insufficient)"
 
 
 # Candidate signals attached to every backtest frame so measure_orthogonality() has
@@ -765,9 +785,11 @@ async def run_backtest(
         actual_by_id[str(row["player_id"])] = entry
         actual_by_name[str(row[name_col]).lower()] = entry
 
-    # Load historical prices
-    historical_prices, price_source = await _load_historical_prices(session, season)
-    using_historical = len(historical_prices) >= 50
+    # Load historical prices — id-keyed, with a name map only for rows lacking an id
+    prices_by_id, prices_by_name, price_source = await _load_historical_prices(
+        session, season
+    )
+    using_historical = len(prices_by_id) + len(prices_by_name) >= MIN_PRICE_COVERAGE
 
     # Load system data — use market_value_league OR historical prices to determine
     # which players to include
@@ -793,14 +815,25 @@ async def run_backtest(
     metrics = BacktestMetrics(season=season)
     metrics.players_analyzed = len(rows)
     metrics.price_source = price_source
-    metrics.price_coverage = len(historical_prices) if using_historical else 0
     results = []
     matched = 0
+    # Ids/names that actually landed on a player. price_coverage used to report the
+    # SIZE OF THE PRICE DICT, which is a count of what was loaded, not of what was
+    # scored — so a run in which a quarter of the auction failed to join looked
+    # identical to a clean one. Counting the landings is what makes that visible.
+    price_hits: set = set()
 
     for player, profile in rows:
-        # Get price: historical auction price > market_value_league
+        # Get price: historical auction price > market_value_league.
+        # ID FIRST — see _load_historical_prices for what name-keying cost us.
         if using_historical:
-            price = historical_prices.get(player.name)
+            price = prices_by_id.get(player.id)
+            if price is not None:
+                price_hits.add(player.id)
+            else:
+                price = prices_by_name.get(player.name)
+                if price is not None:
+                    price_hits.add(player.name)
             if price is None:
                 # Player not in auction history — skip from price-based evaluation
                 # but still include for PPR accuracy
@@ -906,6 +939,21 @@ async def run_backtest(
         results.append(row)
 
     metrics.players_matched = matched
+    # What was SCORED, and what was loaded but never landed. A non-zero unmatched count
+    # means priced players did not join the board — the failure this function's id key
+    # exists to prevent, now reported instead of silent.
+    metrics.price_coverage = len(price_hits) if using_historical else 0
+    metrics.price_rows_unmatched = (
+        len(prices_by_id) + len(prices_by_name) - len(price_hits)
+        if using_historical else 0
+    )
+    if metrics.price_rows_unmatched:
+        logger.warning(
+            "backtest %s: %d of %d priced entries did not join a player row",
+            season, metrics.price_rows_unmatched,
+            len(prices_by_id) + len(prices_by_name),
+        )
+
     df = pd.DataFrame(results)
     df = apply_price_relative_outcome(df)
 
