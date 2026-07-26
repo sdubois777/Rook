@@ -398,11 +398,30 @@ def measure_orthogonality(
             })
             continue
 
+        # PRICE IS CONTROLLED NONLINEARLY, not just linearly. Controlling only for
+        # z(ln price) lets any NONLINEAR transform of the price through: it is not
+        # collinear with the linear term, so it clears the guard below, and the fit then
+        # credits it with explaining outcome variance that the price already explains.
+        # Measured on the 2024 board before this change, `ln(price) ** 2` — a pure
+        # function of the price and nothing else — scored t = 1.80 with 96.3% sign
+        # stability and was reported as "SUGGESTIVE". Adding the quadratic and the
+        # within-position price rank closes that channel; both nulls fall to |t| < 0.7.
+        #
+        # Cost is two degrees of freedom out of ~150 rows, which is cheap insurance on
+        # the one measurement that adjudicates every signal decision in the project.
+        d["_lnp2"] = d["_lnp"] ** 2
+        d["_prank"] = d.groupby("position")["_lnp"].rank(ascending=False)
+
         y = _zscore_within(d, "actual_ppr").to_numpy(dtype=float)
-        x_price = _zscore_within(d, "_lnp").to_numpy(dtype=float)
         x_proj = _zscore_within(d, "proj_ppr").to_numpy(dtype=float)
         x_cand = _zscore_within(d, name).to_numpy(dtype=float)
-        X = np.column_stack([x_price, x_proj, x_cand, np.ones(len(d))])
+        price_basis = [
+            _zscore_within(d, c).to_numpy(dtype=float) for c in ("_lnp", "_lnp2", "_prank")
+        ]
+        # Candidate is the LAST regressor before the intercept; index it rather than
+        # hardcoding, so the basis can grow without silently reporting another column.
+        X = np.column_stack([*price_basis, x_proj, x_cand, np.ones(len(d))])
+        cand_ix = len(price_basis) + 1
         ok = np.isfinite(X).all(axis=1) & np.isfinite(y)
         X, y = X[ok], y[ok]
         if len(y) < 4:
@@ -419,7 +438,7 @@ def measure_orthogonality(
         # and reports a large, confident t (measured t = 14.2 for `projection * 2 - 5`).
         # Without this guard the harness would enthusiastically greenlight restating a
         # column we already have — the precise mistake it exists to prevent.
-        Z = np.column_stack([X[:, 0], X[:, 1], np.ones(len(y))])
+        Z = np.column_stack([X[:, :cand_ix], np.ones(len(y))])
         cb, *_ = np.linalg.lstsq(Z, x_cand[ok], rcond=None)
         cres = x_cand[ok] - Z @ cb
         denom = float(((x_cand[ok] - x_cand[ok].mean()) ** 2).sum())
@@ -436,7 +455,7 @@ def measure_orthogonality(
             continue
 
         beta, se, t, _dof = _ols_t(X, y)
-        tc = t[2]
+        tc = t[cand_ix]
 
         # Bootstrap the SIGN. At ~150 players a t-stat is swayed by a handful of extreme
         # residuals; how often the coefficient keeps its sign under resampling is not.
@@ -445,7 +464,7 @@ def measure_orthogonality(
             rng = np.random.default_rng(0)      # fixed seed: a metric must be reproducible
             same = 0
             total = 0
-            sign = 1.0 if beta[2] >= 0 else -1.0
+            sign = 1.0 if beta[cand_ix] >= 0 else -1.0
             for _ in range(ORTHOGONALITY_BOOTSTRAP):
                 idx = rng.integers(0, len(y), len(y))
                 Xb, yb = X[idx], y[idx]
@@ -454,7 +473,7 @@ def measure_orthogonality(
                 except np.linalg.LinAlgError:
                     continue
                 total += 1
-                if np.sign(bb[2]) == sign:
+                if np.sign(bb[cand_ix]) == sign:
                     same += 1
             stability = round(same / total, 3) if total else None
 
@@ -473,8 +492,8 @@ def measure_orthogonality(
         out.append({
             "candidate": name,
             "n": int(len(y)),
-            "beta": round(float(beta[2]), 4),
-            "se": round(float(se[2]), 4),
+            "beta": round(float(beta[cand_ix]), 4),
+            "se": round(float(se[cand_ix]), 4),
             "t": round(float(tc), 2) if np.isfinite(tc) else None,
             "direction_stability": stability,
             "verdict": verdict,
@@ -681,7 +700,11 @@ CANDIDATE_SIGNALS = (
     "dep_net_impact",        # signed sum of dependency value_impact_pct — the system's
     "dep_flag_count",        # stated reason for existing (Keenan Allen -> McConkey)
     "dep_displaced",
-    "dep_contingent",
+    # `dep_contingent` is DELIBERATELY ABSENT. It is the same column as dep_displaced by
+    # construction (roster_changes.py emits the pair together), measured corr 1.0000 on
+    # the 2024 board and 0.9665 on 2025. Testing both reported ONE signal TWICE and made
+    # two independent candidates look like they agreed — which is how the state doc came
+    # to cite -1.83 and -1.76 as mutual corroboration.
     "dep_beneficiary",
     "beat_signal_count",     # late-breaking news, plausibly ahead of consensus
     "injury_risk_modifier",  # durability history
