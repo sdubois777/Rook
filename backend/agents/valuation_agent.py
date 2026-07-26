@@ -504,6 +504,32 @@ def _apply_hybrid_rails(rows: list[dict]) -> dict:
 # Agent class
 # ---------------------------------------------------------------------------
 
+
+def _stash(results_map: dict, row) -> None:
+    """Record one model result under its player name, skipping malformed entries.
+
+    The model does not reliably return `player_name` on every row. This used to be
+    `results_map[r["player_name"]] = r`, so a single row missing that key raised KeyError
+    out of _run_tier_batches, up through run_prose_for_format, and ABORTED THE WHOLE
+    PIPELINE — taking format_market, team_notes and the availability discount with it.
+    Observed on 3 of 3 runs, including production.
+
+    One unusable row is not a reason to lose the three stages that come after. Skip it,
+    say so, and carry on.
+    """
+    if not isinstance(row, dict):
+        logger.warning("valuation_agent: model returned a non-dict row (%r) — skipped", type(row))
+        return
+    name = row.get("player_name")
+    if not name:
+        logger.warning(
+            "valuation_agent: model row has no player_name (keys=%s) — skipped",
+            sorted(row)[:8],
+        )
+        return
+    results_map[name] = row
+
+
 class ValuationAgent(BaseAgent):
     AGENT_NAME = "valuation_agent"
     AGENT_MODEL = SONNET
@@ -599,7 +625,7 @@ class ValuationAgent(BaseAgent):
                     )
                     if result:
                         for r in result:
-                            results_map[r["player_name"]] = r
+                            _stash(results_map, r)
                         processed += 1
                     else:
                         skipped += 1
@@ -620,7 +646,7 @@ class ValuationAgent(BaseAgent):
                     )
                     if result:
                         for r in result:
-                            results_map[r["player_name"]] = r
+                            _stash(results_map, r)
                         processed += len(grp)
                     else:
                         skipped += len(grp)
@@ -641,7 +667,7 @@ class ValuationAgent(BaseAgent):
                     )
                     if result:
                         for r in result:
-                            results_map[r["player_name"]] = r
+                            _stash(results_map, r)
                         processed += len(grp)
                     else:
                         skipped += len(grp)
