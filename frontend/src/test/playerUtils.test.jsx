@@ -6,10 +6,12 @@ import {
   getFpAdp,
   getAdpDiff,
   getBidCeiling,
+  getValueGap,
   getPrimaryValue,
   formatAdp,
   formatFpAdp,
   formatAdpDiff,
+  formatValueGap,
   snakeSortComparator,
   auctionSortComparator,
   getSnakeFlag,
@@ -53,6 +55,43 @@ describe('playerUtils — ADP selection', () => {
   it('getPrimaryValue returns adp_rank for snake, ceiling for auction', () => {
     expect(getPrimaryValue(PLAYER, true)).toBe(1) // adp_rank
     expect(getPrimaryValue(PLAYER, false)).toBe(60) // ai_bid_ceiling
+  })
+})
+
+describe('playerUtils — value gap', () => {
+  // The measured prod board. AI CEIL and market are both real, and ceiling - market has
+  // the WRONG SIGN against the conviction the PAY UP flag is derived from.
+  const NACUA = { ai_bid_ceiling: 36, market_value: 66, value_gap: 33, pay_up_flag: true }
+  const JSN = { ai_bid_ceiling: 33, market_value: 61, value_gap: 38, pay_up_flag: true }
+  const CHASE = { ai_bid_ceiling: 39, market_value: 56, value_gap: 43, pay_up_flag: true }
+  const ARSB = { ai_bid_ceiling: 40, market_value: 51, value_gap: 48, pay_up_flag: true }
+  const OVERPRICED = { ai_bid_ceiling: 20, market_value: 12, value_gap: -18, pay_up_flag: false }
+
+  it('getValueGap returns the server value_gap, never ceiling - market', () => {
+    expect(getValueGap(NACUA)).toBe(33)
+    expect(getValueGap(NACUA)).not.toBe(NACUA.ai_bid_ceiling - NACUA.market_value)
+  })
+
+  it('returns null when the server sent no gap', () => {
+    expect(getValueGap({ ai_bid_ceiling: 40, market_value: 30 })).toBeNull()
+    expect(getValueGap(null)).toBeNull()
+  })
+
+  it('formatValueGap signs the number and falls back to --', () => {
+    expect(formatValueGap(NACUA)).toBe('+33')
+    expect(formatValueGap(OVERPRICED)).toBe('-18')
+    expect(formatValueGap({})).toBe('--')
+  })
+
+  it('the displayed gap never contradicts PAY UP', () => {
+    // 6 of the 13 PAY UP players on prod displayed a NEGATIVE gap. The two fields are
+    // derived from the same conviction, so the sign agreement is guaranteed server-side
+    // — as long as the client stops recomputing it.
+    for (const p of [NACUA, JSN, CHASE, ARSB, OVERPRICED]) {
+      const gap = getValueGap(p)
+      if (p.pay_up_flag) expect(gap).toBeGreaterThan(0)
+      else expect(gap).toBeLessThanOrEqual(0)
+    }
   })
 })
 
@@ -306,7 +345,11 @@ describe('no component reads raw ADP fields directly', () => {
       return out
     }
 
-    const RAW = /\.(adp_ai|adp_rank|adp_fantasypros|adp_diff|ai_bid_ceiling|snake_flag)\b/
+    // value_gap is in the list because a component recomputing it from
+    // ai_bid_ceiling - market_value is exactly how the board grew a PAY UP badge next to
+    // a -$30 gap. `\b` will not match `.value_gap_signal` ('_' is a word character), so
+    // the signal string is unaffected.
+    const RAW = /\.(adp_ai|adp_rank|adp_fantasypros|adp_diff|ai_bid_ceiling|snake_flag|value_gap)\b/
     const ALLOWED = /playerUtils|[/\\]stores[/\\]|[/\\]api[/\\]|[/\\]test[/\\]|\.test\.|\.spec\./
     const offenders = []
     for (const f of walk(root)) {

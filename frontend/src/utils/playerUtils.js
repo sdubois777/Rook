@@ -38,6 +38,30 @@ export function getBidCeiling(player) {
   return player?.ai_bid_ceiling ?? null
 }
 
+/**
+ * Value gap in dollars — ALWAYS the server's `value_gap`, never recomputed.
+ *
+ * Do NOT derive this as `ai_bid_ceiling - market_value`. That is the legacy dollar gap,
+ * retired for being price-contaminated (corr with ln price -0.581). `value_gap` is the
+ * price curve's dollar_edge, and its SIGN is guaranteed to match `signal_conviction` —
+ * the same basis `pay_up_flag` is derived from, with a backend test pinning it
+ * (test_dollar_edge_sign_always_matches_conviction).
+ *
+ * Recomputing it locally is what put a PAY UP badge next to a -$30 gap on Puka Nacua:
+ * two different bases rendered in adjacent columns, disagreeing on sign for 39 of 155
+ * players and for 6 of the 13 PAY UP players.
+ */
+export function getValueGap(player) {
+  return player?.value_gap ?? null
+}
+
+/** Signed dollar string for the value gap: '+33', '-8', or '--'. */
+export function formatValueGap(player) {
+  const gap = getValueGap(player)
+  if (gap == null) return '--'
+  return `${gap > 0 ? '+' : ''}${gap.toFixed(0)}`
+}
+
 /** The mode-appropriate primary value: adp_rank (snake) or ceiling (auction). */
 export function getPrimaryValue(player, isSnake) {
   return isSnake ? getDisplayAdp(player) : getBidCeiling(player)

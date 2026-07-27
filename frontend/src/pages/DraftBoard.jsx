@@ -18,9 +18,11 @@ import {
   getDisplayAdp,
   getFpAdp,
   getAdpDiff,
+  getValueGap,
   formatAdp,
   formatFpAdp,
   formatAdpDiff,
+  formatValueGap,
   getSnakeFlagClass,
   getSnakeFlagLabel,
 } from '../utils/playerUtils'
@@ -60,10 +62,10 @@ function getPlayerBadges(p) {
   return badges
 }
 
-function getPlayerGap(p) {
-  const ceiling = getBidCeiling(p)
-  return ceiling != null && p.market_value != null ? ceiling - p.market_value : null
-}
+// The GAP column reads the server's value_gap. See getValueGap in playerUtils — this used
+// to recompute `ai_bid_ceiling - market_value`, a different (retired, price-contaminated)
+// basis from the one PAY UP is derived on, so the two columns contradicted each other.
+const getPlayerGap = getValueGap
 
 function sortPlayers(players, sortKey, sortOrder) {
   const sorted = [...players]
@@ -287,9 +289,9 @@ export default function DraftBoard() {
         const aiCeiling = getBidCeiling(p)
         const ceiling = aiCeiling ?? p.recommended_bid_ceiling?.toFixed(0) ?? '--'
         const market = p.market_value?.toFixed(0) ?? '--'
-        const gap = aiCeiling != null && p.market_value != null
-          ? (aiCeiling - p.market_value > 0 ? '+' : '') + (aiCeiling - p.market_value).toFixed(0)
-          : '--'
+        // Same server-side basis as the on-screen GAP column — the cheat sheet must not
+        // print a different number from the board it was exported from.
+        const gap = formatValueGap(p)
         lines.push(`${p.position.padEnd(3)} ${p.name.padEnd(22)} ${p.team_abbr.padEnd(5)} Ceil:$${ceiling.toString().padStart(3)}  Mkt:$${market.toString().padStart(3)}  Gap:${gap}`)
       }
       lines.push('')
@@ -398,9 +400,7 @@ export default function DraftBoard() {
                     : 'text-slate-500'
                 }`}
               >
-                {aiGap != null
-                  ? `${aiGap > 0 ? '+' : ''}${aiGap.toFixed(0)}`
-                  : '--'}
+                {formatValueGap(p)}
               </span>
             </>
           )}

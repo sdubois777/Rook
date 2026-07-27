@@ -259,7 +259,11 @@ async def get_draftboard(
             market_value_season=get_current_season() if p.market_value_fantasypros else None,
             prior_season_price=hist_price,
             prior_season_year=prior_year if hist_price else None,
-            value_gap=float(p.value_gap) if p.value_gap else None,
+            # `is not None`, not truthiness: an exactly-zero gap is a real answer
+            # ("we agree with the market to the dollar"), not missing data. The board
+            # now renders this field directly instead of recomputing it, so a 0 that
+            # serialises as null shows "--" where it should show "0".
+            value_gap=float(p.value_gap) if p.value_gap is not None else None,
             value_gap_signal=p.value_gap_signal,
             ppr_points=round(float(_raw_proj) * avf, 1) if _raw_proj is not None else None,
             breakout_flag=p.breakout_flag or False,
