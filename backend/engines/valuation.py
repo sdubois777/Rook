@@ -155,11 +155,23 @@ REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
 
 # Maximum replacement-level PPR per game — prevents over-compression when
 # profile data inflates bench player projections above realistic levels.
+#
+# THIS CAP IS A COMPRESSION LEVER, and a low one flattens the position's whole dollar
+# curve. Replacement is SUBTRACTED from every projection before the pool-share split, so
+# a cap that binds shrinks every PAR by the same amount and squashes the top toward the
+# middle. Raise it only with the concentration table re-measured (see the TE note below).
 REPLACEMENT_LEVEL_MAX_PPR_PER_GAME: dict[str, float] = {
     "QB": 22.0,   # ~374 season — streamable QB ceiling
     "RB": 10.0,   # ~170 season — waiver wire RB2 ceiling
     "WR": 9.0,    # ~153 season — waiver wire WR3 ceiling
-    "TE": 7.0,    # ~119 season — streamable TE ceiling
+    # 9.0 (~153 season), was 7.0 (~119). A 1-TE league drafts ~18 TEs, so replacement is
+    # a low-end STARTER (measured 8.7 PPG at TE18), not a streamer. At 7.0 the cap
+    # clamped replacement down to 119 and flattened the TE curve to half the market's
+    # shape — the top five held 35.5% of TE money against the market's 56.6%, pricing the
+    # best TE in football at $16 against a $31 market. Must move TOGETHER with
+    # _BENCH_SPLIT["TE"]: at the old 25-deep pool the dynamic value (118.5) sat just
+    # under the old cap, so raising this alone changes precisely nothing.
+    "TE": 9.0,
 }
 
 # Injury recovery discount applied to PPR baseline for players with major injuries
@@ -171,9 +183,25 @@ DEFAULT_ROSTER_SLOTS: dict[str, int] = {
     "K": 1, "DEF": 1, "BENCH": 7,
 }
 
-# FLEX and bench allocation splits by position (empirical auction norms)
+# FLEX and bench allocation splits by position (empirical auction norms).
+#
+# These set the DRAFTABLE POOL SIZE, which is the single biggest lever on a position's
+# value curve — the pool's last player IS the replacement level, so a pool that is too
+# deep sets replacement too low and flattens the whole position. They do not need to sum
+# to 1 (the remainder is bench spent on K/DEF and unrostered depth).
 _FLEX_SPLIT: dict[str, float] = {"RB": 0.30, "WR": 0.60, "TE": 0.10}
-_BENCH_SPLIT: dict[str, float] = {"QB": 0.08, "RB": 0.28, "WR": 0.35, "TE": 0.14}
+_BENCH_SPLIT: dict[str, float] = {
+    "QB": 0.08,   # unused: get_draftable_pool_sizes gives QB starters + 1
+    "RB": 0.28,
+    "WR": 0.35,
+    # 0.06 (~5 bench TEs, an 18-deep pool), was 0.14 (~12 bench, a 25-deep pool). Twelve
+    # BACKUP tight ends in a 1-TE league is not a real roster: teams stream the position.
+    # That over-deep pool put replacement at TE25 (118.5 pts) instead of TE18 (148), and
+    # since replacement is subtracted from every projection before the pool-share split,
+    # the 30-point difference compressed the entire TE curve. Measured top1/top5 share of
+    # the TE pool: 9.5%/37.3% before, 16.0%/58.6% after, against a market of 17.7%/56.6%.
+    "TE": 0.06,
+}
 
 # Draftable positions for this pass
 DRAFTABLE_POSITIONS = frozenset({"QB", "RB", "WR", "TE"})
