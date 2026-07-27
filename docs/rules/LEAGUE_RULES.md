@@ -145,27 +145,34 @@ TYPICAL_BID_RANGES = {
 
 ## Positional Budget Allocation
 
-Historical PPR auction data shows roughly how budgets split across positions.
-These are **targets and soft constraints** — not hard limits.
-The live draft agent uses them as a guide, adjusting based on actual auction flow.
+**THE ONLY definition of the per-position shares is `POSITION_BUDGET_SHARE` in
+`backend/engines/valuation.py`.** Do not restate the numbers here or anywhere
+else — a second copy is how they drift. That constant carries its own derivation
+(three completed seasons of this league's real auction results from
+`league_auction_history`, recency-weighted 1/2/3) and **must sum to 1.0**; an
+earlier set summed to 0.90 and stranded $222 of the $2220 pool by construction.
 
-```python
-POSITIONAL_BUDGET_TARGETS = {
-    # As percentage of SKILL_POSITION_BUDGET ($183)
-    "RB":  0.38,    # ~$70 — most scarce position, highest value at top
-    "WR":  0.32,    # ~$59 — deep position, value extends further down
-    "QB":  0.10,    # ~$18 — one starter, often efficient to wait
-    "TE":  0.10,    # ~$18 — elite TE is valuable, rest are streamers
-    "K":   0.01,    # ~$2  — always $1, sometimes $2 for elite K
-    "DEF": 0.01,    # ~$2  — always $1, sometimes $2 for elite DEF
-    # Remaining ~8% = bench flexibility
-}
-```
+These are **hard** for the pre-draft board and **soft** in the live draft:
 
-**Important:** These percentages reflect market averages. The system should
-track actual auction spend vs targets in real time and alert when a position
-is running significantly over budget — e.g. "You've spent $85 on RB already,
-$15 over target. Adjust WR budget accordingly."
+- **Pre-draft** — `engines.valuation.apply_board_budgets` enforces them on
+  `ai_bid_ceiling` by water-filling each position onto its share. It runs AFTER
+  `valuation_agent` (which rewrites `ai_bid_ceiling`, so anything enforced
+  earlier is overwritten), and it applies to EVERY position. QB used to be
+  excluded because budget enforcement had piggybacked on
+  `_FORMAT_INVARIANT_POSITIONS` — that set is about QB scoring the same in every
+  scoring format and has nothing to do with budgets.
+- **Live draft** — a guide, adjusted against actual auction flow. The system
+  should track real spend vs target and alert when a position runs over, e.g.
+  "You've spent $85 on RB already, $15 over target. Adjust WR budget accordingly."
+
+The budget is measured over each position's DRAFTABLE POOL
+(`get_draftable_pool_sizes` — the ~150 skill players a 12-team league actually
+buys), not over every priced row. The board prices ~673; the $1 depth tail below
+the pool is never bought, so charging it against the pool both misstates the
+constraint and starves the small-share positions.
+
+K and DEF have no share: they are static $1 streamers on a separate path
+(`value_kdef`), bounded to their $2 cap and never rescaled into the skill pool.
 
 ---
 
@@ -464,9 +471,10 @@ specific matchup and Vegas context, not just season averages.
    - WRONG: `183 × 12 = $2,196` (previous incorrect value)
    - CORRECT: `185 × 12 = $2,220`
 
-4. **Positional budget allocation targets from LEAGUE_RULES.md:**
-   RB=38%, WR=32%, QB=10%, TE=10% of SKILL_POSITION_BUDGET.
-   Do NOT invert WR and QB. QB is 10%, not 38%.
+4. **Positional budget allocation targets live in ONE place:**
+   `POSITION_BUDGET_SHARE` in `backend/engines/valuation.py`. Read them there;
+   never hardcode or restate them. They must sum to 1.0, and QB is the SMALLEST
+   share — do NOT invert WR and QB.
 
 5. **`apply_budget_constraint()` runs last** before emitting any bid
    recommendation. It verifies the roster can be completed competitively
