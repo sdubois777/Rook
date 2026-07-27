@@ -121,13 +121,22 @@ class PriceCurve:
         return float(math.exp(min(max(exponent, lo), hi)))
 
     def dollar_edge(self, points: float, price: float) -> Optional[float]:
-        """implied_price - price, for DISPLAY.
+        """implied_price - price. SIGN ONLY — do NOT show this magnitude as money.
 
-        Sign always matches :meth:`conviction` (both are monotone in the same residual,
-        and the clamp cannot cross the price), so the number a user sees never
-        contradicts the assessment chip. Do NOT rank on this — see the module docstring;
-        the dollar magnitude is price-biased and ranking by it scored 46.7% in the top
-        20% of the board. Rank on ``conviction``.
+        NOT PERSISTED AND NOT DISPLAYED. It briefly backed the board's GAP column and had
+        to be reverted. Only the SIGN is meaningful: both terms are monotone in the same
+        residual and the clamp cannot cross the price, so it agrees with
+        :meth:`conviction` — but the MAGNITUDE is an artifact of :meth:`implied_price`'s
+        clamp. Measured on a real board, 12 of 155 priced players sat exactly AT
+        ``price_cap`` — 30% of the top ten by price, 62% of PAY UP players — so their
+        "edge" was ``price_cap - price``, a pure function of price that ranks elite
+        players by cheapness. CeeDee Lamb printed +$44 against a $39 market while the
+        board's own bid ceiling for him was $40.
+
+        The board's dollar column is ``ai_bid_ceiling - market`` (see
+        ``engines.valuation.compute_value_gap_from_player``), which is zero-sum against
+        the market and actionable per row. Rank on ``conviction``; bid on the ceiling;
+        this method is neither.
         """
         if price is None or price <= 0:
             return None
