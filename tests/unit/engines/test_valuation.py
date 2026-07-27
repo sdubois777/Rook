@@ -816,7 +816,11 @@ def test_pool_sizes_derived_from_league_settings():
     assert sizes["QB"] == 13   # 12 starters + 1 (first non-starter)
     assert sizes["RB"] >= 40   # 24 starters + flex + bench
     assert sizes["WR"] >= 50   # 24 starters + flex + bench
-    assert sizes["TE"] >= 20   # 12 starters + flex + bench
+    # TE is a ONE-starter position that teams stream, so its pool is 12 starters + ~1
+    # flex + ~5 bench. Pinned exactly, not as a floor: the pool's last player IS the
+    # replacement level, and an over-deep TE pool (this was 25) sets replacement 30
+    # points too low and flattens the entire TE dollar curve. See _BENCH_SPLIT["TE"].
+    assert sizes["TE"] == 18
     total = sum(sizes.values())
     assert 130 <= total <= 200, f"Total pool {total} outside expected range"
 
