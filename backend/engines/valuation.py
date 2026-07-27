@@ -656,6 +656,39 @@ def derive_market_relative_signals(
     return "avoid", False, True                   # gap <= -15
 
 
+def apply_budget_gate(
+    pay_up: bool, nomination: bool, ai_bid_ceiling, market,
+) -> tuple[bool, bool]:
+    """Suppress an ACTION flag that contradicts our own bid ceiling.
+
+    PAY UP and NOMINATE are the two flags that tell a user to DO something, and they sit
+    on the board next to the dollar gap (``ai_bid_ceiling - market``). They are derived
+    from conviction, which is a within-position statement about production versus price
+    and carries no budget constraint — so a player can be genuinely underpriced for his
+    production AND still cost more than the pool allocates to him. Both statements are
+    true; rendering them adjacent reads as the board contradicting itself.
+
+    Measured on the board this was written against: 3 of 13 PAY UP players had a ceiling
+    BELOW market — "pay up" next to "we would not pay that". The mirror case (NOMINATE on
+    a player we would happily outbid) was 0 of 20, but it is the same defect and is gated
+    symmetrically rather than left to luck of the data.
+
+    Conviction still chooses the candidates and still drives ``value_assessment`` /
+    ``value_gap_signal``, which are OPINIONS and may legitimately disagree with our
+    budget. Only the two act-now flags are gated. Missing data gates nothing — with no
+    ceiling or no market there is no contradiction to resolve.
+    """
+    if ai_bid_ceiling is None or market is None:
+        return pay_up, nomination
+    ceiling = float(ai_bid_ceiling)
+    price = float(market)
+    if pay_up and ceiling < price:
+        pay_up = False
+    if nomination and ceiling > price:
+        nomination = False
+    return pay_up, nomination
+
+
 def compute_let_go_threshold(bid_ceiling: Decimal, risk_level: str = "low") -> Decimal:
     """Let-go threshold — risk-adjusted walk-away price above ceiling.
 
@@ -1569,10 +1602,28 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
     ``docs/recon/signal_accuracy_recon.md``.
 
     ``ai_bid_ceiling`` is UNCHANGED and remains the auction bid surface — bidding, budget
-    maths and the live-draft engine are untouched. ``value_gap`` is still a dollar figure
-    for display and is guaranteed to carry the same SIGN as the assessment. Ranking of
-    "top opportunities" must use ``signal_conviction``, never ``value_gap``: the dollar
-    magnitude is price-biased and the top 20% of the board by dollar gap scored 46.7%.
+    maths and the live-draft engine are untouched. Ranking of "top opportunities" must use
+    ``signal_conviction``, never ``value_gap``: the dollar magnitude is price-biased and
+    the top 20% of the board by dollar gap scored 46.7%.
+
+    TWO QUANTITIES, TWO COLUMNS, NEVER MIXED:
+
+      ``value_gap``          DOLLARS. ``ai_bid_ceiling - market``. What we would bid
+                             versus what he will cost — the auction question, zero-sum
+                             against the market by construction (measured: our ceilings
+                             $2334 against a $2357 market over the same 155 players) and
+                             directly actionable per row.
+      ``signal_conviction``  The standardised price-curve residual. Drives every
+                             JUDGEMENT field and all ranking.
+
+    ``value_gap`` briefly held the curve's ``dollar_edge`` instead. That was wrong to
+    display as money: ``implied_price`` inverts a log-linear fit and so is clamped to
+    1.5x the priciest player at the position, and 12 of 155 priced players sat AT that
+    clamp — 30% of the top ten by price and 62% of PAY UP players. For them the printed
+    "gap" was ``price_cap - price``, a pure function of price, ordering elite players by
+    cheapness: CeeDee Lamb showed +$44 against a $39 market while our own ceiling was $40.
+    ``dollar_edge`` was only ever guaranteed in its SIGN (see its docstring) and is no
+    longer persisted anywhere.
 
     Still a pure DB pass — the curve fit is arithmetic over rows already loaded. NO API
     calls, no extra queries per player, no cache invalidation.
@@ -1630,11 +1681,11 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
             )
 
             if conviction is not None:
-                # PRIMARY PATH — price-neutral projection residual (signal_basis).
+                # PRIMARY PATH — price-neutral projection residual (signal_basis) for the
+                # JUDGEMENT. The DOLLAR column stays ceiling-vs-market on every path.
                 assessment, pay_up, nomination = derive_signals_from_conviction(conviction)
                 sig = conviction_to_gap_signal(conviction)
-                dollar = curve.dollar_edge(pts, float(mkt))
-                gap = _to_dec(dollar) if dollar is not None else None
+                gap, _ = compute_value_gap_from_player(p)
             else:
                 # FALLBACK — no curve for this position (K/DEF, too few priced players)
                 # or no projection/market for this player. Degrade to the legacy
@@ -1642,6 +1693,11 @@ async def reconcile_value_signals(dry_run: bool = False) -> dict:
                 legacy_fallbacks += 1
                 gap, sig = compute_value_gap_from_player(p)
                 assessment, pay_up, nomination = derive_market_relative_signals(gap)
+
+            # BUDGET GATE — an ACTION flag must agree with our own bid. Conviction picks
+            # the candidates; whether we would actually transact decides the badge.
+            pay_up, nomination = apply_budget_gate(
+                pay_up, nomination, p.ai_bid_ceiling, mkt)
 
             new_gap = float(gap) if gap is not None else None
             new = (new_gap, sig, assessment, pay_up, nomination)
