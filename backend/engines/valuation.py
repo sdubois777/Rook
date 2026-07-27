@@ -684,6 +684,56 @@ def derive_market_relative_signals(
     return "avoid", False, True                   # gap <= -15
 
 
+# Every field the valuation surface writes, mapped to its UNVALUED value. A player the
+# pass declines to value must have ALL of them reset.
+#
+# WHY A NAMED SET: this used to be an inline list that cleared the math fields and
+# nothing else, so a player who lost his profile kept `ai_bid_ceiling`, his auction note
+# and his whole snake surface. The result is a GHOST — no anchor, no tier, no gap, but a
+# stale dollar price the board still renders and, once positional budgets landed, that
+# `apply_board_budgets` still funds out of a real position's pool. Measured on production:
+# 20 ghosts holding $30, and 56 holding $123 before the profile backfill.
+#
+# pay_up_flag / nomination_target_flag are NOT NULL with a False default, so their
+# unvalued value is False rather than None.
+_UNVALUED_FIELDS: dict[str, object] = {
+    # the math
+    "tier": None, "adjusted_points": None, "baseline_value": None,
+    "ceiling_value": None, "floor_value": None, "risk_adjusted_value": None,
+    "recommended_bid_ceiling": None, "let_go_threshold": None,
+    "elite_anchor_weight": None, "positional_scarcity_modifier": None,
+    # the model's auction opinion
+    "ai_bid_ceiling": None, "ai_confidence_floor": None,
+    "ai_confidence_ceiling": None, "auction_note": None,
+    # the market-relative judgement
+    "value_gap": None, "value_gap_signal": None, "value_assessment": None,
+    "signal_conviction": None, "pay_up_flag": False, "nomination_target_flag": False,
+    # the snake surface
+    "adp_ai": None, "adp_rank": None, "adp_diff": None, "snake_flag": None,
+    # provenance
+    "data_confidence": "low",
+}
+
+
+def clear_player_valuation(player) -> bool:
+    """Reset every valuation field on a player the pass did not value.
+
+    Returns True when something actually changed, so the caller can count real clears.
+
+    The check is per-field rather than gated on one sentinel column. The old code only
+    cleared `if player.baseline_value is not None`, which meant an ALREADY-half-cleared
+    row — the exact ghost state, baseline gone but ceiling still set — could never be
+    repaired: the gate saw a null baseline and skipped it forever. Idempotent: a second
+    pass over a cleared player changes nothing and returns False.
+    """
+    changed = False
+    for field, unvalued in _UNVALUED_FIELDS.items():
+        if getattr(player, field, unvalued) != unvalued:
+            setattr(player, field, unvalued)
+            changed = True
+    return changed
+
+
 def apply_budget_gate(
     pay_up: bool, nomination: bool, ai_bid_ceiling, market,
 ) -> tuple[bool, bool]:
@@ -1399,20 +1449,7 @@ async def run_valuation_pass(
         cleared = 0
         for player in players:
             if player.position in DRAFTABLE_POSITIONS and player.id not in valued_player_ids:
-                if player.baseline_value is not None:
-                    player.tier                       = None
-                    # Must be cleared with the rest — a player who loses his profile would
-                    # otherwise display last run's points forever.
-                    player.adjusted_points            = None
-                    player.baseline_value             = None
-                    player.risk_adjusted_value        = None
-                    player.recommended_bid_ceiling    = None
-                    player.let_go_threshold           = None
-                    player.elite_anchor_weight        = None
-                    player.positional_scarcity_modifier = None
-                    player.value_gap                  = None
-                    player.value_gap_signal           = None
-                    player.data_confidence            = "low"
+                if clear_player_valuation(player):
                     session.add(player)
                     cleared += 1
                 skipped += 1
@@ -1473,8 +1510,16 @@ async def enforce_ai_ceiling_budgets(
     after: dict[str, float] = {}
     updated = 0
     async with AsyncSessionLocal() as session:
+        # An anchor is REQUIRED, not just a ceiling. A row with a ceiling and no
+        # recommended_bid_ceiling is a ghost — the valuation pass declined to value the
+        # player, so he is not in any position's draftable pool and must not draw from
+        # its budget. clear_player_valuation now strips those rows, but requiring the
+        # anchor here means a ghost created by some future path still cannot be funded.
         players = (await session.execute(
-            select(Player).where(Player.ai_bid_ceiling.isnot(None))
+            select(Player).where(
+                Player.ai_bid_ceiling.isnot(None),
+                Player.recommended_bid_ceiling.isnot(None),
+            )
         )).scalars().all()
         rows = [
             {"key": p.id, "position": p.position, "value": float(p.ai_bid_ceiling)}
