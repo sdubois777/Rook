@@ -2124,7 +2124,8 @@ class PlayerProfilesAgent(BaseAgent):
 
             written = await _write_profiles(
                 all_profiles, context, team,
-                stale_names=stale_names,
+                stale_names=profile_delete_scope(
+                    stale_names, only_players, context["players"]),
                 depth_players=context.get("depth_players", []),
                 input_fingerprints=input_fingerprints,
             )
@@ -2267,6 +2268,33 @@ async def _upsert_profile(session: AsyncSession, record: "PlayerProfile") -> Non
     )
 
 
+def profile_delete_scope(
+    stale_names: set[str] | None,
+    only_players: set[str] | None,
+    context_players: list[dict],
+) -> set[str] | None:
+    """Which players' profiles ``_write_profiles`` is allowed to delete.
+
+    THE INVARIANT: never delete a profile we are not about to rewrite. ``None`` means
+    "wipe the whole team", which is correct only on a force / first run, where every
+    player on the team is about to be re-inserted.
+
+    The bug this exists to prevent: a TARGETED refresh set ``stale_names = None`` to
+    bypass the staleness gate, and that same variable is what the writer reads as its
+    delete scope. But targeted mode also filters the context down to the affected set, so
+    the writer wiped every profile on the team and rewrote only the targeted names. A
+    one-player refresh on a team destroyed that team's other ~30 profiles. Measured in
+    production: refreshing 41 players across 6 teams took player_profiles from 829 rows
+    to 767 and left the cleared players carrying stale ai_bid_ceilings.
+
+    So in targeted mode the scope is exactly the players that survived the context
+    filter — the set actually being rewritten.
+    """
+    if only_players is None:
+        return stale_names
+    return {p["name"] for p in context_players}
+
+
 async def _write_profiles(
     profiles: list[dict], context: dict, team: str,
     stale_names: set[str] | None = None,
@@ -2276,7 +2304,11 @@ async def _write_profiles(
     """Write player_profiles for one team.
 
     When stale_names is provided, only deletes profiles for those players (selective refresh).
-    When stale_names is None, deletes all team profiles before re-inserting (force/first run).
+    When stale_names is None, deletes ALL team profiles before re-inserting — correct ONLY
+    when every player on the team is about to be rewritten (force / first run). Callers
+    must go through ``profile_delete_scope`` rather than passing their staleness variable
+    straight through: a partial rewrite with a None scope silently destroys every profile
+    it does not replace.
 
     input_fingerprints ({player_name: sha256}) — the material-input fingerprint
     computed at staleness-check time — is stamped into clean_season_baseline so
