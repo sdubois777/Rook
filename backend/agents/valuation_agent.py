@@ -457,47 +457,69 @@ def _hybrid_system_prompt(scoring_format: str) -> str:
 
 
 _POS_MAX_BID = {"RB": 80, "WR": 70, "QB": 50, "TE": 45, "K": 2, "DEF": 2}
-_HYBRID_POSITIONS = ("RB", "WR", "TE")  # reception positions reprice; QB/K/DEF are copied
+# Positions the per-format HYBRID re-reasons. QB/K/DEF are format-invariant (they don't
+# catch passes, so their points — and therefore their auction $ — are identical in every
+# scoring format), so their format rows copy the players-table opinion instead of being
+# re-reasoned. This is a statement about FORMAT MATH ONLY. It does NOT scope the rails:
+# _apply_hybrid_rails below runs over every position on both paths.
+_HYBRID_POSITIONS = ("RB", "WR", "TE")
 
 
 def _apply_hybrid_rails(rows: list[dict]) -> dict:
-    """Non-market rails on the hybrid's raw ai_bid_ceilings for one format's reception
-    positions. rows: [{name, ai_raw, anchor, tier, position}] → {name: ai_final:int}.
-    Rails (all structural, none is the market): (1) ±25% leash off the tier-band anchor,
-    (2) sum-to-budget rescale (aggregate == the anchor aggregate — don't mint money),
-    (3) tier-ordinal (no lower tier outprices the max of a better tier), (4) ≤ position
-    pool max, floor $1."""
+    """Non-market rails on raw ai_bid_ceilings, applied PER POSITION.
+
+    rows: [{name, ai_raw, anchor, tier, position}] → {name: ai_final:int}.
+    Rails (all structural, none is the market): (1) ±25% leash off the math anchor,
+    (2) sum-to-anchor rescale (don't mint money), (3) tier-ordinal (no lower tier
+    outprices the max of a better tier), (4) ≤ position pool max, floor $1.
+
+    PER POSITION, not over one merged pool. Rails (2) and (3) are only meaningful inside
+    a single position: an aggregate rescale over a mixed RB+WR+TE pool lets one position
+    absorb another's slack, and a tier-ordinal cap across positions compares a tier-1 QB
+    to a tier-2 RB, which is not a comparison. This function used to be handed the merged
+    reception pool with QB excluded entirely — the exclusion QB inherited from
+    _FORMAT_INVARIANT_POSITIONS, which is about points-per-format and has nothing to do
+    with budgets. Every position is railed here now; the cross-position allocation is a
+    separate, later concern owned by engines.valuation.apply_board_budgets.
+    """
     if not rows:
         return {}
-    # (1) ±25% leash off the anchor
-    for r in rows:
-        a = float(r["anchor"]) if r.get("anchor") else 0.0
-        ai = float(r["ai_raw"]) if r.get("ai_raw") is not None else a
-        if a > 0:
-            ai = max(a * 0.75, min(ai, a * 1.25))
-        r["ai"] = max(1.0, ai)
-    # (2) sum-to-budget: rescale to the tier-band anchor aggregate
-    sum_anchor = sum(float(r["anchor"]) for r in rows if r.get("anchor"))
-    sum_ai = sum(r["ai"] for r in rows) or 1.0
-    if sum_anchor > 0:
-        scale = sum_anchor / sum_ai
-        for r in rows:
-            r["ai"] *= scale
-    # (3) tier-ordinal: ascending tiers, cap at the max ai of the immediately better tier
     from collections import defaultdict
-    by_tier: dict = defaultdict(list)
+
+    by_position: dict = defaultdict(list)
     for r in rows:
-        by_tier[r.get("tier") or 99].append(r)
-    prev_max = float("inf")
-    for tier in sorted(by_tier):
-        for r in by_tier[tier]:
-            r["ai"] = min(r["ai"], prev_max)
-        prev_max = max((r["ai"] for r in by_tier[tier]), default=prev_max)
-    # (4) position pool max + floor + round
-    return {
-        r["name"]: max(1, min(int(round(r["ai"])), _POS_MAX_BID.get(r.get("position"), 80)))
-        for r in rows
-    }
+        by_position[r.get("position")].append(r)
+
+    out: dict = {}
+    for position, group in by_position.items():
+        # (1) ±25% leash off the anchor
+        for r in group:
+            a = float(r["anchor"]) if r.get("anchor") else 0.0
+            ai = float(r["ai_raw"]) if r.get("ai_raw") is not None else a
+            if a > 0:
+                ai = max(a * 0.75, min(ai, a * 1.25))
+            r["ai"] = max(1.0, ai)
+        # (2) sum-to-anchor: rescale this position to its own anchor aggregate
+        sum_anchor = sum(float(r["anchor"]) for r in group if r.get("anchor"))
+        sum_ai = sum(r["ai"] for r in group) or 1.0
+        if sum_anchor > 0:
+            scale = sum_anchor / sum_ai
+            for r in group:
+                r["ai"] *= scale
+        # (3) tier-ordinal: ascending tiers, cap at the max ai of the better tier
+        by_tier: dict = defaultdict(list)
+        for r in group:
+            by_tier[r.get("tier") or 99].append(r)
+        prev_max = float("inf")
+        for tier in sorted(by_tier):
+            for r in by_tier[tier]:
+                r["ai"] = min(r["ai"], prev_max)
+            prev_max = max((r["ai"] for r in by_tier[tier]), default=prev_max)
+        # (4) position pool max + floor + round
+        pos_max = _POS_MAX_BID.get(position, 80)
+        for r in group:
+            out[r["name"]] = max(1, min(int(round(r["ai"])), pos_max))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1027,29 +1049,27 @@ class ValuationAgent(BaseAgent):
         for p in players:
             name_to_player[p.name] = p
 
-        max_bids = {"RB": 80, "WR": 70, "QB": 50, "TE": 45}
         written = 0
 
         # RAILS — the same non-market leash the per-format hybrid path applies in
         # run_prose_for_format. Without it this path clamped only to the position max, so a
         # WR could be written anywhere in $1-70 regardless of his anchor: Ja'Marr Chase's
         # PPR ceiling landed at $58 against a $12.91 anchor (+349%) while the prompt asks
-        # for ±25%. Half-PPR and Standard were already railed, which is exactly why they
-        # priced him sanely ($41/$40) and PPR did not.
+        # for ±25%.
         #
-        # Scoped to _HYBRID_POSITIONS (RB/WR/TE) so this is byte-identical in construction
-        # to the per-format call — rail (2) rescales to the anchor aggregate, which is only
-        # meaningful over one budget pool. QB/K/DEF keep clamp-only behavior here (they are
-        # format-invariant and copy this value into the format rows); railing them is a
-        # separate, larger change.
+        # EVERY POSITION. This used to be scoped to _HYBRID_POSITIONS (RB/WR/TE), leaving
+        # QB clamp-only — an exclusion inherited from _FORMAT_INVARIANT_POSITIONS, which is
+        # about QB scoring the same in every format and says nothing about budgets. Unrailed
+        # QB is how C.J. Stroud and Matthew Stafford were written at $32 against a $1 math
+        # anchor: under the $50 cap, so the clamp never noticed. _apply_hybrid_rails is now
+        # per-position, so rail (2)'s sum-to-anchor and rail (3)'s tier-ordinal each apply
+        # within one position, where they mean something.
         rail_rows = [
             {"name": name, "anchor": float(p.recommended_bid_ceiling),
              "tier": p.tier, "position": p.position,
              "ai_raw": (results_map.get(name) or {}).get("ai_bid_ceiling")}
             for name, p in name_to_player.items()
-            if p.position in _HYBRID_POSITIONS
-            and p.recommended_bid_ceiling
-            and name in results_map
+            if p.recommended_bid_ceiling and name in results_map
         ]
         railed_ai = _apply_hybrid_rails(rail_rows)
 
@@ -1065,13 +1085,14 @@ class ValuationAgent(BaseAgent):
                 if not db_player:
                     continue
 
-                # Reception positions take the railed value (leash + budget rescale +
-                # tier-ordinal + position max, all applied in _apply_hybrid_rails).
-                # Everything else keeps the position-max clamp.
+                # The railed value (leash + sum-to-anchor + tier-ordinal + position max,
+                # all applied per position in _apply_hybrid_rails). The clamp-only branch
+                # survives only for a player with no math anchor to rail against — the
+                # run_all query filters those out, so it should be unreachable.
                 if player_name in railed_ai:
                     ai_ceiling = railed_ai[player_name]
                 else:
-                    pos_max = max_bids.get(db_player.position, 80)
+                    pos_max = _POS_MAX_BID.get(db_player.position, 80)
                     ai_ceiling = result.get("ai_bid_ceiling")
                     if ai_ceiling is not None:
                         ai_ceiling = max(1, min(int(ai_ceiling), pos_max))

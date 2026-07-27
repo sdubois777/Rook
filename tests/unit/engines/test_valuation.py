@@ -522,7 +522,11 @@ def test_analysis_year_dynamic_not_hardcoded():
         Path(__file__).parent.parent.parent.parent
         / "backend" / "engines" / "valuation.py"
     )
-    source = valuation_path.read_text()
+    # encoding is EXPLICIT: Path.read_text() defaults to the locale codec, which is
+    # cp1252 on a Windows dev box. valuation.py has always held non-cp1252 bytes (the
+    # box-drawing banner in the TIERING section), so this guard raised UnicodeDecodeError
+    # instead of running — silently green in CI (UTF-8 locale), silently broken locally.
+    source = valuation_path.read_text(encoding="utf-8")
     # Pattern: 4-digit year from 2020-2030 as a standalone number
     matches = re.findall(r"\b20(2[0-9]|30)\b", source)
     assert not matches, (

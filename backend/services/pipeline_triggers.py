@@ -287,7 +287,7 @@ async def run_targeted_refresh(
     # --- real run (own DB sessions inside the agents; no shared session held) ---
     from backend.agents.player_profiles import PlayerProfilesAgent
     from backend.agents.valuation_agent import ValuationAgent
-    from backend.engines.valuation import run_valuation_pass
+    from backend.engines.valuation import enforce_ai_ceiling_budgets, run_valuation_pass
 
     profiles_written = 0
     profiler = PlayerProfilesAgent(dry_run=False, warehouse=warehouse)
@@ -299,11 +299,16 @@ async def run_targeted_refresh(
 
     val = await run_valuation_pass()                                   # global, free
     va = await ValuationAgent(dry_run=False).run_all(only_player_ids=player_ids)
+    # The budget is a BOARD-WIDE constraint, so re-reasoning even one ceiling breaks it
+    # for every position. Enforcement is global by necessity and pure Python (free), so
+    # it runs on every path that rewrites ai_bid_ceiling, not just the full sweep.
+    enf = await enforce_ai_ceiling_budgets()
 
     logger.info(
-        "Targeted refresh (%s): %d profiles, %d values, %d ceilings across %d team(s)",
+        "Targeted refresh (%s): %d profiles, %d values, %d ceilings across %d team(s); "
+        "%d ceiling(s) re-railed onto the positional budget",
         event_type, profiles_written, val.get("updated", 0),
-        va.get("processed", 0), len(by_team),
+        va.get("processed", 0), len(by_team), enf.get("updated", 0),
     )
     return {
         **plan,
@@ -311,6 +316,7 @@ async def run_targeted_refresh(
         "profiles_written": profiles_written,
         "values_updated": val.get("updated", 0),
         "ceilings_processed": va.get("processed", 0),
+        "ceilings_rebudgeted": enf.get("updated", 0),
     }
 
 

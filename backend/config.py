@@ -11,9 +11,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # equally-explicit prod path.
 _ENV_FILE = os.environ.get("ROOK_ENV_FILE", ".env")
 
+# Base env file — always loaded, and always FIRST. It is where the secrets live.
+BASE_ENV_FILE = ".env"
+
+
+def resolve_env_files(selected: str, base: str = BASE_ENV_FILE) -> tuple[str, ...]:
+    """The env files to load, in precedence order (LATER files win).
+
+    LAYERED, not replaced. `.env.prod` is a one-line overlay carrying only DATABASE_URL —
+    the secrets live once, in `.env`, rather than being duplicated into every target file.
+    pydantic-settings accepts a tuple and lets later files override earlier ones, so the
+    base supplies the keys and the selected file redirects the database.
+
+    Without this, `ROOK_ENV_FILE=.env.prod` REPLACED the base file and Settings() died at
+    import on the required `anthropic_api_key` / `secret_key` — the documented prod path
+    could not run at all. Layering does not weaken the guard: backend/db_guard.py keys on
+    the resolved DB HOST, so redirecting the URL is still what decides "am I about to
+    write to production", and ROOK_ALLOW_PROD_WRITES is still required for any write.
+    """
+    return (base,) if selected == base else (base, selected)
+
+
+_ENV_FILES = resolve_env_files(_ENV_FILE)
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILES, extra="ignore")
 
     # Anthropic
     anthropic_api_key: str

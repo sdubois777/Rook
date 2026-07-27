@@ -14,7 +14,8 @@ back to the players table.
 
 Calibration (per docs/rules/LEAGUE_RULES.md):
     LEAGUE_SKILL_DOLLAR_POOL = $185 × 12 = $2,220
-    RB=38%, WR=32%, QB=10%, TE=10% of skill dollar pool
+    Per-position shares come from POSITION_BUDGET_SHARE in backend/engines/valuation.py —
+    the ONLY definition. --dry-run prints the live values; never restate them here.
     Any ceiling above $80 is logged as a warning.
 """
 from __future__ import annotations

@@ -439,6 +439,24 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
             f"[{name}] {result['processed']} player(s) processed, "
             f"{result['skipped']} skipped."
         )
+        # POSITIONAL BUDGET — rail every position's ai_bid_ceiling onto its budget share.
+        # MUST be here, not inside run_valuation_pass: that pass writes
+        # recommended_bid_ceiling, which the agent above then overwrites, so enforcing
+        # upstream leaves the agent free to undo it and never reaches the board. Runs
+        # BEFORE reconcile_value_signals (so value_gap is computed against the final
+        # ceiling) and BEFORE run_prose_for_format (which copies the format-invariant
+        # QB/K/DEF ceilings out of the players table). Pure Python, no AI.
+        from backend.engines.valuation import (
+            enforce_ai_ceiling_budgets, enforce_format_ai_ceiling_budgets,
+        )
+        enf = await enforce_ai_ceiling_budgets()
+        _before, _after = enf["before"], enf["after"]
+        print(
+            f"[{name}] positional budget enforced on {enf['updated']} ceiling(s): "
+            f"${sum(_before.values()):.0f} -> ${sum(_after.values()):.0f} "
+            f"against a ${enf['pool']:.0f} pool."
+        )
+
         # STEP 5 (Phase 6) — DETERMINISTIC market-relative post-pass now that ai_bid_ceiling
         # is final and blind: recompute value_gap/signal AND derive value_assessment/
         # pay_up_flag/nomination_target_flag from the blind ceiling vs market. Pure DB, no AI.
@@ -466,6 +484,13 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         for _fmt in ("half_ppr", "standard"):
             pr = await agent.run_prose_for_format(_fmt)
             print(f"[{name}] {_fmt} prose: {pr['processed']} processed, {pr['written']} written.")
+        # ...and the same budget rail on the per-format ceilings the hybrid just wrote.
+        # Targets come from _format_budget_shares, which holds QB's share fixed across
+        # formats — so an enforced QB prices identically in every format, which is what
+        # format-invariance actually means.
+        fenf = await enforce_format_ai_ceiling_budgets()
+        for _fmt, _s in sorted(fenf["formats"].items()):
+            print(f"[{name}] {_fmt} budget: {_s['updated']}/{_s['rows']} ceiling(s) railed.")
 
     elif name == "format_market":
         # Per-format ADP (FantasyPros) + auction (DraftWizard, canonical flex roster)
