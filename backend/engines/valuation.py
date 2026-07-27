@@ -31,11 +31,12 @@ Let-go:          low=1.20×, moderate=1.15×, high=1.10×, volatile=1.05×
 from __future__ import annotations
 
 import logging
+import math
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
@@ -55,14 +56,34 @@ LEAGUE_SKILL_BUDGET = int(DEFAULT_LEAGUE_CONFIG.budget * DEFAULT_LEAGUE_CONFIG.s
 LEAGUE_TEAMS        = DEFAULT_LEAGUE_CONFIG.team_count
 LEAGUE_SKILL_DOLLAR_POOL = DEFAULT_LEAGUE_CONFIG.total_skill_pool
 
-# Positional budget allocation targets (% of LEAGUE_SKILL_DOLLAR_POOL)
-# From LEAGUE_RULES.md: RB=38%, WR=32%, QB=10%, TE=10%
-# Do NOT invert WR and QB. QB is 10%, not 38%.
+# Positional budget allocation targets (% of LEAGUE_SKILL_DOLLAR_POOL).
+#
+# MUST SUM TO 1.0. The previous values (QB .10 / RB .38 / WR .32 / TE .10) summed to 0.90,
+# which stranded $222 of a $2220 pool by construction — dollars no position could ever be
+# allocated. Do NOT reintroduce a set that does not sum to 1.
+#
+# DERIVED, not chosen. Three completed seasons of real auction results from
+# `league_auction_history` (~175 rows and ~$2340 of real money per season), weighted by
+# recency 1/2/3. Seasons are named relatively on purpose — this file must hold no year
+# literals (see test_analysis_year_dynamic_not_hardcoded):
+#
+#                  QB      RB      WR      TE
+#   3 seasons ago 8.6%   45.1%   37.4%    9.0%
+#   2 seasons ago 9.2%   38.3%   43.5%    9.1%
+#   most recent   7.5%   36.5%   49.7%    6.2%
+#   recency-w'ted 8.3%   38.5%   45.6%    7.6%   <- these numbers
+#
+# Recency-weighted rather than pooled: WR climbs monotonically (37.4 -> 43.5 -> 49.7) and
+# RB falls (45.1 -> 38.3 -> 36.5) as PPR keeps shifting value to receivers. Pooling would
+# treat the oldest season as equally informative about the coming one, and it is not.
+#
+# Do NOT invert WR and QB. QB is the SMALLEST share, not the second largest.
+# Non-PPR needs no separate numbers: _format_budget_shares anchors on this dict.
 POSITION_BUDGET_SHARE: dict[str, float] = {
-    "QB": 0.10,
-    "RB": 0.38,
-    "WR": 0.32,
-    "TE": 0.10,
+    "QB": 0.083,
+    "RB": 0.385,
+    "WR": 0.456,
+    "TE": 0.076,
 }
 
 # Positions whose per-format budget shifts. QB is FORMAT-INVARIANT (QBs don't catch
@@ -780,6 +801,227 @@ def sanity_check_valuations(
 
 
 # ---------------------------------------------------------------------------
+# POSITIONAL BUDGET ENFORCEMENT
+# ---------------------------------------------------------------------------
+# The auction pool is finite and every position competes for the SAME dollars, so the
+# per-position totals are a constraint, not a suggestion. This is the single place that
+# constraint is applied, and it applies to EVERY position.
+#
+# WHY THIS EXISTS. `ai_bid_ceiling` — the number the draft board shows — is written by
+# the LLM stage (agents/valuation_agent.py), which forms it as an independent opinion and
+# may deviate from the math anchor. The only sum-to-budget rail used to live in
+# `_apply_hybrid_rails` scoped to the RECEPTION positions (RB/WR/TE), because budget
+# enforcement had piggybacked on `_FORMAT_INVARIANT_POSITIONS` / `_TIER_BAND_POSITIONS`.
+# Those sets exist because QB POINTS do not change by scoring format — QBs don't catch
+# passes. That is a real property and it is preserved. But budget enforcement is NOT
+# format math and never should have inherited the exclusion: QB realized 15-21% of the
+# board against a 10% target and the board totalled $3556 against a $2220 pool.
+#
+# WHY WATER-FILLING, not a single rescale: a naive scale fights the clamps. Scale the
+# position down to its target, clamp the top players back up off the $1 floor / down off
+# MAX_REALISTIC_BID, and the sum no longer equals the target — the clamped dollars just
+# vanish (or appear). Water-filling pins whatever hit a bound, then redistributes the
+# residual over the players still free to move, and repeats until nothing new clamps.
+#
+# WHICH PLAYERS THE BUDGET IS MEASURED OVER — the DRAFTABLE POOL. `budgeted` is each
+# position's `get_draftable_pool_sizes` top-N: the same cut the replacement level and the
+# z-tiers are already built on, and the ~150 skill players a 12-team league actually buys.
+# The board prices ~673. Charging the $1 depth tail against the pool is both a category
+# error (nobody buys them, so they never spend league money) and arithmetically
+# degenerate: TE has 146 priced rows against a 7.6% share, so a whole-population
+# constraint leaves $23 above the floor to split among all of them and prices the best TE
+# in football at $3. The tail rides the SAME scale factor and floors at $1, so the
+# ordering stays continuous across the pool boundary and no visible player is dropped.
+# ---------------------------------------------------------------------------
+
+_BUDGET_MAX_ITER = 20
+
+
+def enforce_position_budget(
+    values,
+    target: float,
+    cap: float,
+    floor: int = 1,
+    budgeted: Optional[int] = None,
+    max_iter: int = _BUDGET_MAX_ITER,
+) -> list[int]:
+    """Water-fill ONE position's dollar values onto `target`. Pure — no DB, no ORM.
+
+    Args:
+        values:   dollar values, any order. Returned in the SAME order.
+        target:   dollars the budgeted subset must sum to.
+        cap:      per-player maximum (MAX_REALISTIC_BID for the position).
+        floor:    per-player minimum ($1 — a drafted player always costs something).
+        budgeted: how many of the HIGHEST values count toward `target` (the draftable
+                  pool). None = all of them. Entries outside it are scaled identically
+                  but do not spend the budget.
+
+    Returns integers in ``[floor, cap]`` whose budgeted subset sums to ``round(target)``
+    exactly (largest-remainder allocation), preserving the input ordering.
+
+    Infeasible targets are honoured as far as the bounds allow rather than faked: a
+    position of n players cannot cost less than ``n * floor``, so a target below that
+    returns the floor and the caller sees the overshoot.
+    """
+    n = len(values)
+    if n == 0:
+        return []
+
+    cap_f = float(cap)
+    floor_f = float(floor)
+    vals = [max(0.0, float(v or 0.0)) for v in values]
+
+    # Budget membership by rank on the INPUT values (stable on ties by index).
+    k = n if budgeted is None else max(0, min(int(budgeted), n))
+    order = sorted(range(n), key=lambda i: (-vals[i], i))
+    in_budget = [False] * n
+    for i in order[:k]:
+        in_budget[i] = True
+
+    out = list(vals)
+    pinned = [False] * n
+
+    for _ in range(max_iter):
+        fixed = sum(out[i] for i in range(n) if in_budget[i] and pinned[i])
+        free = sum(out[i] for i in range(n) if in_budget[i] and not pinned[i])
+        remaining = target - fixed
+        if free <= 0 or remaining <= 0:
+            # Every budgeted player is pinned (or worthless): the bounds, not the scale,
+            # now decide the total. Nothing left to redistribute.
+            break
+        scale = remaining / free
+        for i in range(n):
+            if not pinned[i]:
+                out[i] *= scale
+        newly_pinned = False
+        for i in range(n):
+            if pinned[i]:
+                continue
+            if out[i] > cap_f:
+                out[i] = cap_f
+                pinned[i] = True
+                newly_pinned = True
+            elif out[i] < floor_f:
+                out[i] = floor_f
+                pinned[i] = True
+                newly_pinned = True
+        if not newly_pinned:
+            break
+
+    return _integer_allocation(out, in_budget, target, floor, int(cap))
+
+
+def _integer_allocation(
+    out: list[float], in_budget: list[bool], target: float, floor: int, cap: int,
+) -> list[int]:
+    """Round the water-filled floats to whole dollars without losing the target.
+
+    ``ai_bid_ceiling`` is an integer column, and rounding 150 players independently moves
+    the total by more than the 2% the budget is verified to. Largest-remainder over the
+    BUDGETED subset makes the integer sum equal ``round(target)`` exactly.
+
+    Ordering survives: floor(a) >= floor(b) whenever a >= b, and a +1 only ever goes to
+    the larger fractional part, so within one integer step the higher value is always
+    served first and can at worst be equalled. The tail rounds DOWN (never up), which
+    cannot lift a tail player past the pool player above him.
+    """
+    n = len(out)
+    result = [0] * n
+    frac: list[float] = [0.0] * n
+    for i in range(n):
+        base = int(math.floor(out[i]))
+        result[i] = max(floor, min(base, cap))
+        frac[i] = out[i] - base
+
+    budget_idx = [i for i in range(n) if in_budget[i]]
+    if not budget_idx:
+        return result
+
+    deficit = int(round(target)) - sum(result[i] for i in budget_idx)
+
+    if deficit > 0:
+        # Hand out the remaining dollars, largest fractional part first.
+        candidates = sorted(budget_idx, key=lambda i: (-frac[i], -out[i], i))
+        while deficit > 0:
+            eligible = [i for i in candidates if result[i] < cap]
+            if not eligible:
+                break
+            for i in eligible:
+                if deficit == 0:
+                    break
+                result[i] += 1
+                deficit -= 1
+    elif deficit < 0:
+        # Take dollars back, smallest fractional part first.
+        candidates = sorted(budget_idx, key=lambda i: (frac[i], out[i], i))
+        while deficit < 0:
+            eligible = [i for i in candidates if result[i] > floor]
+            if not eligible:
+                break
+            for i in eligible:
+                if deficit == 0:
+                    break
+                result[i] -= 1
+                deficit += 1
+
+    return result
+
+
+def apply_board_budgets(
+    rows,
+    total_budget: float,
+    shares: Optional[dict[str, float]] = None,
+    pool_sizes: Optional[dict[str, int]] = None,
+    caps: Optional[dict[str, int]] = None,
+) -> dict:
+    """Enforce every position's budget across a whole board. Pure — no DB.
+
+    Args:
+        rows:         mappings with ``key`` (any hashable id), ``position``, ``value``.
+        total_budget: the league skill pool.
+        shares:       per-position budget share. Renormalised over the WHOLE dict, so a
+                      share set that sums to less than 1 still allocates the whole pool
+                      instead of stranding the difference. Renormalising over only the
+                      positions PRESENT would be wrong: a board missing a position would
+                      silently hand that position's pool to the others.
+        pool_sizes:   per-position draftable pool size (the budgeted subset).
+        caps:         per-position maximum bid.
+
+    Returns ``{key: int}``. Positions with no budget share (K/DEF — $1 streamers valued
+    on a separate static path) are bounded to ``[1, cap]`` and never rescaled into the
+    skill pool.
+    """
+    shares = POSITION_BUDGET_SHARE if shares is None else shares
+    pool_sizes = get_draftable_pool_sizes() if pool_sizes is None else pool_sizes
+    caps = MAX_REALISTIC_BID if caps is None else caps
+
+    by_pos: dict[str, list[dict]] = {}
+    for r in rows:
+        by_pos.setdefault(r["position"], []).append(r)
+
+    share_sum = sum(shares.values()) or 1.0
+    result: dict = {}
+    for pos, group in by_pos.items():
+        cap = caps.get(pos, 80)
+        share = shares.get(pos)
+        if not share:
+            # No budget share: bound only. K/DEF are static $1 streamers.
+            for r in group:
+                result[r["key"]] = max(1, min(int(round(float(r["value"] or 1))), cap))
+            continue
+        target = total_budget * share / share_sum
+        enforced = enforce_position_budget(
+            [r["value"] for r in group],
+            target=target,
+            cap=cap,
+            budgeted=pool_sizes.get(pos),
+        )
+        for r, v in zip(group, enforced):
+            result[r["key"]] = v
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Shared per-player value math — the SINGLE computation used by BOTH the PPR pass
 # (run_valuation_pass, writing the players table) and the per-format writer
 # (write_format_value_sets, writing player_format_values). Keeping it in one place
@@ -1148,6 +1390,155 @@ async def run_valuation_pass(
     }
 
 
+async def enforce_ai_ceiling_budgets(
+    config: LeagueConfig = DEFAULT_LEAGUE_CONFIG, dry_run: bool = False,
+) -> dict:
+    """Rail the players table's ``ai_bid_ceiling`` onto the positional budget.
+
+    MUST RUN AFTER ``valuation_agent``. ``ai_bid_ceiling`` is the LLM's number and the one
+    the draft board shows; ``recommended_bid_ceiling`` is the pool-share math underneath
+    it. Enforcing inside ``run_valuation_pass`` would only touch the second, which the
+    agent then overwrites — the enforcement would be invisible on the board.
+
+    Also runs before ``run_prose_for_format``, which copies the format-invariant QB/K/DEF
+    opinions verbatim out of this table into the per-format rows.
+
+    Pure Python over rows already loaded: no API calls, no cache invalidation.
+    """
+    total_budget = float(config.total_skill_pool)
+    pool_sizes = get_draftable_pool_sizes(config.team_count)
+
+    before: dict[str, float] = {}
+    after: dict[str, float] = {}
+    updated = 0
+    async with AsyncSessionLocal() as session:
+        players = (await session.execute(
+            select(Player).where(Player.ai_bid_ceiling.isnot(None))
+        )).scalars().all()
+        rows = [
+            {"key": p.id, "position": p.position, "value": float(p.ai_bid_ceiling)}
+            for p in players
+        ]
+        enforced = apply_board_budgets(
+            rows, total_budget, POSITION_BUDGET_SHARE, pool_sizes)
+
+        for p in players:
+            pos = p.position or "?"
+            new = enforced.get(p.id)
+            before[pos] = before.get(pos, 0.0) + float(p.ai_bid_ceiling)
+            after[pos] = after.get(pos, 0.0) + float(new)
+            if new is not None and new != p.ai_bid_ceiling:
+                if not dry_run:
+                    p.ai_bid_ceiling = new
+                    session.add(p)
+                updated += 1
+
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
+
+    logger.info(
+        "Positional budget enforced on %d ai_bid_ceiling(s) (dry_run=%s): %s -> %s",
+        updated, dry_run,
+        {k: round(v) for k, v in sorted(before.items())},
+        {k: round(v) for k, v in sorted(after.items())},
+    )
+    return {
+        "updated": updated, "dry_run": dry_run,
+        "before": before, "after": after,
+        "pool": total_budget, "pool_sizes": pool_sizes,
+    }
+
+
+async def enforce_format_ai_ceiling_budgets(
+    config: LeagueConfig = DEFAULT_LEAGUE_CONFIG, dry_run: bool = False,
+) -> dict:
+    """The same enforcement for ``player_format_values.ai_bid_ceiling`` (Half/Standard).
+
+    MUST RUN AFTER ``run_prose_for_format``, which is what writes those ceilings.
+
+    Targets come from ``_format_budget_shares``, so QB's share is held fixed across
+    formats — which is precisely why enforcing here does not break format-invariance. QB
+    points are identical in every format, its share is identical in every format, and the
+    pool is identical, so the enforced QB dollars come out identical too. Before this, the
+    format rows copied the players-table QB verbatim into a SMALLER non-PPR total and QB
+    realized 22.9% of it against an 11.1% target.
+
+    Aggregate PAR is recomputed from the stored per-format rows. That is the raw projected
+    points rather than the injury/dependency-adjusted points the writer used, so the
+    shares can differ from the write-time shares in the third decimal — far below the 2%
+    the budget is verified to, and it keeps this pass independent of writer state.
+    """
+    from backend.models.player_format_values import PlayerFormatValues
+
+    total_budget = float(config.total_skill_pool)
+    pool_sizes = get_draftable_pool_sizes(config.team_count)
+    results: dict[str, dict] = {}
+
+    async with AsyncSessionLocal() as session:
+        # EVERY row, not just the ones carrying a ceiling. The PPR format row has a NULL
+        # ai_bid_ceiling by design (the players table is authoritative for PPR), so
+        # filtering on it here would leave ppr_total_par empty and silently collapse
+        # _format_budget_shares back to the PPR defaults — the format-aware RB/WR/TE
+        # shift would never be applied.
+        rows = (await session.execute(
+            select(PlayerFormatValues.id, PlayerFormatValues.scoring_format,
+                   PlayerFormatValues.ai_bid_ceiling, PlayerFormatValues.projected_points,
+                   PlayerFormatValues.replacement_ppr, Player.position)
+            .join(Player, Player.id == PlayerFormatValues.player_id)
+        )).all()
+
+        by_format: dict[str, list] = {}
+        for r in rows:
+            by_format.setdefault(r.scoring_format, []).append(r)
+
+        def _total_par(rs) -> dict[str, float]:
+            """Aggregate points-above-replacement per position, from the stored rows."""
+            par: dict[str, float] = {}
+            for r in rs:
+                if r.projected_points is None or r.replacement_ppr is None:
+                    continue
+                par[r.position] = par.get(r.position, 0.0) + max(
+                    0.0, float(r.projected_points) - float(r.replacement_ppr))
+            return par
+
+        ppr_par = _total_par(by_format.get("ppr", []))
+        updated_ids: dict = {}
+        for fmt, frows in by_format.items():
+            priced = [r for r in frows if r.ai_bid_ceiling is not None]
+            if not priced:
+                continue
+            shares = _format_budget_shares(fmt, ppr_par, _total_par(frows))
+            enforced = apply_board_budgets(
+                [{"key": r.id, "position": r.position, "value": float(r.ai_bid_ceiling)}
+                 for r in priced],
+                total_budget, shares, pool_sizes,
+            )
+            changed = 0
+            for r in priced:
+                new = enforced.get(r.id)
+                if new is not None and new != r.ai_bid_ceiling:
+                    updated_ids[r.id] = new
+                    changed += 1
+            results[fmt] = {"rows": len(priced), "updated": changed, "shares": shares}
+
+        if not dry_run and updated_ids:
+            for row_id, new in updated_ids.items():
+                await session.execute(
+                    update(PlayerFormatValues)
+                    .where(PlayerFormatValues.id == row_id)
+                    .values(ai_bid_ceiling=new)
+                )
+            await session.commit()
+        else:
+            await session.rollback()
+
+    logger.info("Positional budget enforced on per-format ceilings (dry_run=%s): %s",
+                dry_run, {f: r["updated"] for f, r in sorted(results.items())})
+    return {"formats": results, "dry_run": dry_run}
+
+
 async def reconcile_value_signals(dry_run: bool = False) -> dict:
     """DETERMINISTIC market-relative post-pass (Phase 6). Pure DB pass — NO AI calls.
 
@@ -1345,10 +1736,11 @@ async def write_format_value_sets(
                 written += 1
                 return
             stmt = pg_insert(PlayerFormatValues).values(**row)
-            update = {k: row[k] for k in row if k not in ("player_id", "scoring_format")}
-            update["updated_at"] = _func.now()
+            # NOT named `update` — the module now imports sqlalchemy's update().
+            set_values = {k: row[k] for k in row if k not in ("player_id", "scoring_format")}
+            set_values["updated_at"] = _func.now()
             await session.execute(stmt.on_conflict_do_update(
-                constraint="uq_player_format", set_=update))
+                constraint="uq_player_format", set_=set_values))
             written += 1
 
         # PPR's per-position total PAR anchors the format-aware budget shift below.

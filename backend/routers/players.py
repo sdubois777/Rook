@@ -271,7 +271,9 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         market_value_season=get_current_season() if player.market_value_fantasypros else None,
         prior_season_price=prior_price,
         prior_season_year=prior_year,
-        value_gap=float(player.value_gap) if player.value_gap else None,
+        # `is not None`, not truthiness — an exactly-zero gap is a real answer, not
+        # missing data (see the same note in routers/draftboard.py).
+        value_gap=float(player.value_gap) if player.value_gap is not None else None,
         value_gap_signal=player.value_gap_signal,
         situation_score=player.situation_score,
         breakout_flag=player.breakout_flag or False,

@@ -9,6 +9,7 @@ import PositionBadge from '../components/shared/PositionBadge'
 import InjuryBadge from '../components/shared/InjuryBadge'
 import FlagBadge from '../components/shared/FlagBadge'
 import PlayerDetailPanel from '../components/PlayerDetailPanel'
+import { getValueGap, formatValueGap } from '../utils/playerUtils'
 
 export default function TeamDetail() {
   const { abbr } = useParams()
@@ -174,9 +175,9 @@ export default function TeamDetail() {
               {p.market_value != null ? `$${p.market_value.toFixed(0)}` : '--'}
             </span>
             <span className={`text-sm font-mono text-right ${
-              p.value_gap > 3 ? 'text-emerald-400' : p.value_gap < -3 ? 'text-red-400' : 'text-slate-400'
+              getValueGap(p) > 3 ? 'text-emerald-400' : getValueGap(p) < -3 ? 'text-red-400' : 'text-slate-400'
             }`}>
-              {p.value_gap != null ? `${p.value_gap > 0 ? '+' : ''}$${p.value_gap.toFixed(0)}` : '--'}
+              {getValueGap(p) != null ? `$${formatValueGap(p)}` : '--'}
             </span>
             {p.top_flag ? <FlagBadge flagType={p.top_flag} compact /> : <span />}
           </div>
