@@ -105,14 +105,28 @@ Player dollar value is then:
 ```python
 # player_value = (player_surplus_points / total_surplus_points) × $2,220
 #
-# surplus = projected_ppr_points_per_game - replacement_level
-REPLACEMENT_LEVEL_PPR = {
-    "QB":  18.0,   # Streamable QB off waivers
-    "RB":   8.0,   # Waiver wire RB
-    "WR":   7.0,   # Waiver wire WR
-    "TE":   5.0,   # Streamable TE
-}
+# surplus = projected_ppr_season_points - replacement_level
 ```
+
+**Replacement level is MEASURED, not declared.** It is the projection of the last
+player in the position's draftable pool — `calculate_replacement_level(sorted_pprs,
+get_draftable_pool_sizes()[pos])`. Do not restate a number for it here: this block
+used to carry a `REPLACEMENT_LEVEL_PPR` dict that drifted out of step with the code
+(it still said QB 18.0 long after the code moved to 17.0) and, worse, invited the
+constants to be read as the intended *answer* rather than as a guard.
+
+The only hardcoded values are the clamp either side of that measurement, and the
+single source of truth for both is `backend/engines/valuation.py`:
+
+- `REPLACEMENT_LEVEL_PPR_PER_GAME` — a **bad-data floor**, derived from the worst
+  season each position's own pool rank has delivered in the last three completed
+  seasons. On a healthy board it must never bind; if it does, the projections are
+  the thing to fix, not the curve.
+- `REPLACEMENT_LEVEL_MAX_PPR_PER_GAME` — a compression cap, which does bind at
+  times and is documented in place.
+
+If a position's replacement should sit higher or lower, the honest lever is its
+**draftable pool size** (`_FLEX_SPLIT` / `_BENCH_SPLIT`), not the clamp.
 
 ### Individual bid ceiling sanity checks
 
