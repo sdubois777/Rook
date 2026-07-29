@@ -195,7 +195,7 @@ def test_no_hardcoded_years_in_agent_files():
 
 def test_seed_nfl_data_uses_dynamic_seasons():
     """Verify no hardcoded [2022, 2023, 2024] exists in scripts/seed_nfl_data.py."""
-    source = (Path(__file__).parent.parent.parent / "scripts" / "seed_nfl_data.py").read_text()
+    source = (Path(__file__).parent.parent.parent / "scripts" / "seed_nfl_data.py").read_text(encoding="utf-8")
     assert "[2022, 2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2022, 2023, 2024]"
     assert "[2023, 2024]" not in source, "seed_nfl_data.py still has hardcoded [2023, 2024]"
 

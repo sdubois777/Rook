@@ -150,8 +150,10 @@ async def test_run_backtest_returns_metrics_and_df():
 
     mock_session = AsyncMock()
 
-    # Track execute calls — first is SET READ ONLY, second is historical prices,
-    # third is player+profile SELECT.  We need to return appropriate results.
+    # POSITIONAL MOCK — it switches on the call ORDER, so ADDING A QUERY anywhere in
+    # run_backtest's price path shifts every branch below and fails this test with an
+    # unrelated-looking AttributeError. If that happens, insert the new call here rather
+    # than assuming the production change is wrong.
     call_count = {"n": 0}
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -170,6 +172,12 @@ async def test_run_backtest_returns_metrics_and_df():
             mock_r.fetchall.return_value = []
             return mock_r
         if call_count["n"] == 4:
+            # _warn_unusable_auction_rows: (total rows, rows with a player_id, spend).
+            # All zero here — the season genuinely has no auction rows, so no warning.
+            mock_r = MagicMock()
+            mock_r.first.return_value = (0, 0, 0)
+            return mock_r
+        if call_count["n"] == 5:
             # _load_historical_prices: market_value_historic — empty here, so the
             # loader still falls through to the market_value_league path this test
             # is exercising

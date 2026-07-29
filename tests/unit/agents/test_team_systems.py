@@ -305,7 +305,7 @@ async def test_oline_grades_stored_separately():
 
 def test_no_hardcoded_years():
     """Scan team_systems.py source for literal year integers."""
-    source = (Path(__file__).parent.parent.parent.parent / "backend" / "agents" / "team_systems.py").read_text()
+    source = (Path(__file__).parent.parent.parent.parent / "backend" / "agents" / "team_systems.py").read_text(encoding="utf-8")
     year_re = re.compile(r"\b(202[2-9])\b")
     model_re = re.compile(r"claude-[a-z]+-[\d]+-[\d]+-\w+")
 
