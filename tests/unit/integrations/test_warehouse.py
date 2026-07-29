@@ -106,7 +106,7 @@ _AGENT_MODULES = [
 @pytest.mark.parametrize("module_path", _AGENT_MODULES)
 def test_no_data_cache_in_agents(module_path):
     """No agent file should contain _data_cache or _DATA_CACHE."""
-    source = (Path(__file__).parent.parent.parent.parent / module_path).read_text()
+    source = (Path(__file__).parent.parent.parent.parent / module_path).read_text(encoding="utf-8")
     assert "_data_cache" not in source, f"{module_path} still references _data_cache"
     assert "_DATA_CACHE" not in source, f"{module_path} still references _DATA_CACHE"
 
@@ -223,7 +223,7 @@ def test_no_columns_kwarg_in_pbp_calls():
     """
     import pathlib
 
-    source = pathlib.Path("backend/integrations/nfl_data.py").read_text()
+    source = pathlib.Path("backend/integrations/nfl_data.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     for node in ast.walk(tree):

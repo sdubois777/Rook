@@ -21,7 +21,7 @@ _FIXTURE = (
 
 
 def _draft_start_bundle():
-    return json.loads(_FIXTURE.read_text())
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 MY_ID = "1373225184038764544"
 

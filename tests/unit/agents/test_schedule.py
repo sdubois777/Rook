@@ -296,7 +296,7 @@ async def test_position_specific_grades_stored_separately():
 
 def test_no_hardcoded_years():
     """schedule.py must not contain literal year constants (integers 2000-2099)."""
-    source = Path("backend/agents/schedule.py").read_text()
+    source = Path("backend/agents/schedule.py").read_text(encoding="utf-8")
     tree   = ast.parse(source)
 
     for node in ast.walk(tree):
