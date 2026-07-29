@@ -847,6 +847,14 @@ def calculate_replacement_level(
     return sorted_pprs[-1]
 
 
+# How far a position's realized share of the draftable pool may sit from its budget
+# target before the sanity check complains. Wider than the 2-point bar
+# apply_board_budgets is verified to, because this runs on `baseline_value` — the
+# pool-share math BEFORE the LLM and before enforcement — so some drift is expected and
+# only a real divergence between the math and the budget is worth a warning.
+_SANITY_SHARE_TOLERANCE_PTS = 6.0
+
+
 def sanity_check_valuations(
     valued_players: list,
     league_pool: float = DEFAULT_LEAGUE_CONFIG.total_skill_pool,
@@ -855,23 +863,43 @@ def sanity_check_valuations(
     Post-valuation sanity checks. Returns list of warning strings.
     Empty list = all checks passed.
 
+    SCALE-FREE BY CONSTRUCTION. Every bound here derives from POSITION_BUDGET_SHARE and
+    the draftable pool rather than being a hardcoded dollar figure, because hardcoded
+    figures silently go stale the moment the shares move — and a check that always warns
+    is a check nobody reads. Two of the three warnings this emitted on production were
+    artifacts of exactly that:
+
+      * the total was summed over EVERY valued row, including the ~500-row $1 depth tail
+        that no auction ever buys, so it exceeded the pool by construction and could never
+        pass (it had been firing continuously);
+      * the per-position bounds were absolute dollar averages over that same
+        tail-dominated population, which makes them a restatement of
+        ``share x pool / row_count`` — they were calibrated when QB was .10 and TE .10,
+        and broke when those became .083 and .076.
+
     Args:
         valued_players: Player objects with baseline_value set.
         league_pool: Expected total dollar pool.
     """
     warnings: list[str] = []
+    pool_sizes = get_draftable_pool_sizes()
 
     by_pos: dict[str, list[float]] = {}
-    total = 0.0
     for p in valued_players:
-        val = float(p.baseline_value or 0)
-        by_pos.setdefault(p.position, []).append(val)
-        total += val
+        by_pos.setdefault(p.position, []).append(float(p.baseline_value or 0))
 
-    # Check 1: Total value shouldn't exceed pool by >10%
-    if total > league_pool * 1.10:
+    # The BUDGETED population: each position's draftable pool, the same top-N
+    # apply_board_budgets allocates over. The tail below it is $1 depth, never bought.
+    pool_spend = {
+        pos: sum(sorted(values, reverse=True)[:pool_sizes.get(pos, len(values))])
+        for pos, values in by_pos.items()
+    }
+    total_pool_spend = sum(pool_spend.values())
+
+    # Check 1: the draftable pool should cost about the league pool.
+    if total_pool_spend > league_pool * 1.10:
         warnings.append(
-            f"Total system value ${total:.0f} exceeds "
+            f"Draftable-pool value ${total_pool_spend:.0f} exceeds "
             f"pool ${league_pool:.0f} by >10%"
         )
 
@@ -884,29 +912,34 @@ def sanity_check_valuations(
                 f"Max {pos} value ${max_val:.0f} exceeds cap ${cap}"
             )
 
-    # Check 3: Reasonable number of players > $10
+    # Check 3: a sane number of players priced above the $1 depth tail. Expressed as a
+    # fraction of the draftable pool, not an absolute count, so it survives a shares or
+    # roster-size change.
+    total_pool_size = sum(pool_sizes.get(pos, 0) for pos in by_pos) or 1
     above_10 = sum(1 for vals in by_pos.values() for v in vals if v > 10)
-    if above_10 < 50 or above_10 > 140:
+    lo_n, hi_n = int(total_pool_size * 0.25), int(total_pool_size * 1.05)
+    if not (lo_n <= above_10 <= hi_n):
         warnings.append(
-            f"Unusual distribution: {above_10} players "
-            f"above $10 (expected 50-140)"
+            f"Unusual distribution: {above_10} players above $10 "
+            f"(expected {lo_n}-{hi_n}, i.e. 25-105% of the {total_pool_size}-player pool)"
         )
 
-    # Check 4: Average values per position should be reasonable
-    # Averages include many $1 players below replacement, so lower bound is low
-    expected_avg: dict[str, tuple[float, float]] = {
-        "QB": (3, 25), "RB": (5, 25),
-        "WR": (4, 22), "TE": (3, 22),
-    }
-    for pos, values in by_pos.items():
-        if not values or pos not in expected_avg:
-            continue
-        avg = sum(values) / len(values)
-        lo, hi = expected_avg[pos]
-        if not (lo <= avg <= hi):
-            warnings.append(
-                f"{pos} average ${avg:.1f} outside expected range ${lo}-${hi}"
-            )
+    # Check 4: each position's pool should hold roughly its BUDGET SHARE of the spend.
+    # This is the same quantity apply_board_budgets enforces, so a drift here means the
+    # math and the enforcement disagree — which is the failure worth hearing about.
+    share_sum = sum(POSITION_BUDGET_SHARE.values()) or 1.0
+    if total_pool_spend > 0:
+        for pos, spent in sorted(pool_spend.items()):
+            share = POSITION_BUDGET_SHARE.get(pos)
+            if not share:
+                continue
+            realized = spent / total_pool_spend * 100
+            target = share / share_sum * 100
+            if abs(realized - target) > _SANITY_SHARE_TOLERANCE_PTS:
+                warnings.append(
+                    f"{pos} holds {realized:.1f}% of the draftable pool against a "
+                    f"{target:.1f}% target ({realized - target:+.1f} points)"
+                )
 
     return warnings
 

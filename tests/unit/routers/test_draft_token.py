@@ -339,7 +339,7 @@ async def test_draft_sync_reconnect_backlog_from_real_capture():
 
     fixture = json.loads(
         (Path(__file__).resolve().parents[3]
-         / "extension" / "test" / "fixtures" / "sleeper" / "snake-draft-start-picks.json").read_text()
+         / "extension" / "test" / "fixtures" / "sleeper" / "snake-draft-start-picks.json").read_text(encoding="utf-8")
     )
     draft_meta, rest_picks = fixture["draft"], fixture["picks"]
     my_uid = next(iter(draft_meta["draft_order"]))  # the real captured user id

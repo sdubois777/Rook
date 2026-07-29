@@ -528,7 +528,7 @@ def test_no_hardcoded_years():
     source = (
         Path(__file__).parent.parent.parent.parent
         / "backend" / "agents" / "roster_changes.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     year_re = re.compile(r"\b(202[2-9])\b")
     model_re = re.compile(r"claude-[a-z]+-[\d]+-[\d]+-\w+")
 
