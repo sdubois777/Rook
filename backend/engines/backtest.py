@@ -54,6 +54,28 @@ def derive_system_signal(
     3. Low-projection players (< 80 PPR) never avoid — depth noise
     4. Small negative gaps (-8 to 0) are auction noise → neutral
     5. Only flag avoid for meaningful gaps (< -8) with confirming assessment
+
+    ON `value_gap` HERE — it is NOT the retired judgement basis, and the +5 / -8 / -15
+    cuts should be left alone. #378 retired ``ai_bid_ceiling - market_value_fantasypros``
+    (ceiling vs CONSENSUS) as a basis for deciding buy/avoid, and this function honours
+    that: the DIRECTION always comes from ``pay_up_flag`` and ``value_assessment``, both
+    derived from the price-neutral conviction residual. What the dollar term adds is the
+    one thing conviction cannot know — what this specific auction ACTUALLY PAID. A player
+    can be fairly priced against consensus and still be wildly overpaid in the room, and
+    that is a real, separate signal.
+
+    The cuts are absolute dollars, so they are only meaningful if the board and the
+    auction are on the same scale. They now are, and it was positional budget enforcement
+    that made them so:
+
+        board (draftable pool)      $2220
+        real 2025 auction           $2340 over 159 skill players     ratio 0.95
+
+    Before enforcement the board summed to $3556 (~$2748 over the same pool) against that
+    same $2340, so ``ceiling - price`` ran systematically positive and nearly everyone
+    looked like a buy. Enforcement did not break this calibration — it is the first thing
+    that made these thresholds mean what they were written to mean. Re-tune them only
+    against a measured re-run, not on the theory that the rescale broke them.
     """
     # Pay up flag always wins
     if pay_up_flag:
@@ -639,6 +661,32 @@ def _load_actual_season(season: int) -> pd.DataFrame:
 MIN_PRICE_COVERAGE = 50
 
 
+async def _warn_unusable_auction_rows(session, season: int, usable: int) -> None:
+    """Warn when a season HAS auction rows that neither price key can read.
+
+    The resolver's fall-through is silent, so "this league never drafted" and "this
+    league's whole draft is sitting in the table with no player_id and no player_name"
+    produce identical output. The second is a data bug worth a loud line in the log —
+    it is real money the backtest is declining to score against.
+    """
+    rows = (await session.execute(
+        select(
+            func.count(LeagueAuctionHistory.id),
+            func.count(LeagueAuctionHistory.player_id),
+            func.sum(LeagueAuctionHistory.price),
+        ).where(LeagueAuctionHistory.season_year == season)
+    )).first()
+    total, with_id, spend = (rows[0] or 0), (rows[1] or 0), float(rows[2] or 0)
+    if total and usable == 0:
+        logger.warning(
+            "backtest %s: league_auction_history holds %d row(s) worth $%.0f but NONE are "
+            "usable — %d carry a player_id and the rest have no resolvable name either. "
+            "The Yahoo league-sync path writes yahoo_player_key only. Falling through to "
+            "market_value_historic; the league's own auction is going unscored.",
+            season, total, spend, with_id,
+        )
+
+
 async def _load_historical_prices(
     session: AsyncSession, season: int,
 ) -> tuple[dict, dict[str, float], str]:
@@ -657,9 +705,14 @@ async def _load_historical_prices(
         actuals join is also by name — the RB's season, produced an "avoid", and was
         scored CORRECT inside the reported 64.1%.
 
-    `league_auction_history.player_id` is 100% populated for every priced season on this
-    deployment (2023: 175/175, 2024: 177/177), so the id key costs nothing and the name
-    map is a fallback for rows that predate it.
+    DO NOT assume `league_auction_history.player_id` is populated. It was, for the seasons
+    this was first written against — but the Yahoo LEAGUE-SYNC path writes rows with a
+    `yahoo_player_key` and NOTHING ELSE: no player_id, no player_name, no position.
+    Measured on production: the 2025 season has 180 such rows totalling $2367, of which
+    ZERO are usable by either key below, and the 2023 season has 160 rows with no prices
+    at all. Both keys therefore come back empty and the resolver falls through to
+    market_value_historic — which is correct, and is why `_warn_unusable_auction_rows`
+    exists: a silent fall-through would look identical to "this season has no auction".
 
     Sources are tried in descending order of trustworthiness, and the one actually used
     is reported in the label so a run can never quietly grade itself against the wrong
@@ -710,6 +763,11 @@ async def _load_historical_prices(
     if len(by_id) + len(by_name) >= MIN_PRICE_COVERAGE:
         n = len(by_id) + len(by_name)
         return by_id, by_name, f"league_auction_history ({season}, N={n})"
+
+    # Rows exist for this season but neither key could use them. Say so LOUDLY: the
+    # fall-through below is silent and otherwise indistinguishable from "no auction data",
+    # which is how a whole season's real prices can sit in the table unused.
+    await _warn_unusable_auction_rows(session, season, len(by_id) + len(by_name))
 
     # market_value_historic — the season-keyed price reference the league-sync path
     # writes. On this deployment it holds the REAL 2025 auction: 159 players summing to

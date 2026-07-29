@@ -657,7 +657,7 @@ def test_no_hardcoded_years():
     player_profiles.py must contain no literal integer year constants.
     All year references must use get_current_season() / get_analysis_year() / etc.
     """
-    source = Path("backend/agents/player_profiles.py").read_text()
+    source = Path("backend/agents/player_profiles.py").read_text(encoding="utf-8")
     # Look for 4-digit integers that look like years (2020-2030)
     found = re.findall(r"\b(202[0-9]|2030)\b", source)
     assert not found, (

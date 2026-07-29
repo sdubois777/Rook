@@ -287,7 +287,9 @@ async def run_targeted_refresh(
     # --- real run (own DB sessions inside the agents; no shared session held) ---
     from backend.agents.player_profiles import PlayerProfilesAgent
     from backend.agents.valuation_agent import ValuationAgent
-    from backend.engines.valuation import enforce_ai_ceiling_budgets, run_valuation_pass
+    from backend.engines.valuation import (
+        enforce_ai_ceiling_budgets, reconcile_value_signals, run_valuation_pass,
+    )
 
     profiles_written = 0
     profiler = PlayerProfilesAgent(dry_run=False, warehouse=warehouse)
@@ -303,12 +305,21 @@ async def run_targeted_refresh(
     # for every position. Enforcement is global by necessity and pure Python (free), so
     # it runs on every path that rewrites ai_bid_ceiling, not just the full sweep.
     enf = await enforce_ai_ceiling_budgets()
+    # ...and the market-relative fields must be recomputed against that FINAL ceiling,
+    # for the same reason the full pipeline does it here. Without this the refresh moved
+    # the ceiling and left value_gap, pay_up_flag and nomination_target_flag describing
+    # the ceiling it USED to have: measured on prod, one morning's beat-reporter refresh
+    # left 7 rows whose stored gap no longer equalled ceiling - market, and the budget
+    # gate that stops a PAY UP badge contradicting the gap was never re-applied. Pure DB,
+    # no API calls.
+    rec = await reconcile_value_signals()
 
     logger.info(
         "Targeted refresh (%s): %d profiles, %d values, %d ceilings across %d team(s); "
-        "%d ceiling(s) re-railed onto the positional budget",
+        "%d ceiling(s) re-railed onto the positional budget, %d signal(s) reconciled",
         event_type, profiles_written, val.get("updated", 0),
         va.get("processed", 0), len(by_team), enf.get("updated", 0),
+        rec.get("updated", 0),
     )
     return {
         **plan,
@@ -317,6 +328,7 @@ async def run_targeted_refresh(
         "values_updated": val.get("updated", 0),
         "ceilings_processed": va.get("processed", 0),
         "ceilings_rebudgeted": enf.get("updated", 0),
+        "signals_reconciled": rec.get("updated", 0),
     }
 
 

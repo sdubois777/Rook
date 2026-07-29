@@ -163,34 +163,89 @@ Full suite green apart from the one failure §5 documents as expected on clean `
 
 ---
 
+## What shipped after this, and why
+
+The budget work above surfaced four further defects. All are now released and verified in
+production; this section is the record of what the original change set off.
+
+**The GAP column was on a retired basis, then briefly on a worse one** (#402). The board
+recomputed `ai_bid_ceiling − market`, which disagreed in SIGN with the conviction-derived
+PAY UP badge for 39 of 155 players. The first fix pointed the column at the server's
+`value_gap`, which at the time held the price curve's `dollar_edge` — and that was worse:
+`implied_price` inverts a log-linear fit and is clamped at 1.5× the priciest player, so 12
+of 155 priced players sat exactly AT the clamp — 30% of the top ten by price and 62% of
+PAY UP players — and their printed "gap" was `price_cap − price`, ordering elite players
+by cheapness. CeeDee Lamb showed +$44 against a $39 market while our own ceiling was $40.
+`value_gap` is now `ceiling − market` again (zero-sum against the market: our ceilings
+$2334 vs a $2357 market), and `apply_budget_gate` suppresses a PAY UP whose ceiling sits
+below market — so the badge and the column agree by construction rather than by luck.
+
+**The TE curve was flat by ~2×** (#404). Not caused by enforcement — enforcement is a
+monotone rescale that made it visible by halving TE's total. Measured stage by stage, TE
+went 9.4/38.2 at PAR to 9.5/35.5 at the final dollar, so nothing downstream was guilty:
+the flatness was created at PAR by a replacement level 30 points too low.
+`_BENCH_SPLIT["TE"] = 0.14` gave twelve BENCH tight ends in a one-starter position, a
+25-deep pool, and replacement at TE25 instead of TE18. Both that and the replacement cap
+had to move together — neither alone did anything. Now 25→18 and 7.0→9.0 PPG.
+
+**A targeted profile refresh wiped every profile on the team it touched** (#406). Triggered
+while backfilling missing profiles. `run_for_team(only_players=…)` nulls `stale_names` to
+bypass the staleness gate, and the writer reads that same null as "wipe the team", then
+rewrote only the targeted names. One player requested destroyed ~30 teammates' profiles:
+829 → 767 rows. `profile_delete_scope()` now decides the delete set explicitly.
+
+**Cleared players kept their price — "ghosts"** (#408). `run_valuation_pass` cleared the
+math fields but not `ai_bid_ceiling`, the auction note, the judgement fields or the snake
+surface. So a player the system declined to value kept a dollar price the board rendered
+and — once budgets landed — that enforcement FUNDED out of a real position's pool. Worse,
+the clear was gated on `baseline_value is not None`, which is exactly false for a ghost,
+so the rows that most needed clearing were the ones it skipped forever. 20 ghosts holding
+$30 on prod, 56 holding $123 before the profile repair. Now one named `_UNVALUED_FIELDS`
+map, a per-field check, and enforcement additionally requires an anchor.
+
+---
+
+## Verified in production
+
+```
+positional budget    worst deviation 10.1 -> 0.0 points,  $3556 -> $2220
+                     holds on all three scoring formats
+GAP column           value_gap == ceiling - market on every row
+                     0 PAY UP with a negative gap, 0 NOMINATE with a positive one
+TE curve             9.5 / 35.5  ->  ~13 / 48.5      (market 17.8 / 56.9)
+profiles             829 -> 876,  ARI 29 missing -> 7,  SF 24 -> 4
+ghosts               56 rows / $123  ->  0
+```
+
+All of it survived the first unattended weekly sweep (Tue 09:00 UTC, full pipeline, ~$8.44)
+with every invariant intact — which is the real test, since that run is the one nobody
+watches.
+
+---
+
 ## Open items
 
-**The within-TE curve is flat and it is now visible.** Our top TE prices at $16 against a
-$31 market. The positional total is not the problem — TE's 7.6% is this league's own
-measured spend and enforcement hits it exactly. The distribution is:
+**The within-position curve at QB and RB is the mirror of the TE problem.** We are MORE
+concentrated than the market (QB 24.5% vs 19.9% at top1; RB ~8.8% vs 6.2%). Same lever —
+pool size and the replacement clamp — pointed the other way. Not investigated.
 
-```
-pos    ours top1 / top5     market top1 / top5     our #1 vs market #1
-QB      24.5% / 72.8%        19.9% / 57.4%          $45 vs $27
-RB       9.0% / 30.2%         6.2% / 26.6%          $77 vs $58
-WR       6.1% / 26.9%         6.0% / 25.0%          $62 vs $66
-TE       9.5% / 35.5%        17.7% / 56.6%          $16 vs $31
-```
+**`league_auction_history` rows written by the Yahoo league sync are unscoreable.** They
+carry `yahoo_player_key` and nothing else: no `player_id`, empty `player_name`, no
+`position`. The 2025 season has 180 such rows worth $2367 and the backtest cannot read
+one of them; it falls through to `market_value_historic`, which happens to hold the same
+auction, so 2025 still scores correctly by luck. **2023 falls all the way through to
+`market_value_league` — current-season ADP — which the resolver's own docstring says makes
+every signal metric meaningless.** The pooled 62.1% has a 2023 component, so that number
+wants re-checking before it is quoted again. `_warn_unusable_auction_rows` now logs this
+loudly instead of failing silently. Spun off.
 
-QB/RB/WR are at or steeper than the market. TE is flat by ~2x. Enforcement is a monotone
-rescale, so it did not create this — it made it visible by halving TE's total. This is a
-within-position (conviction) question, deliberately out of scope here. Spun off.
-
-**The backtest still thresholds on the retired dollar gap.** `backend/engines/backtest.py:946`
-recomputes `value_gap = ai_bid_ceiling − price` and feeds it to `derive_system_signal`.
-The *direction* of every call is safe — `pay_up_flag` wins first and `value_assessment`
-gates rules 3 and 4, and both are conviction-derived, so signal accuracy's basis is
-untouched exactly as §6 says. But the magnitude cuts (+5 / −8 / −15) are on the raw
-dollar gap, and a rescaled board makes that gap systematically more negative, which will
-change how many `avoid` calls the backtest makes. Any movement in the 62.1% would be a
-measurement artifact of backtest.py not having followed #378, not a change in edge.
-Spun off; belongs with the measurement-integrity work.
-
-**Not verified in prod.** Everything above is the local dev board. Prod was untouched and
-read-only throughout. Backend changes do nothing in prod until released, and Stephen
-drives every release.
+**The backtest's dollar thresholds are FINE — and this reverses an earlier note in this
+document.** The +5 / −8 / −15 cuts in `derive_system_signal` are absolute dollars, which
+is only meaningful if the board and the auction share a scale. They now do, *because of*
+enforcement: the draftable pool is $2220 against a real 2025 auction of $2340 over 159
+skill players, a ratio of 0.95. Before enforcement the board ran ~$2748 over that same
+pool against the same $2340, so `ceiling − price` skewed positive and nearly everyone
+looked like a buy. The earlier claim here — that a rescaled board would make the gap
+"systematically more negative" and any movement in the 62.1% would be an artifact — had
+the direction right and the conclusion backwards: enforcement moved this toward correct,
+not away. The cuts should be re-tuned only against a measured re-run.
