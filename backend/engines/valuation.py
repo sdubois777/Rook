@@ -41,6 +41,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.database import AsyncSessionLocal
 from backend.models.player import Player, PlayerProfile, PlayerInjuryProfile
+from backend.scoring import DEFAULT_FORMAT
 from backend.models.league_config import LeagueConfig, DEFAULT_LEAGUE_CONFIG
 from backend.utils.seasons import get_analysis_year, get_current_season
 
@@ -143,15 +144,67 @@ MAX_REALISTIC_BID: dict[str, int] = {
     "DEF": 2,
 }
 
-# Minimum replacement-level PPR per game — sanity floor for dynamic computation.
-# If the dynamically computed replacement PPR/game falls below these values,
-# something is wrong with the data (too few profiles, skewed sample).
-REPLACEMENT_LEVEL_PPR_PER_GAME: dict[str, float] = {
-    "QB": 17.0,
-    "RB": 8.0,
-    "WR": 7.0,
-    "TE": 5.0,
+# Minimum replacement-level PPR per game — BAD-DATA GUARD, never a value judgment.
+# If the dynamically computed replacement PPR/game falls below these values, something is
+# wrong with the data (too few profiles, skewed sample). A healthy board must NEVER see
+# one of these bind: replacement is subtracted from every projection before the pool-share
+# split, so a floor that binds silently steepens the position's entire dollar curve.
+#
+# DERIVED, NOT PICKED. One rule, every position, every format: the worst of the three
+# completed seasons get_analysis_seasons(3) returns, at the position's OWN draftable-pool
+# rank (get_draftable_pool_sizes: QB13 / RB52 / WR60 / TE18) — taken as the lowest value
+# across four slot definitions (rank by season total; same with a >=8 game gate; rank by
+# PPG at >=8 and at >=4 games, scaled to 17). Below that line the board is asserting
+# something no recent season has produced at that slot, which is what "wrong data" means.
+#
+# PER FORMAT, because a single number cannot be right in three. Standard strips a full
+# point per reception, so the same season-points bar is a far higher hurdle there. History
+# is repriced through backend.scoring.season_points — the SAME function the board reprices
+# with — so the guard and the thing it guards share one basis. QB is identical in all
+# three by construction (no receptions).
+#
+# Measured on nflverse actuals — see docs/recon/replacement_floor_report.md.
+#
+# WHAT THIS REPLACED, and why it had to move: a single format-blind PPR-shaped set
+# (QB 17.0 / RB 8.0 / WR 7.0 / TE 5.0), hand-picked when the guard was introduced and
+# never calibrated. It shared no basis across positions — RB's asserted a replacement
+# 28-57% above anything RB52 has scored (roughly RB44: a SECOND, contradictory statement
+# of the pool depth get_draftable_pool_sizes already sets), while TE's sat so far below
+# its own slot that it could never fire. Being format-blind it then bound on FIVE
+# format x position pairs, worst of all on the Standard board it was never calibrated for:
+#
+#   ppr      QB +4    RB +18                    (the two the PPR-only view showed)
+#   half_ppr QB +4    RB +27
+#   standard QB +4    RB +36    WR +16          (RB replacement lifted 36%)
+#
+# On the live board the PPR RB floor alone zeroed the PAR of 8 of the 52 RBs inside the
+# draftable pool and pushed the top RB into MAX_REALISTIC_BID, so a second rail began
+# binding as a downstream consequence of the first.
+#
+# If you want a position's replacement to sit higher, change its DRAFTABLE POOL SIZE
+# (_BENCH_SPLIT / _FLEX_SPLIT) — that is the honest lever and the one the TE fix used.
+# Do not re-purpose this clamp for it.
+#
+# NOTE the sibling REPLACEMENT_LEVEL_MAX_PPR_PER_GAME below is still format-blind. It is
+# inert in every format on the current board (checked), so it was left alone rather than
+# disturb the recently-tuned TE cap — but it carries the same latent defect.
+REPLACEMENT_FLOOR_PPG: dict[str, dict[str, float]] = {
+    "ppr":      {"QB": 14.1, "RB": 4.8, "WR": 5.9, "TE": 7.2},
+    "half_ppr": {"QB": 14.1, "RB": 4.1, "WR": 5.0, "TE": 5.7},
+    "standard": {"QB": 14.1, "RB": 3.6, "WR": 3.8, "TE": 4.2},
 }
+
+
+def replacement_floor(position: str, scoring_format: str = DEFAULT_FORMAT) -> float:
+    """The bad-data floor for one position in one format, in SEASON POINTS (PPG x 17).
+
+    Always go through this rather than indexing REPLACEMENT_FLOOR_PPG directly: reading a
+    PPR-shaped constant in a non-PPR context is precisely the bug this replaced. An
+    unknown format falls back to PPR, which is the strictest row — a guard that errs
+    toward firing is safe; one that errs toward silence is not.
+    """
+    table = REPLACEMENT_FLOOR_PPG.get(scoring_format) or REPLACEMENT_FLOOR_PPG[DEFAULT_FORMAT]
+    return table.get(position, 0.0) * 17
 
 # Maximum replacement-level PPR per game — prevents over-compression when
 # profile data inflates bench player projections above realistic levels.
@@ -830,6 +883,7 @@ def get_draftable_pool_sizes(
 def calculate_replacement_level(
     sorted_pprs: list[float],
     pool_size: int,
+    position: str = "?",
 ) -> float:
     """
     Replacement level = projected PPR of the last player in the draftable pool.
@@ -837,13 +891,29 @@ def calculate_replacement_level(
     Args:
         sorted_pprs: PPR values sorted descending.
         pool_size: Number of players drafted at this position.
+        position:   For logging only — names the position in the short-pool warning.
 
     Returns the replacement-level PPR (season total).
+
+    SHORT POOL IS THE REAL BAD-DATA CASE. When fewer players are valued than the pool
+    holds, the last element is returned instead — a number computed at the wrong rank,
+    which then sets the steepness of the whole position's dollar curve. That is exactly
+    the "too few profiles" failure REPLACEMENT_FLOOR_PPG was standing in for,
+    and it used to pass silently: the magnitude floor could only catch it by accident,
+    and only when the wrong-rank value happened to land low. Warn LOUDLY instead — a
+    guard you can see fire is worth more than one that quietly rewrites the board.
     """
     if not sorted_pprs:
         return 0.0
     if len(sorted_pprs) >= pool_size:
         return sorted_pprs[pool_size - 1]
+    logger.warning(
+        "%s replacement computed on a SHORT POOL: %d players valued, pool needs %d. "
+        "Using rank %d (%.1f) instead of rank %d — the whole %s dollar curve is built "
+        "on a replacement level measured at the wrong rank. Check profile coverage.",
+        position, len(sorted_pprs), pool_size,
+        len(sorted_pprs), sorted_pprs[-1], pool_size, position,
+    )
     return sorted_pprs[-1]
 
 
@@ -1353,10 +1423,10 @@ async def run_valuation_pass(
             # discounted near-cutoff player (e.g. an injured TE) drags replacement below
             # the true marginal value and inflates every par-ratio above it.
             sorted_pprs = sorted((adj_ppr for _, _, adj_ppr in group), reverse=True)
-            dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
+            dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size, pos)
 
-            # Enforce replacement level bounds (PPR/game × 17 games)
-            floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
+            # Enforce replacement level bounds (PPG × 17 games). This pass is PPR.
+            floor_ppr = replacement_floor(pos)
             max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
             repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
             if repl_ppr > dynamic_repl and repl_ppr == floor_ppr:
@@ -1364,11 +1434,14 @@ async def run_valuation_pass(
                 if len(sorted_pprs) >= pool_size:
                     # Find the replacement player's name for logging
                     repl_name = group[pool_size - 1][0].name
-                logger.info(
-                    "%s replacement floor enforced: dynamic=%.1f "
-                    "(#%d %s) < floor=%.1f (%.1f PPG × 17)",
-                    pos, dynamic_repl, pool_size, repl_name,
-                    floor_ppr, REPLACEMENT_LEVEL_PPR_PER_GAME[pos],
+                # WARNING, not INFO: this floor is calibrated never to bind on a healthy
+                # board, so a firing means the projections are suspect — and it silently
+                # steepens the whole position's dollar curve. It must not scroll past.
+                logger.warning(
+                    "%s replacement floor enforced [ppr]: dynamic=%.1f "
+                    "(#%d %s) < floor=%.1f — the %s curve is now built on the floor, "
+                    "not on the board's own projections. Check the projections.",
+                    pos, dynamic_repl, pool_size, repl_name, floor_ppr, pos,
                 )
             if dynamic_repl > max_ppr:
                 logger.info(
@@ -1949,10 +2022,19 @@ async def write_format_value_sets(
                 # `group` is RAW-sorted; calculate_replacement_level assumes descending-
                 # sorted input, so sort the adjusted values (see the players-table pass).
                 sorted_pprs = sorted((adj for _, _, adj in group), reverse=True)
-                dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size)
-                floor_ppr = REPLACEMENT_LEVEL_PPR_PER_GAME.get(pos, 0.0) * 17
+                dynamic_repl = calculate_replacement_level(sorted_pprs, pool_size, pos)
+                # THIS FORMAT's floor, not PPR's. `group` holds points already repriced
+                # into `fmt`, so a PPR-shaped floor would be a far higher bar here — that
+                # mismatch bound on Standard RB/WR and Half RB before it was caught.
+                floor_ppr = replacement_floor(pos, fmt)
                 max_ppr = REPLACEMENT_LEVEL_MAX_PPR_PER_GAME.get(pos, 15.0) * 17
                 repl_ppr = min(max(dynamic_repl, floor_ppr), max_ppr)
+                if repl_ppr > dynamic_repl and repl_ppr == floor_ppr:
+                    logger.warning(
+                        "%s replacement floor enforced [%s]: dynamic=%.1f < floor=%.1f — "
+                        "the %s %s curve is built on the floor, not the projections.",
+                        pos, fmt, dynamic_repl, floor_ppr, fmt, pos,
+                    )
                 total_par = sum(max(0.0, adj - repl_ppr) for _, _, adj in group)
                 par_ctx[pos] = (group, repl_ppr, total_par)
                 # z-tiers on RAW ppr (group is raw-sorted) — tier is talent, not risk.
