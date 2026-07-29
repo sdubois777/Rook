@@ -6,6 +6,7 @@ The async run_valuation_pass() test mocks AsyncSessionLocal.
 """
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -541,7 +542,9 @@ def test_analysis_year_dynamic_not_hardcoded():
 
 from backend.engines.valuation import (
     MAX_REALISTIC_BID,
-    REPLACEMENT_LEVEL_PPR_PER_GAME,
+    REPLACEMENT_FLOOR_PPG,
+    REPLACEMENT_LEVEL_MAX_PPR_PER_GAME,
+    replacement_floor,
     POST_MAJOR_INJURY_DISCOUNT,
     RISK_MARKET_DISCOUNT,
     LET_GO_MULTIPLIER,
@@ -569,11 +572,39 @@ def test_bid_ceiling_hard_cap_enforced():
 
 
 def test_replacement_level_floor_constants():
-    """FIX 2: Verify replacement level PPR per game floor values exist."""
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] == 17.0
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] == 8.0
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] == 7.0
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] == 5.0
+    """FIX 2: Verify replacement level PPG floor values exist, per format."""
+    assert REPLACEMENT_FLOOR_PPG["ppr"] == {"QB": 14.1, "RB": 4.8, "WR": 5.9, "TE": 7.2}
+    assert REPLACEMENT_FLOOR_PPG["half_ppr"] == {"QB": 14.1, "RB": 4.1, "WR": 5.0, "TE": 5.7}
+    assert REPLACEMENT_FLOOR_PPG["standard"] == {"QB": 14.1, "RB": 3.6, "WR": 3.8, "TE": 4.2}
+
+
+def test_replacement_floor_is_format_aware_and_monotone():
+    """Fewer points per reception → a lower bar. The reception positions must step DOWN
+    ppr → half_ppr → standard; QB catches nothing, so it must not move at all.
+
+    A single format-blind constant is what this replaced: it made the Standard board's
+    RB replacement 36% too high, because a PPR-shaped season-points bar is a far higher
+    hurdle once a full point per reception is stripped out."""
+    for pos in ("RB", "WR", "TE"):
+        assert (replacement_floor(pos, "ppr")
+                > replacement_floor(pos, "half_ppr")
+                > replacement_floor(pos, "standard")), f"{pos} floor not format-monotone"
+    assert (replacement_floor("QB", "ppr")
+            == replacement_floor("QB", "half_ppr")
+            == replacement_floor("QB", "standard"))
+
+
+def test_replacement_floor_unknown_format_falls_back_to_ppr():
+    """PPR is the strictest row. An unknown format must err toward firing, not silence."""
+    for pos in ("QB", "RB", "WR", "TE"):
+        assert replacement_floor(pos, "superflex_dynasty_6pt") == replacement_floor(pos, "ppr")
+        assert replacement_floor(pos, None) == replacement_floor(pos, "ppr")
+
+
+def test_replacement_floor_unknown_position_is_zero():
+    """K/DEF never enter the PAR machinery; an unknown position must not invent a bar."""
+    assert replacement_floor("K") == 0.0
+    assert replacement_floor("DEF", "standard") == 0.0
 
 
 def test_injury_discount_post_acl():
@@ -847,6 +878,23 @@ def test_replacement_level_fewer_players_than_pool():
     sorted_pprs = [200.0, 150.0, 100.0]
     repl = calculate_replacement_level(sorted_pprs, pool_size=10)
     assert repl == 100.0
+
+
+def test_replacement_level_short_pool_warns_loudly(caplog):
+    """A short pool is the REAL 'too few profiles' failure: replacement gets measured at
+    the wrong rank and silently sets the steepness of the position's whole dollar curve.
+    It must be visible in the log, not left for a magnitude floor to catch by accident."""
+    with caplog.at_level(logging.WARNING, logger="backend.engines.valuation"):
+        calculate_replacement_level([200.0, 150.0, 100.0], pool_size=52, position="RB")
+    assert any("SHORT POOL" in r.getMessage() for r in caplog.records), \
+        "short pool did not warn"
+
+
+def test_replacement_level_full_pool_does_not_warn(caplog):
+    """The warning must not cry wolf on a healthy pool."""
+    with caplog.at_level(logging.WARNING, logger="backend.engines.valuation"):
+        calculate_replacement_level([200.0, 150.0, 100.0], pool_size=3, position="RB")
+    assert not [r for r in caplog.records if "SHORT POOL" in str(r.msg)]
 
 
 def test_replacement_level_not_hardcoded():
@@ -1342,23 +1390,54 @@ def test_dependency_adjustment_normalizes_whole_percentages():
 
 
 def test_replacement_level_floor_values():
-    """LEAGUE_RULES.md replacement floors: QB=18, RB=8, WR=7, TE=5 PPR/game."""
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["QB"] * 17 == pytest.approx(289.0)
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["RB"] * 17 == pytest.approx(136.0)
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["WR"] * 17 == pytest.approx(119.0)
-    assert REPLACEMENT_LEVEL_PPR_PER_GAME["TE"] * 17 == pytest.approx(85.0)
+    """The floors are history-derived (see the constant's docstring): the worst season,
+    of the last three completed, that each position's OWN pool rank delivered."""
+    assert replacement_floor("QB") == pytest.approx(239.7)
+    assert replacement_floor("RB") == pytest.approx(81.6)
+    assert replacement_floor("WR") == pytest.approx(100.3)
+    assert replacement_floor("TE") == pytest.approx(122.4)
+
+
+def test_replacement_floors_never_bind_on_a_healthy_board():
+    """A bad-data guard must be INERT on good data. These are the dynamic replacement
+    levels measured on the live board, in SEASON POINTS, in every format; none may trip
+    its floor.
+
+    The old format-blind constants failed this on five of the twelve pairs — worst on
+    Standard RB, where a PPR-shaped floor lifted replacement 36% on a board it was never
+    calibrated for. That is a value judgment on the curve, not a guard."""
+    dynamic = {
+        "ppr":      {"QB": 285.0, "RB": 118.0, "WR": 142.0, "TE": 148.0},
+        "half_ppr": {"QB": 285.0, "RB": 109.0, "WR": 125.0, "TE": 120.5},
+        "standard": {"QB": 285.0, "RB": 100.0, "WR": 103.0, "TE":  94.0},
+    }
+    for fmt, by_pos in dynamic.items():
+        for pos, pts in by_pos.items():
+            assert replacement_floor(pos, fmt) < pts, (
+                f"{fmt}/{pos}: floor {replacement_floor(pos, fmt):.1f} binds on a "
+                f"healthy dynamic replacement of {pts:.1f} season points"
+            )
+
+
+def test_replacement_floors_sit_below_their_max_caps():
+    """Floor < cap at every position in every format, or the clamp order
+    min(max(dyn, floor), cap) would pin replacement to the cap regardless of the data."""
+    for fmt in REPLACEMENT_FLOOR_PPG:
+        for pos in ("QB", "RB", "WR", "TE"):
+            assert REPLACEMENT_FLOOR_PPG[fmt][pos] < REPLACEMENT_LEVEL_MAX_PPR_PER_GAME[pos], \
+                f"{fmt}/{pos}: floor is not below its cap"
 
 
 @pytest.mark.asyncio
 async def test_replacement_floor_enforced_wr():
     """
-    WR replacement level is max(dynamic, 119).
-    With 70 WRs where #60 projects 84 PPR, floor should kick in at 119.
+    WR replacement level is max(dynamic, 100.3).
+    With 70 WRs where #60 projects below the floor, the floor should kick in.
     """
-    # 70 WRs: top player 320 PPR, descending ~3.5 per rank
-    # Player #60 would be at 320 - 59*3.5 = 113.5, below 119 floor
+    # 70 WRs: top player 320 PPR, descending 4.0 per rank.
+    # Player #60 is at 320 - 59*4.0 = 84.0, below the 100.3 floor.
     mock_players = [
-        _make_player("WR", ppr_points=320 - i * 3.5) for i in range(70)
+        _make_player("WR", ppr_points=320 - i * 4.0) for i in range(70)
     ]
 
     session = AsyncMock()
@@ -1373,15 +1452,15 @@ async def test_replacement_floor_enforced_wr():
     with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
         result = await run_valuation_pass()
 
-    # Replacement level should be 119 (floor), not ~113.5 (dynamic)
-    assert result["replacement_levels"]["WR"] == pytest.approx(119.0)
+    # Replacement level should be 100.3 (floor), not 84.0 (dynamic)
+    assert result["replacement_levels"]["WR"] == pytest.approx(100.3)
 
 
 @pytest.mark.asyncio
 async def test_replacement_floor_enforced_rb():
-    """RB replacement floor = 8.0 × 17 = 136 PPR."""
+    """RB replacement floor = 4.8 × 17 = 81.6 PPR. #52 here is 300 - 51*4.5 = 70.5."""
     mock_players = [
-        _make_player("RB", ppr_points=300 - i * 4) for i in range(60)
+        _make_player("RB", ppr_points=300 - i * 4.5) for i in range(60)
     ]
 
     session = AsyncMock()
@@ -1396,7 +1475,7 @@ async def test_replacement_floor_enforced_rb():
     with patch("backend.engines.valuation.AsyncSessionLocal", return_value=session):
         result = await run_valuation_pass()
 
-    assert result["replacement_levels"]["RB"] >= 136.0
+    assert result["replacement_levels"]["RB"] == pytest.approx(81.6)
 
 
 @pytest.mark.asyncio
