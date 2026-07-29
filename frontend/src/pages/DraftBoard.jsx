@@ -208,6 +208,9 @@ export default function DraftBoard() {
         position: position || undefined,
         // PRE-DRAFT surface: per-format tier/points/ADP from player_format_values.
         scoring_format: scoringFormat,
+        // draft_type is DELIBERATELY not sent. The endpoint accepts it, but its snake
+        // branch filters `adp_rank IS NOT NULL`, which would drop K/DEF from the payload
+        // and empty the board's No-ADP bucket. Snake-ness is a client-side re-sort here.
       }),
     // Don't fetch until Clerk is ready, or the request goes out tokenless -> 401.
     enabled: isLoaded,

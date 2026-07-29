@@ -3,6 +3,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useLeague } from '../../context/LeagueContext'
 import { fetchUserLeagues } from '../../api/league'
 import { useUIStore } from '../../stores/ui'
+import NoLeagueFormatToggle from './NoLeagueFormatToggle'
 
 // Short chip label for the collapsed sidebar: initials of the league name.
 function abbreviate(name) {
@@ -46,7 +47,10 @@ export default function LeagueSelector() {
   // (or after a failed) fetch — the localStorage value is available immediately.
   const options = leagues.length > 0 ? leagues : selectedLeague ? [selectedLeague] : []
 
-  if (options.length === 0) return null
+  // No league synced → offer the format picker in this exact slot instead of rendering
+  // nothing. Returning it from here (rather than mounting a sibling in Sidebar) makes the
+  // mutual exclusion structural: exactly one of the two controls can ever render.
+  if (options.length === 0) return <NoLeagueFormatToggle />
 
   const meta = selectedLeague
     ? `${selectedLeague.draft_type} · ${selectedLeague.scoring} · ${selectedLeague.team_count}-tm`
