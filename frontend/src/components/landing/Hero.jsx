@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import { usePricing } from '../../hooks/usePricing'
+import { PLATFORM_SUPPORT_COPY } from '../../lib/constants'
 
 /**
  * Hero — leads with the PRODUCT, not a mascot. The signature element is a
@@ -155,7 +156,7 @@ export default function Hero() {
 
           <p className="mt-5 text-sm text-slate-500">
             Free forever{freeCredits ? ` · ${freeCredits} credits to start` : ''} ·
-            no card required. Works with Yahoo, ESPN, and Sleeper.
+            no card required. Works with {PLATFORM_SUPPORT_COPY}.
           </p>
         </div>
 

@@ -79,6 +79,11 @@ export default function Dashboard() {
   // Sort by adp_rank asc (actionability), NOT |adp_diff|: a value/sleeper at the
   // soonest pick is more useful than a larger diff buried deep, and reaches only
   // matter early (a reach at #178 we've already faded isn't actionable).
+  //
+  // scoring_format is DELIBERATELY omitted from these three, and from their query keys.
+  // They render only adp_rank / adp_fantasypros / adp_diff, which are PPR-only by
+  // construction (valuation_agent.VALUATION_SCORING) — passing the format would change
+  // nothing displayed while causing a pointless refetch every time the format changes.
   const { data: valuePicks } = useQuery({
     queryKey: ['dashboard-snake-value'],
     queryFn: () => fetchPlayers({ snake_flag: 'VALUE', sort: 'adp_rank', order: 'asc', per_page: 8 }),

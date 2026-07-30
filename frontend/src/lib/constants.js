@@ -21,6 +21,22 @@ export const SCORING_LABELS = { ppr: 'PPR', half_ppr: 'Half PPR', standard: 'Sta
 
 export const DRAFT_LABELS = { auction: 'Auction', snake: 'Snake' }
 
+// Yahoo moved the Fantasy Sports API behind an application-and-approval process and
+// withdrew access from apps that had it self-serve, so every fantasy endpoint returns
+// 403 for this app and the connect flow cannot succeed. Gating it here rather than
+// letting users discover it at the end of a five-step wizard.
+// See docs/recon/yahoo_api_access_handoff.md.
+// RE-ENABLE: flip this one boolean to true. Nothing else needs to change.
+export const YAHOO_ENABLED = false
+
+export const YAHOO_DISABLED_NOTE =
+  'Yahoo import is paused while Yahoo reviews our Fantasy API access. ESPN and Sleeper work now.'
+
+// Derived so the marketing copy cannot drift from the actual capability.
+export const PLATFORM_SUPPORT_COPY = YAHOO_ENABLED
+  ? 'Yahoo, ESPN, and Sleeper'
+  : 'ESPN and Sleeper (Yahoo coming soon)'
+
 // TIER labels, credit costs, prices, and packs are NOT defined here.
 // They are fetched from GET /billing/pricing (backend/models/user.py is the
 // single source of truth) via hooks/usePricing — hardcoding them re-creates

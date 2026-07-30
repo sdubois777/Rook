@@ -19,10 +19,12 @@ import base64
 import logging
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
 from backend.config import settings
+from backend.core.exceptions import AppError
 from backend.integrations.nfl_data import normalize_player_name
 
 logger = logging.getLogger(__name__)
@@ -102,8 +104,11 @@ def get_authorization_url(state: str | None = None) -> str:
     }
     if state:
         params["state"] = state
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{_YAHOO_AUTH_URL}?{query}"
+    # PERCENT-ENCODED. This was hand-joined with f"{k}={v}", which sends redirect_uri's
+    # "://" and "/" raw — outside the OAuth2 spec, and it leaves the query one stray
+    # reserved character away from being unparseable. The state value is urlsafe-b64 and
+    # so survives by luck rather than design; a padding "=" is already going out raw.
+    return f"{_YAHOO_AUTH_URL}?{urlencode(params)}"
 
 
 async def exchange_code_for_tokens(code: str) -> dict[str, Any]:
@@ -212,6 +217,77 @@ async def _get_valid_token() -> str:
 # Core API helper
 # ---------------------------------------------------------------------------
 
+class YahooAuthError(AppError):
+    """Yahoo refused the call for an auth reason we can explain to the user.
+
+    Exists because httpx's raise_for_status() propagated as a bare 500 with a stack
+    trace: every Yahoo-side refusal — an expired grant, a revoked token, or Rook's own
+    app losing its Fantasy Sports permission — looked identical to a crash, both to the
+    user and in the logs. The three have completely different remedies.
+    """
+    status_code = 502
+    error_code = "yahoo_auth"
+
+
+def _raise_for_yahoo_auth(resp: httpx.Response, path: str) -> None:
+    """Translate Yahoo's 401/403 into something actionable. No-op otherwise.
+
+    Yahoo distinguishes the two, and so must we:
+      * 401 → the USER's grant is dead (expired/revoked). They reconnect and it works.
+      * 403 "This application is not authorized" → ROOK's app lacks Fantasy Sports
+        permission in the Yahoo developer console. Reconnecting cannot fix it — every
+        user is broken until the app's API permissions are restored, so telling someone
+        to reconnect here just wastes their time.
+    """
+    if resp.status_code not in (401, 403):
+        return
+    # Yahoo puts the reason in the body; raise_for_status() throws it away.
+    try:
+        described = str(resp.json().get("error", {}).get("description", "")).strip()
+    except Exception:
+        described = ""
+
+    if resp.status_code == 401:
+        err = YahooAuthError(
+            "Your Yahoo connection has expired. Reconnect Yahoo to continue.",
+            {"action": "connect", "platform": "yahoo", "yahoo_status": 401},
+        )
+        err.status_code = 400
+        logger.warning("Yahoo 401 on %s — user grant is dead: %s", path, described)
+        raise err
+
+    # 403 = the Fantasy Sports API is GATED. Yahoo moved it behind an application and
+    # approval process (sports.yahoo.com/developer, which the old
+    # developer.yahoo.com/fantasysports/guide URL now redirects to) and withdrew access
+    # from apps that had it under the previous self-serve model. Confirmed by
+    # measurement, not inference: OAuth, token refresh and consent all still succeed,
+    # while EVERY fantasy endpoint refuses — including a bare /game/nfl that carries no
+    # user data at all. Newly created Yahoo apps are no longer even offered a Fantasy
+    # Sports permission checkbox.
+    #
+    # Nothing in this codebase can fix it and no user action can either, which is why
+    # this must not read like a transient error or suggest reconnecting.
+    logger.error(
+        "Yahoo 403 on %s — the Fantasy Sports API is gated behind Yahoo's approval "
+        "process and this app is not approved: %s. Apply at "
+        "https://sports.yahoo.com/developer/access/ — see "
+        "docs/recon/yahoo_api_access_handoff.md. Every Yahoo user is blocked until "
+        "approval lands; ESPN and Sleeper are unaffected.",
+        path, described or "(no description)",
+    )
+    raise YahooAuthError(
+        "Yahoo has moved its Fantasy Sports API behind an approval process, and Rook's "
+        "access is pending. This is not your account and reconnecting will not help — "
+        "ESPN and Sleeper still work in the meantime.",
+        {
+            "platform": "yahoo",
+            "yahoo_status": 403,
+            "yahoo_description": described,
+            "reason": "api_access_pending",
+        },
+    )
+
+
 async def _api_get_with_token(
     path: str, access_token: str, **extra_params: str
 ) -> dict[str, Any]:
@@ -227,6 +303,7 @@ async def _api_get_with_token(
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
         )
+        _raise_for_yahoo_auth(resp, path)
         resp.raise_for_status()
         return resp.json()
 

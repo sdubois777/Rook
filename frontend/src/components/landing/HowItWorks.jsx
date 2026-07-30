@@ -1,9 +1,11 @@
+import { PLATFORM_SUPPORT_COPY } from '../../lib/constants'
+
 const STEPS = [
   {
     num: '1',
     title: 'Connect Your League',
     description:
-      'Import from Yahoo, ESPN, or Sleeper. The system learns your league\'s history — who your opponents are, what they overpay for, what they systematically miss.',
+      `Import from ${PLATFORM_SUPPORT_COPY}. The system learns your league's history — who your opponents are, what they overpay for, what they systematically miss.`,
     icon: (
       <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />

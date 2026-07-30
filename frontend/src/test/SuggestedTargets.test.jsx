@@ -1,7 +1,28 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useDraftStore } from '../stores/draft'
+import { LeagueContext } from '../context/LeagueContext'
 import SuggestedTargets, { getSuggestedTargets } from '../components/draft/SuggestedTargets'
+
+// SuggestedTargets branches on isSnake, and the value arrow asserted below is the AUCTION
+// rendering. This used to rely on the bare context default happening to be auction; now
+// that the app default is snake, the intent has to be stated. Wrapping also documents
+// which mode the assertion is about.
+const AUCTION_CTX = {
+  selectedLeague: null,
+  setSelectedLeague: () => {},
+  draftType: 'auction',
+  isSnake: false,
+  isAuction: true,
+  scoringFormat: 'ppr',
+  formatOverride: null,
+  setFormatOverride: () => {},
+  canChooseFormat: true,
+}
+
+function renderAuction(ui) {
+  return render(<LeagueContext.Provider value={AUCTION_CTX}>{ui}</LeagueContext.Provider>)
+}
 
 const AVAILABLE = [
   { id: 'q1', name: 'Josh Allen', position: 'QB', ai_bid_ceiling: 35, market_value: 33 },
@@ -63,7 +84,7 @@ describe('SuggestedTargets component', () => {
   })
 
   it('shows value arrow when gap > 5', () => {
-    render(<SuggestedTargets />)
+    renderAuction(<SuggestedTargets />)
     // Bijan (ceiling 60 - market 50 = gap 10 > 5) renders the up arrow.
     const row = screen.getByText('Bijan Robinson').closest('div')
     expect(row.textContent).toContain('↑')
@@ -74,7 +95,7 @@ describe('SuggestedTargets component', () => {
 
   it('shows empty state when no players available', () => {
     useDraftStore.setState({ availablePlayers: [] })
-    render(<SuggestedTargets />)
+    renderAuction(<SuggestedTargets />)
     expect(screen.getByText('No targets available')).toBeInTheDocument()
   })
 })

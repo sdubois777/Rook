@@ -10,6 +10,7 @@ import LeagueChooser from '../components/billing/LeagueChooser'
 import LandingFooter from '../components/landing/LandingFooter'
 import { SCORING_LABELS } from '../lib/constants'
 import { usePricing } from '../hooks/usePricing'
+import { useLeague } from '../context/LeagueContext'
 
 const SUBSCRIPTION_STATUS_COPY = {
   past_due: 'Your last payment failed — update your payment method to keep your plan.',
@@ -208,6 +209,7 @@ function DraftTokenSection({ token, onRevoke }) {
 
 function LeagueCard({ league }) {
   const queryClient = useQueryClient()
+  const { selectedLeague, setSelectedLeague } = useLeague()
   const [syncing, setSyncing] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState('')
@@ -243,6 +245,11 @@ function LeagueCard({ league }) {
       queryClient.setQueryData(['account'], (old) =>
         old ? { ...old, leagues: old.leagues.filter((l) => l.id !== league.id) } : old
       )
+      // …and drop it from the league CONTEXT, which is a separate store backed by
+      // localStorage. Without this the sidebar keeps offering the league that was just
+      // deleted, and the whole app keeps resolving its draft type and scoring from it,
+      // until a reload — the selector holds its own fetched copy and never re-runs.
+      if (selectedLeague?.id === league.id) setSelectedLeague(null)
     } catch (err) {
       setError(err.response?.data?.message || 'Remove failed')
       setRemoving(false)

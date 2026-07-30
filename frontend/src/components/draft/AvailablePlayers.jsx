@@ -1,3 +1,8 @@
+// NOT given the DraftBoard's responsive treatment, deliberately. This row is a structural
+// twin of DraftBoard's renderPlayerRow, but it renders only inside the LIVE DRAFT ROOM, and
+// frontend/CLAUDE.md scopes mobile to pre-draft prep and review — live drafting needs the
+// desktop browser extension. Adding breakpoint classes here would imply a mobile
+// live-draft path the product does not support.
 import { useMemo, useCallback } from 'react'
 import { useDraftStore } from '../../stores/draft'
 import { useLeague } from '../../context/LeagueContext'

@@ -9,7 +9,12 @@ export default function DraftSetup() {
   const [error, setError] = useState(null)
 
   const startDraft = useDraftStore((s) => s.startDraft)
-  const { selectedLeague } = useLeague()
+  // draftType is the RESOLVED value from LeagueContext's precedence chain. It must come
+  // from there and never be re-derived here: it is sent to POST /draft/start (api/draft.js)
+  // and SELECTS THE BACKEND ENGINE (snake vs auction recommendation path). A private
+  // `|| 'auction'` fallback used to live on this line, which meant a user with no synced
+  // league saw the snake UI everywhere and silently started the auction engine.
+  const { selectedLeague, draftType } = useLeague()
   const { tierLimits } = useEntitlements()
   // Live draft is a standard+ entitlement. Show a locked state instead of a
   // dead button when we KNOW the tier lacks it (fail-open otherwise). The
@@ -25,7 +30,7 @@ export default function DraftSetup() {
       // snake vs auction path and loads league settings.
       await startDraft({
         leagueId: selectedLeague?.id,
-        draftType: selectedLeague?.draft_type || 'auction',
+        draftType,
       })
     } catch (err) {
       setError(err.response?.data?.detail || err.message || 'Failed to start draft')

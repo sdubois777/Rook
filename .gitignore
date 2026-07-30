@@ -78,3 +78,7 @@ rook_kit.png
 rook.png
 frontend/public/_debug_crops/
 frontend/public/_brand_preview/
+
+# Self-signed localhost TLS for the dev OAuth callback (scripts/make_dev_cert.py).
+# Never commit key material, even a throwaway one.
+certs/
