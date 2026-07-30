@@ -256,16 +256,35 @@ def _raise_for_yahoo_auth(resp: httpx.Response, path: str) -> None:
         logger.warning("Yahoo 401 on %s — user grant is dead: %s", path, described)
         raise err
 
+    # 403 = the Fantasy Sports API is GATED. Yahoo moved it behind an application and
+    # approval process (sports.yahoo.com/developer, which the old
+    # developer.yahoo.com/fantasysports/guide URL now redirects to) and withdrew access
+    # from apps that had it under the previous self-serve model. Confirmed by
+    # measurement, not inference: OAuth, token refresh and consent all still succeed,
+    # while EVERY fantasy endpoint refuses — including a bare /game/nfl that carries no
+    # user data at all. Newly created Yahoo apps are no longer even offered a Fantasy
+    # Sports permission checkbox.
+    #
+    # Nothing in this codebase can fix it and no user action can either, which is why
+    # this must not read like a transient error or suggest reconnecting.
     logger.error(
-        "Yahoo 403 on %s — APPLICATION-level refusal, not a user token problem: %s. "
-        "Check the Yahoo developer app's API Permissions include Fantasy Sports (Read). "
-        "Every user is affected until that is restored.",
+        "Yahoo 403 on %s — the Fantasy Sports API is gated behind Yahoo's approval "
+        "process and this app is not approved: %s. Apply at "
+        "https://sports.yahoo.com/developer/access/ — see "
+        "docs/recon/yahoo_api_access_handoff.md. Every Yahoo user is blocked until "
+        "approval lands; ESPN and Sleeper are unaffected.",
         path, described or "(no description)",
     )
     raise YahooAuthError(
-        "Rook's Yahoo integration is not currently authorized by Yahoo. This is on our "
-        "side, not your account — reconnecting will not help.",
-        {"platform": "yahoo", "yahoo_status": 403, "yahoo_description": described},
+        "Yahoo has moved its Fantasy Sports API behind an approval process, and Rook's "
+        "access is pending. This is not your account and reconnecting will not help — "
+        "ESPN and Sleeper still work in the meantime.",
+        {
+            "platform": "yahoo",
+            "yahoo_status": 403,
+            "yahoo_description": described,
+            "reason": "api_access_pending",
+        },
     )
 
 

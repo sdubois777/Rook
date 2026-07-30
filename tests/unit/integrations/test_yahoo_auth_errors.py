@@ -55,6 +55,19 @@ def test_403_carries_yahoos_own_description_through():
     assert "not authorized" in exc.value.detail["yahoo_description"].lower()
 
 
+def test_403_names_the_actual_cause_and_a_working_alternative():
+    """Yahoo gated the Fantasy Sports API behind an approval process and revoked access
+    from apps that had it self-serve. No code change and no user action fixes that, so
+    the message must not read as transient — and it should say what still works, since
+    ESPN and Sleeper are entirely unaffected."""
+    with pytest.raises(YahooAuthError) as exc:
+        _raise_for_yahoo_auth(_resp(403, APP_403), "game/nfl")
+    msg = exc.value.message.lower()
+    assert "approval" in msg
+    assert "espn" in msg and "sleeper" in msg
+    assert exc.value.detail["reason"] == "api_access_pending"
+
+
 def test_403_still_raises_when_the_body_is_not_json():
     bad = httpx.Response(
         status_code=403, text="<html>gateway</html>",
