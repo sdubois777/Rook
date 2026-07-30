@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PLATFORM_SUPPORT_COPY } from '../../lib/constants'
 
 const ITEMS = [
   {
@@ -11,7 +12,7 @@ const ITEMS = [
   },
   {
     q: 'What leagues and platforms are supported?',
-    a: 'Yahoo Fantasy, ESPN, and Sleeper. Import your league in one click — the system pulls your league history, opponent tendencies, and scoring settings automatically.',
+    a: `${PLATFORM_SUPPORT_COPY}. Import your league in one click — the system pulls your league history, opponent tendencies, and scoring settings automatically.`,
   },
   {
     q: 'How accurate are the projections?',

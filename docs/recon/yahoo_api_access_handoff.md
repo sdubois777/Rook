@@ -4,6 +4,39 @@ Written 2026-07-30. Everything in §1 is measured against the live Yahoo API, no
 
 ---
 
+## AMENDED 2026-07-30 — read `yahoo_api_access_application.md` alongside this
+
+§1 (the gating itself) stands unchanged and is still the measured record. Three claims
+elsewhere in this document are **wrong** and were corrected after reading Yahoo's live
+terms and re-reading the code. They matter because they would have gone into the
+access application verbatim:
+
+1. **"`backend/integrations/yahoo_api.py` is the only call path" (§2) is false.**
+   `backend/integrations/yahoo_league_api.py` is a second Fantasy API client, live in
+   prod via `platform_factory.py:27`. It has **no `_raise_for_yahoo_auth` guard**, and
+   `get_draft_picks` (:226-235) **swallows 403 as "no draft history"** — so a gated
+   Yahoo league imports *successfully with an empty draft* rather than erroring. PR #417
+   does not cover this path. Add it to the §3b re-verification list.
+2. **"reads a user's own leagues" is not enforced by Rook.** `get_all_user_leagues()`
+   brute-force probes league IDs across game keys 2016-2026 (other people's leagues),
+   `POST /leagues/connect/yahoo` accepts a `league_key` from the client body unchecked,
+   and `league_sync.py:159-188` continues the sync when the user owns no team in the
+   league — despite a docstring claiming it "fails LOUD". Do not claim membership
+   verification in the application.
+3. **Attribution (§3a) is the third-biggest obligation, not the first.** The binding YDN
+   API Terms carry a **24-hour deletion rule** for Yahoo user data (Rook persists
+   indefinitely, with no purge on disconnect) and prohibit **deriving income** from API
+   use without prior written permission (Rook is paid; Yahoo sells Fantasy Plus). Both
+   need Yahoo to say yes in writing. Neither is fixable by better wording.
+
+Also: §3a's premise that the draft board blends Yahoo prices with Rook valuations is
+**not true today** — every DraftBoard cell is Rook- or FantasyPros-sourced. The real
+exposure is elsewhere, and it is worse: one league's Yahoo auction prices are written to
+**global, non-user-scoped** columns and served to every user, including ESPN- and
+Sleeper-only users, and into a third-party LLM prompt. See §4 of the application doc.
+
+---
+
 ## 1. What happened
 
 **Yahoo moved the Fantasy Sports API behind an application-and-approval process and
