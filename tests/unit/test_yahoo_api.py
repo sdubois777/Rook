@@ -56,12 +56,22 @@ def mock_settings(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_oauth_url_generated_correctly(mock_settings):
-    """Authorization URL must contain client_id, redirect_uri, and response_type=code."""
-    url = get_authorization_url()
+    """Authorization URL must carry client_id, redirect_uri, and response_type=code.
 
-    assert "test_client_id" in url
-    assert "http://localhost:8000/auth/yahoo/callback" in url
-    assert "response_type=code" in url
+    Asserted on the PARSED query, not with substring checks. The old version required the
+    raw unencoded "http://localhost:8000/auth/yahoo/callback" to appear literally, which
+    pinned the very defect that broke the flow: the params were hand-joined rather than
+    percent-encoded, so redirect_uri's "://" went out raw. What matters is that the value
+    round-trips exactly — Yahoo compares it byte-for-byte against the registered URI.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    url = get_authorization_url()
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+
+    assert q["client_id"] == "test_client_id"
+    assert q["redirect_uri"] == "http://localhost:8000/auth/yahoo/callback"
+    assert q["response_type"] == "code"
     assert "api.login.yahoo.com" in url
 
 

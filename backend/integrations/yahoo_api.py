@@ -19,6 +19,7 @@ import base64
 import logging
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -103,8 +104,11 @@ def get_authorization_url(state: str | None = None) -> str:
     }
     if state:
         params["state"] = state
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{_YAHOO_AUTH_URL}?{query}"
+    # PERCENT-ENCODED. This was hand-joined with f"{k}={v}", which sends redirect_uri's
+    # "://" and "/" raw — outside the OAuth2 spec, and it leaves the query one stray
+    # reserved character away from being unparseable. The state value is urlsafe-b64 and
+    # so survives by luck rather than design; a padding "=" is already going out raw.
+    return f"{_YAHOO_AUTH_URL}?{urlencode(params)}"
 
 
 async def exchange_code_for_tokens(code: str) -> dict[str, Any]:
