@@ -2,10 +2,11 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
-    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response,
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
+    RedirectResponse, Response,
 )
 from fastapi.staticfiles import StaticFiles
 
@@ -112,15 +113,21 @@ app.include_router(webhooks.router)  # /webhooks/{clerk,stripe} — external-con
 # index.html. That is exactly how the misconfiguration hid: the wrong path did not 404,
 # it silently served the frontend and the token exchange never ran.
 #
-# Same handler object, so the two paths cannot drift. include_in_schema=False keeps the
-# compatibility alias out of the public docs.
-app.add_api_route(
-    "/auth/yahoo/callback",
-    auth.yahoo_callback,
-    methods=["GET"],
-    include_in_schema=False,
-    name="yahoo_callback_unprefixed",
-)
+# A REDIRECT, not a second handler. The single-use binding nonce is set with
+# Path=/api/auth/yahoo (backend/routers/auth.py), and a cookie is not sent to a path
+# outside its scope — so serving the callback directly here got the browser to arrive
+# WITHOUT the cookie and the flow died on `missing_binding`. Bouncing to the canonical
+# path lets the browser attach the cookie on the follow-up request, which keeps the nonce
+# narrowly scoped instead of widening it to "/" to paper over the alias.
+#
+# 307 preserves the method, and the query string carries code/state through untouched.
+@app.get("/auth/yahoo/callback", include_in_schema=False)
+async def yahoo_callback_unprefixed(request: Request):
+    query = request.url.query
+    return RedirectResponse(
+        url=f"/api/auth/yahoo/callback{'?' + query if query else ''}",
+        status_code=307,
+    )
 
 _scheduler = None
 

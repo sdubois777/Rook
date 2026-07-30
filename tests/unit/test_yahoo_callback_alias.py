@@ -41,22 +41,41 @@ def test_the_alias_is_defined_before_the_spa_catch_all():
     assert paths.index(UNPREFIXED) < catch_all
 
 
-def test_both_paths_reach_the_real_handler_not_the_spa():
+def test_the_prefixed_path_reaches_the_real_handler():
     """422 means the OAuth handler ran and rejected a request with no code/state.
     200 would mean the SPA catch-all swallowed it — the original silent failure."""
-    client = TestClient(app)
-    for path in (UNPREFIXED, PREFIXED):
-        r = client.get(path)
-        assert r.status_code == 422, f"{path} returned {r.status_code}, expected 422"
+    r = TestClient(app).get(PREFIXED)
+    assert r.status_code == 422
 
 
-def test_both_paths_share_one_handler():
-    """Registered from the same function object, so the two cannot drift apart."""
-    endpoints = {
-        r.endpoint for r in app.routes
-        if getattr(r, "path", "") in (UNPREFIXED, PREFIXED)
-    }
-    assert len(endpoints) == 1
+def test_the_alias_redirects_rather_than_handling_in_place():
+    """It MUST bounce to the canonical path, not serve the callback itself.
+
+    The single-use binding nonce is set with Path=/api/auth/yahoo, and a cookie is not
+    sent to a path outside its scope — so handling the callback at the un-prefixed path
+    meant the browser arrived without it and the flow died on `missing_binding`. The
+    redirect lets the cookie attach on the follow-up request, keeping the nonce narrowly
+    scoped rather than widening it to "/".
+    """
+    r = TestClient(app, follow_redirects=False).get(UNPREFIXED)
+    assert r.status_code == 307
+    assert r.headers["location"] == PREFIXED
+
+
+def test_the_alias_carries_code_and_state_through():
+    """Dropping the query would turn a working consent into a silent failure."""
+    r = TestClient(app, follow_redirects=False).get(
+        UNPREFIXED, params={"code": "abc123", "state": "signed.state"})
+    assert r.status_code == 307
+    loc = r.headers["location"]
+    assert loc.startswith(PREFIXED + "?")
+    assert "code=abc123" in loc
+    assert "state=signed.state" in loc
+
+
+def test_following_the_alias_lands_on_the_real_handler():
+    r = TestClient(app).get(UNPREFIXED)
+    assert r.status_code == 422      # the handler ran, not the SPA
 
 
 def test_the_alias_is_hidden_from_the_public_schema():
