@@ -819,7 +819,10 @@ async def test_start_draft_creates_session_for_user():
             assert data["status"] == "ready"
             assert data["mode"] == "extension"
             assert data["team_name"] == "Your Team"  # generic label until a name streams
-            build.assert_awaited_once_with(None, None)
+            # user_id is REQUIRED — _build_state used the unscoped LeagueRepository.get(),
+            # so any other user's league_id returned their config. See
+            # tests/unit/routers/test_draft_league_scoping.py.
+            build.assert_awaited_once_with(None, None, user_id=user.id)
             mgr.create.assert_awaited_once()
             assert mgr.create.await_args[0][0] == user.id
         finally:
