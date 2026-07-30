@@ -2,15 +2,17 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
-    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response,
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
+    RedirectResponse, Response,
 )
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.core.exceptions import AppError
+from backend.core.oauth_config_check import check_oauth_redirects
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
@@ -99,6 +101,34 @@ for _router in (
 
 app.include_router(webhooks.router)  # /webhooks/{clerk,stripe} — external-configured, stay at root
 
+# Yahoo OAuth callback ALIAS at the un-prefixed path, in addition to /api/....
+#
+# The redirect URI is an EXTERNAL contract: Yahoo will only redirect to a URI already
+# registered in its developer console, and the registered localhost/Railway entries are
+# the pre-/api ones. Rejecting a URI we cannot register from here means the OAuth flow
+# simply cannot complete, so the app meets the registered path where it already is.
+#
+# This MUST be registered before the SPA catch-all at the bottom of this file — routes
+# match in definition order, and the catch-all answers anything unmatched with 200 and
+# index.html. That is exactly how the misconfiguration hid: the wrong path did not 404,
+# it silently served the frontend and the token exchange never ran.
+#
+# A REDIRECT, not a second handler. The single-use binding nonce is set with
+# Path=/api/auth/yahoo (backend/routers/auth.py), and a cookie is not sent to a path
+# outside its scope — so serving the callback directly here got the browser to arrive
+# WITHOUT the cookie and the flow died on `missing_binding`. Bouncing to the canonical
+# path lets the browser attach the cookie on the follow-up request, which keeps the nonce
+# narrowly scoped instead of widening it to "/" to paper over the alias.
+#
+# 307 preserves the method, and the query string carries code/state through untouched.
+@app.get("/auth/yahoo/callback", include_in_schema=False)
+async def yahoo_callback_unprefixed(request: Request):
+    query = request.url.query
+    return RedirectResponse(
+        url=f"/api/auth/yahoo/callback{'?' + query if query else ''}",
+        status_code=307,
+    )
+
 _scheduler = None
 
 
@@ -112,6 +142,12 @@ async def startup_checks():
         raise RuntimeError(
             "CLERK_SECRET_KEY not configured — refusing to start in production"
         )
+
+    # A redirect URI whose path does not match the mounted callback route breaks league
+    # connection SILENTLY — the SPA catch-all answers the unmatched path with 200 and
+    # index.html, so Yahoo's ?code= lands on the frontend and the exchange never runs.
+    # Checked against the route table so it stays correct if the /api prefix moves.
+    check_oauth_redirects(app, settings.yahoo_redirect_uri)
 
     missing = []
     if not settings.yahoo_client_id:

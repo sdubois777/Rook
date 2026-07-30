@@ -28,6 +28,12 @@ createRoot(document.getElementById('root')).render(
     <ErrorBoundary>
       <ClerkProvider
         publishableKey={PUBLISHABLE_KEY || 'pk_test_placeholder'}
+        // Clerk ships usage telemetry to clerk-telemetry.com. Our CSP already blocks it
+        // (connect-src does not list that host), so it only ever produced a console error
+        // — but the honest fix is to not make the call, rather than widen the CSP to
+        // permit a third-party analytics beacon. Auth is unaffected: telemetry is
+        // product analytics, not part of the sign-in path.
+        telemetry={false}
         fallbackRedirectUrl="/dashboard"
         signInFallbackRedirectUrl="/dashboard"
         signUpFallbackRedirectUrl="/dashboard"
