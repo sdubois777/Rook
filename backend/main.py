@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.core.exceptions import AppError
+from backend.core.oauth_config_check import check_oauth_redirects
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
@@ -112,6 +113,12 @@ async def startup_checks():
         raise RuntimeError(
             "CLERK_SECRET_KEY not configured — refusing to start in production"
         )
+
+    # A redirect URI whose path does not match the mounted callback route breaks league
+    # connection SILENTLY — the SPA catch-all answers the unmatched path with 200 and
+    # index.html, so Yahoo's ?code= lands on the frontend and the exchange never runs.
+    # Checked against the route table so it stays correct if the /api prefix moves.
+    check_oauth_redirects(app, settings.yahoo_redirect_uri)
 
     missing = []
     if not settings.yahoo_client_id:
