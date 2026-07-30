@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from backend.config import settings
+from backend.core.exceptions import AppError
 from backend.integrations.nfl_data import normalize_player_name
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,58 @@ async def _get_valid_token() -> str:
 # Core API helper
 # ---------------------------------------------------------------------------
 
+class YahooAuthError(AppError):
+    """Yahoo refused the call for an auth reason we can explain to the user.
+
+    Exists because httpx's raise_for_status() propagated as a bare 500 with a stack
+    trace: every Yahoo-side refusal — an expired grant, a revoked token, or Rook's own
+    app losing its Fantasy Sports permission — looked identical to a crash, both to the
+    user and in the logs. The three have completely different remedies.
+    """
+    status_code = 502
+    error_code = "yahoo_auth"
+
+
+def _raise_for_yahoo_auth(resp: httpx.Response, path: str) -> None:
+    """Translate Yahoo's 401/403 into something actionable. No-op otherwise.
+
+    Yahoo distinguishes the two, and so must we:
+      * 401 → the USER's grant is dead (expired/revoked). They reconnect and it works.
+      * 403 "This application is not authorized" → ROOK's app lacks Fantasy Sports
+        permission in the Yahoo developer console. Reconnecting cannot fix it — every
+        user is broken until the app's API permissions are restored, so telling someone
+        to reconnect here just wastes their time.
+    """
+    if resp.status_code not in (401, 403):
+        return
+    # Yahoo puts the reason in the body; raise_for_status() throws it away.
+    try:
+        described = str(resp.json().get("error", {}).get("description", "")).strip()
+    except Exception:
+        described = ""
+
+    if resp.status_code == 401:
+        err = YahooAuthError(
+            "Your Yahoo connection has expired. Reconnect Yahoo to continue.",
+            {"action": "connect", "platform": "yahoo", "yahoo_status": 401},
+        )
+        err.status_code = 400
+        logger.warning("Yahoo 401 on %s — user grant is dead: %s", path, described)
+        raise err
+
+    logger.error(
+        "Yahoo 403 on %s — APPLICATION-level refusal, not a user token problem: %s. "
+        "Check the Yahoo developer app's API Permissions include Fantasy Sports (Read). "
+        "Every user is affected until that is restored.",
+        path, described or "(no description)",
+    )
+    raise YahooAuthError(
+        "Rook's Yahoo integration is not currently authorized by Yahoo. This is on our "
+        "side, not your account — reconnecting will not help.",
+        {"platform": "yahoo", "yahoo_status": 403, "yahoo_description": described},
+    )
+
+
 async def _api_get_with_token(
     path: str, access_token: str, **extra_params: str
 ) -> dict[str, Any]:
@@ -227,6 +280,7 @@ async def _api_get_with_token(
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
         )
+        _raise_for_yahoo_auth(resp, path)
         resp.raise_for_status()
         return resp.json()
 

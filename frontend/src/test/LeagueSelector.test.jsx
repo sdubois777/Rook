@@ -12,6 +12,7 @@ vi.mock('../api/league', () => ({
 }))
 
 import LeagueSelector from '../components/layout/LeagueSelector'
+import { fetchUserLeagues } from '../api/league'
 
 beforeEach(() => {
   localStorage.clear()
@@ -40,7 +41,15 @@ describe('LeagueContext sync init', () => {
 })
 
 describe('LeagueSelector reload persistence', () => {
-  it('still shows the saved league when the leagues fetch returns nothing', async () => {
+  // RETARGETED. This case is about a reload where the leagues fetch does not come back —
+  // the saved league must carry the selector so it never flashes empty. It used to mock a
+  // RESOLVED empty array, which is a different thing entirely: the response interceptor
+  // (api/client.js) rejects every failure, so a resolved [] can only mean "the server says
+  // you have zero leagues". Treating that as "unknown" is what let a deleted league
+  // survive its own deletion forever — see LeagueDisconnect.test.jsx. The mock now
+  // REJECTS, which is what "fetch fails" actually looks like.
+  it('still shows the saved league when the leagues fetch FAILS', async () => {
+    fetchUserLeagues.mockRejectedValueOnce(new Error('offline'))
     const SAVED = {
       id: 'abc',
       league_name: "Stephen's Test",

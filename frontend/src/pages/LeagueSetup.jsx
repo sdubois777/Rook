@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../api/client'
 import { fetchYahooConnectUrl, fetchUserLeagues } from '../api/league'
 import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
+import { useLeague } from '../context/LeagueContext'
 
 const PLATFORMS = [
   { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },
@@ -656,16 +657,51 @@ export default function LeagueSetup() {
   const [platform, setPlatform] = useState(null)
   const [result, setResult] = useState(null)
   const [yahooLeagues, setYahooLeagues] = useState(null)
+  // NOTE: local wizard state for the Yahoo league being confirmed — NOT the app-wide
+  // selection. The two are different things and the shadowed name has caused confusion;
+  // the app-wide one is `adoptLeague` below.
   const [selectedLeague, setSelectedLeague] = useState(null)
   const [retryMessage, setRetryMessage] = useState('')
+  const { setSelectedLeague: setActiveLeague } = useLeague()
+
+  /**
+   * Point the whole app at the league that was just imported.
+   *
+   * Without this, finishing the wizard created the league server-side and navigated away
+   * while the app-wide selection stayed on whatever was already in localStorage. Connect
+   * an ESPN snake league next to an existing Yahoo auction one and the sidebar keeps
+   * naming the Yahoo league, every board keeps rendering salary values, and nothing tells
+   * you why — the league you just connected is not the league the app is using.
+   *
+   * The full row is re-fetched rather than assembled from the import response, because the
+   * context resolves draft_type and scoring off this object: a partial one would silently
+   * fall through to the snake/PPR default and mislabel an auction league.
+   */
+  const adoptLeague = async (data) => {
+    const id = data?.league_id
+    if (!id) return
+    try {
+      const list = await fetchUserLeagues()
+      const match = (list || []).find((l) => String(l.id) === String(id))
+      if (match) setActiveLeague(match)
+    } catch {
+      // Non-fatal: the import itself succeeded. The user can still pick it in the sidebar.
+    }
+  }
 
   // Handle redirect params (?platform=espn or ?platform=yahoo after OAuth)
+  //
+  // PRE-EXISTING lint exception, not introduced with the adoptLeague work above: this
+  // effect drives wizard state from the OAuth return URL, which react-hooks/set-state-in-
+  // effect flags. Rewriting it to derive during render would change how the OAuth callback
+  // is handled — worth doing, but on its own, not folded into a bug fix.
   useEffect(() => {
     const p = searchParams.get('platform')
     const error = searchParams.get('error')
     const retry = searchParams.get('retry')
 
     if (error === 'account_not_ready' && retry === 'true') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRetryMessage('Account is setting up — retrying automatically...')
       setPlatform(p || 'yahoo')
       setStep(1)
@@ -710,6 +746,7 @@ export default function LeagueSetup() {
   const handleConnected = (data) => {
     setResult(data)
     setStep(4)
+    adoptLeague(data)
   }
 
   // Yahoo OAuth complete → show league list
@@ -728,6 +765,7 @@ export default function LeagueSetup() {
   const handleYahooImport = (data) => {
     setResult(data)
     setStep(4)
+    adoptLeague(data)
   }
 
   const handleBack = () => {
