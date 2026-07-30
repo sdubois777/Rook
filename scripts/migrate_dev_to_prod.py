@@ -32,13 +32,22 @@ DEV = "postgresql://postgres:dev@localhost:5433/rook"
 
 PRESERVED = {"market_value_league", "market_value_prior_season", "market_value_prior_season_year"}
 
-# Board tables — wholesale. opponent_profiles -> draft_state is the only inter-board FK.
+# Board tables — wholesale.
+#
+# opponent_profiles and draft_state are DELIBERATELY EXCLUDED. They are per-TENANT
+# state, not board data: opponent_profiles now carries user_id/user_league_id and
+# holds real managers' names and rosters. Copying them wholesale would overwrite
+# prod's tenancy with dev's, and ship dev rows (and dev's user ids, which do not
+# exist in prod — the FKs would fail) into production.
+#
+# season_roster is also per-user but has no tenant column yet; it stays for now
+# because nothing writes it. Revisit when it gets one.
 BOARD = ["player_profiles", "player_format_values", "player_dependencies",
          "player_injury_profiles", "player_schedules", "team_systems",
          "beat_reporter_signals", "market_value_historic", "market_value_metadata",
-         "season_roster", "value_snapshots", "draft_state", "opponent_profiles"]
-DELETE_FIRST = ["opponent_profiles"]            # child before parent
-INSERT_LAST = ["opponent_profiles"]             # parent (draft_state) before child
+         "season_roster", "value_snapshots"]
+DELETE_FIRST: list[str] = []
+INSERT_LAST: list[str] = []
 
 
 async def _codec(conn):
