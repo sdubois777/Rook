@@ -2,10 +2,27 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../api/client'
 import { fetchYahooConnectUrl, fetchUserLeagues } from '../api/league'
-import { DRAFT_LABELS, SCORING_LABELS } from '../lib/constants'
+import {
+  DRAFT_LABELS,
+  SCORING_LABELS,
+  YAHOO_ENABLED,
+  YAHOO_DISABLED_NOTE,
+} from '../lib/constants'
+import { useLeague } from '../context/LeagueContext'
 
+// The Yahoo entry is DISABLED, not deleted, when YAHOO_ENABLED is false. Deleting it
+// would (a) lose the explanation, so users hunt for Yahoo and conclude Rook is broken,
+// (b) leave the sm:grid-cols-3 tile row unbalanced, and (c) make re-enabling a
+// multi-line restore instead of flipping one boolean.
 const PLATFORMS = [
-  { id: 'yahoo', name: 'Yahoo', color: 'bg-purple-600 hover:bg-purple-500', icon: '🟣' },
+  {
+    id: 'yahoo',
+    name: 'Yahoo',
+    color: 'bg-purple-600 hover:bg-purple-500',
+    icon: '🟣',
+    disabled: !YAHOO_ENABLED,
+    note: YAHOO_DISABLED_NOTE,
+  },
   { id: 'espn', name: 'ESPN', color: 'bg-orange-600 hover:bg-orange-500', icon: '🏈' },
   { id: 'sleeper', name: 'Sleeper', color: 'bg-sky-600 hover:bg-sky-500', icon: '💤' },
 ]
@@ -52,14 +69,27 @@ function PlatformStep({ onSelect }) {
       <p className="text-gray-400 mb-8">Which platform is your fantasy league on?</p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {PLATFORMS.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelect(p.id)}
-            className={`${p.color} text-white rounded-xl p-6 text-center transition-colors`}
-          >
-            <div className="text-3xl mb-2">{p.icon}</div>
-            <div className="text-lg font-semibold">{p.name}</div>
-          </button>
+          // The note stays a <p>, never a button, and never names another platform:
+          // EspnConnectPolling.test.jsx does getByRole('button', {name: /ESPN/i}), which
+          // throws on multiple matches.
+          <div key={p.id}>
+            <button
+              onClick={() => onSelect(p.id)}
+              disabled={p.disabled}
+              aria-disabled={p.disabled || undefined}
+              className={`w-full rounded-xl p-6 text-center transition-colors ${
+                p.disabled
+                  ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                  : `${p.color} text-white`
+              }`}
+            >
+              <div className={`text-3xl mb-2 ${p.disabled ? 'opacity-40' : ''}`}>{p.icon}</div>
+              <div className="text-lg font-semibold">{p.name}</div>
+            </button>
+            {p.disabled && p.note && (
+              <p className="text-xs text-gray-500 mt-2 text-center">{p.note}</p>
+            )}
+          </div>
         ))}
       </div>
     </div>
@@ -68,10 +98,32 @@ function PlatformStep({ onSelect }) {
 
 // Step 1 — Connect (platform-specific)
 function ConnectStep({ platform, onConnected, onYahooLeagues, onBack }) {
+  // THE choke point. Step 1 is the only route to YahooConnect, so this one line makes
+  // YahooConnect, YahooLeagueSelect and YahooConfirmStep unreachable no matter how the
+  // user got here — tile, deep link, OAuth error branch, or an entry point nobody has
+  // written yet. The deep-link guard in the effect below stops the auto-redirect; this
+  // stops everything else.
+  if (platform === 'yahoo' && !YAHOO_ENABLED) {
+    return <PlatformUnavailable note={YAHOO_DISABLED_NOTE} onBack={onBack} />
+  }
   if (platform === 'yahoo') return <YahooConnect onYahooLeagues={onYahooLeagues} onBack={onBack} />
   if (platform === 'espn') return <EspnConnect onConnected={onConnected} onBack={onBack} />
   if (platform === 'sleeper') return <SleeperConnect onConnected={onConnected} onBack={onBack} />
   return null
+}
+
+function PlatformUnavailable({ note, onBack }) {
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-2">Yahoo import is temporarily unavailable</h2>
+      <p className="text-gray-400 mb-2">{note}</p>
+      <p className="text-gray-500 text-sm">
+        Nothing is wrong with your account — Yahoo has changed how it grants access to its
+        Fantasy API, and our request is in their review queue.
+      </p>
+      <BackButton onClick={onBack} />
+    </div>
+  )
 }
 
 function YahooConnect({ onYahooLeagues, onBack }) {
@@ -656,16 +708,69 @@ export default function LeagueSetup() {
   const [platform, setPlatform] = useState(null)
   const [result, setResult] = useState(null)
   const [yahooLeagues, setYahooLeagues] = useState(null)
+  // NOTE: local wizard state for the Yahoo league being confirmed — NOT the app-wide
+  // selection. The two are different things and the shadowed name has caused confusion;
+  // the app-wide one is `adoptLeague` below.
   const [selectedLeague, setSelectedLeague] = useState(null)
   const [retryMessage, setRetryMessage] = useState('')
+  const { setSelectedLeague: setActiveLeague } = useLeague()
+
+  /**
+   * Point the whole app at the league that was just imported.
+   *
+   * Without this, finishing the wizard created the league server-side and navigated away
+   * while the app-wide selection stayed on whatever was already in localStorage. Connect
+   * an ESPN snake league next to an existing Yahoo auction one and the sidebar keeps
+   * naming the Yahoo league, every board keeps rendering salary values, and nothing tells
+   * you why — the league you just connected is not the league the app is using.
+   *
+   * The full row is re-fetched rather than assembled from the import response, because the
+   * context resolves draft_type and scoring off this object: a partial one would silently
+   * fall through to the snake/PPR default and mislabel an auction league.
+   */
+  const adoptLeague = async (data) => {
+    const id = data?.league_id
+    if (!id) return
+    try {
+      const list = await fetchUserLeagues()
+      const match = (list || []).find((l) => String(l.id) === String(id))
+      if (match) setActiveLeague(match)
+    } catch {
+      // Non-fatal: the import itself succeeded. The user can still pick it in the sidebar.
+    }
+  }
 
   // Handle redirect params (?platform=espn or ?platform=yahoo after OAuth)
+  //
+  // PRE-EXISTING lint exception, not introduced with the adoptLeague work above: this
+  // effect drives wizard state from the OAuth return URL, which react-hooks/set-state-in-
+  // effect flags. Rewriting it to derive during render would change how the OAuth callback
+  // is handled — worth doing, but on its own, not folded into a bug fix.
   useEffect(() => {
     const p = searchParams.get('platform')
     const error = searchParams.get('error')
     const retry = searchParams.get('retry')
 
+    // Yahoo deep-link short-circuit. MUST stay above the retry branch: that branch
+    // reaches fetchYahooConnectUrl() + window.location.href through a 2s timer with NO
+    // user click, so a stale bookmark or history entry would auto-launch the dead OAuth
+    // flow. A guard placed after it is too late.
+    //
+    // The `!p && (error || retry)` clause is the trap: both branches below read
+    // `setPlatform(p || 'yahoo')`, so a URL carrying only `?error=invalid_state` and no
+    // platform param still resolves to Yahoo. Guarding on `p === 'yahoo'` alone ships a
+    // half-gate that leaves the auto-redirect live.
+    const wantsYahoo = p === 'yahoo' || (!p && (error || retry))
+    if (wantsYahoo && !YAHOO_ENABLED) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRetryMessage(YAHOO_DISABLED_NOTE)
+      setPlatform(null)
+      setStep(0)
+      return
+    }
+
     if (error === 'account_not_ready' && retry === 'true') {
+       
       setRetryMessage('Account is setting up — retrying automatically...')
       setPlatform(p || 'yahoo')
       setStep(1)
@@ -710,6 +815,7 @@ export default function LeagueSetup() {
   const handleConnected = (data) => {
     setResult(data)
     setStep(4)
+    adoptLeague(data)
   }
 
   // Yahoo OAuth complete → show league list
@@ -728,6 +834,7 @@ export default function LeagueSetup() {
   const handleYahooImport = (data) => {
     setResult(data)
     setStep(4)
+    adoptLeague(data)
   }
 
   const handleBack = () => {

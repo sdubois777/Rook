@@ -208,6 +208,9 @@ export default function DraftBoard() {
         position: position || undefined,
         // PRE-DRAFT surface: per-format tier/points/ADP from player_format_values.
         scoring_format: scoringFormat,
+        // draft_type is DELIBERATELY not sent. The endpoint accepts it, but its snake
+        // branch filters `adp_rank IS NOT NULL`, which would drop K/DEF from the payload
+        // and empty the board's No-ADP bucket. Snake-ness is a client-side re-sort here.
       }),
     // Don't fetch until Clerk is ready, or the request goes out tokenless -> 401.
     enabled: isLoaded,
@@ -324,7 +327,7 @@ export default function DraftBoard() {
     return (
       <div
         key={p.id}
-        className={`flex items-center gap-3 px-4 py-2.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50 ${highlightClasses}`}
+        className={`flex items-center gap-2 px-3 sm:gap-3 sm:px-4 py-2.5 hover:bg-surface-3 cursor-pointer transition-colors border-b border-border/50 ${highlightClasses}`}
       >
         <button
           onClick={(e) => {
@@ -340,8 +343,11 @@ export default function DraftBoard() {
           )}
         </button>
 
+        {/* flex-wrap at base only: the phone tier now carries our own number (AI ADP /
+            AI Ceil), which leaves no room for the flags inline, so they wrap to a second
+            line. Unchanged from sm up. */}
         <div
-          className="flex items-center gap-3 flex-1 min-w-0"
+          className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap flex-1 min-w-0"
           onClick={() => openPlayerDetail(p.id)}
         >
           <span className="w-9 shrink-0"><PositionBadge position={p.position} variant="dense" /></span>
@@ -358,15 +364,17 @@ export default function DraftBoard() {
             <>
               {/* Snake: AI ADP (clean adp_rank) / FP ADP / Diff (fp_rank -
                   adp_rank; positive = we rate them earlier than consensus).
-                  Diff is the core signal — always visible. */}
-              <span className="hidden sm:block text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+                  OUR OWN PICK POSITION and Diff are the product — both visible at every
+                  tier, narrower at base. FP ADP is consensus (duplicate info) so it stays
+                  the one that gives way on a phone. */}
+              <span className="block text-sm text-purple-400 font-mono w-10 sm:w-20 shrink-0 text-right">
                 {formatAdp(p)}
               </span>
               <span className="hidden md:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
                 {formatFpAdp(p)}
               </span>
               <span
-                className={`text-xs font-mono w-16 shrink-0 text-right ${
+                className={`text-xs font-mono w-12 sm:w-16 shrink-0 text-right ${
                   getAdpDiff(p) != null && getAdpDiff(p) > 3
                     ? 'text-emerald-400'
                     : getAdpDiff(p) != null && getAdpDiff(p) < -3
@@ -379,9 +387,11 @@ export default function DraftBoard() {
             </>
           ) : (
             <>
-              {/* Auction: AI Ceil / Market / PPR progressively revealed;
-                  Gap is the core signal — always visible. */}
-              <span className="hidden sm:block text-sm text-purple-400 font-mono w-20 shrink-0 text-right">
+              {/* Auction: AI Ceil / Market / PPR progressively revealed.
+                  OUR OWN PRICE and Gap are the product — both visible at every tier,
+                  narrower at base (w-12 fits "$188"). Market is consensus (duplicate
+                  info) so it stays the one that gives way on a phone. */}
+              <span className="block text-sm text-purple-400 font-mono w-12 sm:w-20 shrink-0 text-right">
                 {getBidCeiling(p) != null ? `$${getBidCeiling(p)}` : '--'}
               </span>
               <span className="hidden md:block text-xs text-slate-400 font-mono w-20 shrink-0 text-right">
@@ -392,7 +402,7 @@ export default function DraftBoard() {
               </span>
 
               <span
-                className={`text-xs font-mono w-16 shrink-0 text-right ${
+                className={`text-xs font-mono w-12 sm:w-16 shrink-0 text-right ${
                   aiGap != null && aiGap > 3
                     ? 'text-emerald-400'
                     : aiGap != null && aiGap < -3
@@ -405,8 +415,10 @@ export default function DraftBoard() {
             </>
           )}
 
-          {/* Flags — snake shows the snake_flag; auction shows the $ badges */}
-          <div className="flex gap-1 ml-auto flex-wrap justify-end">
+          {/* Flags — snake shows the snake_flag; auction shows the $ badges.
+              w-full at base takes the whole second line (see the row's flex-wrap);
+              from sm up this is the inline right-aligned column it has always been. */}
+          <div className="flex gap-1 ml-auto flex-wrap justify-end w-full sm:w-auto">
             {isSnake ? (
               getSnakeFlagLabel(p) && (
                 <span
@@ -450,28 +462,32 @@ export default function DraftBoard() {
     )
   }
 
+  // Width classes here MUST match renderPlayerRow's corresponding cell exactly — they are
+  // separate flex rows, so any divergence misaligns every column to its right. Pinned by
+  // DraftBoardMobile.test.jsx. The header stays one line at every tier (no flex-wrap):
+  // "Flags" is hidden at base, where the flags move to the row's own second line.
   const columnHeaders = (
-    <div className="flex items-center gap-3 px-4 py-1.5 border-b border-border">
+    <div className="flex items-center gap-2 px-3 sm:gap-3 sm:px-4 py-1.5 border-b border-border">
       <span className="w-[14px] shrink-0" />
-      <div className="flex items-center gap-3 flex-1 min-w-0">
+      <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
         <span className="w-9 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Pos</span>
         <SortableHeader label="Player" sortKey="name" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="flex-1 min-w-0 lg:flex-none lg:w-[220px]" defaultOrder="asc" />
         <span className="hidden sm:block w-12 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">Team</span>
         {isSnake ? (
           <>
-            <span className="hidden sm:block w-20 shrink-0"><SortableHeader label="AI ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
+            <span className="block w-10 sm:w-20 shrink-0"><SortableHeader label="AI ADP" shortLabel="ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
             <span className="hidden md:block w-20 shrink-0"><SortableHeader label="FP ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
-            <SortableHeader label="Diff" sortKey="adp_diff" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" defaultOrder="desc" />
+            <SortableHeader label="Diff" sortKey="adp_diff" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 sm:w-16 shrink-0" align="right" defaultOrder="desc" />
           </>
         ) : (
           <>
-            <span className="hidden sm:block w-20 shrink-0"><SortableHeader label="AI Ceil" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
+            <span className="block w-12 sm:w-20 shrink-0"><SortableHeader label="AI Ceil" shortLabel="AI $" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <span className="hidden md:block w-20 shrink-0"><SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <span className="hidden lg:block w-20 shrink-0"><SortableHeader label="Points" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
-            <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-16 shrink-0" align="right" />
+            <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 sm:w-16 shrink-0" align="right" />
           </>
         )}
-        <span className="ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
+        <span className="hidden sm:block ml-auto text-[10px] uppercase tracking-wider text-slate-500">Flags</span>
       </div>
     </div>
   )

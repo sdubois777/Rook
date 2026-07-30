@@ -2,8 +2,30 @@ import { render, screen, fireEvent, act, waitFor, within } from '@testing-librar
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { useDraftStore } from '../stores/draft'
+import { LeagueContext } from '../context/LeagueContext'
 import { ACTION_STYLES } from '../components/draft/RecommendationPanel'
 import { assignToSlot, POSITION_SLOTS } from '../components/draft/MyRoster'
+
+// Every panel test in this file simulates an AUCTION draft — the fixtures below all carry
+// bid_ceiling / market_value / budget. That used to be implicit, riding on the bare
+// LeagueContext default happening to be auction; now that the app default is snake, the
+// assumption is stated. Declaring it also matches what the live draft actually does: the
+// backend echoes the detected format into the store, so a real draft is never ambiguous.
+const AUCTION_CTX = {
+  selectedLeague: null,
+  setSelectedLeague: () => {},
+  draftType: 'auction',
+  isSnake: false,
+  isAuction: true,
+  scoringFormat: 'ppr',
+  formatOverride: null,
+  setFormatOverride: () => {},
+  canChooseFormat: true,
+}
+
+function AuctionCtx({ children }) {
+  return <LeagueContext.Provider value={AUCTION_CTX}>{children}</LeagueContext.Provider>
+}
 
 // Mock the API module
 vi.mock('../api/draft', () => ({
@@ -163,7 +185,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <RecommendationPanel />
+        <AuctionCtx><RecommendationPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -201,7 +223,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <RecommendationPanel />
+        <AuctionCtx><RecommendationPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -240,7 +262,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <RecommendationPanel />
+        <AuctionCtx><RecommendationPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1329,7 +1351,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1350,7 +1372,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1373,7 +1395,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1392,7 +1414,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1405,7 +1427,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1424,7 +1446,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1508,7 +1530,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 
@@ -1531,7 +1553,7 @@ describe('DraftRoom', () => {
 
     render(
       <MemoryRouter>
-        <TeamRosterPanel />
+        <AuctionCtx><TeamRosterPanel /></AuctionCtx>
       </MemoryRouter>
     )
 

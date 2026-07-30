@@ -3,6 +3,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useLeague } from '../../context/LeagueContext'
 import { fetchUserLeagues } from '../../api/league'
 import { useUIStore } from '../../stores/ui'
+import NoLeagueFormatToggle from './NoLeagueFormatToggle'
 
 // Short chip label for the collapsed sidebar: initials of the league name.
 function abbreviate(name) {
@@ -16,6 +17,9 @@ export default function LeagueSelector() {
   const { isLoaded, isSignedIn } = useAuth()
   const { selectedLeague, setSelectedLeague } = useLeague()
   const [leagues, setLeagues] = useState([])
+  // Distinguishes "haven't heard back yet / fetch failed" from "server says: none".
+  // Without it those two look identical and the saved-league fallback covers both.
+  const [fetched, setFetched] = useState(false)
 
   useEffect(() => {
     // Gate on Clerk being ready — otherwise the fetch goes out tokenless on a
@@ -28,10 +32,19 @@ export default function LeagueSelector() {
         if (cancelled) return
         const list = data || []
         setLeagues(list)
-        // Auto-select: if nothing saved (or the saved one is gone), pick the
-        // first connected league so the app always has a league in context.
-        const stillValid = list.some((l) => l.id === selectedLeague?.id)
-        if (list.length > 0 && !stillValid) setSelectedLeague(list[0])
+        setFetched(true)
+        if (list.length > 0) {
+          // Auto-select: if nothing saved (or the saved one is gone), pick the
+          // first connected league so the app always has a league in context.
+          const stillValid = list.some((l) => l.id === selectedLeague?.id)
+          if (!stillValid) setSelectedLeague(list[0])
+        } else {
+          // The fetch SUCCEEDED and returned nothing: every league is gone. Clear the
+          // saved one or it outlives its own deletion — the selector's fallback below
+          // would keep rendering it, the format would keep resolving from it, and no
+          // reload would ever heal it because this branch is the only thing that could.
+          setSelectedLeague(null)
+        }
       })
       .catch(() => {})
     return () => {
@@ -42,11 +55,18 @@ export default function LeagueSelector() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, isSignedIn, setSelectedLeague])
 
-  // Fall back to the saved league so the selector never renders empty before
-  // (or after a failed) fetch — the localStorage value is available immediately.
-  const options = leagues.length > 0 ? leagues : selectedLeague ? [selectedLeague] : []
+  // Fall back to the saved league so the selector never renders empty before (or after a
+  // FAILED) fetch — the localStorage value is available immediately. Gated on `fetched`
+  // so it applies only while the answer is unknown: once a successful fetch has said
+  // "no leagues", the fallback must not resurrect the one that was just deleted.
+  const options = leagues.length > 0
+    ? leagues
+    : (!fetched && selectedLeague ? [selectedLeague] : [])
 
-  if (options.length === 0) return null
+  // No league synced → offer the format picker in this exact slot instead of rendering
+  // nothing. Returning it from here (rather than mounting a sibling in Sidebar) makes the
+  // mutual exclusion structural: exactly one of the two controls can ever render.
+  if (options.length === 0) return <NoLeagueFormatToggle />
 
   const meta = selectedLeague
     ? `${selectedLeague.draft_type} · ${selectedLeague.scoring} · ${selectedLeague.team_count}-tm`

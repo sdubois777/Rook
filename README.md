@@ -186,6 +186,22 @@ alembic upgrade head
 # Start the backend
 uvicorn backend.main:app --reload
 
+# Start the backend over HTTPS — REQUIRED to test the Yahoo OAuth callback locally.
+# Yahoo will not register an http:// redirect URI, so YAHOO_REDIRECT_URI is necessarily
+# https://localhost:8000/api/auth/yahoo/callback and the dev server has to speak TLS.
+# Without it the browser reports "SSL received a record that exceeded the maximum
+# permissible length" — that is the scheme mismatch, not a Rook error.
+python scripts/make_dev_cert.py        # once; writes certs/ (gitignored)
+uvicorn backend.main:app --reload \
+    --ssl-keyfile certs/localhost-key.pem --ssl-certfile certs/localhost.pem
+# then point the Vite proxy at it:
+#   cd frontend && VITE_API_TARGET=https://localhost:8000 npm run dev
+#
+# NOTE the /api prefix in the callback path: every router is mounted under /api, and a
+# redirect URI without it lands on the SPA catch-all, which answers 200 with index.html —
+# so the token exchange silently never runs. Startup logs OAUTH REDIRECT MISCONFIGURED if
+# the configured URI and the mounted route disagree.
+
 # Run the pre-draft pipeline (with cost estimate)
 python scripts/run_predraft_pipeline.py --dry-run
 python scripts/run_predraft_pipeline.py --agent all

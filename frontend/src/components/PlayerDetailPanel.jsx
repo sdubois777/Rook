@@ -6,7 +6,6 @@ import { usePreferencesStore } from '../stores/preferences'
 import { PlayerBadges } from './shared/PlayerName'
 import FlagBadge from './shared/FlagBadge'
 import SystemGradeBadge from './shared/SystemGradeBadge'
-import ValueComparisonBar from './shared/ValueComparisonBar'
 import { getDisplaySignal, getSignalBadgeStyle, getSignalLabel } from '../lib/signals'
 import { useLeague } from '../context/LeagueContext'
 import {
@@ -21,7 +20,11 @@ import {
 export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
   const { isSnake, scoringFormat } = useLeague()
   const close = useUIStore((s) => s.closePlayerDetail)
-  const openPlayerDetail = onPlayerSelect || useUIStore((s) => s.openPlayerDetail)
+  // The store selector is called UNCONDITIONALLY and the prop chosen afterwards. Written
+  // as `onPlayerSelect || useUIStore(...)` it was a rules-of-hooks violation — harmless
+  // only because no caller passes onPlayerSelect today, so the hook always ran anyway.
+  const openFromStore = useUIStore((s) => s.openPlayerDetail)
+  const openPlayerDetail = onPlayerSelect || openFromStore
   const isWatchlisted = usePreferencesStore((s) => s.watchlist.some((w) => w.player_id === playerId))
   const addToWatchlist = usePreferencesStore((s) => s.addToWatchlist)
   const removeFromWatchlist = usePreferencesStore((s) => s.removeFromWatchlist)
@@ -95,136 +98,11 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
               </div>
             </Section>
 
-            {/* Valuation */}
+            {/* Valuation — NUMBERS ONLY. The verdict badges and the AI prose live in
+                their own section BELOW Projection, so the evidence arrives before the
+                narrative. */}
             <Section title="Valuation">
-              {/* Snake: ADP fields + flag, no dollar amounts */}
-              {isSnake && (
-                <>
-                  <div className="grid grid-cols-3 gap-3 mb-3">
-                    <StatBox label="AI ADP" value={getDisplayAdp(player) != null ? `#${getDisplayAdp(player)}` : '--'} accent />
-                    <StatBox label="FP ADP" value={formatFpAdp(player)} />
-                    <StatBox label="Diff" value={formatAdpDiff(player)} />
-                  </div>
-                  {getSnakeFlagLabel(player) && (
-                    <div className="mb-3">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSnakeFlagClass(player)}`}>
-                        {getSnakeFlagLabel(player)}
-                      </span>
-                    </div>
-                  )}
-                  {player.auction_note && (
-                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
-                      {player.auction_note}
-                    </p>
-                  )}
-                </>
-              )}
-
-              {/* Auction: the dollar valuation block (hidden for snake leagues) */}
-              {!isSnake && (
-              <>
-              <div className={`grid ${getBidCeiling(player) != null ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-3 mb-3`}>
-                <StatBox label="Bid Ceiling" value={`$${player.recommended_bid_ceiling?.toFixed(0) || '--'}`} accent />
-                {getBidCeiling(player) != null && (
-                  <StatBox label="AI Ceiling" value={`$${getBidCeiling(player)}`} accent />
-                )}
-                <StatBox label="System" value={`$${player.baseline_value?.toFixed(0) || '--'}`} />
-                <StatBox
-                  label={`${player.market_value_season || ''} ADP`}
-                  value={`$${player.market_value?.toFixed(0) || '--'}`}
-                />
-              </div>
-
-              {/* AI confidence range */}
-              {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
-                <div className="bg-surface-2 rounded p-2 mb-3 text-center">
-                  <div className="text-[10px] text-slate-500 mb-1">Confidence Range</div>
-                  <div className="text-sm font-mono text-slate-300">
-                    ${player.ai_confidence_floor} &ndash; ${player.ai_confidence_ceiling}
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <StatBox label="Ceiling" value={`$${player.ceiling_value?.toFixed(0) || '--'}`} />
-                <StatBox label="Floor" value={`$${player.floor_value?.toFixed(0) || '--'}`} />
-              </div>
-
-              {player.prior_season_price != null && (
-                <div className="bg-surface-2 rounded p-2 mb-3 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500">{player.prior_season_year} Avg Price</span>
-                  <span className="text-sm font-mono text-slate-300">${player.prior_season_price.toFixed(0)}</span>
-                </div>
-              )}
-
-              {/* AI Assessment + tactical badges */}
-              {(player.value_assessment || player.pay_up_flag || player.nomination_target_flag) && (
-                <div className="mb-3">
-                  <div className="flex items-center gap-2 flex-wrap mb-2">
-                    {player.value_assessment && (() => {
-                      const signal = getDisplaySignal(player)
-                      return (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSignalBadgeStyle(signal)}`}>
-                          {getSignalLabel(signal)}
-                        </span>
-                      )
-                    })()}
-                    {player.pay_up_flag && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
-                        PAY UP
-                      </span>
-                    )}
-                    {player.nomination_target_flag && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
-                        NOMINATE
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Auction note */}
-                  {player.auction_note && (
-                    <p className="text-xs text-slate-400 leading-relaxed mb-2">
-                      {player.auction_note}
-                    </p>
-                  )}
-
-                  {/* Signal disagreement context */}
-                  {player.value_gap_signal && player.value_assessment && (() => {
-                    const sig = player.value_gap_signal
-                    const assess = player.value_assessment
-                    const agree = (
-                      (sig === 'market_undervalues' && ['elite_value', 'good_value'].includes(assess)) ||
-                      (sig === 'market_overvalues' && ['avoid', 'slight_overpay'].includes(assess)) ||
-                      (sig === 'aligned' && assess === 'fair_value') ||
-                      sig === 'no_market_data' || sig === 'no_system_data'
-                    )
-                    if (agree) return null
-                    const explanation = (
-                      sig === 'market_overvalues' && ['elite_value', 'good_value'].includes(assess)
-                        ? 'AI sees upside the historical average misses.'
-                        : sig === 'market_undervalues' && ['avoid', 'slight_overpay'].includes(assess)
-                          ? 'AI applying contextual discount to math value.'
-                          : null
-                    )
-                    return (
-                      <div className="flex items-start gap-1.5 mt-1">
-                        <Info size={13} className="text-slate-500 mt-0.5 shrink-0" />
-                        <span className="text-[11px] text-slate-500 leading-snug">
-                          Math signal ({sig.replace(/_/g, ' ')}) differs from AI — AI wins for bid decisions.
-                          {explanation && ` ${explanation}`}
-                        </span>
-                      </div>
-                    )
-                  })()}
-                </div>
-              )}
-
-              <ValueComparisonBar
-                systemValue={player.baseline_value}
-                marketValue={player.market_value}
-              />
-              </>
-              )}
+              <ValuationNumbers player={player} isSnake={isSnake} />
             </Section>
 
             {/* Projection */}
@@ -379,6 +257,16 @@ export default function PlayerDetailPanel({ playerId, onPlayerSelect }) {
                 )}
                   </>)
                 })()}
+              </Section>
+            )}
+
+            {/* AI Assessment — the verdict badges and the prose, deliberately BELOW
+                Projection. The section is gated per branch: hoisting a heading above the
+                inner conditions would render a bare title over nothing for an auction
+                player with no assessment and no tactical flags. */}
+            {hasAiAssessment(player, isSnake) && (
+              <Section title="AI Assessment">
+                <AiAssessment player={player} isSnake={isSnake} />
               </Section>
             )}
 
@@ -571,5 +459,155 @@ function StatBox({ label, value, accent = false }) {
         {value}
       </div>
     </div>
+  )
+}
+
+/**
+ * The Valuation section's NUMBERS — nothing else.
+ *
+ * The auction side used to carry nine figures: Bid Ceiling, AI Ceiling, System, {season}
+ * ADP, a Confidence Range, Ceiling, Floor, {year} Avg Price, and then System and Market a
+ * second time inside a comparison bar. Most of them were intermediate values a user never
+ * bids off. What survives is the price we'd pay, what it costs on the market, and how
+ * confident we are in the first.
+ */
+function ValuationNumbers({ player, isSnake }) {
+  if (isSnake) {
+    return (
+      <div className="grid grid-cols-3 gap-3">
+        <StatBox label="AI ADP" value={getDisplayAdp(player) != null ? `#${getDisplayAdp(player)}` : '--'} accent />
+        <StatBox label="FP ADP" value={formatFpAdp(player)} />
+        <StatBox label="Diff" value={formatAdpDiff(player)} />
+      </div>
+    )
+  }
+
+  const hasCeiling = getBidCeiling(player) != null
+  return (
+    <>
+      {/* Column count tracks the box count: two normally, one when the AI has no ceiling
+          for this player — otherwise the grid renders a dangling empty cell. */}
+      <div className={`grid ${hasCeiling ? 'grid-cols-2' : 'grid-cols-1'} gap-3 mb-3`}>
+        {hasCeiling && (
+          <StatBox label="AI Ceiling" value={`$${getBidCeiling(player)}`} accent />
+        )}
+        <StatBox
+          label={`${player.market_value_season || ''} ADP`}
+          value={`$${player.market_value?.toFixed(0) || '--'}`}
+        />
+      </div>
+
+      {player.ai_confidence_floor != null && player.ai_confidence_ceiling != null && (
+        <div className="bg-surface-2 rounded p-2 text-center">
+          <div className="text-[10px] text-slate-500 mb-1">Confidence Range</div>
+          <div className="text-sm font-mono text-slate-300">
+            ${player.ai_confidence_floor} &ndash; ${player.ai_confidence_ceiling}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * Whether there is anything to put under an "AI Assessment" heading.
+ *
+ * Mirrors the render conditions below exactly. Kept as its own predicate because the
+ * heading is now hoisted into a Section: if this ever drifts from AiAssessment's own
+ * conditions, the panel renders a titled section with nothing in it.
+ */
+function hasAiAssessment(player, isSnake) {
+  if (isSnake) return Boolean(getSnakeFlagLabel(player) || player.auction_note)
+  return Boolean(
+    player.value_assessment || player.pay_up_flag || player.nomination_target_flag
+  )
+}
+
+/**
+ * The verdict badges and the AI's prose.
+ *
+ * The snake flag chip lives here rather than with the numbers because it is a verdict, not
+ * a measurement — which makes both branches structurally parallel: Valuation is numbers,
+ * this is the badge row plus the narrative.
+ *
+ * NOTE the asymmetry in the auction branch is pre-existing and deliberately preserved:
+ * auction_note only renders when there is also an assessment or a tactical flag, whereas
+ * snake renders the note on its own. Changing that would alter what users see, which is
+ * not what this refactor is for.
+ */
+function AiAssessment({ player, isSnake }) {
+  if (isSnake) {
+    return (
+      <>
+        {getSnakeFlagLabel(player) && (
+          <div className="mb-2">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSnakeFlagClass(player)}`}>
+              {getSnakeFlagLabel(player)}
+            </span>
+          </div>
+        )}
+        {player.auction_note && (
+          <p className="text-xs text-slate-400 leading-relaxed">{player.auction_note}</p>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        {player.value_assessment && (() => {
+          const signal = getDisplaySignal(player)
+          return (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${getSignalBadgeStyle(signal)}`}>
+              {getSignalLabel(signal)}
+            </span>
+          )
+        })()}
+        {player.pay_up_flag && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-500/15 text-emerald-400">
+            PAY UP
+          </span>
+        )}
+        {player.nomination_target_flag && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-400">
+            NOMINATE
+          </span>
+        )}
+      </div>
+
+      {player.auction_note && (
+        <p className="text-xs text-slate-400 leading-relaxed mb-2">{player.auction_note}</p>
+      )}
+
+      {/* Signal disagreement context */}
+      {player.value_gap_signal && player.value_assessment && (() => {
+        const sig = player.value_gap_signal
+        const assess = player.value_assessment
+        const agree = (
+          (sig === 'market_undervalues' && ['elite_value', 'good_value'].includes(assess)) ||
+          (sig === 'market_overvalues' && ['avoid', 'slight_overpay'].includes(assess)) ||
+          (sig === 'aligned' && assess === 'fair_value') ||
+          sig === 'no_market_data' || sig === 'no_system_data'
+        )
+        if (agree) return null
+        const explanation = (
+          sig === 'market_overvalues' && ['elite_value', 'good_value'].includes(assess)
+            ? 'AI sees upside the historical average misses.'
+            : sig === 'market_undervalues' && ['avoid', 'slight_overpay'].includes(assess)
+              ? 'AI applying contextual discount to math value.'
+              : null
+        )
+        return (
+          <div className="flex items-start gap-1.5 mt-1">
+            <Info size={13} className="text-slate-500 mt-0.5 shrink-0" />
+            <span className="text-[11px] text-slate-500 leading-snug">
+              Math signal ({sig.replace(/_/g, ' ')}) differs from AI — AI wins for bid decisions.
+              {explanation && ` ${explanation}`}
+            </span>
+          </div>
+        )
+      })()}
+    </>
   )
 }
