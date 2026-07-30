@@ -16,12 +16,17 @@ throw — it would go quiet, which is why the 200-vs-422 distinction is asserted
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app
 
 UNPREFIXED = "/auth/yahoo/callback"
 PREFIXED = "/api/auth/yahoo/callback"
+
+_MAIN_PY = Path(__file__).resolve().parents[2] / "backend" / "main.py"
 
 
 def _paths() -> list[str]:
@@ -34,10 +39,34 @@ def test_both_callback_paths_are_registered():
     assert UNPREFIXED in paths
 
 
+def test_the_alias_is_defined_before_the_spa_catch_all_in_source():
+    """The ordering guard that survives a backend-only CI job.
+
+    The runtime check below cannot run there: the catch-all is registered inside
+    ``if FRONTEND_DIST.exists()`` (backend/main.py), and CI's backend job never builds
+    the frontend — so the route simply is not on ``app`` and the ordering is unobservable
+    at runtime. Asserting on source order keeps the invariant guarded in exactly the
+    place a regression would otherwise sail through.
+    """
+    src = _MAIN_PY.read_text(encoding="utf-8")
+    alias = src.index('@app.get("/auth/yahoo/callback"')
+    catch_all = src.index('"/{full_path:path}"')
+    assert alias < catch_all, (
+        "The Yahoo callback alias must be defined before the SPA catch-all. After it, "
+        "the catch-all answers /auth/yahoo/callback with 200 + index.html and the token "
+        "exchange silently never runs — the exact regression fba1f78 shipped."
+    )
+
+
 def test_the_alias_is_defined_before_the_spa_catch_all():
-    """Order is the whole mechanism — after the catch-all the alias is unreachable."""
+    """Same invariant, checked against the live route table where the SPA is served."""
     paths = _paths()
-    catch_all = next(i for i, p in enumerate(paths) if "{full_path" in p)
+    catch_all = next((i for i, p in enumerate(paths) if "{full_path" in p), None)
+    if catch_all is None:
+        pytest.skip(
+            "SPA catch-all not registered — frontend/dist is absent (backend-only run). "
+            "Source-order equivalent above still guards this."
+        )
     assert paths.index(UNPREFIXED) < catch_all
 
 
