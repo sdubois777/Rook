@@ -100,6 +100,28 @@ for _router in (
 
 app.include_router(webhooks.router)  # /webhooks/{clerk,stripe} — external-configured, stay at root
 
+# Yahoo OAuth callback ALIAS at the un-prefixed path, in addition to /api/....
+#
+# The redirect URI is an EXTERNAL contract: Yahoo will only redirect to a URI already
+# registered in its developer console, and the registered localhost/Railway entries are
+# the pre-/api ones. Rejecting a URI we cannot register from here means the OAuth flow
+# simply cannot complete, so the app meets the registered path where it already is.
+#
+# This MUST be registered before the SPA catch-all at the bottom of this file — routes
+# match in definition order, and the catch-all answers anything unmatched with 200 and
+# index.html. That is exactly how the misconfiguration hid: the wrong path did not 404,
+# it silently served the frontend and the token exchange never ran.
+#
+# Same handler object, so the two paths cannot drift. include_in_schema=False keeps the
+# compatibility alias out of the public docs.
+app.add_api_route(
+    "/auth/yahoo/callback",
+    auth.yahoo_callback,
+    methods=["GET"],
+    include_in_schema=False,
+    name="yahoo_callback_unprefixed",
+)
+
 _scheduler = None
 
 
