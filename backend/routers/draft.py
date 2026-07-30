@@ -97,23 +97,51 @@ class DraftEventPayload(BaseModel):
 async def _build_state(
     league_id: str | None = None,
     draft_type: str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
 ):
     """Construct a DraftStateManager from a user's connected league (or defaults).
 
     No team name is passed — the manager starts with the generic label and is
     upgraded to the real own-team name when a resolver streams one.
+
+    ``user_id`` is REQUIRED to read a league. This used to call the inherited
+    ``LeagueRepository.get()``, which is a bare ``session.get(model, id)`` with no
+    ownership predicate (backend/repositories/base.py) — so passing any other user's
+    league_id to POST /draft/start returned THEIR budget, team_count, roster_slots,
+    draft_type and scoring, which then built the caller's config and surfaced via
+    GET /draft/state. The ownership check at the call site did not stop it: a foreign
+    league makes get_user_league return None, which only skips the suspended-league
+    branch and falls through.
+
+    Missing user_id therefore falls back to defaults rather than reading unscoped —
+    a wrong-but-generic board beats another tenant's settings.
     """
     from backend.engines.draft_state_manager import DraftStateManager
 
     user_league = None
-    if league_id:
+    if league_id and user_id is not None:
         try:
             from backend.repositories.league_repo import LeagueRepository
 
             async with AsyncSessionLocal() as session:
-                user_league = await LeagueRepository(session).get(uuid.UUID(league_id))
+                # get_user_league, NOT get — it ANDs user_id, which is the row-level
+                # security check (backend/repositories/league_repo.py:44-45).
+                user_league = await LeagueRepository(session).get_user_league(
+                    user_id, uuid.UUID(league_id)
+                )
+            if user_league is None:
+                logger.warning(
+                    "Draft config: league %s is not owned by user %s — using defaults",
+                    league_id, user_id,
+                )
         except Exception as exc:
             logger.warning("Could not load league %s for draft config: %s", league_id, exc)
+    elif league_id:
+        logger.warning(
+            "Draft config requested for league %s without a user_id — refusing the "
+            "unscoped read and falling back to defaults", league_id,
+        )
 
     config = DraftStateManager.config_from_user_league(user_league)
     if draft_type:
@@ -736,7 +764,7 @@ async def start_draft(
             ),
         }
 
-    state = await _build_state(req.league_id, req.draft_type)
+    state = await _build_state(req.league_id, req.draft_type, user_id=user.id)
     await session_manager.create(user.id, state)
 
     logger.info("Draft session ready for user %s (team label %s)", user.id, state.your_team_id)
