@@ -290,6 +290,7 @@ class LeagueSyncService:
                     res = await self._store_picks(
                         picks, user_league.id, season,
                         manager_map=user_league.manager_map,
+                        platform=user_league.platform,
                     )
                     picks_total += res["stored"]
                     resolved_total += res["resolved"]
@@ -417,7 +418,24 @@ class LeagueSyncService:
         except Exception as exc:
             logger.warning("Could not fetch Yahoo league settings: %s", exc)
 
-    async def _resolve_pick_identities(self, picks: list) -> dict[str, tuple]:
+    @staticmethod
+    def _pick_key(platform: str, platform_player_id: str | None) -> str:
+        """The bare platform player id to match against the players table.
+
+        Yahoo draft results return a compound key like "461.p.33963"; the
+        players table stores only the numeric tail in Player.yahoo_id. ESPN and
+        Sleeper both return the bare id already.
+        """
+        key = str(platform_player_id or "")
+        if not key:
+            return ""
+        if platform == "yahoo":
+            return key.rsplit(".p.", 1)[-1] if ".p." in key else ""
+        return key
+
+    async def _resolve_pick_identities(
+        self, picks: list, platform: str = "yahoo",
+    ) -> dict[str, tuple]:
         """Map each pick's platform player key to a real player row.
 
         WHY THIS EXISTS. Yahoo's ``draftresults`` endpoint returns only ``player_key``,
@@ -442,26 +460,38 @@ class LeagueSyncService:
 
         from backend.models.player import Player
 
+        col = {
+            "yahoo": Player.yahoo_id,
+            "espn": Player.espn_id,
+            "sleeper": Player.sleeper_id,
+        }.get(platform)
+        if col is None:
+            logger.warning(
+                "league_sync: no identity column for platform %r — draft picks "
+                "will store without a player_id", platform,
+            )
+            return {}
+
         ids = {
-            key.rsplit(".p.", 1)[-1]
-            for key in (p.platform_player_id or "" for p in picks)
-            if ".p." in key
+            k for k in (
+                self._pick_key(platform, p.platform_player_id) for p in picks
+            ) if k
         }
         if not ids:
             return {}
 
         rows = (await self._db.execute(
-            select(Player.id, Player.yahoo_id, Player.name, Player.position)
-            .where(Player.yahoo_id.in_(ids))
+            select(Player.id, col.label("pid"), Player.name, Player.position)
+            .where(col.in_(ids))
         )).all()
 
         seen: dict[str, tuple] = {}
         ambiguous: set[str] = set()
         for row in rows:
-            if row.yahoo_id in seen:
-                ambiguous.add(row.yahoo_id)
+            if row.pid in seen:
+                ambiguous.add(row.pid)
                 continue
-            seen[row.yahoo_id] = (row.id, row.name, row.position)
+            seen[row.pid] = (row.id, row.name, row.position)
         for dup in ambiguous:
             seen.pop(dup, None)
         if ambiguous:
@@ -478,6 +508,7 @@ class LeagueSyncService:
         user_league_id: uuid.UUID,
         season: int,
         manager_map: dict | None = None,
+        platform: str = "yahoo",
     ) -> dict:
         """
         Store historical draft picks, resolving player identity as we go.
@@ -504,7 +535,7 @@ class LeagueSyncService:
         from backend.models.league_auction_history import LeagueAuctionHistory
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        identities = await self._resolve_pick_identities(picks)
+        identities = await self._resolve_pick_identities(picks, platform)
 
         count = 0
         resolved = 0
@@ -512,7 +543,8 @@ class LeagueSyncService:
             if not pick.player_name and not pick.platform_player_id:
                 continue
             key = pick.platform_player_id or ""
-            player_id, name, position = identities.get(key.rsplit(".p.", 1)[-1], (None, "", ""))
+            player_id, name, position = identities.get(
+                self._pick_key(platform, key), (None, "", ""))
             if player_id is not None:
                 resolved += 1
             await self._db.execute(
