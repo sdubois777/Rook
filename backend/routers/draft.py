@@ -166,8 +166,12 @@ async def _make_engine_for(state, session_key: str):
     tendencies: dict = {}
     try:
         from backend.engines.league_auction import load_manager_tendencies
+        # session_key IS the user id — DraftSessionManager._key is str(user_id)
+        # (backend/services/draft_session.py:232-233). This read used to have no
+        # tenant predicate, so one league's manager tendencies biased threat scoring
+        # for every user who started a draft.
         async with AsyncSessionLocal() as session:
-            tendencies = await load_manager_tendencies(session)
+            tendencies = await load_manager_tendencies(session, uuid.UUID(session_key))
         if tendencies:
             logger.info("Loaded tendencies for %d managers", len(tendencies))
     except Exception as exc:
