@@ -3,7 +3,9 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, func
+from sqlalchemy import (
+    String, Integer, Boolean, DateTime, ForeignKey, Index, UniqueConstraint, func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
@@ -42,12 +44,39 @@ class DraftState(Base):
 
 
 class OpponentProfile(Base):
-    """Per-opponent tracking during live draft and in-season."""
+    """Per-opponent tracking during live draft and in-season.
+
+    TENANT-SCOPED. This table had no user column of any kind while being read on
+    every user's live-draft path (`load_manager_tendencies` →
+    `OpponentThreatAnalyzer`), so one league's manager tendencies biased threat
+    scoring for every user — and `build_manager_profiles` deleted every row for the
+    analysis year regardless of owner, which is destruction, not just disclosure.
+
+    ``user_id``/``user_league_id`` are NOT NULL deliberately. The only writer is
+    `build_manager_profiles`, which currently has no callers — so nothing live can
+    violate the constraint today, and if anyone wires it up they are forced to
+    supply an owner rather than silently recreating the leak.
+    """
     __tablename__ = "opponent_profiles"
+    __table_args__ = (
+        # Scopes the year-wide rebuild to one league instead of the whole table.
+        UniqueConstraint(
+            "user_league_id", "season_year", "team_name",
+            name="uq_opponent_profile_league_season_team",
+        ),
+        Index("ix_opponent_profiles_user_id", "user_id"),
+        Index("ix_opponent_profiles_user_league_id", "user_league_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     draft_state_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("draft_state.id"), nullable=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    user_league_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_leagues.id", ondelete="CASCADE"), nullable=False,
     )
     season_year: Mapped[int] = mapped_column(Integer, nullable=False)
 

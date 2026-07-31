@@ -566,10 +566,17 @@ def _classify_management_style(
 
 async def build_manager_profiles(
     session: AsyncSession,
+    user_id: uuid.UUID,
+    user_league_id: uuid.UUID,
     season_year: int | None = None,
 ) -> dict:
     """
     Build opponent profiles from league auction history spending patterns.
+
+    ``user_id``/``user_league_id`` are REQUIRED. Both reads below were unscoped and
+    the DELETE wiped every tenant's profiles for the analysis year — destruction,
+    not just disclosure. NOTE: this function still has no callers; scoping it is
+    containment so that wiring it up later cannot recreate the leak.
 
     Creates one OpponentProfile per manager in the latest year, populated with:
     - budget_spent / budget_remaining
@@ -585,6 +592,7 @@ async def build_manager_profiles(
     if season_year is None:
         result = await session.execute(
             select(func.max(LeagueAuctionHistory.season_year))
+            .where(LeagueAuctionHistory.user_league_id == user_league_id)
         )
         season_year = result.scalar()
         if season_year is None:
@@ -596,6 +604,7 @@ async def build_manager_profiles(
     result = await session.execute(
         select(LeagueAuctionHistory)
         .where(
+            LeagueAuctionHistory.user_league_id == user_league_id,
             LeagueAuctionHistory.season_year == season_year,
             LeagueAuctionHistory.manager_name.isnot(None),
             LeagueAuctionHistory.manager_name != "",
@@ -619,6 +628,7 @@ async def build_manager_profiles(
     result = await session.execute(
         select(LeagueAuctionHistory)
         .where(
+            LeagueAuctionHistory.user_league_id == user_league_id,
             LeagueAuctionHistory.manager_name.isnot(None),
             LeagueAuctionHistory.manager_name != "",
         )
@@ -630,14 +640,16 @@ async def build_manager_profiles(
     for pick in all_picks:
         history_by_manager.setdefault(pick.manager_name, []).append(pick)
 
-    # Delete existing profiles for this analysis year (re-build from scratch)
-    await session.execute(
-        select(OpponentProfile)
-        .where(OpponentProfile.season_year == analysis_year)
-    )
+    # Delete THIS LEAGUE'S profiles for this analysis year (re-build from scratch).
+    # The user_league_id predicate is load-bearing: without it this wiped every
+    # tenant's profiles for the year on any rebuild. (A dead `select(OpponentProfile)`
+    # whose result was discarded used to sit above this — removed.)
     from sqlalchemy import delete
     await session.execute(
-        delete(OpponentProfile).where(OpponentProfile.season_year == analysis_year)
+        delete(OpponentProfile).where(
+            OpponentProfile.user_league_id == user_league_id,
+            OpponentProfile.season_year == analysis_year,
+        )
     )
 
     created = 0
@@ -686,6 +698,8 @@ async def build_manager_profiles(
             })
 
         profile = OpponentProfile(
+            user_id=user_id,
+            user_league_id=user_league_id,
             season_year=analysis_year,
             yahoo_team_id=team_keys.get(mgr),
             team_name=mgr,
@@ -706,9 +720,15 @@ async def build_manager_profiles(
 
 async def load_manager_tendencies(
     session: AsyncSession,
+    user_id: uuid.UUID,
 ) -> dict[str, dict]:
     """
     Load historical manager tendencies from OpponentProfile records.
+
+    ``user_id`` is REQUIRED and deliberately has no default. This read had no tenant
+    predicate at all, so one league's tendencies were loaded into every user's live
+    draft engine (backend/routers/draft.py). A default of None would let a caller
+    silently reintroduce that.
 
     Returns dict keyed by yahoo_team_id (or team_name fallback):
         {
@@ -724,7 +744,10 @@ async def load_manager_tendencies(
 
     result = await session.execute(
         select(OpponentProfile)
-        .where(OpponentProfile.positional_scores.isnot(None))
+        .where(
+            OpponentProfile.user_id == user_id,
+            OpponentProfile.positional_scores.isnot(None),
+        )
         .order_by(OpponentProfile.season_year.desc())
     )
     profiles = result.scalars().all()
