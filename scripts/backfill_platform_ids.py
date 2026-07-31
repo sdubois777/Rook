@@ -90,6 +90,13 @@ def _lookup(maps, sleeper, sportradar, gsis) -> tuple[str | None, str | None]:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill players.espn_id / yahoo_id")
     parser.add_argument("--dry-run", action="store_true", help="report only, no writes")
+    parser.add_argument(
+        "--repair", action="store_true",
+        help="Also CORRECT ids that disagree with the source of truth. Off by "
+             "default: this script is otherwise fill-NULL-only, which means a "
+             "wrong value it wrote on an earlier run can never be fixed by "
+             "re-running it.",
+    )
     args = parser.parse_args()
 
     from sqlalchemy import select
@@ -113,35 +120,92 @@ async def main() -> None:
 
         total = len(rows)
         filled_espn = filled_yahoo = from_ii = from_sl = 0
+        repaired_espn = repaired_yahoo = 0
+        skipped_claimed = 0
+
+        # A platform id identifies exactly ONE player. Without this, the script
+        # wrote the same id onto several rows: measured on the production dump,
+        # 21 espn_id values and 18 yahoo_id values are each held by more than one
+        # player. Binding a draft price or a roster slot to the wrong member of
+        # such a pair is worse than leaving the id unset, which is the same rule
+        # league_sync applies when it drops ambiguous keys instead of guessing.
+        claimed_espn = {_norm(r[4]): r[0] for r in rows if _norm(r[4])}
+        claimed_yahoo = {_norm(r[5]): r[0] for r in rows if _norm(r[5])}
+
         for pid, sleeper, sportradar, gsis, cur_espn, cur_yahoo, pos in rows:
-            if cur_espn and cur_yahoo:
-                continue  # already populated
             skey, srkey, gkey = _norm(sleeper), _norm(sportradar), _norm(gsis)
-            # Fill EACH id independently from the UNION: import_ids is primary, but a
-            # row with espn and NO yahoo must still take the Sleeper-dump yahoo fill
-            # (and vice-versa) — never take one source's whole tuple wholesale.
             e_ii, y_ii = _lookup(ii, skey, srkey, gkey)
             e_sl, y_sl = _lookup(sl, skey, srkey, gkey)
-            e = e_ii or e_sl
-            y = y_ii or y_sl
-            from_ii += bool(e_ii or y_ii)
-            from_sl += bool((e_sl and not e_ii) or (y_sl and not y_ii))
+            # SLEEPER FIRST. This used to read `e_ii or e_sl`, preferring nflverse
+            # import_ids. CLAUDE.md rule 8 makes Sleeper the primary source for
+            # player IDENTITY, and preferring nflverse had already written wrong
+            # values: measured against Sleeper, 7 espn_id and 4 yahoo_id values in
+            # production disagree, including Tyler Conklin (TE, DET) carrying
+            # Ryan Izzo's Yahoo id 31127 instead of his own 31220.
+            e = e_sl or e_ii
+            y = y_sl or y_ii
+            from_sl += bool(e_sl or y_sl)
+            from_ii += bool((e_ii and not e_sl) or (y_ii and not y_sl))
             if not (e or y):
                 continue
-            new_espn = cur_espn or e            # fill NULL only — never overwrite
-            new_yahoo = cur_yahoo or y
-            if new_espn == cur_espn and new_yahoo == cur_yahoo:
+
+            def _take(value, current, claimed, column):
+                """Decide the value to store, or None to leave the column alone."""
+                nonlocal skipped_claimed
+                if not value:
+                    return None
+                owner = claimed.get(value)
+                if owner is not None and owner != pid:
+                    # Held by a different player — refuse rather than duplicate.
+                    skipped_claimed += 1
+                    logger.warning(
+                        "  %s %s already belongs to player %s — not writing it to %s",
+                        column, value, owner, pid,
+                    )
+                    return None
+                if not current:
+                    return value            # fill a NULL
+                if args.repair and value != current:
+                    # Fill-only can never correct a wrong value it wrote earlier,
+                    # so repair is opt-in and explicit.
+                    logger.warning(
+                        "  REPAIR %s on player %s: %s -> %s", column, pid, current, value)
+                    return value
+                return None
+
+            take_espn = _take(e, _norm(cur_espn), claimed_espn, "espn_id")
+            take_yahoo = _take(y, _norm(cur_yahoo), claimed_yahoo, "yahoo_id")
+            if take_espn is None and take_yahoo is None:
                 continue
+
             if not args.dry_run:
                 p = await db.get(Player, pid)
-                if new_espn and not p.espn_id:
-                    p.espn_id = new_espn
-                if new_yahoo and not p.yahoo_id:
-                    p.yahoo_id = new_yahoo
-            if new_espn and not cur_espn:
-                filled_espn += 1
-            if new_yahoo and not cur_yahoo:
-                filled_yahoo += 1
+                if take_espn is not None:
+                    p.espn_id = take_espn
+                if take_yahoo is not None:
+                    p.yahoo_id = take_yahoo
+            # Keep the claim table current so two rows in ONE run cannot both
+            # take the same id.
+            if take_espn is not None:
+                claimed_espn.pop(_norm(cur_espn), None)
+                claimed_espn[take_espn] = pid
+                if cur_espn:
+                    repaired_espn += 1
+                else:
+                    filled_espn += 1
+            if take_yahoo is not None:
+                claimed_yahoo.pop(_norm(cur_yahoo), None)
+                claimed_yahoo[take_yahoo] = pid
+                if cur_yahoo:
+                    repaired_yahoo += 1
+                else:
+                    filled_yahoo += 1
+
+        logger.info(
+            "  filled espn=%d yahoo=%d | repaired espn=%d yahoo=%d | "
+            "refused (id belongs to another player)=%d",
+            filled_espn, filled_yahoo, repaired_espn, repaired_yahoo, skipped_claimed,
+        )
 
         if not args.dry_run:
             await db.commit()
