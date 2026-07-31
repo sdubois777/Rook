@@ -188,6 +188,10 @@ class LeagueSyncService:
             "league_id": user_league.league_id,
             "picks_imported": 0,
             "players_resolved": 0,
+            # Picks the database already had. Surfaced so a RE-sync reads as
+            # "nothing new" instead of looking like a failed import now that
+            # picks_imported counts real writes rather than attempts.
+            "picks_already_present": 0,
             "seasons_imported": 0,
             "managers_found": 0,
             "free_agents_cached": 0,
@@ -257,16 +261,44 @@ class LeagueSyncService:
         user_league.last_synced = datetime.now(timezone.utc)
         await self._db.commit()
 
-        # 3. Import draft history — up to HISTORY_SEASONS, best-effort
+        # 3. Import draft history — best-effort.
+        #
+        # ONLY YAHOO IS ADDRESSABLE BY SEASON. yahoo_league_key() puts that season's
+        # game key in front of the league id (461.l.<id> is 2025, 423.l.<id> is 2023),
+        # so each pass of the loop asks Yahoo for a genuinely different draft.
+        #
+        # ESPN AND SLEEPER ARE NOT. ESPNLeagueAPI.get_draft_picks ignores the
+        # league_key argument and calls _get("mDraftDetail"), whose URL is built from
+        # self._league.season_year. SleeperLeagueAPI.get_draft_picks ignores it too and
+        # walks /league/{league_id}/drafts, and one Sleeper league id IS one season.
+        # Both therefore return THE SAME current draft on every pass. Looping them
+        # stored that one draft under four PAST years and never under the year it
+        # belongs to, while reporting "seasons_imported: 4" for a league that has
+        # drafted once.
+        #
+        # So Yahoo walks back and everyone else imports ONCE, stamped with the season
+        # the league itself records. For ESPN that is the same value its own request
+        # URL is built from, so the stored year and the fetched year cannot disagree.
+        # It is also what supports deliberately connecting a past season: the connect
+        # endpoints accept an explicit season (backend/routers/league_connect.py), and
+        # an ESPN league connected as 2024 must fetch 2024 AND be stamped 2024.
+        if user_league.platform == "yahoo":
+            seasons = [
+                s for s in (
+                    current_season - offset - 1      # completed seasons only
+                    for offset in range(HISTORY_SEASONS)
+                ) if s >= 2020
+            ]
+        else:
+            seasons = [user_league.season_year]
+
         picks_total = 0
         resolved_total = 0
+        dropped_total = 0
         seasons_ok = 0
-        for offset in range(HISTORY_SEASONS):
-            season = current_season - offset - 1  # completed seasons only
-            if season < 2020:
-                break
-
-            # Build season-specific league key for Yahoo
+        for season in seasons:
+            # Season-specific league key for Yahoo ONLY — the other two adapters
+            # ignore this argument, which is exactly why they must not be looped.
             season_key = None
             if user_league.platform == "yahoo":
                 season_key = yahoo_league_key(
@@ -294,6 +326,7 @@ class LeagueSyncService:
                     )
                     picks_total += res["stored"]
                     resolved_total += res["resolved"]
+                    dropped_total += res.get("dropped", 0)
                     seasons_ok += 1
                     # A draft whose players we could not identify is unusable downstream
                     # (the backtest matches on name then player_id), so say so loudly
@@ -318,6 +351,7 @@ class LeagueSyncService:
 
         summary["picks_imported"] = picks_total
         summary["players_resolved"] = resolved_total
+        summary["picks_already_present"] = dropped_total
         summary["seasons_imported"] = seasons_ok
 
         # 4. Cache free agents count — best-effort
@@ -539,15 +573,14 @@ class LeagueSyncService:
 
         count = 0
         resolved = 0
+        dropped = 0
         for pick in picks:
             if not pick.player_name and not pick.platform_player_id:
                 continue
             key = pick.platform_player_id or ""
             player_id, name, position = identities.get(
                 self._pick_key(platform, key), (None, "", ""))
-            if player_id is not None:
-                resolved += 1
-            await self._db.execute(
+            result = await self._db.execute(
                 pg_insert(LeagueAuctionHistory)
                 .values(
                     user_id=self._user_id,
@@ -573,7 +606,27 @@ class LeagueSyncService:
                 )
                 .on_conflict_do_nothing()
             )
-            count += 1
+            # COUNT WRITES, NOT ATTEMPTS. `count += 1` used to run unconditionally
+            # right here, and `resolved += 1` ran BEFORE the insert, so both counters
+            # reported attempts. A re-sync of an already-imported league reported a
+            # full, healthy-looking import while inserting nothing at all — and the
+            # same number is what hides a genuine cross-tenant collision, where
+            # on_conflict_do_nothing silently discards a second customer's picks.
+            #
+            # `!= 0` rather than `+= result.rowcount`: on a single-row execute with an
+            # untargeted ON CONFLICT DO NOTHING the driver reports exactly 0 or 1, and
+            # treating a -1 "unknown" as written preserves the old over-count rather
+            # than silently reporting zero imports.
+            if result.rowcount != 0:
+                count += 1
+                if player_id is not None:
+                    resolved += 1
+            else:
+                dropped += 1
 
         await self._db.commit()
-        return {"stored": count, "resolved": resolved}
+        # `resolved` MUST be counted inside the written branch: the caller compares it
+        # against `stored` to decide whether to warn that prices are unusable, and a
+        # ratio built from one counter of writes and one of attempts can exceed 1 on a
+        # re-sync, which silences that warning exactly when it matters.
+        return {"stored": count, "resolved": resolved, "dropped": dropped}
