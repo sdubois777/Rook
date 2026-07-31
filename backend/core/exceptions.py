@@ -34,6 +34,23 @@ class ConflictError(AppError):
     error_code = "conflict"
 
 
+class PlatformAuthError(AppError):
+    """A platform rejected the user's stored credential — THEY can fix it.
+
+    Exists because these were raised as a bare ``AppError``, which defaults to
+    status_code 500 / "internal_error". An expired espn_s2 cookie is the single
+    most common way a working ESPN league stops working, and it surfaced as a
+    server error: Trade, Waiver and Matchup all rendered a generic "Could not
+    load…" because the frontend discards the message on a 500, so the user was
+    never told to reconnect and had no affordance to do it.
+
+    401 rather than 400: this is specifically "your credential is no longer
+    valid", which is what the UI keys on to offer a reconnect.
+    """
+    status_code = 401
+    error_code = "platform_auth_expired"
+
+
 class UnboundTeamError(AppError):
     """Exact-identity binding matched NO team (auto-detect failed) — we must NOT guess.
     Instead of a dead-end 409, this carries the league id + the full team list so the

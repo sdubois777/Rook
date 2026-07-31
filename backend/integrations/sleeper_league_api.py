@@ -122,7 +122,12 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
             result.append(TeamRoster(
                 platform_team_id=str(roster["roster_id"]),
                 manager_name=user.get("display_name", ""),
-                team_name=user.get("metadata", {}).get("team_name", ""),
+                # `or {}`, not a .get default: Sleeper returns metadata EXPLICITLY
+                # NULL for a user who never set a team name, and `.get("metadata", {})`
+                # returns that None rather than the default. The resulting
+                # AttributeError killed get_rosters, which is the fail-hard step of
+                # sync — so one league-mate with no team name broke the whole connect.
+                team_name=(user.get("metadata") or {}).get("team_name", ""),
                 players=players,
                 faab_remaining=roster.get("settings", {}).get(
                     "waiver_budget_used", 0

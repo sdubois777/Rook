@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.core.exceptions import PlatformAuthError
 from backend.main import app
 from backend.models.user import User
 
@@ -81,40 +82,22 @@ async def test_connect_sleeper_validates_username():
 
 
 @pytest.mark.asyncio
-async def test_espn_callback_requires_cookies():
-    """ESPN callback without cookies returns error."""
+async def test_espn_bookmarklet_callback_route_is_gone():
+    """GET /leagues/connect/espn/callback was REMOVED and must stay removed.
+
+    It accepted `espn_s2` and `swid` as URL QUERY PARAMETERS — session credentials
+    in a place that lands in access logs, browser history and Referer headers. It
+    was also unreachable: no frontend or extension code ever called it, and the
+    "ESPN bookmarklet" it served is a UI that does not exist.
+
+    This replaces two tests that asserted the route's 422/401 behaviour, i.e. that
+    pinned a credentials-in-URL endpoint as correct. Asserting 404 is the point.
+    """
     user = _make_user()
 
     from backend.core.dependencies import get_current_user, get_db
-    mock_db = AsyncMock()
     app.dependency_overrides[get_current_user] = lambda: user
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            follow_redirects=False,
-        ) as ac:
-            # Missing espn_s2 and swid params
-            resp = await ac.get("/api/leagues/connect/espn/callback")
-        # FastAPI will return 422 for missing required query params
-        assert resp.status_code == 422
-    finally:
-        app.dependency_overrides.clear()
-
-
-@pytest.mark.asyncio
-async def test_espn_callback_requires_auth():
-    """ESPN bookmarklet callback requires authenticated user."""
-    from backend.core.dependencies import get_current_user
-
-    # Override auth to raise — simulates unauthenticated request
-    async def raise_unauth():
-        from backend.core.exceptions import UnauthorizedError
-        raise UnauthorizedError("Not authenticated")
-
-    app.dependency_overrides[get_current_user] = raise_unauth
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
 
     try:
         async with AsyncClient(
@@ -126,7 +109,9 @@ async def test_espn_callback_requires_auth():
                 "/api/leagues/connect/espn/callback"
                 "?espn_s2=test_cookie&swid=test_swid"
             )
-        assert resp.status_code == 401
+        assert resp.status_code == 404, (
+            "the credentials-in-query-string callback is back — it must not be"
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -145,8 +130,12 @@ async def test_invalid_espn_cookies_raise_app_error():
 
     # ESPNLeagueAPI is lazy-imported inside connect_espn_league endpoint
     mock_api = AsyncMock()
-    mock_api.validate_cookies.side_effect = AppError(
-        "ESPN cookies expired — please reconnect"
+    # Must be what production actually raises. This previously constructed a bare
+    # AppError (status 500), so the test asserted its own fixture rather than the
+    # behaviour — and the permissive `in (400,401,422,500)` assertion below hid it.
+    mock_api.validate_cookies.side_effect = PlatformAuthError(
+        "Your ESPN session expired. Reconnect ESPN to continue.",
+        {"platform": "espn", "action": "reconnect"},
     )
 
     mock_espn_cls = MagicMock(return_value=mock_api)
@@ -168,8 +157,17 @@ async def test_invalid_espn_cookies_raise_app_error():
                         "swid": "bad_swid",
                     },
                 )
-            # AppError returns 400 or custom status
-            assert resp.status_code in (400, 401, 422, 500)
+            # This used to accept `in (400, 401, 422, 500)` — a set that INCLUDES
+            # the failure mode, so the assertion was structurally incapable of
+            # failing. Bad cookies are the user's problem to fix, so this must be
+            # a 4xx carrying an actionable message, never an opaque 500.
+            assert resp.status_code < 500, (
+                f"invalid ESPN cookies surfaced as {resp.status_code} — a server "
+                "error tells the user nothing they can act on"
+            )
+            assert resp.status_code >= 400
+            # And the reason must survive to the client; the frontend renders it.
+            assert "reconnect" in resp.text.lower()
         finally:
             app.dependency_overrides.clear()
 
@@ -195,7 +193,12 @@ async def test_espn_connect_detects_snake_draft():
         "backend.integrations.espn_league_api.ESPNLeagueAPI",
         return_value=mock_api,
     ), patch(
-        "backend.repositories.credential_repo.CredentialRepository",
+        # league_connect imports CredentialRepository at MODULE level, so patching
+        # it in its defining module does nothing — the router resolves the real
+        # class and Fernet + two session.execute calls actually ran against the
+        # mock session (visible as a "coroutine was never awaited" RuntimeWarning).
+        # The sibling extension test already patches the right target.
+        "backend.routers.league_connect.CredentialRepository",
     ) as MockCredRepo, patch(
         "backend.routers.league_connect.LeagueRepository",
     ) as MockLeagueRepo, patch(
@@ -206,37 +209,36 @@ async def test_espn_connect_detects_snake_draft():
         MockCredRepo.return_value.upsert_espn = AsyncMock()
         MockLeagueRepo.return_value.count_active = AsyncMock(return_value=0)
 
-        mock_service = AsyncMock()
-        mock_service.add_league = AsyncMock(return_value=mock_league)
-        with patch(
-            "backend.services.league_service.LeagueService",
-            return_value=mock_service,
-        ):
-            MockSync.return_value.sync_league = AsyncMock(
-                return_value={"picks_imported": 0, "seasons_imported": 0,
-                              "managers_found": 0, "free_agents_cached": 0}
-            )
+        # ESPN connect now goes through LeagueRepository.upsert (idempotent),
+        # NOT LeagueService.add_league (a bare INSERT that made reconnecting
+        # impossible). find_by_identity returning None = a genuinely new league,
+        # so the tier check still runs.
+        MockLeagueRepo.return_value.find_by_identity = AsyncMock(return_value=None)
+        MockLeagueRepo.return_value.upsert = AsyncMock(return_value=mock_league)
+        MockSync.return_value.sync_league = AsyncMock(
+            return_value={"picks_imported": 0, "seasons_imported": 0,
+                          "managers_found": 0, "free_agents_cached": 0}
+        )
 
-            try:
-                async with AsyncClient(
-                    transport=ASGITransport(app=app),
-                    base_url="http://test",
-                ) as ac:
-                    resp = await ac.post(
-                        "/api/leagues/connect/espn",
-                        json={
-                            "league_id": "999",
-                            "espn_s2": "cookie",
-                            "swid": "{SWID}",
-                        },
-                    )
-                assert resp.status_code == 200
-                # Verify add_league was called with detected draft_type
-                call_kwargs = mock_service.add_league.call_args[1]
-                assert call_kwargs["draft_type"] == "snake"
-                assert call_kwargs["budget"] == 200  # fallback
-            finally:
-                app.dependency_overrides.clear()
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+            ) as ac:
+                resp = await ac.post(
+                    "/api/leagues/connect/espn",
+                    json={
+                        "league_id": "999",
+                        "espn_s2": "cookie",
+                        "swid": "{SWID}",
+                    },
+                )
+            assert resp.status_code == 200
+            call_kwargs = MockLeagueRepo.return_value.upsert.call_args[1]
+            assert call_kwargs["draft_type"] == "snake"
+            assert call_kwargs["budget"] == 200  # fallback
+        finally:
+            app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
@@ -410,7 +412,7 @@ async def test_finished_league_still_deletable():
 @pytest.mark.asyncio
 async def test_espn_extension_connect_valid_token_converges_with_manual():
     """Valid draft token + valid cookies → same end state as the manual JWT path:
-    validate → upsert → add_league (detected draft type) → sync."""
+    validate → credential upsert → league UPSERT (detected draft type) → sync."""
     user = _make_user()
     from backend.core.dependencies import get_db
     app.dependency_overrides[get_db] = lambda: AsyncMock()
@@ -434,33 +436,35 @@ async def test_espn_extension_connect_valid_token_converges_with_manual():
     ) as MockSync:
         MockCredRepo.return_value.upsert_espn = AsyncMock()
         MockLeagueRepo.return_value.count_active = AsyncMock(return_value=0)
-        mock_service = AsyncMock()
-        mock_service.add_league = AsyncMock(return_value=mock_league)
-        with patch("backend.services.league_service.LeagueService", return_value=mock_service):
-            MockSync.return_value.sync_league = AsyncMock(
-                return_value={"picks_imported": 3, "seasons_imported": 1,
-                              "managers_found": 12, "free_agents_cached": 0}
-            )
-            try:
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                    resp = await ac.post(
-                        "/api/leagues/connect/espn/extension",
-                        json={"league_id": "999", "espn_s2": "cookieval", "swid": "{SWID}"},
-                        headers={"X-Draft-Token": "valid-token"},
-                    )
-                assert resp.status_code == 200
-                body = resp.json()
-                assert body["status"] == "connected"
-                assert body["picks_imported"] == 3
-                # resolved via the draft token (NOT get_current_user)
-                user_repo.get_by_draft_token.assert_awaited_once_with("valid-token")
-                # same end state: credential upserted + league created with detected type
-                MockCredRepo.return_value.upsert_espn.assert_awaited_once()
-                assert mock_service.add_league.call_args[1]["draft_type"] == "snake"
-                # cookie values never echoed back
-                assert "cookieval" not in resp.text
-            finally:
-                app.dependency_overrides.clear()
+        # Both ESPN endpoints share _espn_persist_and_sync, which now upserts.
+        MockLeagueRepo.return_value.find_by_identity = AsyncMock(return_value=None)
+        MockLeagueRepo.return_value.upsert = AsyncMock(return_value=mock_league)
+        MockSync.return_value.sync_league = AsyncMock(
+            return_value={"picks_imported": 3, "seasons_imported": 1,
+                          "managers_found": 12, "free_agents_cached": 0}
+        )
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/api/leagues/connect/espn/extension",
+                    json={"league_id": "999", "espn_s2": "cookieval", "swid": "{SWID}"},
+                    headers={"X-Draft-Token": "valid-token"},
+                )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "connected"
+            assert body["picks_imported"] == 3
+            # a successful sync must say so — the wizard branches on this
+            assert body["sync_failed"] is False
+            # resolved via the draft token (NOT get_current_user)
+            user_repo.get_by_draft_token.assert_awaited_once_with("valid-token")
+            # same end state: credential upserted + league upserted with detected type
+            MockCredRepo.return_value.upsert_espn.assert_awaited_once()
+            assert MockLeagueRepo.return_value.upsert.call_args[1]["draft_type"] == "snake"
+            # cookie values never echoed back
+            assert "cookieval" not in resp.text
+        finally:
+            app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

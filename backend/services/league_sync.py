@@ -51,6 +51,42 @@ def bind_my_team_id(rosters, identity: str | None) -> str | None:
     return None
 
 
+def _manager_for(manager_map: dict | None, team_id) -> str:
+    """Resolve a draft pick's team id to a manager name.
+
+    Direct hit first — ESPN (bare team id) and Sleeper (bare roster_id) key
+    manager_map with exactly the value their picks carry, so they match outright.
+
+    Yahoo does NOT. manager_map is built from the CURRENT season's roster call,
+    whose team keys are "<game_key>.l.<league>.t.<n>" with the game key for
+    THIS season (470 in 2026). Historical draft results carry that season's game
+    key instead (461 for 2025, 449 for 2024 — see YAHOO_NFL_GAME_KEYS). So a
+    direct lookup misses on every historical Yahoo row.
+
+    The league and team number are stable across seasons; only the game-key
+    prefix rotates. So fall back to matching on the ".l.<league>.t.<n>" tail.
+    That is still exact — it is the same league and the same team slot — it just
+    ignores the season prefix.
+
+    Returns "" on any miss. Never guesses: a wrong manager name is worse than a
+    blank one, because build_manager_profiles uses it as a cross-season identity
+    key.
+    """
+    if not manager_map or not team_id:
+        return ""
+    key = str(team_id)
+    if key in manager_map:
+        return manager_map[key] or ""
+    # Yahoo cross-season: compare the league+team tail, ignoring the game key.
+    if ".l." in key and ".t." in key:
+        tail = key.split(".", 1)[1]           # "l.<league>.t.<n>"
+        for k, v in manager_map.items():
+            ks = str(k)
+            if ".l." in ks and ks.split(".", 1)[1] == tail:
+                return v or ""
+    return ""
+
+
 class LeagueSyncService:
     def __init__(self, db: AsyncSession, user_id: uuid.UUID):
         self._db = db
@@ -103,7 +139,19 @@ class LeagueSyncService:
                 logger.warning("ESPN draft type re-detection failed: %s", exc)
             # T3 lineup config (defensive/sample-gated — unknown id → default).
             try:
-                user_league.roster_slots = await platform.get_roster_slots()
+                # Assign only on success. get_roster_slots() returns None on ANY
+                # parse failure or unknown slot id (a deliberate fail-safe), so an
+                # unconditional assignment let one transient blip on an unattended
+                # passive sync wipe a correct, previously-synced lineup and silently
+                # fall back to the generic default.
+                _slots = await platform.get_roster_slots()
+                if _slots is not None:
+                    user_league.roster_slots = _slots
+                else:
+                    logger.warning(
+                        "ESPN roster-slots returned None for league %s — keeping "
+                        "the previously synced lineup", user_league.id,
+                    )
             except Exception as exc:
                 logger.warning("ESPN roster-slots sync failed: %s", exc)
             # Name / scoring / draft_date from the SAME mSettings response (stop discarding).
@@ -114,7 +162,19 @@ class LeagueSyncService:
         elif user_league.platform == "sleeper":
             # T3 lineup config from /v1/league roster_positions (verified live).
             try:
-                user_league.roster_slots = await platform.get_roster_slots()
+                # Assign only on success. get_roster_slots() returns None on ANY
+                # parse failure or unknown slot id (a deliberate fail-safe), so an
+                # unconditional assignment let one transient blip on an unattended
+                # passive sync wipe a correct, previously-synced lineup and silently
+                # fall back to the generic default.
+                _slots = await platform.get_roster_slots()
+                if _slots is not None:
+                    user_league.roster_slots = _slots
+                else:
+                    logger.warning(
+                        "Sleeper roster-slots returned None for league %s — keeping "
+                        "the previously synced lineup", user_league.id,
+                    )
             except Exception as exc:
                 logger.warning("Sleeper roster-slots sync failed: %s", exc)
             # Name / scoring / draft_type / draft_date from /league + /drafts.
@@ -228,7 +288,8 @@ class LeagueSyncService:
                 )
                 if picks:
                     res = await self._store_picks(
-                        picks, user_league.id, season
+                        picks, user_league.id, season,
+                        manager_map=user_league.manager_map,
                     )
                     picks_total += res["stored"]
                     resolved_total += res["resolved"]
@@ -416,6 +477,7 @@ class LeagueSyncService:
         picks: list,
         user_league_id: uuid.UUID,
         season: int,
+        manager_map: dict | None = None,
     ) -> dict:
         """
         Store historical draft picks, resolving player identity as we go.
@@ -424,6 +486,20 @@ class LeagueSyncService:
 
         Returns {"stored": n, "resolved": n} — the resolved count is reported by the
         caller because a silent 0% is the exact failure this method used to have.
+
+        ``manager_map`` fills manager_name, which ALL THREE adapters hardcode to ""
+        on draft picks (yahoo_league_api.py:251, espn_league_api.py:276,
+        sleeper_league_api.py:165) even though every one of them resolves real names
+        on the ROSTER path. LeagueAuctionHistoryRepository.manager_tendencies filters
+        `manager_name != ""`, so opponent tendencies were permanently empty for every
+        synced user — the map was built ~70 lines earlier in this same sync and simply
+        never handed down.
+
+        The join is safe on all three platforms because manager_map is keyed on
+        TeamRoster.platform_team_id and that is the SAME value as
+        DraftPick.picked_by_team_id: Yahoo team_key both sides, ESPN str(team id)
+        both sides, Sleeper roster_id both sides. Verified per adapter — a mismatch
+        would attribute a real name to the wrong manager, which is worse than blank.
         """
         from backend.models.league_auction_history import LeagueAuctionHistory
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -450,7 +526,14 @@ class LeagueSyncService:
                     player_name=pick.player_name or name or "",
                     position=pick.position or position or "",
                     price=pick.auction_price or 0,
-                    manager_name=pick.manager_name or "",
+                    # Adapter value wins if it ever supplies one; otherwise fall
+                    # back to the roster-derived map. Today every adapter sends "",
+                    # so the map is what actually populates this.
+                    manager_name=(
+                        pick.manager_name
+                        or _manager_for(manager_map, pick.picked_by_team_id)
+                        or ""
+                    ),
                     draft_pick_number=pick.pick_number,
                     season_year=season,
                     source=f"sync_{pick.picked_by_team_id}",
