@@ -190,7 +190,7 @@ async def test_store_picks_resolves_identity_from_the_yahoo_key():
     svc = LeagueSyncService(db=AsyncMock(), user_id=_uuid.uuid4())
     svc._db.execute = AsyncMock(return_value=MagicMock(
         all=MagicMock(return_value=[
-            SimpleNamespace(id=pid, yahoo_id="33963", name="Ja'Marr Chase", position="WR"),
+            SimpleNamespace(id=pid, pid="33963", name="Ja'Marr Chase", position="WR"),
         ])
     ))
     svc._db.commit = AsyncMock()
@@ -216,8 +216,8 @@ async def test_store_picks_drops_ambiguous_yahoo_ids():
     svc = LeagueSyncService(db=AsyncMock(), user_id=_uuid.uuid4())
     svc._db.execute = AsyncMock(return_value=MagicMock(
         all=MagicMock(return_value=[
-            SimpleNamespace(id=_uuid.uuid4(), yahoo_id="999", name="Dupe A", position="WR"),
-            SimpleNamespace(id=_uuid.uuid4(), yahoo_id="999", name="Dupe B", position="WR"),
+            SimpleNamespace(id=_uuid.uuid4(), pid="999", name="Dupe A", position="WR"),
+            SimpleNamespace(id=_uuid.uuid4(), pid="999", name="Dupe B", position="WR"),
         ])
     ))
     picks = [SimpleNamespace(
