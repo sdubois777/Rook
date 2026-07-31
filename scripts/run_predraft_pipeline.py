@@ -821,6 +821,28 @@ async def main() -> None:
         print("[sync_rosters] WARNING — sync failed, continuing with seed data.")
     print()
 
+    # Refresh players.espn_id / players.yahoo_id from Sleeper (primary) with
+    # nflverse import_ids as fill. Runs here because seed + sync_rosters have just
+    # inserted this season's new players, and those rows arrive with both columns
+    # NULL — every rookie and mid-season signing would otherwise stay unresolvable
+    # for ESPN and Sleeper league sync until someone ran the script by hand.
+    #
+    # Safe in the pipeline: it writes ONLY those two id columns. It never touches
+    # market_value_*, ai_bid_ceiling or recommended_bid_ceiling, so it cannot move
+    # a board value. It fills empty columns only — correcting an existing wrong
+    # value needs the explicit --repair flag, which is deliberately NOT passed
+    # here so an automatic run can never rewrite identity unattended.
+    # A failure is non-fatal: stale ids degrade platform matching, they do not
+    # invalidate the board.
+    print("[platform_ids] Refreshing espn_id / yahoo_id...")
+    ids_result = subprocess.run(
+        [sys.executable, "scripts/backfill_platform_ids.py"],
+    )
+    if ids_result.returncode != 0:
+        print("[platform_ids] WARNING — refresh failed; ESPN/Sleeper league sync "
+              "may not resolve newly added players.")
+    print()
+
     # Sync FantasyPros ADP (snake-draft support) — populates adp_fantasypros
     # before the agent phases. Independent of the agents; a failure is non-fatal.
     # Live FantasyPros scrape — CURRENT consensus, with no historical equivalent. Under
