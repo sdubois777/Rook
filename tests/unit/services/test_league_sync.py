@@ -812,3 +812,53 @@ async def test_sync_manual_pick_wins_over_disagreeing_autobind():
         await LeagueSyncService(mock_db, league.user_id).sync_league(league.id)
     assert league.my_team_id == "1"             # manual WINS over the disagreeing auto-bind
     assert league.my_team_id_source == "manual"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["espn", "sleeper"])
+async def test_espn_and_sleeper_import_one_season_at_the_leagues_own_year(platform):
+    """A non-Yahoo league must import its draft ONCE, stamped with its own year.
+
+    ESPN's get_draft_picks ignores the league_key argument and builds its URL from
+    the league's season_year; a Sleeper league id is one season. Both therefore
+    return the SAME current draft on every pass of a season loop. Looping them
+    stored one draft under four PAST years and never under the year it belongs to,
+    while reporting "seasons_imported: 4" for a league that had drafted once.
+
+    Yahoo is different and is covered by test_sync_imports_up_to_4_seasons: its
+    league key carries a per-season game key, so each pass really does address a
+    different draft.
+    """
+    league = _make_league(platform=platform)
+    league.season_year = 2026
+    mock_db = _make_mock_db(league)
+
+    mock_platform = AsyncMock()
+    mock_platform.get_draft_picks.return_value = _make_picks(3)
+    mock_platform.get_rosters.return_value = _make_rosters(2)
+    mock_platform.get_free_agents.return_value = []
+
+    seen_seasons = []
+    from backend.services.league_sync import LeagueSyncService
+    real_store = LeagueSyncService._store_picks
+
+    async def spy(self, picks, user_league_id, season, **kw):
+        seen_seasons.append(season)
+        return await real_store(self, picks, user_league_id, season, **kw)
+
+    with patch(
+        "backend.services.league_sync.get_platform_api",
+        new_callable=AsyncMock, return_value=mock_platform,
+    ), patch(
+        "backend.services.league_sync.get_current_season", return_value=2026,
+    ), patch.object(
+        LeagueSyncService, "_store_picks", spy,
+    ), _patch_league_repo(league):
+        service = LeagueSyncService(mock_db, league.user_id)
+        summary = await service.sync_league(league.id)
+
+    assert seen_seasons == [2026], (
+        f"{platform} stored the draft under {seen_seasons}; it must be imported "
+        "once, under the league's own season_year (2026)"
+    )
+    assert summary["seasons_imported"] == 1
