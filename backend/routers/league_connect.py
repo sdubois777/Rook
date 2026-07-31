@@ -31,6 +31,93 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/leagues", tags=["league-connect"])
 
 
+async def _sync_after_connect(db, user, league):
+    """Sync a freshly-connected league; a sync failure must not lose the league.
+
+    The UserLeague is committed BEFORE this runs, so an exception here used to
+    leave a committed row while the user saw an error — and their natural retry
+    hit the connect bug and was told they were at their league limit. The connect
+    is idempotent now, so the retry is safe, but stranding the user mid-wizard is
+    still the wrong outcome when the league itself is fine.
+
+    Returns the sync summary plus ``sync_failed``. The caller MUST surface that:
+    a league that connected but never synced has no rosters and no draft history,
+    and reading as healthy is how a loud failure becomes a quiet one.
+    """
+    from backend.services.league_sync import LeagueSyncService
+
+    try:
+        summary = await LeagueSyncService(db, user.id).sync_league(league.id)
+        return {**summary, "sync_failed": False}
+    except Exception as exc:  # noqa: BLE001 — deliberate: the league survives
+        logger.warning(
+            "league %s (%s) connected but the initial sync failed: %s",
+            league.id, league.platform, exc, exc_info=True,
+        )
+        return {
+            "sync_failed": True,
+            "sync_error": (
+                "Your league was connected, but we could not load it yet. "
+                "Open it from your Account page to retry."
+            ),
+        }
+
+
+async def _upsert_league_for_connect(
+    db,
+    user,
+    *,
+    platform: str,
+    league_id: str,
+    season_year: int,
+    team_count: int,
+    draft_type: str,
+    scoring: str,
+    budget: int | None,
+    is_active: bool,
+):
+    """Idempotent connect for EVERY platform. Use this, never ``add_league``.
+
+    ESPN and Sleeper used to call ``LeagueService.add_league`` -> a bare INSERT,
+    while only Yahoo used the idempotent upsert. Against the live
+    ``uq_user_leagues_user_platform_league`` constraint that made reconnecting a
+    league impossible — and the symptom was not a duplicate-row error but a
+    misleading one, because the tier check runs first and ``count_active``
+    counts the league the user ALREADY has. A Standard subscriber re-entering
+    fresh ESPN cookies for their only league was told
+    "League limit reached (1 of 1)" and pointed at /pricing. On Pro
+    (max_leagues=None) the check passed and the INSERT died as an unmapped 500.
+
+    The cap is re-checked on REACTIVATION as well as on a genuinely new league.
+    Gating purely on "does this row exist" would let a user at their cap flip a
+    dormant past-season league (is_active=False, so invisible to
+    ``count_active``) back to active and end up over the cap.
+    """
+    from backend.services.feature_service import FeatureService
+
+    league_repo = LeagueRepository(db)
+    existing = await league_repo.find_by_identity(user.id, platform, league_id)
+
+    is_new = existing is None
+    is_reactivation = (
+        existing is not None and is_active and not existing.is_active
+    )
+    if is_new or is_reactivation:
+        FeatureService.can_add_league(user, await league_repo.count_active(user.id))
+
+    return await league_repo.upsert(
+        user_id=user.id,
+        platform=platform,
+        league_id=league_id,
+        season_year=season_year,
+        team_count=team_count,
+        draft_type=draft_type,
+        scoring=scoring,
+        budget=budget,
+        is_active=is_active,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -70,56 +157,14 @@ async def _get_user_league(league_id: uuid.UUID, user, db):
     return league
 
 
-# ---------------------------------------------------------------------------
-# ESPN bookmarklet callback
-# ---------------------------------------------------------------------------
-
-@router.get("/connect/espn/callback")
-async def espn_bookmarklet_callback(
-    espn_s2: str,
-    swid: str,
-    league_id: str | None = None,
-    season: int | None = None,
-    user=Depends(get_current_user),
-    db=Depends(get_db),
-):
-    """
-    Receives ESPN cookies from the bookmarklet.
-    Validates cookies against ESPN before storing.
-    Redirects to league setup wizard.
-    """
-    from backend.integrations.espn_league_api import ESPNLeagueAPI
-    from backend.utils.seasons import get_current_season
-    from backend.models.user_league import UserLeague
-
-    target_season = season or get_current_season()
-
-    # Validate cookies work before storing
-    if league_id:
-        mock_league = UserLeague(
-            league_id=league_id,
-            season_year=target_season,
-            platform="espn",
-            user_id=user.id,
-            team_count=12,
-            draft_type="auction",
-            scoring="ppr",
-        )
-        api = ESPNLeagueAPI(
-            league=mock_league, espn_s2=espn_s2, swid=swid
-        )
-        await api.validate_cookies()
-
-    repo = CredentialRepository(db)
-    await repo.upsert_espn(
-        user_id=user.id, espn_s2=espn_s2, swid=swid
-    )
-
-    redirect_url = "/league-setup?platform=espn"
-    if league_id:
-        redirect_url += f"&league_id={league_id}"
-
-    return RedirectResponse(url=redirect_url, status_code=302)
+# NOTE: GET /connect/espn/callback was REMOVED.
+#
+# It accepted `espn_s2` and `swid` as URL QUERY PARAMETERS — session credentials
+# in a location that lands in access logs, browser history and Referer headers.
+# It was also unreachable: `grep -rn "espn/callback\|bookmarklet" frontend/src
+# extension/src` returns zero hits. The "ESPN bookmarklet" it served is a UI that
+# does not exist; the two live paths are the extension (X-Draft-Token) and manual
+# cookie entry (Clerk JWT), both POST with the values in the body.
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +217,18 @@ async def connect_yahoo_league(
     sync_service = LeagueSyncService(db, user.id)
     summary = await sync_service.sync_league(league.id, league_key=body.league_key)
 
+    # `league_id` AFTER the spread, deliberately. sync_league's summary carries
+    # its OWN "league_id" — the PLATFORM id string — so spreading it last
+    # clobbered the UserLeague UUID. adoptLeague (frontend/src/pages/
+    # LeagueSetup.jsx) matches this against `l.id` from /account/leagues,
+    # which IS the UUID, so it never matched and the app stayed pointed at
+    # the previously selected league — the exact failure adoptLeague exists
+    # to prevent. Affected all three platforms.
     return {
+        **summary,
         "status": "connected",
         "league_id": str(league.id),
         "platform": "yahoo",
-        **summary,
     }
 
 
@@ -206,20 +258,13 @@ async def connect_sleeper_league(
     repo = CredentialRepository(db)
     await repo.upsert_sleeper(user.id, sleeper_data["user_id"])
 
-    # Check tier limits
-    league_repo = LeagueRepository(db)
-    current_count = await league_repo.count_active(user.id)
-    FeatureService.can_add_league(user, current_count)
-
     # Sleeper leagues are always current season
     target_season = get_current_season()
 
-    # Create league record
-    service = LeagueService(
-        league_repo, LeagueAuctionHistoryRepository(db)
-    )
-    league = await service.add_league(
-        user_id=user.id,
+    # Idempotent — a reconnect updates the existing row instead of colliding with
+    # uq_user_leagues_user_platform_league. Tier cap is enforced inside.
+    league = await _upsert_league_for_connect(
+        db, user,
         platform="sleeper",
         league_id=body.league_id,
         season_year=target_season,
@@ -229,12 +274,19 @@ async def connect_sleeper_league(
         budget=200,
         is_active=True,
     )
+    await db.commit()
 
-    # Sync
-    sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league.id)
+    # Sync — a failure here keeps the league (see _sync_after_connect).
+    summary = await _sync_after_connect(db, user, league)
 
-    return {"status": "connected", "league_id": str(league.id), **summary}
+    # `league_id` AFTER the spread, deliberately. sync_league's summary carries
+    # its OWN "league_id" — the PLATFORM id string — so spreading it last
+    # clobbered the UserLeague UUID. adoptLeague (frontend/src/pages/
+    # LeagueSetup.jsx) matches this against `l.id` from /account/leagues,
+    # which IS the UUID, so it never matched and the app stayed pointed at
+    # the previously selected league — the exact failure adoptLeague exists
+    # to prevent. Affected all three platforms.
+    return {**summary, "status": "connected", "league_id": str(league.id)}
 
 
 async def _espn_persist_and_sync(user, *, league_id, espn_s2, swid, target_season, api, db):
@@ -254,16 +306,12 @@ async def _espn_persist_and_sync(user, *, league_id, espn_s2, swid, target_seaso
     repo = CredentialRepository(db)
     await repo.upsert_espn(user_id=user.id, espn_s2=espn_s2, swid=swid)
 
-    # Check tier limits
-    league_repo = LeagueRepository(db)
-    current_count = await league_repo.count_active(user.id)
-    FeatureService.can_add_league(user, current_count)
-
-    # Create league record
+    # Idempotent — see _upsert_league_for_connect. Reconnecting after an
+    # espn_s2 rotation is the single most common reason a user comes back here,
+    # and it used to be impossible.
     is_active = target_season == get_current_season()
-    service = LeagueService(league_repo, LeagueAuctionHistoryRepository(db))
-    league = await service.add_league(
-        user_id=user.id,
+    league = await _upsert_league_for_connect(
+        db, user,
         platform="espn",
         league_id=league_id,
         season_year=target_season,
@@ -273,12 +321,19 @@ async def _espn_persist_and_sync(user, *, league_id, espn_s2, swid, target_seaso
         budget=budget or 200,
         is_active=is_active,
     )
+    await db.commit()
 
-    # Sync
-    sync_service = LeagueSyncService(db, user.id)
-    summary = await sync_service.sync_league(league.id)
+    # Sync — a failure here keeps the league (see _sync_after_connect).
+    summary = await _sync_after_connect(db, user, league)
 
-    return {"status": "connected", "league_id": str(league.id), **summary}
+    # `league_id` AFTER the spread, deliberately. sync_league's summary carries
+    # its OWN "league_id" — the PLATFORM id string — so spreading it last
+    # clobbered the UserLeague UUID. adoptLeague (frontend/src/pages/
+    # LeagueSetup.jsx) matches this against `l.id` from /account/leagues,
+    # which IS the UUID, so it never matched and the app stayed pointed at
+    # the previously selected league — the exact failure adoptLeague exists
+    # to prevent. Affected all three platforms.
+    return {**summary, "status": "connected", "league_id": str(league.id)}
 
 
 @router.post("/connect/espn")
