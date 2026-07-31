@@ -9,7 +9,7 @@ import logging
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.exceptions import AppError
+from backend.core.exceptions import AppError, PlatformAuthError
 from datetime import datetime, timezone
 
 from backend.integrations.platform_api import LeaguePlatformAPI
@@ -59,9 +59,12 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         repo = CredentialRepository(db)
         cookies = await repo.get_espn_cookies(league.user_id)
         if not cookies:
-            raise AppError(
-                "ESPN not connected — use the ESPN bookmarklet",
-                {"platform": "espn", "action": "bookmarklet"},
+            # "bookmarklet" named a UI that does not exist; the real recovery
+            # is the extension or manual cookie entry in the league wizard.
+            raise PlatformAuthError(
+                "ESPN is not connected. Connect it from Add a League.",
+                {"platform": "espn", "action": "connect",
+                 "connect_url": "/league-setup?platform=espn"},
             )
         espn_s2, swid = cookies
         return cls(league=league, espn_s2=espn_s2, swid=swid)
@@ -81,12 +84,26 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         ) as client:
             resp = await client.get(url, params={"view": view})
             if resp.status_code == 401:
-                raise AppError(
-                    "ESPN cookies expired — please reconnect",
+                raise PlatformAuthError(
+                    "Your ESPN session expired. Reconnect ESPN to continue.",
                     {
                         "platform": "espn",
                         "action": "reconnect",
-                        "bookmarklet_url": "/league-setup?platform=espn",
+                        "connect_url": "/league-setup?platform=espn",
+                    },
+                )
+            if resp.status_code == 403:
+                # 403 escaped through raise_for_status() as an httpx error and
+                # became a 500 with no message field at all. ESPN returns it for
+                # a private league the cookies no longer grant access to — same
+                # remedy as 401 from the user's point of view.
+                raise PlatformAuthError(
+                    "ESPN denied access to this league. Reconnect ESPN, or check "
+                    "that your account can still see it.",
+                    {
+                        "platform": "espn",
+                        "action": "reconnect",
+                        "connect_url": "/league-setup?platform=espn",
                     },
                 )
             resp.raise_for_status()

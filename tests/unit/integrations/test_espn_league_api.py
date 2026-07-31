@@ -266,7 +266,7 @@ async def test_create_raises_without_cookies():
         MockRepo.return_value = mock_repo_instance
 
         from backend.core.exceptions import AppError
-        with pytest.raises(AppError, match="ESPN not connected"):
+        with pytest.raises(AppError, match="ESPN is not connected"):
             await ESPNLeagueAPI.create(league, AsyncMock())
 
 
