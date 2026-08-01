@@ -95,7 +95,15 @@ class UserLeague(Base):
 
     # Extra Yahoo settings that get_league_settings already pulls (previously dropped).
     trade_deadline: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    waiver_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    waiver_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # Tri-state, and the ONLY field that decides whether a dollar bid means
+    # anything. NULL = we could not determine the league's waiver system, so
+    # nothing may be claimed either way. True = the league bids with a budget.
+    # False = priority or reverse standings; a dollar figure is meaningless.
+    uses_bidding_budget: Mapped[Optional[bool]] = mapped_column(nullable=True)
+    # Only meaningful when uses_bidding_budget is True. NULL means the league
+    # bids but we could not read the amount.
+    waiver_budget: Mapped[Optional[int]] = mapped_column(nullable=True)
     playoff_start_week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Normalized per-league starting-lineup config {slot_type: count} (T3).
