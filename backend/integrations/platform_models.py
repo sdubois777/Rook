@@ -11,6 +11,14 @@ from datetime import datetime
 from typing import Optional
 
 
+# The waiver_system label for a league that runs NO waiver process at all — every
+# drop is immediately available. Such a league has neither a bidding budget nor a
+# waiver order, so this value is the signal to withhold both. Shared rather than
+# written as a literal in two places, because a typo in either would silently
+# re-enable the claim it exists to suppress.
+NO_WAIVERS_SYSTEM = "free agency, no waivers"
+
+
 @dataclass
 class LeagueMetadata:
     """Pre-draft league metadata, mapped from whatever call a platform already makes.
@@ -22,6 +30,20 @@ class LeagueMetadata:
     draft_type: Optional[str] = None       # auction | snake
     draft_date: Optional[datetime] = None
     draft_status: Optional[str] = None     # pre_draft | drafting | complete (Sleeper); None elsewhere
+
+    # --- waiver settings -----------------------------------------------------
+    # uses_bidding_budget is the ONLY field that decides whether a dollar bid is
+    # meaningful. Do NOT infer it from waiver_budget: every platform ships a
+    # vestigial budget value on leagues that do not bid at all. Measured across
+    # 285 live Sleeper leagues, waiver_budget was present on 285 of 285 including
+    # every rolling-waiver league, almost always as 100 — which is exactly the
+    # fabricated figure this field exists to stop us showing.
+    #   None  = could not determine; caller must not claim either way
+    #   True  = league bids with a budget
+    #   False = league uses priority or reverse standings; a dollar bid is meaningless
+    uses_bidding_budget: Optional[bool] = None
+    waiver_budget: Optional[int] = None    # only meaningful when uses_bidding_budget is True
+    waiver_system: Optional[str] = None    # short human label, e.g. "budget", "rolling priority"
 
 
 @dataclass
@@ -43,7 +65,14 @@ class TeamRoster:
     manager_name: str
     team_name: str
     players: list[RosteredPlayer] = field(default_factory=list)
-    faab_remaining: Optional[int] = None
+    # What the team has SPENT from a bidding budget. Named for what it holds:
+    # both Sleeper and ESPN report spend, not remaining balance, and the previous
+    # field was named faab_remaining while being assigned the spent amount — so
+    # a team that had spent everything appeared to have everything left.
+    # Remaining is computed downstream, where the league budget is known.
+    budget_spent: Optional[int] = None
+    # Waiver order position for leagues that use priority instead of bidding.
+    waiver_position: Optional[int] = None
     wins: int = 0
     losses: int = 0
     points_for: float = 0.0

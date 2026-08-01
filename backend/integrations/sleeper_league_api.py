@@ -74,6 +74,33 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 meta.name = lg.get("name") or None
                 meta.team_count = lg.get("total_rosters") or None
                 meta.scoring = _scoring_from_rec((lg.get("scoring_settings") or {}).get("rec"))
+                # Waiver settings from the SAME payload — no extra call.
+                # settings.waiver_type is an integer: 2 means the league bids with
+                # a budget; 0 and 1 are rolling waivers and reverse standings.
+                # Gate on it BEFORE reading waiver_budget: measured across 285 live
+                # leagues, waiver_budget is present on ALL of them including every
+                # non-bidding league, almost always as a vestigial 100. Reading the
+                # budget without this gate is how every league ends up claiming a
+                # $100 bidding budget it does not have.
+                _s = lg.get("settings") or {}
+                _wt = _s.get("waiver_type")
+                if _wt is not None:
+                    try:
+                        _wt = int(_wt)
+                    except (TypeError, ValueError):
+                        _wt = None
+                if _wt is not None:
+                    meta.uses_bidding_budget = (_wt == 2)
+                    meta.waiver_system = (
+                        "budget" if _wt == 2
+                        else "reverse standings" if _wt == 1
+                        else "rolling priority"
+                    )
+                    if _wt == 2 and _s.get("waiver_budget") is not None:
+                        try:
+                            meta.waiver_budget = int(_s["waiver_budget"])
+                        except (TypeError, ValueError):
+                            pass
         except Exception as exc:
             logger.warning("Sleeper league metadata fetch failed: %s", exc)
         try:
@@ -129,9 +156,14 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 # sync — so one league-mate with no team name broke the whole connect.
                 team_name=(user.get("metadata") or {}).get("team_name", ""),
                 players=players,
-                faab_remaining=roster.get("settings", {}).get(
-                    "waiver_budget_used", 0
-                ),
+                # SPENT, not remaining. Sleeper's waiver_budget_used is the amount
+                # already spent — verified against live leagues, where the values
+                # top out at exactly the league budget. It used to be assigned to a
+                # field named faab_remaining, so a team that had spent its whole
+                # budget was shown as having all of it left.
+                budget_spent=roster.get("settings", {}).get("waiver_budget_used"),
+                # Order position for leagues that use priority rather than bidding.
+                waiver_position=roster.get("settings", {}).get("waiver_position"),
                 wins=roster.get("settings", {}).get("wins", 0),
                 losses=roster.get("settings", {}).get("losses", 0),
                 owner_ids=owner_ids,

@@ -55,22 +55,51 @@ class LeagueTeamOut(BaseModel):
     team_id: str
     team_name: str
     is_me: bool
-    faab_remaining: int
+    # Optional because it is genuinely unknown for a league whose waiver settings
+    # could not be read, and for every league that does not bid at all. It used to
+    # be a required int filled with a hardcoded 100, which told every customer
+    # they had $100 left regardless of their real league.
+    faab_remaining: Optional[int] = None
+    waiver_position: Optional[int] = None
     roster: list[LeaguePlayerOut]
 
 
 class WaiverSettingsOut(BaseModel):
-    type: str
-    budget: int
-    remaining: int
+    # A readable label for the league's waiver system, e.g. "budget" or
+    # "rolling priority". None when it could not be determined.
+    type: Optional[str] = None
+    # True  = the league bids with a budget
+    # False = priority or reverse standings; a dollar figure is meaningless
+    # None  = unknown; the client must not claim either way
+    uses_bidding_budget: Optional[bool] = None
+    budget: Optional[int] = None
+    remaining: Optional[int] = None
+    waiver_position: Optional[int] = None
+    # True when ANY part of the dollar figures was assumed rather than read from
+    # the league. The client MUST surface this — presenting an assumed figure as
+    # the customer's real one is the defect this replaces.
+    budget_is_assumed: bool = False
+    # WHAT was assumed, so the client can say it precisely instead of implying the
+    # wrong thing. The distinction matters: telling someone "we could not read your
+    # budget" asserts that their league bids, which is a claim only the waiver-system
+    # field may authorise.
+    #   "league"          nothing assumed; both figures were read from the league
+    #   "full_budget"     the league's budget was read but this team's SPEND was not,
+    #                     so the balance is assumed to be the whole budget untouched
+    #   "standard_budget" the league bids but no amount was readable; $100 assumed
+    #   "unknown_system"  we could not establish whether the league bids AT ALL, so
+    #                     even the relevance of a dollar figure is an assumption
+    #   "no_bidding"      the league does not bid; there are no dollar figures
+    budget_basis: str = "league"
 
 
 class WaiverLeagueResponse(BaseModel):
     season: int
     week: int
     teams: list[LeagueTeamOut]
-    waiver_type: str
-    faab_budget: int
+    waiver_type: Optional[str] = None
+    uses_bidding_budget: Optional[bool] = None
+    faab_budget: Optional[int] = None
     demo_mode: bool
     enforced: bool
 
@@ -121,6 +150,10 @@ class FaabOut(BaseModel):
     news_bump_bid: int
     pct_of_remaining: float
     why: str
+    # False when the league claims by waiver priority instead of bidding. The
+    # dollar fields are then 0 meaning "not applicable", NOT "$0", and the client
+    # must render the tier label instead of a figure.
+    bid_applicable: bool = True
 
 
 class NewsOut(BaseModel):
@@ -224,7 +257,7 @@ def _rec_out(
             recommended=r.faab.recommended, tier_label=r.faab.tier_label,
             total_bid=r.faab.total_bid, base_bid=r.faab.base_bid,
             news_bump_bid=r.faab.news_bump_bid, pct_of_remaining=r.faab.pct_of_remaining,
-            why=r.faab.why,
+            why=r.faab.why, bid_applicable=r.faab.bid_applicable,
         ),
         news=NewsOut(
             kind=r.news.kind, headline=r.news.headline, signal_type=r.news.signal_type,
@@ -264,13 +297,19 @@ async def league(user=Depends(get_current_user), db=Depends(get_db)):
             ))
         teams.append(LeagueTeamOut(
             team_id=team.team_id, team_name=team.team_name, is_me=team.is_me,
-            faab_remaining=src.faab_remaining_by_team.get(team.team_id, src.faab_budget),
+            # No default to src.faab_budget: a team whose spend the platform did
+            # not report has an UNKNOWN balance, and showing the full budget in
+            # its place is the fabricated figure this replaces.
+            faab_remaining=src.faab_remaining_by_team.get(team.team_id),
+            waiver_position=getattr(src, "waiver_position_by_team", {}).get(team.team_id),
             roster=roster,
         ))
 
     return WaiverLeagueResponse(
         season=src.state.season, week=src.state.week, teams=teams,
-        waiver_type=src.waiver_type, faab_budget=src.faab_budget,
+        waiver_type=src.waiver_type,
+        uses_bidding_budget=getattr(src, "uses_bidding_budget", None),
+        faab_budget=src.faab_budget,
         demo_mode=demo, enforced=waiver_demo_enforce_gates(),
     )
 
@@ -351,7 +390,37 @@ async def recommendations(
     roster_limit = getattr(src, "roster_limit", DEFAULT_ROSTER_LIMIT)
     pool_ids = {rp.canonical_player_id for rp in src.pool}
     news_map = await build_news_map(db, pool_ids, now=datetime.now(timezone.utc))
-    faab_remaining = src.faab_remaining_by_team.get(acting.team_id, src.faab_budget)
+    # The bid curve needs a number. Resolve it honestly, and record whether the
+    # figure is the league's own or the standard $100 assumption, so the client
+    # can say which. A league that does not bid at all gets no dollar figure.
+    from backend.services.waiver.faab import FAAB_BUDGET_DEFAULT
+
+    uses_budget = getattr(src, "uses_bidding_budget", None)
+    if uses_budget is False:
+        faab_remaining = None
+        budget_basis = "no_bidding"
+    else:
+        faab_remaining = src.faab_remaining_by_team.get(acting.team_id)
+        if faab_remaining is not None:
+            budget_basis = "league"
+        else:
+            # This team's spend was never reported, so its balance is UNKNOWN.
+            # Substituting the league budget assumes the team has not spent a cent.
+            # That is an unearned claim, so it is recorded as one — reporting it as
+            # read is the original defect with a different number, and it would also
+            # contradict GET /waiver/league, which returns null for the same team.
+            faab_remaining = src.faab_budget
+            budget_basis = "full_budget"
+            if faab_remaining is None:
+                # Nothing readable at all. Fall back to the standard $100.
+                faab_remaining = FAAB_BUDGET_DEFAULT
+                budget_basis = "standard_budget"
+        if uses_budget is None:
+            # A bigger unknown than any amount: we never established whether this
+            # league bids. Overrides the amount-level basis so the client says the
+            # SYSTEM is unknown rather than implying the league bids.
+            budget_basis = "unknown_system"
+    budget_is_assumed = budget_basis not in ("league", "no_bidding")
 
     recs = recommend(
         acting, src.pool, src.values, rules=rules,
@@ -381,7 +450,14 @@ async def recommendations(
     return WaiverRecommendationsResponse(
         season=src.state.season, week=src.state.week,
         my_team_id=acting.team_id, my_team_name=acting.team_name,
-        waiver=WaiverSettingsOut(type=src.waiver_type, budget=src.faab_budget, remaining=faab_remaining),
+        waiver=WaiverSettingsOut(
+            type=src.waiver_type,
+            uses_bidding_budget=uses_budget,
+            budget=src.faab_budget,
+            remaining=faab_remaining if uses_budget is not False else None,
+            waiver_position=getattr(src, "waiver_position_by_team", {}).get(acting.team_id),
+            budget_is_assumed=budget_is_assumed, budget_basis=budget_basis,
+        ),
         needs=needs,
         recommendations=[_rec_out(r, getattr(src, "dst_matchup", {}), injury_by_id) for r in recs],
         silence=silence,

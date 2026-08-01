@@ -6,6 +6,11 @@
  * Mirrors the Trade page: GET /waiver/league (demo picker) + POST
  * /waiver/recommendations. The "Acting as" switch is DEMO-ONLY scaffolding
  * (WAIVER_DEMO_MODE / fetchWaiverLeague) — teardown removes it with the trade demo.
+ *
+ * WAIVER SETTINGS: every budget/priority string on this page comes from
+ * lib/waiverSettings. This page previously printed "$100 of $100 budget left" for
+ * every customer from a budget nobody had read; the rules that stop that are in
+ * that module, not in this JSX.
  */
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -14,6 +19,7 @@ import {
 } from 'lucide-react'
 import { fetchWaiverLeague, fetchWaiverRecommendations, fetchWaiverWire } from '../api/waiver'
 import { leagueLoadMessage, isUnboundTeam, unboundInfo } from '../lib/leagueError'
+import { isPrintableNumber, waiverBudgetSummary, waiverSystemLabel } from '../lib/waiverSettings'
 import TeamPicker from '../components/TeamPicker'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
@@ -72,9 +78,47 @@ function MatchupTag({ matchup }) {
   )
 }
 
+// The bid corner of a recommendation card. `bid_applicable` false means the league
+// claims by waiver priority and never bids: the dollar fields are 0 meaning "not
+// applicable", NOT "$0", so the tier label is shown in place of a figure. Older
+// responses have no such field, so only an explicit false suppresses the money.
+function BidCorner({ faab }) {
+  // Strict. Only an explicit true — or the field being absent from an older cached
+  // response — means this league bids. null, 0 and the string "false" must NOT print
+  // money: a confident "$0" is still a figure the league does not have.
+  const bids = faab.bid_applicable === undefined ? true : faab.bid_applicable === true
+  if (!faab.recommended) {
+    return <div className="text-xs text-slate-600">{bids ? 'no bid' : 'not worth a claim'}</div>
+  }
+  if (!bids) {
+    return (
+      <>
+        <div className="text-sm font-bold text-emerald-400">{faab.tier_label}</div>
+        <div className="text-[10px] text-slate-500">claim by waiver priority</div>
+      </>
+    )
+  }
+  // Each number is printed only if it really is one, so a malformed payload drops
+  // the figure instead of rendering "$NaN", "NaN%" or a bare "$".
+  return (
+    <>
+      {isPrintableNumber(faab.total_bid) && (
+        <div className="text-lg font-bold text-emerald-400">${faab.total_bid}</div>
+      )}
+      <div className="text-[10px] text-slate-500">
+        {isPrintableNumber(faab.pct_of_remaining)
+          ? `${Math.round(faab.pct_of_remaining * 100)}% · ` : ''}
+        {faab.tier_label}
+      </div>
+      {isPrintableNumber(faab.news_bump_bid) && faab.news_bump_bid > 0 && (
+        <div className="text-[10px] text-sky-400">incl. +${faab.news_bump_bid} news</div>
+      )}
+    </>
+  )
+}
+
 function RecCard({ rec }) {
   const t = TREND[rec.add.value_trend] || TREND.stable
-  const f = rec.faab
   return (
     <div className="rounded-lg border border-border bg-surface-1 p-3">
       <div className="flex items-start justify-between gap-3">
@@ -93,21 +137,9 @@ function RecCard({ rec }) {
             <span className="tabular-nums">{rec.add.forward_ppg} ppg</span>
           </div>
         </div>
-        {/* FAAB bid */}
+        {/* Bid, or the tier when the league does not bid */}
         <div className="shrink-0 text-right">
-          {f.recommended ? (
-            <>
-              <div className="text-lg font-bold text-emerald-400">${f.total_bid}</div>
-              <div className="text-[10px] text-slate-500">
-                {Math.round(f.pct_of_remaining * 100)}% · {f.tier_label}
-              </div>
-              {f.news_bump_bid > 0 && (
-                <div className="text-[10px] text-sky-400">incl. +${f.news_bump_bid} news</div>
-              )}
-            </>
-          ) : (
-            <div className="text-xs text-slate-600">no bid</div>
-          )}
+          <BidCorner faab={rec.faab} />
         </div>
       </div>
 
@@ -127,6 +159,51 @@ function RecCard({ rec }) {
       {/* DST-only matchup context (backend sets `matchup` only for tilted DSTs; K + offense have none). */}
       {rec.matchup && <MatchupTag matchup={rec.matchup} />}
       {rec.news && <NewsBadge news={rec.news} />}
+    </div>
+  )
+}
+
+// The two things the customer must be told about the money on these cards, from the
+// recommendations response. Silent on a league whose real budget we read — there is
+// nothing to caveat then.
+function WaiverSettingsNote({ waiver }) {
+  if (!waiver) return null
+  const amount = isPrintableNumber(waiver.remaining) ? waiver.remaining : 100
+
+  // Checked in the same order as lib/waiverSettings, so the note can never claim
+  // money for a league the header says does not bid.
+  if (waiver.uses_bidding_budget === false) {
+    const system = waiverSystemLabel(waiver.type)
+    const order = isPrintableNumber(waiver.waiver_position)
+      ? ` You are #${waiver.waiver_position} in the waiver order.`
+      : ''
+    return (
+      <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-slate-400">
+        {`Your league claims players by ${system ? system.toLowerCase() : 'waiver priority'}, not by bidding, so no dollar amounts are shown. The ranking and the tier on each card still apply.${order}`}
+      </div>
+    )
+  }
+
+  // What exactly was assumed. Telling someone only "we could not read your budget"
+  // asserts that their league bids, which is a claim we may not make from an
+  // unreadable waiver system.
+  const basis = waiver.budget_basis || (waiver.budget_is_assumed ? 'standard_budget' : 'league')
+  const NOTE = {
+    unknown_system:
+      `We could not read how your league handles waivers, so the bids below assume a $${amount} budget. `
+      + 'If your league claims by waiver priority instead of bidding, ignore the dollar amounts and use the ranking. '
+      + 'Re-syncing the league on the League page will read your real settings.',
+    standard_budget:
+      `Your league bids, but we could not read its budget, so the bids below assume $${amount}. `
+      + "These are our assumption, not your league's figures.",
+    full_budget:
+      `We read your league's budget but not how much you have already spent, so the bids below `
+      + 'assume you still have all of it. Scale them down by whatever you have spent.',
+  }
+  if (!NOTE[basis]) return null
+  return (
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+      {NOTE[basis]}
     </div>
   )
 }
@@ -239,8 +316,19 @@ export default function Waiver() {
   })
 
   const [myTeamId, setMyTeamId] = useState(null)
+  // effMyId drives the demo "Acting as" switcher and the recommendations request, and
+  // keeps its positional last resort so the control always has a value.
   const effMyId = myTeamId || league?.teams?.find((t) => t.is_me)?.team_id || league?.teams?.[0]?.team_id
-  const myTeam = useMemo(() => league?.teams?.find((t) => t.team_id === effMyId), [league, effMyId])
+  // boundTeam is DELIBERATELY stricter: an explicit pick, or the team the backend
+  // identified as yours. No positional fallback, because a stale team binding leaves
+  // every team unflagged and the first one in the list belongs to a stranger. Money
+  // is only ever shown for a team that is genuinely yours.
+  const boundTeam = useMemo(
+    () => (myTeamId
+      ? league?.teams?.find((t) => t.team_id === myTeamId)
+      : league?.teams?.find((t) => t.is_me)),
+    [league, myTeamId],
+  )
 
   // FREE wire browse list — independent of the acting team + the metered flow.
   const wireQuery = useQuery({
@@ -290,8 +378,43 @@ export default function Waiver() {
   // a non-enforced demo shows an explicit no-charge note.
   const costNote =
     demo && !enforced ? ' · demo · no charge' : unlimited ? '' : ` · ${creditCost('waiver_wire')} cr`
-  const remaining = myTeam?.faab_remaining ?? league.faab_budget
   const data = recMut.data
+
+  // The subtitle. Each clause is dropped when there is nothing truthful to put in
+  // it — a league whose waiver system we could not read shows the week alone
+  // rather than a budget nobody read. NEVER fall back to the league budget for an
+  // unknown team balance: that is what printed "$100 of $100 budget left".
+  //
+  // Once recommendations have run, the header reads its waiver settings from THAT
+  // response rather than the cached league query. Two reasons: the league query is
+  // cached for five minutes, so the two could otherwise disagree on screen; and the
+  // recommendations response is what the bids on the cards were actually computed
+  // against, which is what the customer needs the header to describe.
+  const recWaiver = data?.waiver
+  const budgetSummary = recWaiver
+    ? waiverBudgetSummary({
+      usesBiddingBudget: recWaiver.uses_bidding_budget,
+      budget: recWaiver.budget,
+      remaining: recWaiver.remaining,
+      waiverPosition: recWaiver.waiver_position,
+      budgetIsAssumed: recWaiver.budget_is_assumed,
+      budgetBasis: recWaiver.budget_basis,
+    })
+    : waiverBudgetSummary({
+      usesBiddingBudget: league.uses_bidding_budget,
+      budget: league.faab_budget,
+      // boundTeam, NOT the displayed team: with a stale or missing team binding no
+      // team is flagged as yours, and the acting-team fallback is another manager's
+      // roster. Printing their balance as your money is the same defect in a new
+      // place, so an unbound customer gets no balance at all.
+      remaining: boundTeam?.faab_remaining,
+      waiverPosition: boundTeam?.waiver_position,
+    })
+  const subtitle = [
+    `Week ${league.week}, ${league.season}`,
+    waiverSystemLabel(recWaiver ? recWaiver.type : league.waiver_type),
+    budgetSummary.text,
+  ].filter(Boolean).join(' · ')
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
@@ -301,9 +424,7 @@ export default function Waiver() {
           <h1 className="flex items-center gap-2 text-xl font-semibold text-white">
             <Waves size={22} className="text-brand-accent" /> Waiver Wire
           </h1>
-          <p className="text-sm text-slate-500">
-            Week {league.week}, {league.season} · {league.waiver_type?.toUpperCase()} · ${remaining} of ${league.faab_budget} budget left
-          </p>
+          <p className="text-sm text-slate-500">{subtitle}</p>
         </div>
         {demo && (
           <label className="flex items-center gap-2 text-sm text-slate-400">
@@ -358,6 +479,9 @@ export default function Waiver() {
               {recMut.error?.response?.data?.detail || recMut.error?.response?.data?.message || 'Could not fetch waiver targets.'}
             </div>
           )}
+
+          {/* How to read the money on the cards below — shown before them. */}
+          {data && <WaiverSettingsNote waiver={data.waiver} />}
 
           {/* Empty state — explain the silence, don't look broken */}
           {data && data.recommendations.length === 0 && (

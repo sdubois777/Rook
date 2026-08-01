@@ -27,7 +27,10 @@ def test_team_roster_empty_players():
         team_name="Team",
     )
     assert t.players == []
-    assert t.faab_remaining is None
+    # Renamed from faab_remaining, which was assigned the amount SPENT — so a
+    # team that had spent its whole budget appeared to have it all left.
+    assert t.budget_spent is None
+    assert t.waiver_position is None
     assert t.wins == 0
 
 

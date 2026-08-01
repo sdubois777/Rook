@@ -81,8 +81,17 @@ class WaiverDemoSource:
     weekly_usage: pd.DataFrame
     priors: dict[str, float] = field(default_factory=dict)
     waiver_type: str = "faab"
+    # The demo league is a made-up FAAB league, so True is the honest answer FOR IT
+    # — its budget and per-team balances below are internally consistent and the
+    # response is flagged demo_mode. Without this the router's
+    # getattr(src, "uses_bidding_budget", None) reads None ("unknown") and the demo
+    # page would hide the budget it is meant to be demonstrating.
+    uses_bidding_budget: bool = True
     faab_budget: int = FAAB_BUDGET_DEFAULT
     faab_remaining_by_team: dict[str, int] = field(default_factory=dict)
+    # Present so the router's lookup finds an empty mapping rather than nothing;
+    # a bidding league has no waiver order to show.
+    waiver_position_by_team: dict[str, int] = field(default_factory=dict)
     # {dst_canonical_id: {"opponent", "tilt"}} for the demo week (slice 5a display).
     dst_matchup: dict[str, dict] = field(default_factory=dict)
     scoring_format: str = "ppr"   # in-season re-score basis (PPR byte-identical)
