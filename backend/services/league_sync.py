@@ -601,7 +601,17 @@ class LeagueSyncService:
                     ),
                     draft_pick_number=pick.pick_number,
                     season_year=season,
-                    source=f"sync_{pick.picked_by_team_id}",
+                    # The user_league id makes this unique PER CUSTOMER.
+                    # Neither unique constraint on this table carries a customer
+                    # or league column, so `source` is the only thing separating
+                    # one customer's draft from another's. It used to be just the
+                    # team id, which is "1".."12" on ESPN and Sleeper, so two
+                    # customers collided and the second one's picks were silently
+                    # discarded by ON CONFLICT DO NOTHING. Yahoo was not immune
+                    # either: two customers in the SAME Yahoo league produced
+                    # identical values, and production already has two users
+                    # sharing Yahoo league 141688.
+                    source=f"sync_{user_league_id}_{pick.picked_by_team_id}",
                     yahoo_player_key=pick.platform_player_id or None,
                 )
                 .on_conflict_do_nothing()
