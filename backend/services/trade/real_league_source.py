@@ -37,7 +37,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from backend.core.exceptions import UnboundTeamError, UndraftedLeagueError
-from backend.integrations.platform_models import TeamRoster
+from backend.integrations.platform_models import NO_WAIVERS_SYSTEM, TeamRoster
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
@@ -67,6 +67,12 @@ class RealLeagueSource:
     unresolved: list[dict] = field(default_factory=list)
     my_team_id: Optional[str] = None
     scoring_format: str = "ppr"   # league's format (in-season re-score basis; PPR default)
+    # The synced league record, carried so downstream views can read its REAL
+    # settings (waiver system, budget) rather than assuming them.
+    user_league: object = None
+    # The raw platform rosters, which carry per-team budget spend and waiver
+    # order position. resolve_team_rosters drops both when it maps to LeagueState.
+    team_rosters: list = field(default_factory=list)
 
     def get_league_state(self) -> LeagueState:
         return self.state
@@ -361,6 +367,11 @@ async def build_real_league_source(
         state=state, weekly_usage=weekly_usage, priors=priors, season=season,
         week=week, roster_limit=roster_limit, pool=pool, unresolved=unresolved,
         my_team_id=my_team_id, scoring_format=scoring_format,
+        # `league` is the RESOLVED league record (_pick_league may substitute one
+        # when the caller passed none); user_league is the raw argument and can be
+        # None. Carrying the wrong one would silently make every waiver setting
+        # read as unknown.
+        user_league=league, team_rosters=team_rosters,
     )
 
 
@@ -375,9 +386,16 @@ class RealWaiverSource:
     weekly_usage: pd.DataFrame
     priors: dict[str, float]
     roster_limit: int
-    waiver_type: str = "faab"
-    faab_budget: int = 100
+    # These three used to be a hardcoded "faab" and 100, which labelled EVERY
+    # league as bidding and told every customer they had $100 of $100 left.
+    waiver_type: Optional[str] = None          # readable label, e.g. "rolling priority"
+    uses_bidding_budget: Optional[bool] = None  # tri-state; None = unknown
+    # Only meaningful when uses_bidding_budget is True. None means the league bids
+    # but the amount could not be read — the caller then states the standard $100
+    # as an assumption rather than presenting it as the league's real figure.
+    faab_budget: Optional[int] = None
     faab_remaining_by_team: dict = field(default_factory=dict)
+    waiver_position_by_team: dict = field(default_factory=dict)
     dst_matchup: dict = field(default_factory=dict)
     unresolved: list[dict] = field(default_factory=list)
     my_team_id: Optional[str] = None
@@ -399,11 +417,13 @@ async def build_real_waiver_source(
     """Real waiver source: build the league, then value roster + FA pool in ONE
     evaluate_league over an augmented LeagueState (a synthetic pool team) so every
     forward_value shares the anchor basis the add/drop math needs — mirroring the
-    demo waiver source, on real data. FAAB defaults (UserLeague has no waiver
-    columns yet — real FAAB sync is a follow-up)."""
+    demo waiver source, on real data.
+
+    Waiver settings come from the league record written by league_sync, and any of
+    them may be None meaning "unknown". Nothing here substitutes a default for an
+    unknown: a $100 stand-in for a budget nobody read is the defect this replaced."""
     from backend.services.kdef_matchup import apply_dst_matchup
     from backend.services.trade.value_engine import evaluate_league
-    from backend.services.waiver.faab import FAAB_BUDGET_DEFAULT
 
     source = await build_real_league_source(
         db, user, user_league=user_league, team_rosters=team_rosters,
@@ -424,12 +444,67 @@ async def build_real_waiver_source(
         aug, source.weekly_usage, scoring_format=source.scoring_format, priors=source.priors)
     values, dst_matchup = apply_dst_matchup(values, aug, season=source.season, week=source.week)
 
-    faab_remaining = {t.team_id: FAAB_BUDGET_DEFAULT for t in source.state.teams}
+    # Real waiver settings, read from the league during sync. All three may be
+    # None, which means "unknown" and must never be rendered as a number.
+    league = getattr(source, "user_league", None)
+    uses_budget = getattr(league, "uses_bidding_budget", None)
+    league_budget = getattr(league, "waiver_budget", None)
+    waiver_label = getattr(league, "waiver_type", None)
+
+    # Remaining = budget minus what the platform says the team has SPENT. Both ESPN
+    # and Sleeper report spend, not remaining, and the field that held it used to be
+    # named faab_remaining — so a team that had spent its whole budget was shown as
+    # having all of it left.
+    #
+    # The two branches below are EXCLUSIVE and neither is a fallback for the other. A
+    # league whose waiver system could not be read (uses_budget is None) gets NEITHER
+    # a balance nor a waiver order, because there is nothing we know to claim. A team
+    # whose spend the platform did not report is simply left out, not defaulted to the
+    # full budget.
+    #
+    # Keys are str(platform_team_id), the same key resolve_team_rosters gives every
+    # TeamState.team_id, so the router's per-team lookup matches.
+    rosters = getattr(source, "team_rosters", None) or []
+    faab_remaining: dict = {}
+    waiver_positions: dict = {}
+    if uses_budget and league_budget is not None:
+        for tr in rosters:
+            spent = getattr(tr, "budget_spent", None)
+            if spent is None:
+                continue
+            try:
+                faab_remaining[str(tr.platform_team_id)] = max(
+                    0, int(league_budget) - int(spent))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "waiver: unreadable budget spend %r for team %s — leaving that "
+                    "team's balance unknown rather than guessing it",
+                    spent, tr.platform_team_id,
+                )
+    elif uses_budget is False and waiver_label != NO_WAIVERS_SYSTEM:
+        # A league with no waiver process has no waiver order either. ESPN reports a
+        # per-team waiverRank on EVERY team of every league regardless — measured
+        # present on all 176 sampled live leagues, including every free-agency one —
+        # so it is vestigial in exactly the way the budget of 100 is, and the waiver
+        # system has to authorise it. Without this the page says "free agency, no
+        # waivers · waiver priority #3", which contradicts itself in one line.
+        for tr in rosters:
+            pos = getattr(tr, "waiver_position", None)
+            if pos is None:
+                continue
+            try:
+                waiver_positions[str(tr.platform_team_id)] = int(pos)
+            except (TypeError, ValueError):
+                logger.warning("waiver: unreadable waiver position %r for team %s",
+                               pos, tr.platform_team_id)
     return RealWaiverSource(
         state=source.state, pool=source.pool, values=values,
         weekly_usage=source.weekly_usage, priors=source.priors,
-        roster_limit=source.roster_limit, faab_budget=FAAB_BUDGET_DEFAULT,
-        faab_remaining_by_team=faab_remaining, dst_matchup=dst_matchup,
+        roster_limit=source.roster_limit,
+        waiver_type=waiver_label, uses_bidding_budget=uses_budget,
+        faab_budget=league_budget if uses_budget else None,
+        faab_remaining_by_team=faab_remaining,
+        waiver_position_by_team=waiver_positions, dst_matchup=dst_matchup,
         unresolved=source.unresolved, my_team_id=source.my_team_id,
         scoring_format=source.scoring_format,
     )

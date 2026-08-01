@@ -394,6 +394,16 @@ class LeagueSyncService:
             user_league.draft_date = meta.draft_date
         if meta.draft_status:
             user_league.draft_status = meta.draft_status
+        # `is not None`, NOT truthiness: uses_bidding_budget is a tri-state and
+        # False is a real, meaningful answer ("this league does not bid"). A
+        # truthiness test would silently discard it and leave the league looking
+        # like its waiver system is unknown.
+        if meta.uses_bidding_budget is not None:
+            user_league.uses_bidding_budget = meta.uses_bidding_budget
+        if meta.waiver_budget is not None:
+            user_league.waiver_budget = meta.waiver_budget
+        if meta.waiver_system:
+            user_league.waiver_type = meta.waiver_system
 
     async def _sync_yahoo_settings(
         self, user_league: UserLeague, league_key: str | None = None,
@@ -441,7 +451,23 @@ class LeagueSyncService:
             if settings.get("draft_date"):
                 user_league.draft_date = settings["draft_date"]
             user_league.trade_deadline = settings.get("trade_deadline") or None
-            user_league.waiver_type = settings.get("waiver_type") or None
+            # waiver_type is a VARCHAR(30); Yahoo's raw rule string is not a value
+            # we control, so cap it rather than letting an over-long one abort the
+            # whole settings sync.
+            _wt = settings.get("waiver_type") or None
+            user_league.waiver_type = _wt[:30] if _wt else None
+            # Tri-state, and `is not None` NOT truthiness: False is a real answer
+            # ("this league does not bid") that a truthiness test would discard,
+            # leaving the league looking unknown. None means Yahoo did not tell us,
+            # and we leave whatever is already stored alone rather than overwriting
+            # a known answer with a guess.
+            _uses_faab = settings.get("uses_faab")
+            if _uses_faab is not None:
+                user_league.uses_bidding_budget = bool(_uses_faab)
+            # waiver_budget is intentionally NOT set here. No Yahoo field for a
+            # league's FAAB budget has been confirmed against a live response, so
+            # there is nothing to read; it stays NULL and the waiver page states its
+            # $100 figure as an assumption instead of as the league's own number.
             user_league.playoff_start_week = settings.get("playoff_start_week")
             await self._db.flush()
             logger.info(

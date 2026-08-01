@@ -100,12 +100,16 @@ def recommend(
     *,
     rules: Optional[LineupRules] = None,
     roster_limit: int,
-    faab_remaining: int,
+    faab_remaining: Optional[int],
     news_map: Optional[dict[str, NewsInfo]] = None,
     max_results: int = MAX_RESULTS,
 ) -> list[Recommendation]:
     """Rank the available pool by the real-ppw lineup improvement each add makes to
-    ``acting_team``, paired with the best drop. Pure — no DB, no LLM."""
+    ``acting_team``, paired with the best drop. Pure — no DB, no LLM.
+
+    ``faab_remaining=None`` means the league claims by waiver priority and never
+    bids. Ranking, drops and tier labels are identical; only the dollar amount is
+    withheld (see suggest_bid)."""
     rules = rules or DEFAULT_LINEUP_RULES
     news_map = news_map or {}
 
