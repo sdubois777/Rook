@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from backend.integrations.platform_api import LeaguePlatformAPI
 from backend.integrations.platform_models import (
+    NO_WAIVERS_SYSTEM,
     DraftPick, FreeAgent, LeagueMetadata, RosteredPlayer, TeamRoster,
     Transaction, WeeklyMatchup,
 )
@@ -135,8 +136,18 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
             owners = [str(o) for o in (t.get("owners") or []) if o]
             if not owners and t.get("primaryOwner"):
                 owners = [str(t["primaryOwner"])]
+            # Budget SPENT (not remaining) and waiver order position. Both come
+            # from the mTeam response this method already fetches; both were
+            # previously discarded. acquisitionBudgetSpent sits inside
+            # transactionCounter, waiverRank sits at the team level.
+            spent = ((t.get("transactionCounter") or {})
+                     .get("acquisitionBudgetSpent"))
             if tid:
-                out[tid] = {"name": name, "owners": owners}
+                out[tid] = {
+                    "name": name, "owners": owners,
+                    "budget_spent": spent,
+                    "waiver_position": t.get("waiverRank"),
+                }
         return out
 
     async def get_rosters(self) -> list[TeamRoster]:
@@ -164,6 +175,8 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                 team_name=tmeta.get("name") or team.get("name") or team.get("abbrev", "") or f"Team {tid}",
                 players=players,
                 owner_ids=tmeta.get("owners", []),
+                budget_spent=tmeta.get("budget_spent"),
+                waiver_position=tmeta.get("waiver_position"),
             ))
         return result
 
@@ -204,6 +217,36 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         s = data.get("settings", {}) or {}
         meta.name = s.get("name") or None
         meta.team_count = s.get("size") or None
+
+        # Waiver settings from the SAME mSettings payload — no extra call.
+        #
+        # isUsingAcquisitionBudget is the ONLY field that says whether the league
+        # bids. acquisitionType does NOT: measured across 57 live leagues,
+        # "WAIVERS_TRADITIONAL" appears with the budget flag both true (17) and
+        # false (34). acquisitionType describes WHEN claims process, not whether
+        # they are bid on.
+        #
+        # And read acquisitionBudget only when the flag is true: 34 of 35 live
+        # non-bidding leagues still carried acquisitionBudget 100, which is exactly
+        # the fabricated figure this is meant to stop us showing.
+        acq = s.get("acquisitionSettings") or {}
+        _uses = acq.get("isUsingAcquisitionBudget")
+        if isinstance(_uses, bool):
+            meta.uses_bidding_budget = _uses
+            _type = str(acq.get("acquisitionType") or "").upper()
+            if _uses:
+                meta.waiver_system = "budget"
+                try:
+                    if acq.get("acquisitionBudget") is not None:
+                        meta.waiver_budget = int(acq["acquisitionBudget"])
+                except (TypeError, ValueError):
+                    pass
+            elif _type == "FREEAGENCY":
+                meta.waiver_system = NO_WAIVERS_SYSTEM
+            elif _type == "WAIVERS_CONTINUOUS":
+                meta.waiver_system = "continuous waiver priority"
+            else:
+                meta.waiver_system = "rolling priority"
         # scoring: reception points (statId 53) → ppr/half/standard
         items = (s.get("scoringSettings", {}) or {}).get("scoringItems", []) or []
         for it in items:

@@ -18,7 +18,7 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -846,6 +846,42 @@ async def _detect_draft_type(
         return "snake", None
 
 
+def _parse_yahoo_uses_faab(settings_data: dict[str, Any]) -> Optional[bool]:
+    """Does this Yahoo league bid with a FAAB budget? True / False / None-for-unknown.
+
+    UNVERIFIED FIELD NAMES. Yahoo's Fantasy API sits behind their approval process,
+    so unlike the ESPN and Sleeper equivalents none of this could be checked against
+    a live response. The rule that follows from that is: only ever return a definite
+    answer when the payload states one, and return None otherwise.
+
+    The previous version of this code was ``uses_faab = "faab" in waiver_rule``,
+    which returned False when the field was absent entirely. False is a real answer
+    meaning "this league does not bid" — it makes the waiver page tell the customer
+    their league claims by priority and withhold the bid. Absence is not evidence of
+    that, so absence now returns None, which produces a clearly-labelled assumption
+    instead of a confident wrong statement.
+
+    Order: Yahoo's own documented ``uses_faab`` flag ("0"/"1") first, because it is
+    Yahoo answering the question directly. Then the ``waiver_type`` string, which can
+    only ever raise the answer to True — an unrecognised value stays unknown rather
+    than being read as "does not bid".
+    """
+    raw = settings_data.get("uses_faab")
+    if raw is not None:
+        flag = str(raw).strip().lower()
+        if flag in ("1", "true", "yes"):
+            return True
+        if flag in ("0", "false", "no"):
+            return False
+
+    rule = str(settings_data.get("waiver_type", "") or "").strip().lower()
+    # "2" is inherited from the code this replaced and is itself unverified; it is
+    # kept because it can only ever ADD a True, never assert a False.
+    if "faab" in rule or rule == "2":
+        return True
+    return None
+
+
 async def get_league_settings(
     access_token: str,
     league_key: str,
@@ -947,9 +983,10 @@ async def get_league_settings(
             access_token, league_key
         )
 
-    # Waiver type
-    waiver_rule = str(settings_data.get("waiver_type", "")).lower()
-    uses_faab = "faab" in waiver_rule or waiver_rule == "2"
+    # Waiver settings — TRI-STATE. See _parse_yahoo_uses_faab for why an absent
+    # field must read as None ("unknown") and never as False.
+    waiver_rule = str(settings_data.get("waiver_type", "") or "").strip().lower()
+    uses_faab = _parse_yahoo_uses_faab(settings_data)
 
     # Per-league lineup (T3): roster_positions is ALREADY in this /settings
     # response — stop discarding it. Normalize to the canonical model; a wrong/
@@ -978,11 +1015,18 @@ async def get_league_settings(
         "auction_budget": auction_budget,
         "draft_date": draft_date,
         "trade_deadline": settings_data.get("trade_end_date", ""),
-        "waiver_type": "faab" if uses_faab else waiver_rule,
+        "waiver_type": "faab" if uses_faab else (waiver_rule or None),
         "playoff_start_week": int(
             settings_data.get("playoff_start_week", 15)
         ),
+        # True / False / None — None means "we could not tell", and the caller must
+        # not store a waiver-system answer at all in that case.
         "uses_faab": uses_faab,
+        # Deliberately absent: no Yahoo field for a league's FAAB budget has been
+        # confirmed, so none is read. A Yahoo bidding league therefore reaches the
+        # customer as "bids, budget unknown", which the waiver page renders as a
+        # STATED $100 assumption rather than as their league's real figure. Adding
+        # a guessed field name here would put an invented number back on the page.
         "roster_slots": roster_slots,  # canonical {slot: count} or None (→ defaults)
     }
 
