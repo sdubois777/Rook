@@ -16,8 +16,13 @@ def test_rostered_player_defaults():
         position="QB",
         team_abbr="BUF",
     )
-    assert p.is_starter is False
+    # Both default to None meaning UNKNOWN, and that is the point. The lineup field
+    # replaced `is_starter: bool = False`, where False was a positive claim that the
+    # player is benched — a reader that could not tell where a player was seated had
+    # no way to say so, and every real league silently rendered as entirely bench.
+    assert p.lineup_slot is None
     assert p.injury_status is None
+    assert not hasattr(p, "is_starter")
 
 
 def test_team_roster_empty_players():

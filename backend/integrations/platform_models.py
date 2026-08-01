@@ -53,9 +53,23 @@ class RosteredPlayer:
     player_name: str
     position: str           # QB, RB, WR, TE, K, DEF
     team_abbr: str          # NFL team
-    is_starter: bool = False
+
+    # The lineup slot the MANAGER has this player in, as the platform reports it,
+    # normalized to the canonical slot vocabulary in backend/services/roster_slots.py
+    # ("QB", "RB", "FLEX", "SUPER_FLEX", "K", "DEF", "BENCH", "IR").
+    #
+    # THREE-STATE and it must stay that way. None means the platform did not tell us
+    # where this player is seated — which is the honest answer for Yahoo, whose roster
+    # response shape could not be verified. It does NOT mean "on the bench". The field
+    # this replaced was `is_starter: bool = False`, and False is a positive claim that
+    # a player is benched; a reader that could not tell had no way to say so.
+    lineup_slot: Optional[str] = None
+
+    # Raw, UNNORMALIZED injury string exactly as the platform spelled it, or None if
+    # the platform did not report one. Never store a canonical code here — the
+    # conversion belongs to backend/utils/injury_status.to_canonical, and doing it at
+    # the reader would hide which platform spelling arrived.
     injury_status: Optional[str] = None
-    # full | questionable | doubtful | out | None
 
 
 @dataclass

@@ -5,6 +5,7 @@ Cookie-based unofficial API. Validates cookies on first use.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,33 @@ _ESPN_PROTEAM = {
     17: "NE", 18: "NO", 19: "NYG", 20: "NYJ", 21: "PHI", 22: "ARI", 23: "PIT", 24: "LAC",
     25: "SF", 26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX", 33: "BAL", 34: "HOU",
 }
+
+
+def _lineup_slot_name(slot_id) -> Optional[str]:
+    """One ESPN roster entry's numeric lineup slot -> the canonical slot name.
+
+    Reuses the SAME id map the per-league lineup config already uses, which was
+    confirmed against a real settings sample and is pinned by a test. Sharing it
+    means the two readings of "what slot is this player in" cannot drift apart.
+
+    None for an id the map does not cover. Numeric ids are not self-describing, so a
+    wrong guess would emit a valid-looking but wrong slot, which is worse than
+    saying nothing.
+    """
+    from backend.services.roster_slots import _ESPN_LINEUP_SLOT_ID
+    if slot_id is None:
+        return None
+    try:
+        sid = int(slot_id)
+    except (TypeError, ValueError):
+        return None
+    name = _ESPN_LINEUP_SLOT_ID.get(sid)
+    if name is None:
+        logger.warning(
+            "ESPN: unmapped lineup slot id %r - leaving this player's slot UNKNOWN "
+            "rather than guessing it", slot_id,
+        )
+    return name
 
 
 class ESPNLeagueAPI(LeaguePlatformAPI):
@@ -166,6 +194,13 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
                     position=_ESPN_POS.get(p.get("defaultPositionId", 0), ""),
                     # NFL team from proTeamId (deterministic DST resolution needs it).
                     team_abbr=_ESPN_PROTEAM.get(p.get("proTeamId"), ""),
+                    # Where the MANAGER has this player seated. Both of these sit in
+                    # the response this method already fetches and were discarded:
+                    # the slot id on the roster ENTRY, the injury on the player.
+                    lineup_slot=_lineup_slot_name(entry.get("lineupSlotId")),
+                    # Raw ESPN wording, normalized downstream so the platform's own
+                    # spelling stays visible at this layer.
+                    injury_status=p.get("injuryStatus"),
                 ))
             tid = str(team.get("id", ""))
             tmeta = meta.get(tid, {})
@@ -340,8 +375,116 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
             ))
         return result
 
-    async def get_matchups(self, week: int) -> list[WeeklyMatchup]:
-        return []
+    async def _matchup_period_for_week(self, week: int) -> Optional[int]:
+        """Which ESPN ROUND covers NFL `week`.
+
+        Returns the round number, 0 when the week belongs to no round (the season is
+        over — a real answer), or None when the map could not be read at all.
+
+        The distinction between 0 and None matters downstream: 0 becomes an empty
+        schedule, which tells the customer they have no game; None makes the page say
+        the schedule could not be read. Guessing that a week with no round is a bye
+        would be a false claim during a multi-week playoff round.
+        """
+        try:
+            settings = (await self._get("mSettings")).get("settings") or {}
+        except Exception as exc:
+            logger.warning(
+                "ESPN league %s: could not read the schedule settings (%s: %s) — "
+                "reporting the week-%s schedule as UNKNOWN",
+                self._league.league_id, type(exc).__name__, exc, week,
+            )
+            return None
+        periods = ((settings.get("scheduleSettings") or {}).get("matchupPeriods"))
+        if not isinstance(periods, dict) or not periods:
+            logger.warning(
+                "ESPN league %s: no matchupPeriods map — cannot tell which round NFL "
+                "week %s belongs to, so the schedule is UNKNOWN rather than guessed",
+                self._league.league_id, week,
+            )
+            return None
+        for raw_period, weeks in periods.items():
+            try:
+                covered = [int(w) for w in (weeks or [])]
+            except (TypeError, ValueError):
+                continue
+            if int(week) in covered:
+                try:
+                    return int(raw_period)
+                except (TypeError, ValueError):
+                    return None
+        logger.info(
+            "ESPN league %s: NFL week %s is in no matchup period — the season's "
+            "schedule has ended", self._league.league_id, week,
+        )
+        return 0
+
+    async def get_matchups(self, week: int) -> Optional[list[WeeklyMatchup]]:
+        """The league's REAL head-to-head schedule for ``week``.
+
+        The `mMatchup` view carries a `schedule` array holding the WHOLE season, one
+        entry per game, keyed by `matchupPeriodId`. Verified against a real league:
+        a 12-team league returned all 84 entries (14 weeks x 6 games) before a single
+        game had been played, so this serves the forward-looking preview the matchup
+        page needs, not just results.
+
+        `matchupPeriodId` is ESPN's ROUND number, which is NOT the NFL week the app
+        counts in. `settings.scheduleSettings.matchupPeriods` maps each round to a
+        LIST of NFL weeks — a list because a league can set playoffMatchupPeriodLength
+        above 1, making a playoff round span two weeks. From the first such round on,
+        round number and NFL week diverge for the rest of the season, so the requested
+        week is translated through that map rather than compared directly. Comparing
+        directly returns another round's game, or none at all, presented as the
+        league's real schedule.
+
+        None on any failure, so the caller withholds an opponent rather than
+        inventing one. An empty list is a real answer: no game that week.
+        """
+        period = await self._matchup_period_for_week(week)
+        if period is None:
+            return None
+        if period == 0:
+            # The week belongs to no round: the season is over. A real answer.
+            return []
+        try:
+            data = await self._get("mMatchup")
+        except Exception as exc:
+            logger.warning(
+                "ESPN league %s: week-%s matchup fetch failed (%s: %s) — reporting "
+                "UNKNOWN, not an empty schedule",
+                self._league.league_id, week, type(exc).__name__, exc,
+            )
+            return None
+        schedule = (data or {}).get("schedule")
+        if not isinstance(schedule, list):
+            logger.warning("ESPN league %s: mMatchup carried no schedule array — "
+                           "reporting UNKNOWN", self._league.league_id)
+            return None
+
+        out: list[WeeklyMatchup] = []
+        for game in schedule:
+            if not isinstance(game, dict) or game.get("matchupPeriodId") != period:
+                continue
+            home, away = game.get("home") or {}, game.get("away") or {}
+            home_id, away_id = home.get("teamId"), away.get("teamId")
+            if home_id is None or away_id is None:
+                # A bye, or a playoff slot with only one side filled. Never pair a
+                # team with a placeholder.
+                logger.info("ESPN league %s week %s: schedule entry %r has only one "
+                            "side — no opponent for it",
+                            self._league.league_id, week, game.get("id"))
+                continue
+            out.append(WeeklyMatchup(
+                week=week,
+                home_team_id=str(home_id),
+                away_team_id=str(away_id),
+                home_score=float(home.get("totalPoints") or 0.0),
+                away_score=float(away.get("totalPoints") or 0.0),
+                # ESPN marks an unplayed game "UNDECIDED"; anything else means the
+                # result is settled.
+                is_complete=str(game.get("winner") or "UNDECIDED").upper() != "UNDECIDED",
+            ))
+        return out
 
     async def get_transactions(self, week: int) -> list[Transaction]:
         return []
