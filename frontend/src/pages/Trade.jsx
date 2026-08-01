@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { fetchTradeLeague, analyzeTrade, fetchTradeIdeas } from '../api/trade'
 import { leagueLoadMessage, isUnboundTeam, unboundInfo } from '../lib/leagueError'
+import { isStartingSlot, isInjuredReserve } from '../lib/lineupSlots'
 import TeamPicker from '../components/TeamPicker'
 import { useMe } from '../hooks/useMe'
 import { usePricing } from '../hooks/usePricing'
@@ -49,8 +50,11 @@ function PlayerRow({ p, selected, onToggle, accent }) {
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
           <span>{p.nfl_team || '—'}</span>
-          {p.starter_slot && p.starter_slot !== 'BENCH' && (
+          {isStartingSlot(p.starter_slot) && (
             <span className="rounded bg-surface-3 px-1 text-brand-accent">{p.starter_slot}</span>
+          )}
+          {isInjuredReserve(p.starter_slot) && (
+            <span className="rounded bg-red-500/15 px-1 text-red-300">IR</span>
           )}
           <span className={CONF_CLS[p.confidence]}>{p.confidence}</span>
         </div>
@@ -66,7 +70,7 @@ function PlayerRow({ p, selected, onToggle, accent }) {
 function RosterColumn({ players, selected, onToggle, accent }) {
   // Starters first, then by canonical trade value desc — scannable.
   const sorted = useMemo(() => {
-    const isStarter = (p) => p.starter_slot && p.starter_slot !== 'BENCH'
+    const isStarter = (p) => isStartingSlot(p.starter_slot)
     return [...players].sort((a, b) =>
       (isStarter(b) - isStarter(a)) || (b.value - a.value))
   }, [players])

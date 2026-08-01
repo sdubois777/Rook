@@ -142,7 +142,14 @@ class MatchupLeagueResponse(BaseModel):
     my_team_name: str
     teams: list[LadderRowOut]            # season-long strength ladder (all 12)
     matchups: list[PairOut]              # every team's opponent this week
-    scout: Optional[ScoutOut]           # None only if the acting team is byed
+    scout: Optional[ScoutOut]           # None when there is no opponent to scout
+    # Where `matchups` came from. The client MUST distinguish these, because
+    # everything the scout says is about a specific opponent:
+    #   "league"      - the league's real schedule, read from the platform
+    #   "demo"        - a made-up pairing for the demo league, which has no real one
+    #   "unavailable" - the platform could not tell us, so NO opponent is shown
+    # It used to be a made-up pairing in all three cases, unlabelled.
+    schedule_source: str = "unavailable"
     demo_mode: bool
     enforced: bool
 
@@ -213,8 +220,8 @@ async def league(
         key=lambda r: -r.strength,
     )
 
-    # --- synthesized week schedule (deterministic; permanent WeeklyMatchup shape) ---
-    matchups = synthesize_week_matchups([t.team_id for t in state.teams], state.week)
+    # --- the league's REAL week schedule (or none at all) ---
+    matchups, schedule_source = await _week_schedule(db, user, state, demo)
     name_by_id = {t.team_id: t.team_name for t in state.teams}
     pairs = [PairOut(
         home_team_id=m.home_team_id, away_team_id=m.away_team_id,
@@ -247,8 +254,78 @@ async def league(
         season=state.season, week=state.week,
         my_team_id=acting.team_id, my_team_name=acting.team_name,
         teams=ladder, matchups=pairs, scout=scout,
+        schedule_source=schedule_source,
         demo_mode=demo, enforced=trade_demo_enforce_gates(),
     )
+
+
+async def _week_schedule(db, user, state, demo: bool):
+    """(matchups, where they came from) for this week.
+
+    Returns one of three things, and the difference is the whole point:
+
+      * the league's REAL schedule, read from the platform.
+      * a made-up round-robin, ONLY for the demo league, which has no real schedule
+        to read because it is not a real league.
+      * nothing at all, when the platform could not tell us.
+
+    That last case used to be a made-up schedule too, for every real league on every
+    week. Measured against real leagues, the invented pairing named the correct
+    opponent for about one team-week in ten. Everything the page says about "your
+    opponent" — the projected margin, the win band, the positional grid, and the
+    trade opening it hands to the paid analyzer — was computed against a team the
+    customer was not playing, and nothing said so.
+    """
+    if demo:
+        # The demo league is invented end to end, so a schedule for it is not a
+        # claim about anybody's real league.
+        return synthesize_week_matchups([t.team_id for t in state.teams], state.week), "demo"
+
+    league = await _pick_league(db, user)
+    if league is None:
+        return [], "unavailable"
+    try:
+        from backend.integrations.platform_factory import get_platform_api
+        api = await get_platform_api(league, db)
+        real = await api.get_matchups(state.week)
+    except Exception as exc:
+        logger.warning(
+            "matchup: league %s week %s schedule fetch failed (%s: %s) — showing NO "
+            "opponent rather than inventing one",
+            getattr(league, "id", "?"), state.week, type(exc).__name__, exc,
+        )
+        return [], "unavailable"
+
+    if real is None:
+        logger.info(
+            "matchup: league %s (%s) cannot report a week-%s schedule — showing NO "
+            "opponent rather than inventing one",
+            getattr(league, "id", "?"), getattr(league, "platform", "?"), state.week,
+        )
+        return [], "unavailable"
+
+    # Keep only games between teams this league state actually knows about, so a
+    # stale roster sync can never produce an opponent with no roster to scout.
+    known = {t.team_id for t in state.teams}
+    kept = [m for m in real
+            if m.home_team_id in known and m.away_team_id in known]
+    if len(kept) != len(real):
+        logger.warning(
+            "matchup: league %s week %s — %d of %d scheduled games reference a team "
+            "not in the synced league; dropped",
+            getattr(league, "id", "?"), state.week, len(real) - len(kept), len(real),
+        )
+    return kept, "league"
+
+
+async def _pick_league(db, user):
+    """The synced league being analyzed — the same one the value path resolved."""
+    from backend.services.trade.real_league_source import _pick_league as pick
+    try:
+        return await pick(db, user, None)
+    except Exception as exc:
+        logger.warning("matchup: could not resolve the synced league (%s)", exc)
+        return None
 
 
 def _scout(acting, opp, values, rules, replacement, def_grades=None, nfl_opp=None) -> ScoutOut:
