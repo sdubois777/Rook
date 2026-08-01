@@ -168,6 +168,40 @@ function Leverage({ scout, onExplore }) {
 }
 
 // --- Season-long roster-strength ladder ------------------------------------
+// Why there is no opponent to scout. The three reasons are genuinely different and
+// the page used to give only one of them ("bye this week") for all of them.
+//
+// Before the league's real schedule was read, this page paired teams with a
+// round-robin generator for every league on every week and said nothing about it.
+// Measured against real leagues that named the right opponent about one team-week in
+// ten, and every number the scout produced was about a team the customer was not
+// playing. Showing nothing is the honest replacement when the schedule cannot be read.
+function NoOpponent({ meName, scheduleSource, week }) {
+  let body
+  if (scheduleSource === 'unavailable') {
+    body = (
+      <>
+        <div className="mb-1 font-medium text-slate-300">
+          {`We could not read your league's schedule for week ${week}.`}
+        </div>
+        <div>
+          {'Rather than guess who you are playing, no opponent is shown. Your league '
+           + 'strength ladder is on the right and is unaffected. Re-syncing the league '
+           + 'on the League page may pick the schedule up.'}
+        </div>
+      </>
+    )
+  } else {
+    body = `${meName} has no game this week — no opponent to scout.`
+  }
+  return (
+    <div className="rounded-lg border border-border bg-surface-1 p-6 text-sm text-slate-400 lg:col-span-2">
+      {body}
+    </div>
+  )
+}
+
+
 function StrengthLadder({ teams, myId }) {
   const max = Math.max(1, ...teams.map((t) => t.strength))
   return (
@@ -377,9 +411,11 @@ export default function Matchup() {
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-3">
-          <div className="rounded-lg border border-border bg-surface-1 p-6 text-slate-400 lg:col-span-2">
-            {meName} has a bye this week — no opponent to scout.
-          </div>
+          <NoOpponent
+            meName={meName}
+            scheduleSource={data.schedule_source}
+            week={data.week}
+          />
           <StrengthLadder teams={data.teams} myId={effMyId} />
         </div>
       )}

@@ -10,6 +10,8 @@ import httpx
 
 from datetime import datetime, timezone
 
+from typing import Optional
+
 from backend.integrations.platform_api import LeaguePlatformAPI
 from backend.integrations.platform_models import (
     DraftPick, FreeAgent, LeagueMetadata, RosteredPlayer, TeamRoster,
@@ -121,6 +123,29 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
             logger.warning("Sleeper draft metadata fetch failed: %s", exc)
         return meta
 
+    async def _starting_slot_order(self) -> Optional[list[str]]:
+        """The league's STARTING slots, in the order Sleeper indexes them.
+
+        `roster_positions` on the league object is the ordered token list including
+        bench entries. Dropping "BN" leaves the starting slots, and index i of that
+        list is the slot of index i of a roster's `starters` array — verified live
+        across a large sample, with the bench always a contiguous tail and IR/taxi
+        never appearing in the list at all.
+
+        None when it cannot be read, so the caller leaves every slot unknown rather
+        than mislabelling positions.
+        """
+        try:
+            lg = await self._get(f"/league/{self._league.league_id}")
+        except Exception as exc:
+            logger.warning("Sleeper league %s: roster_positions fetch failed (%s) — "
+                           "lineup slots stay UNKNOWN", self._league.league_id, exc)
+            return None
+        raw = (lg or {}).get("roster_positions") if isinstance(lg, dict) else None
+        if not isinstance(raw, list) or not raw:
+            return None
+        return [str(p) for p in raw if str(p) != "BN"]
+
     async def get_rosters(self) -> list[TeamRoster]:
         rosters = await self._get(
             f"/league/{self._league.league_id}/rosters"
@@ -129,17 +154,58 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
             f"/league/{self._league.league_id}/users"
         )
         user_map = {u["user_id"]: u for u in users}
+        # One extra request for the whole call, not one per team.
+        slot_order = await self._starting_slot_order()
 
         result: list[TeamRoster] = []
         for roster in rosters:
             user = user_map.get(roster.get("owner_id"), {})
             player_ids = roster.get("players") or []
+            # Where the MANAGER has each player seated. starters is slot-ordered and
+            # positional: index i is slot_order[i]. Sleeper uses "0" for an empty
+            # slot, which holds the index alignment, so it is skipped rather than
+            # letting it shift every later slot.
+            slot_by_pid: dict[str, str] = {}
+            starters = roster.get("starters") or []
+            # Per-ROSTER, not per-league: one team with a shape we do not recognise
+            # must not make the rest of the league unknown, and must not be labelled.
+            slots_known = slot_order is not None
+            if slot_order is not None:
+                if len(starters) != len(slot_order):
+                    # Never guess past a shape we do not recognise. Leaving these
+                    # unknown is the point: calling them all "BENCH" would be a
+                    # positive claim that every player is benched.
+                    logger.warning(
+                        "Sleeper league %s roster %s: %d starters but %d starting "
+                        "slots — lineup slots left UNKNOWN for this team",
+                        self._league.league_id, roster.get("roster_id"),
+                        len(starters), len(slot_order),
+                    )
+                    slots_known = False
+                else:
+                    for slot, pid in zip(slot_order, starters):
+                        if pid and str(pid) != "0":
+                            slot_by_pid[str(pid)] = slot
+            # Injured reserve is a real lineup placement the manager chose, and it is
+            # the strongest availability signal there is — it beats any global feed.
+            # It comes from its own array, so it stands even when the starting-slot
+            # order could not be read.
+            for pid in (roster.get("reserve") or []):
+                if pid:
+                    slot_by_pid[str(pid)] = "IR"
+
             players = [
                 RosteredPlayer(
                     platform_player_id=pid,
                     player_name="",
                     position="",
                     team_abbr="",
+                    # A named slot if we have one. Otherwise "BENCH" ONLY when the
+                    # slots were readable and this player simply was not in them;
+                    # when they were not readable the answer is None, meaning we do
+                    # not know — never "benched".
+                    lineup_slot=(slot_by_pid.get(str(pid))
+                                 or ("BENCH" if slots_known else None)),
                 )
                 for pid in player_ids
             ]
@@ -206,8 +272,75 @@ class SleeperLeagueAPI(LeaguePlatformAPI):
                 ))
         return all_picks
 
-    async def get_matchups(self, week: int) -> list[WeeklyMatchup]:
-        return []
+    async def get_matchups(self, week: int) -> Optional[list[WeeklyMatchup]]:
+        """The league's REAL head-to-head schedule for ``week``.
+
+        `/league/{id}/matchups/{week}` returns one entry PER ROSTER, not per game:
+        two rosters sharing a matchup_id are playing each other. Verified live. A
+        null matchup_id means that roster has no game that week (eliminated from the
+        playoff bracket), so it is dropped rather than paired with anything.
+
+        Available BEFORE a week is played, which is what the matchup page needs — it
+        is a stored season schedule, not a result feed. It only exists once the
+        league has drafted; before that Sleeper returns an empty list.
+
+        None on any failure, so the caller withholds an opponent rather than
+        inventing one. An empty list is a real answer: no game this week.
+        """
+        try:
+            rows = await self._get(f"/league/{self._league.league_id}/matchups/{week}")
+        except Exception as exc:
+            logger.warning(
+                "Sleeper league %s: week-%s matchup fetch failed (%s: %s) — reporting "
+                "UNKNOWN, not an empty schedule",
+                self._league.league_id, week, type(exc).__name__, exc,
+            )
+            return None
+        if not isinstance(rows, list):
+            logger.warning("Sleeper league %s: week-%s matchups had unexpected shape %s "
+                           "— reporting UNKNOWN", self._league.league_id, week, type(rows).__name__)
+            return None
+
+        by_matchup: dict[object, list[dict]] = {}
+        no_game = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = row.get("matchup_id")
+            if mid is None:
+                no_game += 1
+                continue
+            by_matchup.setdefault(mid, []).append(row)
+        if no_game:
+            logger.info("Sleeper league %s week %s: %d roster(s) have no game (null "
+                        "matchup_id)", self._league.league_id, week, no_game)
+
+        out: list[WeeklyMatchup] = []
+        for mid in sorted(by_matchup, key=lambda x: (x is None, str(x))):
+            side = by_matchup[mid]
+            if len(side) != 2:
+                # Never guess a pairing. One entry with a matchup_id is a data
+                # oddity, not a game we can name an opponent from.
+                logger.warning(
+                    "Sleeper league %s week %s: matchup_id %r had %d roster(s), not 2 "
+                    "— skipped (an opponent is never inferred)",
+                    self._league.league_id, week, mid, len(side),
+                )
+                continue
+            # Sleeper does not designate a home side; order by roster_id so the same
+            # week always produces the same pairing.
+            a, b = sorted(side, key=lambda r: str(r.get("roster_id")))
+            out.append(WeeklyMatchup(
+                week=week,
+                home_team_id=str(a.get("roster_id")),
+                away_team_id=str(b.get("roster_id")),
+                home_score=float(a.get("points") or 0.0),
+                away_score=float(b.get("points") or 0.0),
+                # Sleeper reports points as they accrue and never flags completion,
+                # so this stays False: a forward-looking preview, not a result.
+                is_complete=False,
+            ))
+        return out
 
     async def get_transactions(self, week: int) -> list[Transaction]:
         return []

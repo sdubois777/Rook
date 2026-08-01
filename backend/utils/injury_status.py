@@ -40,6 +40,12 @@ _TO_CANONICAL: dict[str, str] = {
     "ir": IR,
     "injured reserve": IR,
     "injured_reserve": IR,
+    # ESPN's own wording, sampled live from a real league's player list: it emits
+    # ACTIVE / QUESTIONABLE / OUT / INJURY_RESERVE. The first three already matched
+    # after lower-casing; this one did not, so ESPN's injured-reserve players
+    # normalized to "no badge" and were treated as available — indistinguishable
+    # from reading no injury data at all.
+    "injury_reserve": IR,
     "pup": IR,            # physically-unable-to-perform ~ multi-week, bucket to IR for display
 }
 

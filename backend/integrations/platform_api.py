@@ -11,7 +11,7 @@ Usage:
     # Works identically for Yahoo, ESPN, and Sleeper
 """
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from backend.integrations.platform_models import (
     DraftPick, FreeAgent, LeagueMetadata, TeamRoster,
@@ -60,8 +60,23 @@ class LeaguePlatformAPI(ABC):
         """
 
     @abstractmethod
-    async def get_matchups(self, week: int) -> list[WeeklyMatchup]:
-        """Matchups for a given week."""
+    async def get_matchups(self, week: int) -> Optional[list[WeeklyMatchup]]:
+        """The league's real head-to-head schedule for ``week``.
+
+        THREE-STATE, and the distinction is the whole point of this method:
+
+          * a list  - the platform told us the schedule. May be EMPTY, which is a
+                      real answer meaning "this league has no games this week"
+                      (a bye week, or past the end of the season).
+          * None    - the platform could not tell us. Either it does not expose a
+                      schedule, or the request failed, or the league has not drafted
+                      and no schedule exists yet.
+
+        Returning [] for "we don't know" is what made this unusable before: the
+        caller could not tell an empty week from an unimplemented reader, so it
+        invented a round-robin opponent for every league on every week. A caller
+        that gets None must NOT substitute a made-up opponent.
+        """
 
     @abstractmethod
     async def get_transactions(self, week: int) -> list[Transaction]:

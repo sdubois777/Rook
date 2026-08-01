@@ -215,7 +215,20 @@ async def sync_players_from_sleeper(
                     changed_teams.add(_team)                     # depth shift
                 if existing.injury_status != _injury:
                     existing.injury_status = _injury            # may be None (recovery)
-                    existing.injury_status_updated_at = datetime.now(timezone.utc)
+                # Stamped on EVERY observation, not only when the value changes, so it
+                # means "last CONFIRMED" rather than "last CHANGED".
+                #
+                # That distinction decides whether a real injury is shown at all.
+                # backend/services/trade/real_league_source.py withholds a stored injury
+                # once this timestamp is older than its ceiling, on the reasoning that a
+                # stale value should not be presented as current. With a last-CHANGED
+                # stamp that test got the answer exactly backwards: the longer a player
+                # stayed injured, the older the stamp grew, so the most certain,
+                # longest-running injuries were the first to be discarded. Measured on
+                # the development database, 90% of stored injuries were being withheld,
+                # and 8 of the 9 withheld injured-reserve players were still injured
+                # according to the live feed the same day.
+                existing.injury_status_updated_at = datetime.now(timezone.utc)
                 d.pop("injury_status", None)                    # handled above (allow blank)
 
             # Recent-activity gate — only INSERT genuinely-new players on the 2026 depth

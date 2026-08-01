@@ -191,3 +191,154 @@ def test_matchup_path_is_non_metered():
         src = path.read_text(encoding="utf-8")
         hits = [b for b in banned if b in src]
         assert not hits, f"{path} references metered symbol(s): {hits}"
+
+
+# ---------------------------------------------------------------------------
+# The page must never invent an opponent for a REAL league.
+#
+# It used to call a round-robin pairing generator unconditionally, for every league
+# on every week, with nothing marking the result as made up. Measured against real
+# leagues, that pairing named the correct opponent for about one team-week in ten.
+# Everything the page says about "your opponent" — projected margin, win band,
+# positional grid, and the trade opening it hands to the 1-credit trade analyzer —
+# was computed against a team the customer was not playing.
+# ---------------------------------------------------------------------------
+import backend.routers.matchup as matchup_mod
+from backend.integrations.platform_models import WeeklyMatchup
+
+
+def _real_league(monkeypatch, schedule):
+    """Demo off, a synced league present, and the platform returning `schedule`
+    (a list of games, or None meaning it could not tell us)."""
+    monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _fake_load(db, user, demo):
+        return _fixture()
+    monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake_load)
+
+    async def _pick(db, user):
+        lg = MagicMock()
+        lg.id = "L1"
+        lg.platform = "sleeper"
+        return lg
+    monkeypatch.setattr(matchup_mod, "_pick_league", _pick)
+
+    class _Api:
+        async def get_matchups(self, week):
+            return schedule
+
+    async def _get_api(league, db):
+        return _Api()
+    monkeypatch.setattr(
+        "backend.integrations.platform_factory.get_platform_api", _get_api)
+
+
+async def test_real_league_uses_the_platforms_own_schedule(monkeypatch):
+    """The opponent comes from the league's real schedule, and the response says so."""
+    _real_league(monkeypatch, [
+        WeeklyMatchup(week=14, home_team_id="me", away_team_id="c",
+                      home_score=0.0, away_score=0.0, is_complete=False),
+        WeeklyMatchup(week=14, home_team_id="a", away_team_id="b",
+                      home_score=0.0, away_score=0.0, is_complete=False),
+    ])
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["schedule_source"] == "league"
+    assert body["scout"]["opponent_team_id"] == "c"        # the REAL opponent
+    assert len(body["matchups"]) == 2
+
+
+async def test_no_schedule_means_no_opponent_rather_than_an_invented_one(monkeypatch):
+    """The platform could not tell us. The page shows no opponent at all — it does
+    not fall back to a made-up pairing, which is what it used to do."""
+    _real_league(monkeypatch, None)
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["schedule_source"] == "unavailable"
+    assert body["matchups"] == []
+    assert body["scout"] is None
+    # The opponent-independent half of the page still works and is still free.
+    assert len(body["teams"]) == 4
+
+
+async def test_a_failed_schedule_fetch_also_shows_no_opponent(monkeypatch):
+    """A platform outage must not silently become a made-up opponent either."""
+    monkeypatch.delenv("TRADE_DEMO_MODE", raising=False)
+
+    async def _fake_load(db, user, demo):
+        return _fixture()
+    monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake_load)
+
+    async def _pick(db, user):
+        lg = MagicMock(); lg.id = "L1"; lg.platform = "espn"
+        return lg
+    monkeypatch.setattr(matchup_mod, "_pick_league", _pick)
+
+    async def _boom(league, db):
+        raise RuntimeError("platform down")
+    monkeypatch.setattr(
+        "backend.integrations.platform_factory.get_platform_api", _boom)
+
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["schedule_source"] == "unavailable"
+    assert body["scout"] is None
+
+
+async def test_a_game_naming_an_unknown_team_is_dropped(monkeypatch):
+    """A stale roster sync can leave the schedule referencing a team this league
+    state has no roster for. Scouting it would produce an empty opponent."""
+    _real_league(monkeypatch, [
+        WeeklyMatchup(week=14, home_team_id="me", away_team_id="ghost",
+                      home_score=0.0, away_score=0.0, is_complete=False),
+    ])
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["matchups"] == []
+    assert body["scout"] is None
+
+
+async def test_the_demo_league_still_gets_a_pairing_and_is_labelled_demo(monkeypatch):
+    """The demo league is invented end to end, so a made-up schedule for it is not a
+    claim about anyone's real league — but it must still say which it is."""
+    monkeypatch.setenv("TRADE_DEMO_MODE", "true")
+
+    async def _fake(db, user, demo):
+        return _fixture()
+    monkeypatch.setattr(trade_mod, "load_league_for_analysis", _fake)
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    app.dependency_overrides[get_db] = lambda: None
+    try:
+        resp = await _get()
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["schedule_source"] == "demo"
+    assert body["scout"] is not None
