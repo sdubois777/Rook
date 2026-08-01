@@ -307,6 +307,18 @@ async def test_get_rosters_captures_owner_swids_from_mteam():
 # played. Until this was implemented the method returned an empty list and the
 # matchup page invented a round-robin opponent for every league, every week.
 # ---------------------------------------------------------------------------
+_ONE_WEEK_PERIODS = {"settings": {"scheduleSettings": {
+    "matchupPeriodCount": 14, "playoffMatchupPeriodLength": 1,
+    "matchupPeriods": {str(i): [i] for i in range(1, 19)},
+}}}
+
+
+def _sched_views(schedule):
+    """mMatchup plus the settings the reader needs to translate an NFL week into
+    ESPN's round number."""
+    return {"mMatchup": {"schedule": schedule}, "mSettings": _ONE_WEEK_PERIODS}
+
+
 def _game(mid, home, away, *, winner="UNDECIDED", hp=0.0, ap=0.0, one_sided=False):
     entry = {"id": mid * 100 + home, "matchupPeriodId": mid, "winner": winner,
              "home": {"teamId": home, "totalPoints": hp}}
@@ -323,7 +335,7 @@ async def test_get_matchups_returns_only_the_requested_week():
     api = _espn_api()
     schedule = [_game(1, 5, 3), _game(1, 4, 7), _game(2, 5, 7), _game(3, 1, 2)]
     with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"schedule": schedule}
+        mock_get.side_effect = _view_dispatch(_sched_views(schedule))
         out = await api.get_matchups(1)
 
     assert len(out) == 2
@@ -337,7 +349,7 @@ async def test_get_matchups_marks_played_games_complete():
     schedule = [_game(1, 5, 3, winner="HOME", hp=120.5, ap=99.0),
                 _game(2, 5, 3)]
     with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"schedule": schedule}
+        mock_get.side_effect = _view_dispatch(_sched_views(schedule))
         played = (await api.get_matchups(1))[0]
         upcoming = (await api.get_matchups(2))[0]
 
@@ -352,7 +364,7 @@ async def test_get_matchups_skips_a_one_sided_entry():
     api = _espn_api()
     schedule = [_game(1, 5, 3), _game(1, 9, None, one_sided=True)]
     with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"schedule": schedule}
+        mock_get.side_effect = _view_dispatch(_sched_views(schedule))
         out = await api.get_matchups(1)
 
     assert len(out) == 1
@@ -373,8 +385,8 @@ async def test_get_matchups_returns_none_when_the_fetch_fails():
 async def test_get_matchups_empty_week_is_a_real_answer():
     api = _espn_api()
     with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"schedule": [_game(1, 5, 3)]}
-        out = await api.get_matchups(20)      # past the end of the season
+        mock_get.side_effect = _view_dispatch(_sched_views([_game(1, 5, 3)]))
+        out = await api.get_matchups(18)      # a real week with no game scheduled
     assert out == [] and out is not None
 
 
@@ -434,3 +446,100 @@ async def test_an_unmapped_slot_id_leaves_the_slot_unknown_not_guessed():
 
     slots = {p.platform_player_id: p.lineup_slot for p in rosters[0].players}
     assert slots == {"1": None, "2": "QB"}
+
+
+# ---------------------------------------------------------------------------
+# ESPN counts MATCHUP PERIODS, the app counts NFL WEEKS, and they are not the same
+# number. settings.scheduleSettings.matchupPeriods maps each period to a LIST of NFL
+# weeks — a list precisely because a league can set playoffMatchupPeriodLength above
+# 1, making a playoff round span two weeks. From that point on, period id and NFL
+# week diverge for the rest of the season.
+#
+# Filtering the schedule on the NFL week then returns another round's game, or no
+# game at all. Both are worse than the invented opponent this work removed, because
+# both are presented as the league's real schedule.
+# ---------------------------------------------------------------------------
+_TWO_WEEK_PLAYOFFS = {
+    "settings": {"scheduleSettings": {
+        "matchupPeriodCount": 16,
+        "playoffMatchupPeriodLength": 2,
+        "matchupPeriods": {
+            **{str(i): [i] for i in range(1, 15)},   # weeks 1-14, one week each
+            "15": [15, 16],                          # semifinal spans two weeks
+            "16": [17, 18],                          # final spans two weeks
+        },
+    }},
+}
+
+
+def _period_views(schedule, settings=None):
+    return {"mMatchup": {"schedule": schedule},
+            "mSettings": settings if settings is not None else _TWO_WEEK_PLAYOFFS}
+
+
+@pytest.mark.asyncio
+async def test_a_two_week_playoff_round_is_found_by_either_of_its_weeks():
+    """Weeks 17 and 18 are both the final. Asking for either must return the final,
+    not an empty schedule."""
+    api = _espn_api()
+    schedule = [_game(15, 1, 2), _game(16, 1, 4)]
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(_period_views(schedule))
+        wk17 = await api.get_matchups(17)
+        wk18 = await api.get_matchups(18)
+
+    assert [(m.home_team_id, m.away_team_id) for m in wk17] == [("1", "4")]
+    assert [(m.home_team_id, m.away_team_id) for m in wk18] == [("1", "4")]
+
+
+@pytest.mark.asyncio
+async def test_the_second_week_of_a_round_is_not_read_as_the_next_round():
+    """NFL week 16 is the second half of the semifinal, not the final. Comparing the
+    week against the period id directly would return the final a round early."""
+    api = _espn_api()
+    schedule = [_game(15, 1, 2), _game(16, 1, 4)]
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(_period_views(schedule))
+        wk16 = await api.get_matchups(16)
+
+    assert [(m.home_team_id, m.away_team_id) for m in wk16] == [("1", "2")]
+
+
+@pytest.mark.asyncio
+async def test_one_week_periods_still_line_up():
+    """The common case, and the shape of the league this was verified against: one
+    NFL week per period, so the numbers coincide."""
+    api = _espn_api()
+    one_to_one = {"settings": {"scheduleSettings": {
+        "matchupPeriodCount": 14, "playoffMatchupPeriodLength": 1,
+        "matchupPeriods": {str(i): [i] for i in range(1, 18)},
+    }}}
+    schedule = [_game(5, 1, 2), _game(6, 1, 3)]
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(_period_views(schedule, one_to_one))
+        out = await api.get_matchups(5)
+
+    assert [(m.home_team_id, m.away_team_id) for m in out] == [("1", "2")]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_period_map_reports_unknown_not_a_bye():
+    """Without the map we cannot tell which round a week belongs to. Saying so makes
+    the page state that the schedule could not be read; returning an empty list would
+    tell the customer they have no game, which is a different and possibly false
+    claim."""
+    api = _espn_api()
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(_period_views([_game(1, 1, 2)], {"settings": {}}))
+        assert await api.get_matchups(1) is None
+
+
+@pytest.mark.asyncio
+async def test_a_week_past_the_end_of_the_schedule_is_a_real_empty_answer():
+    """Week 19 belongs to no round in a 16-period league. The season is over, which
+    is a real answer, not a failure to read the schedule."""
+    api = _espn_api()
+    with patch.object(api, "_get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = _view_dispatch(_period_views([_game(16, 1, 4)]))
+        out = await api.get_matchups(19)
+    assert out == [] and out is not None

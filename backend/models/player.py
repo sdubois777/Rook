@@ -43,8 +43,15 @@ class Player(Base):
     # Live injury designation for the status badge (canonical code from
     # backend/utils/injury_status.py: "Q" | "D" | "O" | "IR"; None = healthy).
     # Sourced from Sleeper injury_status during sync_rosters (sleeper_id join,
-    # 100% attribution), refreshed daily. Display-only — NOT a valuation input.
+    # 100% attribution). Refreshed WEEKLY, on the Tuesday full sweep — the previous
+    # comment here said daily, which is wrong and led to a freshness check being
+    # written against a cadence that does not exist.
     injury_status: Mapped[Optional[str]] = mapped_column(String(4))
+    # When the injury status was last CONFIRMED, not when it last CHANGED. Stamped on
+    # every sweep observation. Read by the real-league roster builder to decide
+    # whether the stored value is recent enough to show; with change-only semantics
+    # that test discarded the longest-running injuries first, which are the ones most
+    # likely to still be true.
     injury_status_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Pre-draft AVAILABILITY discount (engines/availability.py) — a DETERMINISTIC

@@ -375,6 +375,50 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
             ))
         return result
 
+    async def _matchup_period_for_week(self, week: int) -> Optional[int]:
+        """Which ESPN ROUND covers NFL `week`.
+
+        Returns the round number, 0 when the week belongs to no round (the season is
+        over — a real answer), or None when the map could not be read at all.
+
+        The distinction between 0 and None matters downstream: 0 becomes an empty
+        schedule, which tells the customer they have no game; None makes the page say
+        the schedule could not be read. Guessing that a week with no round is a bye
+        would be a false claim during a multi-week playoff round.
+        """
+        try:
+            settings = (await self._get("mSettings")).get("settings") or {}
+        except Exception as exc:
+            logger.warning(
+                "ESPN league %s: could not read the schedule settings (%s: %s) — "
+                "reporting the week-%s schedule as UNKNOWN",
+                self._league.league_id, type(exc).__name__, exc, week,
+            )
+            return None
+        periods = ((settings.get("scheduleSettings") or {}).get("matchupPeriods"))
+        if not isinstance(periods, dict) or not periods:
+            logger.warning(
+                "ESPN league %s: no matchupPeriods map — cannot tell which round NFL "
+                "week %s belongs to, so the schedule is UNKNOWN rather than guessed",
+                self._league.league_id, week,
+            )
+            return None
+        for raw_period, weeks in periods.items():
+            try:
+                covered = [int(w) for w in (weeks or [])]
+            except (TypeError, ValueError):
+                continue
+            if int(week) in covered:
+                try:
+                    return int(raw_period)
+                except (TypeError, ValueError):
+                    return None
+        logger.info(
+            "ESPN league %s: NFL week %s is in no matchup period — the season's "
+            "schedule has ended", self._league.league_id, week,
+        )
+        return 0
+
     async def get_matchups(self, week: int) -> Optional[list[WeeklyMatchup]]:
         """The league's REAL head-to-head schedule for ``week``.
 
@@ -384,13 +428,24 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
         game had been played, so this serves the forward-looking preview the matchup
         page needs, not just results.
 
-        `matchupPeriodId` is the fantasy WEEK, which is what the app counts in. It is
-        deliberately not `scoringPeriodId` — that counts NFL scoring periods, and the
-        two diverge whenever a league runs multi-week playoff rounds.
+        `matchupPeriodId` is ESPN's ROUND number, which is NOT the NFL week the app
+        counts in. `settings.scheduleSettings.matchupPeriods` maps each round to a
+        LIST of NFL weeks — a list because a league can set playoffMatchupPeriodLength
+        above 1, making a playoff round span two weeks. From the first such round on,
+        round number and NFL week diverge for the rest of the season, so the requested
+        week is translated through that map rather than compared directly. Comparing
+        directly returns another round's game, or none at all, presented as the
+        league's real schedule.
 
         None on any failure, so the caller withholds an opponent rather than
         inventing one. An empty list is a real answer: no game that week.
         """
+        period = await self._matchup_period_for_week(week)
+        if period is None:
+            return None
+        if period == 0:
+            # The week belongs to no round: the season is over. A real answer.
+            return []
         try:
             data = await self._get("mMatchup")
         except Exception as exc:
@@ -408,7 +463,7 @@ class ESPNLeagueAPI(LeaguePlatformAPI):
 
         out: list[WeeklyMatchup] = []
         for game in schedule:
-            if not isinstance(game, dict) or game.get("matchupPeriodId") != week:
+            if not isinstance(game, dict) or game.get("matchupPeriodId") != period:
                 continue
             home, away = game.get("home") or {}, game.get("away") or {}
             home_id, away_id = home.get("teamId"), away.get("teamId")
