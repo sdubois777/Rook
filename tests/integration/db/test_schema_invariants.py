@@ -67,24 +67,18 @@ async def test_user_leagues_unique_constraint_is_deployed(sm):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN, UNFIXED: league_auction_history.source is String(50) and a "
-        "tenant-scoped value needs ~57. Until it is widened, the ESPN/Sleeper "
-        "cross-tenant collision cannot be fixed. strict=True on purpose — when the "
-        "widen lands this XPASSes and FAILS CI, forcing whoever ships it to delete "
-        "this marker rather than leaving a stale xfail behind."
-    ),
-)
 @pytest.mark.asyncio
 async def test_auction_source_column_fits_a_tenant_scoped_value(sm):
     """`source` must hold "sync_{user_league_id}_{team_id}".
 
-    Tenant-scoping the dedupe key requires embedding a UUID. A Yahoo team key is
-    itself ~18 chars, so the composed value is ~57 — String(50) would raise
-    StringDataRightTruncation on every Yahoo sync. This test is the one that
-    catches that before it reaches a boot migration.
+    The value that separates one customer's draft picks from another's embeds the
+    user_league row id. A Yahoo team key is itself about 18 characters, so the
+    composed value reaches 58 — it did not fit the original 50-character column
+    and raised StringDataRightTruncation on every Yahoo sync.
+
+    The column was widened by migration src2026tenant. This now guards against a
+    future migration narrowing it again, which would break every Yahoo league
+    sync at the moment a customer connects one.
     """
     async with sm() as s:
         width = (await s.execute(sa.text("""

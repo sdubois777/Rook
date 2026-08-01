@@ -29,7 +29,12 @@ class LeagueAuctionHistory(Base):
     season_year: Mapped[int] = mapped_column(Integer, nullable=False)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     team_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    source: Mapped[str] = mapped_column(String(50), nullable=False)  # "yahoo", "manual_csv", or "sync_{team_key}"
+    # 100, not 50: the platform-sync value embeds the user_league id so that one
+    # customer's picks cannot collide with another's under the two unique
+    # constraints above, neither of which carries a customer or league column.
+    # Measured longest value against production: 58 characters.
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    # "yahoo", "manual_csv", or "sync_{user_league_id}_{platform_team_id}"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Row-level security — scope all data to user + league
