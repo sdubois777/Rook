@@ -113,3 +113,58 @@ async def test_draft_history_unexpected_error_reraises():
     with patch.object(api, "_api_get", AsyncMock(side_effect=_http_status_error(500))):
         with pytest.raises(httpx.HTTPStatusError):
             await api.get_draft_picks(league_key="470.l.46511")
+
+
+# ---------------------------------------------------------------------------
+# Yahoo says "unknown", never a guess.
+#
+# Nothing about Yahoo's response shape could be checked against a real response: its
+# API refuses unauthenticated requests and no recorded sample exists in this repo. So
+# every Yahoo field here reports unknown, and these tests exist to stop someone
+# filling them in from documentation alone later.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_matchups_reports_unknown_not_an_empty_week():
+    """None means "we could not tell", which makes the caller withhold an opponent.
+    An empty list would claim this league genuinely has no game this week — the
+    signal the matchup page uses to decide whether to show one."""
+    api = _make_api()
+    assert await api.get_matchups(week=1) is None
+
+
+@pytest.mark.asyncio
+async def test_roster_players_carry_no_guessed_slot_or_injury():
+    """Both fields arrive as None, meaning unknown.
+
+    A wrong lineup slot renders as a confident, valid-looking starting position, and
+    a missed injury silently seats a player who cannot play. Neither field name has
+    been verified against a real Yahoo response, so neither is populated."""
+    api = _make_api()
+    roster_payload = {
+        "fantasy_content": {"league": [{}, {"teams": {
+            "count": 1,
+            "0": {"team": [
+                [{"team_key": "470.l.1.t.1"}, {"name": "My Team"}],
+                {"roster": {"players": {
+                    "count": 1,
+                    "0": {"player": [[
+                        {"player_key": "470.p.100"},
+                        {"name": {"full": "Some Player"}},
+                        {"display_position": "RB"},
+                        {"editorial_team_abbr": "SF"},
+                        # Present in the payload and deliberately NOT read:
+                        {"status": "Q"},
+                        {"selected_position": [{"position": "RB"}]},
+                    ]]},
+                }}},
+            ]},
+        }}]}
+    }
+    with patch.object(api, "_api_get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = roster_payload
+        rosters = await api.get_rosters()
+
+    player = rosters[0].players[0]
+    assert player.player_name == "Some Player"      # the verified fields still parse
+    assert player.lineup_slot is None               # unknown, NOT "RB"
+    assert player.injury_status is None             # unknown, NOT "Q"

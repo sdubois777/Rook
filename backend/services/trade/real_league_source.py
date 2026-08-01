@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,6 +38,7 @@ from sqlalchemy import select
 
 from backend.core.exceptions import UnboundTeamError, UndraftedLeagueError
 from backend.integrations.platform_models import NO_WAIVERS_SYSTEM, TeamRoster
+from backend.utils.injury_status import to_canonical
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
@@ -111,15 +112,69 @@ def _resolver_kwargs(platform: str, rp) -> dict:
     return base
 
 
+# The canonical players table refreshes injury status on the WEEKLY full sweep
+# (Tuesday ~09:00 UTC), which can additionally defer while a draft window is open.
+# So a value up to about a week old is NORMAL operation, not a fault. This ceiling
+# exists to catch the sweep having STOPPED: past it we show no badge rather than a
+# months-old one. A no-refund product degrades to silence, never to a confident
+# wrong answer.
+INJURY_STALE_AFTER = timedelta(days=10)
+
+
+def _resolve_injury(player, rp, now) -> Optional[str]:
+    """The canonical injury code for one rostered player, or None for no claim.
+
+    Precedence, strongest evidence first:
+
+      1. The manager has this player in an INJURED RESERVE slot in their own league.
+         That is the customer's actual league state and no league-wide feed can
+         express it, so it outranks everything.
+      2. A per-player designation the platform sent with the roster, normalized.
+         Unrecognized spellings become None with a loud warning rather than being
+         guessed at.
+      3. The canonical players row, IF it is fresh enough to stand behind.
+      4. Nothing. No badge, and the lineup math treats the player as available.
+    """
+    if rp.lineup_slot == "IR":
+        return "IR"
+    if rp.injury_status:
+        return to_canonical(rp.injury_status)
+    stored = getattr(player, "injury_status", None)
+    if not stored:
+        return None
+    seen_at = getattr(player, "injury_status_updated_at", None)
+    if seen_at is None:
+        logger.warning(
+            "real league: %s carries injury status %r with no timestamp — withholding "
+            "it rather than claiming an age we cannot prove", player.name, stored,
+        )
+        return None
+    if now - seen_at > INJURY_STALE_AFTER:
+        logger.warning(
+            "real league: injury status for %s is %s old (last seen %s) — withholding "
+            "the badge; the weekly roster sweep may have stopped running",
+            player.name, now - seen_at, seen_at,
+        )
+        return None
+    return stored
+
+
 async def resolve_team_rosters(
     db, platform: str, team_rosters: list[TeamRoster], my_team_id: Optional[str],
 ) -> tuple[list[TeamState], list[dict]]:
     """Resolve every roster entry to a canonical Player via resolve_player. Returns
     (teams, unresolved). Unresolved players are loud-warned + collected, never
-    silently dropped."""
+    silently dropped.
+
+    Also carries the two things that used to be dropped here: where the manager has
+    each player seated, and whether the player is hurt. Both were hardcoded — the
+    lineup slot to None and the injury to a platform field no reader ever filled —
+    so on every real league the injury-aware lineup filters were silently inert and
+    every roster rendered as entirely bench."""
     repo = PlayerRepository(db)
     teams: list[TeamState] = []
     unresolved: list[dict] = []
+    now = datetime.now(timezone.utc)
     for tr in team_rosters:
         players: list[RosterPlayer] = []
         for rp in tr.players:
@@ -141,7 +196,11 @@ async def resolve_team_rosters(
             players.append(RosterPlayer(
                 canonical_player_id=str(player.id), name=player.name,
                 position=player.position, nfl_team=player.team_abbr,
-                injury_status=rp.injury_status, starter_slot=None,
+                injury_status=_resolve_injury(player, rp, now),
+                # The platform's own answer, three-state: None genuinely means the
+                # platform did not say where this player is seated, and must not be
+                # rendered as "on the bench".
+                starter_slot=rp.lineup_slot,
             ))
         teams.append(TeamState(
             team_id=str(tr.platform_team_id),

@@ -195,6 +195,22 @@ class YahooLeagueAPI(LeaguePlatformAPI):
                     player_name=full_name,
                     position=p.get("display_position", "").split(",")[0],
                     team_abbr=p.get("editorial_team_abbr", ""),
+                    # lineup_slot and injury_status are DELIBERATELY left unset, so
+                    # they arrive as None meaning "we do not know".
+                    #
+                    # Yahoo documents a per-player status and a selected_position
+                    # holding the starting slot, but the Yahoo Fantasy API sits behind
+                    # their approval process: every endpoint refuses an unauthenticated
+                    # request, and there is no recorded sample anywhere in this
+                    # repository to check either field name against. The slot is
+                    # additionally in a part of the response this parser does not even
+                    # read — it takes player[0] and drops player[1], which is where
+                    # selected_position is documented to live.
+                    #
+                    # Do not populate these from documentation alone. A wrong slot
+                    # renders as a confident, valid-looking lineup position, and a
+                    # missed injury silently seats an unavailable player. Unknown is
+                    # the honest answer until a real Yahoo response can be sampled.
                 ))
 
             is_me, guids = _yahoo_owner_identity(team_info.get("managers"))
@@ -255,8 +271,26 @@ class YahooLeagueAPI(LeaguePlatformAPI):
             ))
         return picks
 
-    async def get_matchups(self, week: int) -> list[WeeklyMatchup]:
-        return []
+    async def get_matchups(self, week: int) -> Optional[list[WeeklyMatchup]]:
+        """NOT IMPLEMENTED, and it says so by returning None rather than [].
+
+        Yahoo documents a league scoreboard resource that would carry this, but the
+        Yahoo Fantasy API sits behind their approval process: every endpoint refuses
+        an unauthenticated request, there is no recorded sample anywhere in this
+        repository, and no field name here could be checked against a real response.
+        Writing a parser from documentation alone would produce opponents nobody has
+        verified, which is the same defect as the invented ones it would replace.
+
+        None means "we could not tell", so the caller withholds an opponent instead
+        of making one up. [] would have meant "this league genuinely has no game this
+        week", which is a claim we have not earned.
+        """
+        logger.info(
+            "Yahoo league %s: no verified schedule source — reporting the week-%s "
+            "matchups as UNKNOWN rather than inventing them",
+            self._league.league_id, week,
+        )
+        return None
 
     async def get_transactions(self, week: int) -> list[Transaction]:
         return []
