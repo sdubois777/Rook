@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { UserButton } from '@clerk/clerk-react'
 import {
   LayoutDashboard,
@@ -12,10 +13,12 @@ import {
   Waves,
   UserCircle,
   Coins,
+  MessageSquareWarning,
   X,
 } from 'lucide-react'
 import { useUIStore } from '../../stores/ui'
 import { useMe } from '../../hooks/useMe'
+import { fetchFeedbackStatus } from '../../api/feedback'
 import LeagueSelector from './LeagueSelector'
 import Logo from '../brand/Logo'
 
@@ -54,7 +57,15 @@ const navGroups = [
 export default function Sidebar({ mobileOpen = false, onClose }) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggle = useUIStore((s) => s.toggleSidebar)
+  const openFeedback = useUIStore((s) => s.openFeedback)
   const { credits } = useMe()
+  // Hidden rather than shown-and-broken when the deployment has no GitHub issue token.
+  const { data: feedbackStatus } = useQuery({
+    queryKey: ['feedback-status'],
+    queryFn: fetchFeedbackStatus,
+    staleTime: Infinity,
+    retry: false,
+  })
   // Labels/brand hide only when desktop-collapsed; on mobile the drawer is full
   // width so they always show.
   const labelHidden = collapsed ? 'lg:hidden' : ''
@@ -131,8 +142,18 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
         ))}
       </nav>
 
-      {/* Footer — credits + user */}
+      {/* Footer — report a bug, credits, user */}
       <div className="p-4 border-t border-border space-y-3">
+        {feedbackStatus?.enabled && (
+          <button
+            onClick={() => { onClose?.(); openFeedback() }}
+            title="Report a bug or suggest a feature"
+            className="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-slate-400 hover:text-slate-200 hover:bg-surface-2 transition-colors min-h-11 lg:min-h-0"
+          >
+            <MessageSquareWarning size={16} className="shrink-0" />
+            <span className={labelHidden}>Report a bug</span>
+          </button>
+        )}
         {credits !== null && (
           <NavLink
             to="/account"
