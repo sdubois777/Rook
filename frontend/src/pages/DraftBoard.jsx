@@ -35,6 +35,16 @@ const STRATEGY_OPTIONS = [
   { value: 'balanced', label: 'Balanced' },
 ]
 
+// One line per strategy, shown under the board so the highlighting is self-explaining.
+// These are the same definitions the backend highlights on (_STRATEGY_LABELS in
+// backend/engines/league_auction.py) — keep the two in step.
+const STRATEGY_BLURBS = {
+  hero_rb: 'Pay a premium for one or two elite RBs, fill cheap everywhere else.',
+  zero_rb: 'Skip the expensive RBs, put the money in WR/TE/QB, take RBs late and cheap.',
+  stars_and_scrubs: 'Spend big on two or three studs, fill the rest at minimum price.',
+  balanced: 'Spread the budget evenly — no single stud, no roster full of $1 fillers.',
+}
+
 const POSITION_OPTIONS = buildPositionOptions('All Positions')
 
 const NFL_TEAMS = [
@@ -482,7 +492,11 @@ export default function DraftBoard() {
         ) : (
           <>
             <span className="block w-12 sm:w-20 shrink-0"><SortableHeader label="AI Ceil" shortLabel="AI $" sortKey="ai_ceiling" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
-            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="ADP" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
+            {/* "Market $", not "ADP": this cell renders a DOLLAR auction price
+                (market_value), never an average draft position. It was labelled ADP,
+                which read as a snake rank that then appeared frozen across scoring
+                formats. */}
+            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="Market $" sortKey="market" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <span className="hidden lg:block w-20 shrink-0"><SortableHeader label="Points" sortKey="ppr" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" /></span>
             <SortableHeader label="Gap" sortKey="gap" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 sm:w-16 shrink-0" align="right" />
           </>
@@ -515,6 +529,7 @@ export default function DraftBoard() {
         scoringFormat={data?.scoring_format || scoringFormat}
         scoringFormatDefaulted={data?.scoring_format_defaulted}
         adpFormatDefaulted={isSnake && data?.adp_format_defaulted}
+        marketFormatDefaulted={!isSnake && data?.market_format_defaulted}
       />
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold text-slate-100 print-full-width">Draft Board</h1>
@@ -637,21 +652,28 @@ export default function DraftBoard() {
         </div>
       )}
 
-      {/* Strategy legend */}
+      {/* Strategy legend — what the strategy is, then what each colour means. Highlights
+          are keyed to our own auction price for each player (elite / mid / value / cheap),
+          not to the tier column, because tier is a within-position ranking. */}
       {strategy && (
-        <div className="mt-4 flex items-center gap-4 text-xs text-slate-500">
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded border-l-2 border-blue-500 bg-blue-500/20" />
-            Primary target
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded border-l-2 border-purple-500 bg-purple-500/20" />
-            Secondary target
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-3 rounded bg-slate-500/20 opacity-40" />
-            De-prioritized
-          </span>
+        <div className="mt-4 space-y-1.5">
+          {STRATEGY_BLURBS[strategy] && (
+            <p className="text-xs text-slate-400">{STRATEGY_BLURBS[strategy]}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded border-l-2 border-blue-500 bg-blue-500/20" />
+              Spend here
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded border-l-2 border-purple-500 bg-purple-500/20" />
+              Fill around it
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded bg-slate-500/20 opacity-40" />
+              Skipped by this strategy
+            </span>
+          </div>
         </div>
       )}
 

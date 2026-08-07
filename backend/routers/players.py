@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
+from backend.agents.valuation_agent import classify_snake_flag, compute_adp_diff
 from backend.schemas.player_badges import PlayerBadgeFields
 from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
@@ -23,6 +24,7 @@ from backend.utils.seasons import get_current_season
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
 from backend.repositories.team_system_repo import TeamSystemRepository
+from backend.services.format_display import resolve_market_and_gap
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/players", tags=["players"])
@@ -256,6 +258,27 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
     )
     eff_assessment = _ov.value_assessment if (_ov is not None and _ov.value_assessment is not None) else player.value_assessment
 
+    # MARKET + GAP on the same basis as eff_ai_ceiling. PPR passes the players-table trio
+    # through unchanged; non-PPR reads the format's own market $ and recomputes the gap
+    # from the ceiling shown above, so the two never come from different scoring formats.
+    eff_market, eff_gap, eff_gap_signal = resolve_market_and_gap(
+        _ov,
+        float(player.market_value_fantasypros) if player.market_value_fantasypros else None,
+        float(player.value_gap) if player.value_gap is not None else None,
+        player.value_gap_signal,
+        eff_ai_ceiling,
+    )
+
+    # Snake diff/badge follow the FP rank actually shown (see routers/draftboard.py for
+    # the full note). Untouched when the overlay has no per-format ADP.
+    eff_adp_diff = float(player.adp_diff) if player.adp_diff is not None else None
+    eff_snake_flag = player.snake_flag
+    if _ov is not None and _ov.adp_fantasypros is not None:
+        eff_adp_diff = compute_adp_diff(eff_adp_fp, player.adp_rank)
+        eff_snake_flag = classify_snake_flag(
+            eff_adp_diff, eff_tier, adp_rank=player.adp_rank, fp_rank=eff_adp_fp,
+        )
+
     return PlayerSummary(
         id=str(player.id),
         name=player.name,
@@ -267,14 +290,14 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         baseline_value=eff_baseline,
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
         floor_value=float(player.floor_value) if player.floor_value else None,
-        market_value=float(player.market_value_fantasypros) if player.market_value_fantasypros else None,
-        market_value_season=get_current_season() if player.market_value_fantasypros else None,
+        market_value=eff_market,
+        market_value_season=get_current_season() if eff_market is not None else None,
         prior_season_price=prior_price,
         prior_season_year=prior_year,
         # `is not None`, not truthiness — an exactly-zero gap is a real answer, not
         # missing data (see the same note in routers/draftboard.py).
-        value_gap=float(player.value_gap) if player.value_gap is not None else None,
-        value_gap_signal=player.value_gap_signal,
+        value_gap=eff_gap,
+        value_gap_signal=eff_gap_signal,
         situation_score=player.situation_score,
         breakout_flag=player.breakout_flag or False,
         is_rookie=player.is_rookie or False,
@@ -288,8 +311,8 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         nomination_target_flag=player.nomination_target_flag or False,
         adp_rank=player.adp_rank,
         adp_fantasypros=eff_adp_fp,
-        adp_diff=float(player.adp_diff) if player.adp_diff is not None else None,
-        snake_flag=player.snake_flag,
+        adp_diff=eff_adp_diff,
+        snake_flag=eff_snake_flag,
     )
 
 

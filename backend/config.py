@@ -93,10 +93,23 @@ class Settings(BaseSettings):
     stripe_price_pack_200: Optional[str] = None
     stripe_price_pack_500: Optional[str] = None
 
+    # --- In-app bug report / feature suggestion -> GitHub issue ---------------
+    # A fine-grained personal access token with Issues: Read and write on the ONE repo
+    # named below, and nothing else. Leave unset and the report form is simply off
+    # (GET /feedback/status returns enabled=false and the UI hides the entry point).
+    github_issue_token: Optional[str] = None
+    github_issue_repo: Optional[str] = None      # "owner/name", e.g. "sdubois777/Rook"
+    # Comma-separated labels applied to every filed issue. Labels that do not exist yet
+    # are created by GitHub; if the API rejects them the issue is re-filed unlabelled
+    # rather than lost (see backend/routers/feedback.py).
+    github_issue_labels: str = "backlog,user-report"
+    github_api_url: str = "https://api.github.com"
+
     # Rate limits — requests per minute, per client IP
     rate_limit_api_rpm: int = 120        # general API endpoints
     rate_limit_pipeline_rpm: int = 2     # expensive pipeline triggers (each ~$10 run)
     rate_limit_auth_rpm: int = 10        # auth endpoints
+    rate_limit_feedback_rpm: int = 3     # issue filing — low, it writes to a public-ish repo
 
     # Admin allowlist — comma-separated emails permitted to reach the operator-only
     # pipeline + admin routers (paid-compute triggers, cost reports, backtests).
@@ -135,6 +148,16 @@ class Settings(BaseSettings):
     def stripe_enabled(self) -> bool:
         """True when Stripe billing is configured (secret key present)."""
         return bool(self.stripe_secret_key)
+
+    @property
+    def feedback_enabled(self) -> bool:
+        """True when in-app reports can be filed as GitHub issues (token AND repo set)."""
+        return bool(self.github_issue_token and self.github_issue_repo)
+
+    @property
+    def github_issue_label_list(self) -> list[str]:
+        """GITHUB_ISSUE_LABELS split and trimmed; empty list when unset."""
+        return [x.strip() for x in self.github_issue_labels.split(",") if x.strip()]
 
     @property
     def admin_email_set(self) -> set[str]:
