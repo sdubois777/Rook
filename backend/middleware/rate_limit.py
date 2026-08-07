@@ -69,6 +69,7 @@ class RateLimiter:
 _api_limiter = RateLimiter(requests_per_minute=settings.rate_limit_api_rpm)
 _pipeline_limiter = RateLimiter(requests_per_minute=settings.rate_limit_pipeline_rpm)
 _auth_limiter = RateLimiter(requests_per_minute=settings.rate_limit_auth_rpm)
+_feedback_limiter = RateLimiter(requests_per_minute=settings.rate_limit_feedback_rpm)
 
 
 def rate_limit_api(request: Request) -> None:
@@ -87,3 +88,13 @@ def rate_limit_auth(request: Request) -> None:
     """Auth endpoint rate limit per IP."""
     key = request.client.host if request.client else "unknown"
     _auth_limiter.check(key)
+
+
+def rate_limit_feedback(request: Request) -> None:
+    """Bug-report / suggestion submission rate limit per IP.
+
+    Deliberately tight: each accepted request writes a new issue into the project's
+    GitHub repo, so an unthrottled endpoint is an issue-spam endpoint.
+    """
+    key = request.client.host if request.client else "unknown"
+    _feedback_limiter.check(key)
