@@ -5,6 +5,8 @@ import { usePreferencesStore } from './stores/preferences'
 import Layout from './components/layout/Layout'
 import { LeagueProvider } from './context/LeagueContext'
 import BillingNotice from './components/BillingNotice'
+import FeedbackModal from './components/FeedbackModal'
+import { useUIStore } from './stores/ui'
 import Landing from './pages/Landing'
 import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
@@ -39,6 +41,8 @@ function ProtectedRoute({ children }) {
 function App() {
   const loadWatchlist = usePreferencesStore((s) => s.loadWatchlist)
   const loadStrategy = usePreferencesStore((s) => s.loadStrategy)
+  const feedbackOpen = useUIStore((s) => s.feedbackOpen)
+  const closeFeedback = useUIStore((s) => s.closeFeedback)
   const location = useLocation()
 
   useEffect(() => {
@@ -88,6 +92,10 @@ function App() {
     <LeagueProvider>
       {isFullScreen ? routes : <Layout>{routes}</Layout>}
       <BillingNotice />
+      {/* Mounted here, not in the sidebar, so the draft room (full-screen, no sidebar)
+          can still open it. Mounted only while open, so each open starts with an
+          empty form. */}
+      {feedbackOpen && <FeedbackModal onClose={closeFeedback} />}
     </LeagueProvider>
   )
 }

@@ -16,7 +16,7 @@ from backend.core.oauth_config_check import check_oauth_redirects
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
-from backend.routers import account, billing, matchup, trade, waiver, webhooks
+from backend.routers import account, billing, feedback, matchup, trade, waiver, webhooks
 from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ for _router in (
     trade.router,
     waiver.router,
     matchup.router,
+    feedback.router,
 ):
     app.include_router(_router, prefix="/api")
 
