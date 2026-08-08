@@ -225,6 +225,59 @@ async def test_status_reports_whether_filing_is_configured():
         app.dependency_overrides.pop(get_current_user, None)
 
 
+# ---------------------------------------------------------------------------
+# Configuration — the token must be the ONLY switch
+# ---------------------------------------------------------------------------
+
+class TestTokenIsTheOnlySwitch:
+    """Regression guard for a production outage.
+
+    This shipped with `github_issue_repo: Optional[str] = None` and the repo name given
+    only in .env.example. Railway injects environment variables and never reads a .env
+    file, so setting GITHUB_ISSUE_TOKEN alone left feedback_enabled False and the report
+    button stayed hidden in production, with no error in any log or response.
+
+    These tests construct the real Settings class against a controlled environment rather
+    than patching the singleton, because the defect WAS in the defaults.
+    """
+
+    @staticmethod
+    def _settings(**env):
+        """Real Settings built from a clean environment, ignoring any local .env file."""
+        import os
+        from unittest.mock import patch as _patch
+        from backend.config import Settings
+
+        base = {
+            "ANTHROPIC_API_KEY": "test-key",
+            "SECRET_KEY": "test-secret",
+            **env,
+        }
+        with _patch.dict(os.environ, base, clear=True):
+            # _env_file=None: do not let a developer's .env supply what the test is
+            # asserting the DEFAULTS provide. Railway has no .env file either.
+            return Settings(_env_file=None)
+
+    def test_token_alone_enables_the_feature(self):
+        s = self._settings(GITHUB_ISSUE_TOKEN="gh-token")
+        assert s.github_issue_repo, "the repo must have a working default, not None"
+        assert s.feedback_enabled is True
+
+    def test_no_token_disables_the_feature(self):
+        assert self._settings().feedback_enabled is False
+
+    def test_the_repo_default_is_this_project(self):
+        assert self._settings().github_issue_repo == "sdubois777/Rook"
+
+    def test_the_repo_can_still_be_overridden_for_a_fork(self):
+        s = self._settings(GITHUB_ISSUE_TOKEN="t", GITHUB_ISSUE_REPO="someone/fork")
+        assert s.github_issue_repo == "someone/fork"
+        assert s.feedback_enabled is True
+
+    def test_labels_have_a_working_default_too(self):
+        assert self._settings().github_issue_label_list == ["backlog", "user-report"]
+
+
 @pytest.mark.asyncio
 async def test_a_too_short_report_is_rejected_before_any_issue_is_filed():
     post = AsyncMock(return_value=_github_response())

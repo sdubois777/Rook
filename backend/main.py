@@ -161,6 +161,11 @@ async def startup_checks():
         missing.append("YAHOO_REFRESH_TOKEN")
     if not settings.rapidapi_key:
         missing.append("RAPIDAPI_KEY")
+    # The in-app bug report form turns itself off when this is unset, and the ONLY visible
+    # consequence is that a button does not render — which is indistinguishable from a
+    # frontend bug. Name it here so the reason is in the boot log.
+    if not settings.github_issue_token:
+        missing.append("GITHUB_ISSUE_TOKEN (in-app bug reporting is OFF)")
     if missing:
         logger.warning("Optional settings not configured: %s", missing)
     logger.info(
