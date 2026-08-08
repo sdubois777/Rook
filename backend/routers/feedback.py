@@ -85,8 +85,18 @@ class FeedbackRequest(BaseModel):
 
 
 class FeedbackResponse(BaseModel):
-    issue_number: int
-    issue_url: str
+    """Deliberately carries NO issue number and NO issue URL.
+
+    The reporter is a fantasy football player, not a contributor. Where the report ends up
+    is an internal detail: naming the issue tracker invites a follow-up we have not promised
+    to answer, and a link is useless to someone without repository access. Hiding those
+    fields in the UI would not be enough either — anything in the response body is visible
+    to anyone with browser developer tools open, so they are not sent at all.
+
+    The issue number IS written to the server log (see submit_feedback), which is where an
+    operator correlates a report with its ticket.
+    """
+    ok: bool = True
 
 
 class FeedbackStatusResponse(BaseModel):
@@ -248,12 +258,11 @@ async def submit_feedback(
             "GitHub refused to create the issue. Please try again shortly."
         )
 
+    # The issue number goes to the SERVER LOG only — that is where an operator ties a
+    # report back to its ticket. It is not returned to the browser (see FeedbackResponse).
     data = resp.json()
     logger.info(
         "Feedback issue #%s filed (kind=%s, user=%s)",
         data.get("number"), body.kind, getattr(user, "id", "unknown"),
     )
-    return FeedbackResponse(
-        issue_number=data.get("number", 0),
-        issue_url=data.get("html_url", ""),
-    )
+    return FeedbackResponse()

@@ -164,10 +164,18 @@ async def _post_feedback(post_mock=None, **settings_over):
 
 
 @pytest.mark.asyncio
-async def test_submitting_a_report_returns_the_created_issue():
+async def test_submitting_a_report_acknowledges_without_naming_the_issue():
+    """The reporter is told it sent, and nothing about where it went.
+
+    An issue number or tracker URL in the response body is visible to anyone with browser
+    developer tools open, so hiding those in the UI would not be enough — they are not
+    returned at all. The operator gets the issue number from the server log instead.
+    """
     resp = await _post_feedback()
     assert resp.status_code == 201
-    assert resp.json() == {"issue_number": 437, "issue_url": "https://gh/issues/437"}
+    assert resp.json() == {"ok": True}
+    body = resp.text
+    assert "437" not in body and "gh/issues" not in body
 
 
 @pytest.mark.asyncio
