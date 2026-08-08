@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useDraftStore } from '../stores/draft'
 import { LeagueContext } from '../context/LeagueContext'
 import { ACTION_STYLES } from '../components/draft/RecommendationPanel'
@@ -26,6 +27,34 @@ const AUCTION_CTX = {
 function AuctionCtx({ children }) {
   return <LeagueContext.Provider value={AUCTION_CTX}>{children}</LeagueContext.Provider>
 }
+
+// Stands in for the real provider stack. main.jsx wraps the whole app in a
+// QueryClientProvider, so any component under test here is inside one in production;
+// these tests rendered a bare MemoryRouter, which is a configuration the app never has.
+// A component that calls useQuery then throws "No QueryClient set" in the test only.
+// retry:false keeps a failing fetch from stalling a test on backoff.
+function TestProviders({ children }) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
+}
+
+// The status bar's "Report" button reads Clerk (to wait for a token) and the feedback
+// status endpoint. Same mocking pattern as DraftBoardMobile.test.jsx — these tests render
+// DraftRoom outside a ClerkProvider, so useAuth must be stubbed.
+vi.mock('@clerk/clerk-react', () => ({
+  useAuth: () => ({ isLoaded: true, isSignedIn: true, getToken: async () => 'tok' }),
+}))
+
+vi.mock('../api/feedback', () => ({
+  fetchFeedbackStatus: vi.fn().mockResolvedValue({ enabled: false }),
+  submitFeedback: vi.fn(),
+}))
 
 // Mock the API module
 vi.mock('../api/draft', () => ({
@@ -129,9 +158,9 @@ beforeEach(async () => {
 describe('DraftRoom', () => {
   it('renders setup screen initially', () => {
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftSetup />
-      </MemoryRouter>
+      </TestProviders>
     )
     expect(screen.getByText('Start Draft Session')).toBeInTheDocument()
     expect(screen.getByText('Start Draft')).toBeInTheDocument()
@@ -142,9 +171,9 @@ describe('DraftRoom', () => {
 
   it('start button calls API and transitions to live', async () => {
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftSetup />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // No input to fill — just start.
@@ -184,9 +213,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><RecommendationPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('BUY')).toBeInTheDocument()
@@ -222,9 +251,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><RecommendationPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('PASS')).toBeInTheDocument()
@@ -261,9 +290,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><RecommendationPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // The recommendation content still renders...
@@ -285,9 +314,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <MyRoster />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('$142')).toBeInTheDocument()
@@ -308,9 +337,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AvailablePlayers />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // All 3 visible initially
@@ -389,9 +418,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <NominationPanel />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     const clockEl = screen.getByText('0:08')
@@ -414,9 +443,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <NominationPanel />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('Undervalued')).toBeInTheDocument()
@@ -481,9 +510,9 @@ describe('DraftRoom', () => {
     useDraftStore.setState({ phase: 'live' })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // The mount poll should pull the engine's existing recommendation into
@@ -616,9 +645,9 @@ describe('DraftRoom', () => {
 
       useDraftStore.setState({ phase: 'live' })
       render(
-        <MemoryRouter>
+        <TestProviders>
           <DraftRoom />
-        </MemoryRouter>
+        </TestProviders>
       )
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1)
@@ -731,9 +760,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <MyRoster />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // Live budget (137) wins over the stale store myBudget (200)
@@ -750,9 +779,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <MyRoster />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('$175')).toBeInTheDocument()
@@ -796,9 +825,9 @@ describe('DraftRoom', () => {
     getDraftState.mockRejectedValueOnce({ response: { status: 409 } })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await waitFor(() => {
       const list = useDraftStore.getState().availablePlayers
@@ -807,13 +836,46 @@ describe('DraftRoom', () => {
     })
   })
 
+  // The draft room is full-screen and renders no sidebar, so the sidebar's report button
+  // is unreachable here. The dialog was mounted globally in App.jsx with a comment saying
+  // the draft room could open it, but no trigger existed on this page at all.
+  it('the status bar has a Report button when issue filing is configured', async () => {
+    const { fetchFeedbackStatus } = await import('../api/feedback')
+    fetchFeedbackStatus.mockResolvedValueOnce({ enabled: true })
+    const { useUIStore } = await import('../stores/ui')
+    useUIStore.setState({ feedbackOpen: false })
+    useDraftStore.setState({ phase: 'live' })
+
+    render(
+      <TestProviders>
+        <DraftRoom />
+      </TestProviders>
+    )
+    const btn = await screen.findByRole('button', { name: /Report a bug/i })
+    fireEvent.click(btn)
+    expect(useUIStore.getState().feedbackOpen).toBe(true)
+    useUIStore.setState({ feedbackOpen: false })
+  })
+
+  it('the status bar hides the Report button when issue filing is not configured', async () => {
+    // fetchFeedbackStatus is mocked to {enabled: false} for the whole file.
+    useDraftStore.setState({ phase: 'live' })
+    render(
+      <TestProviders>
+        <DraftRoom />
+      </TestProviders>
+    )
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByRole('button', { name: /Report a bug/i })).not.toBeInTheDocument()
+  })
+
   it('End Draft requires window.confirm — cancel does nothing, confirm ends it', async () => {
     const { endDraft } = await import('../api/draft')
     useDraftStore.setState({ phase: 'live' }) // skips mount rehydrate
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     endDraft.mockClear()
@@ -908,9 +970,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -938,9 +1000,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1108,9 +1170,9 @@ describe('DraftRoom', () => {
     // be present after the nomination is processed.
     useDraftStore.setState({ phase: 'live', currentNomination: null, recommendation: null })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1138,9 +1200,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1195,9 +1257,9 @@ describe('DraftRoom', () => {
     useDraftStore.setState({ phase: 'live', currentNomination: null })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     // Let the on-mount load run, then clear the spies so we only observe
     // what the nomination itself triggers.
@@ -1283,9 +1345,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <OpponentTracker />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // Toggle the sidebar open
@@ -1350,9 +1412,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     const options = within(screen.getByLabelText('Select team')).getAllByRole('option')
@@ -1371,9 +1433,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     const options = within(screen.getByLabelText('Select team')).getAllByRole('option')
@@ -1394,9 +1456,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('CMC')).toBeInTheDocument()
@@ -1413,9 +1475,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText(/High threat/)).toBeInTheDocument()
@@ -1426,9 +1488,9 @@ describe('DraftRoom', () => {
     useDraftStore.setState({ phase: 'live', myTeamName: null })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     expect(screen.getByText('Team Rosters')).toBeInTheDocument()
@@ -1445,9 +1507,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // Dropdown lands on my team, and my roster (with position slots) shows.
@@ -1529,9 +1591,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // The slot grid renders FLEX/BN/Empty labels the old flat opponent list never did.
@@ -1552,9 +1614,9 @@ describe('DraftRoom', () => {
     })
 
     render(
-      <MemoryRouter>
+      <TestProviders>
         <AuctionCtx><TeamRosterPanel /></AuctionCtx>
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // A null-position pick falls through to the bench slot.
@@ -1577,9 +1639,9 @@ describe('DraftRoom', () => {
 
     useDraftStore.setState({ phase: 'live' })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
 
     // Initial connect + onopen resync pulls the recommendation.
@@ -1610,9 +1672,9 @@ describe('DraftRoom', () => {
       recommendation: { type: 'recommendation', player_name: 'Old', action: 'draft', pick: 50 },
     })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1636,7 +1698,7 @@ describe('DraftRoom', () => {
 
   it('snake_status WS message updates the continuous pick/round/countdown', async () => {
     useDraftStore.setState({ phase: 'live', currentPick: null, currentRound: null, picksUntilYourTurn: null })
-    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    render(<TestProviders><DraftRoom /></TestProviders>)
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
 
@@ -1657,7 +1719,7 @@ describe('DraftRoom', () => {
 
   it('snake_pick does NOT null the countdown — status stays populated pick-over-pick', async () => {
     useDraftStore.setState({ phase: 'live' })
-    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    render(<TestProviders><DraftRoom /></TestProviders>)
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
 
@@ -1677,7 +1739,7 @@ describe('DraftRoom', () => {
 
   it('snake_status degrades gracefully when fields are absent (no crash, no false numbers)', async () => {
     useDraftStore.setState({ phase: 'live', currentPick: 50, currentRound: 4, picksUntilYourTurn: 3 })
-    render(<MemoryRouter><DraftRoom /></MemoryRouter>)
+    render(<TestProviders><DraftRoom /></TestProviders>)
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
 
@@ -1695,9 +1757,9 @@ describe('DraftRoom', () => {
   it('your_turn does NOT clear the rec when it is for the same pick', async () => {
     useDraftStore.setState({ phase: 'live' })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1729,9 +1791,9 @@ describe('DraftRoom', () => {
       recommendation: { type: 'recommendation', player_name: 'Old Guy', pick: 15 },
     })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1749,9 +1811,9 @@ describe('DraftRoom', () => {
   it('your_turn_soon WS message sets the picks countdown', async () => {
     useDraftStore.setState({ phase: 'live' })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -1848,9 +1910,9 @@ describe('DraftRoom', () => {
     // The continuous snake_status stream owns the countdown now.
     useDraftStore.setState({ phase: 'live', isYourTurn: true, picksUntilYourTurn: 4 })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <DraftRoom />
-      </MemoryRouter>
+      </TestProviders>
     )
     await act(async () => { await Promise.resolve() })
     const ws = MockWebSocket.instances.at(-1)
@@ -2027,9 +2089,9 @@ describe('DraftRoom', () => {
       currentPick: 93,
     })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <SnakePanel />
-      </MemoryRouter>
+      </TestProviders>
     )
     expect(screen.getByText('YOUR TURN')).toBeInTheDocument()
     expect(screen.getByText('Round 8, Pick 93')).toBeInTheDocument()
@@ -2044,9 +2106,9 @@ describe('DraftRoom', () => {
       currentRound: 7,
     })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <SnakePanel />
-      </MemoryRouter>
+      </TestProviders>
     )
     expect(screen.getByText("You're up in 2 picks")).toBeInTheDocument()
   })
@@ -2063,14 +2125,14 @@ describe('DraftRoom', () => {
       ],
     })
     render(
-      <MemoryRouter>
+      <TestProviders>
         <LeagueContext.Provider
           value={{ isSnake: true, isAuction: false, scoringFormat: 'ppr',
                    selectedLeague: { draft_type: 'snake' }, setSelectedLeague() {} }}
         >
           <AvailablePlayersCmp />
         </LeagueContext.Provider>
-      </MemoryRouter>
+      </TestProviders>
     )
     // Shows the integer rank, not the raw 4.0 adp_ai.
     expect(screen.getByText('1')).toBeInTheDocument()

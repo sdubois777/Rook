@@ -1,5 +1,10 @@
 import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useAuth } from '@clerk/clerk-react'
+import { MessageSquareWarning } from 'lucide-react'
 import { useDraftStore } from '../stores/draft'
+import { useUIStore } from '../stores/ui'
+import { fetchFeedbackStatus } from '../api/feedback'
 import useDraftSocket from '../hooks/useDraftSocket'
 import { fetchDraftboard } from '../api/draftboard'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -25,6 +30,19 @@ export default function DraftRoom() {
   const rehydrate = useDraftStore((s) => s.rehydrate)
   const endDraft = useDraftStore((s) => s.endDraft)
   const { isSnake } = useLeague()
+
+  // The draft room is full-screen and renders no sidebar, so the sidebar's report
+  // button is unreachable here — and this is the surface where a bug costs the most,
+  // because it happens mid-draft with a clock running. Same status gate as the
+  // sidebar: hidden entirely when the deployment cannot file issues.
+  const openFeedback = useUIStore((s) => s.openFeedback)
+  const { isLoaded } = useAuth()
+  const { data: feedbackStatus } = useQuery({
+    queryKey: ['feedback-status'],   // same key as the sidebar — one fetch, shared cache
+    queryFn: fetchFeedbackStatus,
+    staleTime: Infinity,
+    enabled: isLoaded,
+  })
 
   // Connect WebSocket
   useDraftSocket()
@@ -105,6 +123,17 @@ export default function DraftRoom() {
         <div className="flex items-center gap-3">
           <span className={`w-2 h-2 rounded-full ${statusInfo.color}`} />
           <span className="text-xs text-slate-500">{statusInfo.text}</span>
+          {feedbackStatus?.enabled && (
+            <button
+              onClick={openFeedback}
+              title="Report a bug or suggest a feature"
+              aria-label="Report a bug"
+              className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 border border-border hover:border-slate-500/40 rounded px-2 py-0.5 transition-colors"
+            >
+              <MessageSquareWarning size={12} />
+              <span className="hidden sm:inline">Report</span>
+            </button>
+          )}
           {/* End Draft — the deliberate, irreversible "I'm done" signal that marks
               the backend session inactive so re-entering shows the board, not this
               finished draft. window.confirm (modal, no timer) guards an action
