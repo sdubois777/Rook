@@ -39,7 +39,9 @@ export default function FeedbackModal({ onClose }) {
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [filed, setFiled] = useState(null) // { issue_number, issue_url }
+  // Just "did it send". The endpoint deliberately returns no issue number or link, so
+  // there is nothing else to hold — see FeedbackResponse in backend/routers/feedback.py.
+  const [sent, setSent] = useState(false)
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -55,7 +57,7 @@ export default function FeedbackModal({ onClose }) {
     setBusy(true)
     setError('')
     try {
-      const result = await submitFeedback({
+      await submitFeedback({
         kind,
         title: title.trim().slice(0, TITLE_MAX),
         description: description.trim().slice(0, DESCRIPTION_MAX),
@@ -66,7 +68,7 @@ export default function FeedbackModal({ onClose }) {
         draft_type: draftType || null,
         scoring_format: scoringFormat || null,
       })
-      setFiled(result)
+      setSent(true)
     } catch (err) {
       setError(
         err?.response?.data?.message ||
@@ -91,7 +93,7 @@ export default function FeedbackModal({ onClose }) {
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold text-slate-100">
-            {filed ? 'Report sent' : 'Report a bug or suggest a feature'}
+            {sent ? 'Report sent' : 'Report a bug or suggest a feature'}
           </h2>
           <button
             onClick={onClose}
@@ -102,29 +104,16 @@ export default function FeedbackModal({ onClose }) {
           </button>
         </div>
 
-        {filed ? (
+        {sent ? (
           <div className="px-4 py-6 space-y-3">
             <div className="flex items-start gap-2">
               <CheckCircle2 size={18} className="text-emerald-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="text-sm text-slate-200">
-                  Filed as issue #{filed.issue_number} in the Rook backlog.
-                </p>
-                <p className="text-xs text-slate-400">
-                  It will be reproduced and investigated before anything is changed.
-                </p>
-              </div>
+              {/* Generic on purpose. Where the report goes is an internal detail, and a
+                  tracker link is useless to someone without repository access. */}
+              <p className="text-sm text-slate-200">
+                Thanks — your report has been sent.
+              </p>
             </div>
-            {filed.issue_url && (
-              <a
-                href={filed.issue_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-block text-xs text-blue-400 hover:text-blue-300"
-              >
-                View the issue on GitHub
-              </a>
-            )}
             <button
               onClick={onClose}
               className="w-full mt-2 px-3 py-2 min-h-11 lg:min-h-0 text-sm bg-surface-2 text-slate-200 border border-border rounded hover:bg-surface-3 transition-colors"
