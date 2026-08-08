@@ -3,10 +3,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../api/feedback', () => ({
-  submitFeedback: vi.fn(async () => ({
-    issue_number: 437,
-    issue_url: 'https://github.com/sdubois777/Rook/issues/437',
-  })),
+  // The endpoint returns only an acknowledgement — no issue number, no tracker URL.
+  submitFeedback: vi.fn(async () => ({ ok: true })),
   fetchFeedbackStatus: vi.fn(async () => ({ enabled: true })),
 }))
 
@@ -84,16 +82,18 @@ describe('FeedbackModal', () => {
     await waitFor(() => expect(submitFeedback.mock.calls[0][0].kind).toBe('idea'))
   })
 
-  it('confirms with the issue number and says it will be investigated first', async () => {
+  it('confirms generically — no issue number, no tracker name, no link', async () => {
     renderModal()
     fillValidReport()
     fireEvent.click(screen.getByRole('button', { name: /Send report/i }))
     await waitFor(() =>
-      expect(screen.getByText(/issue #437 in the Rook backlog/i)).toBeInTheDocument()
+      expect(screen.getByText(/your report has been sent/i)).toBeInTheDocument()
     )
-    expect(
-      screen.getByText(/reproduced and investigated before anything is changed/i)
-    ).toBeInTheDocument()
+    // Where the report ends up is an internal detail the reporter is not shown.
+    expect(screen.queryByText(/backlog/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/issue/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/github/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
   it('shows the server message when filing fails, and does not claim success', async () => {
