@@ -94,11 +94,23 @@ class Settings(BaseSettings):
     stripe_price_pack_500: Optional[str] = None
 
     # --- In-app bug report / feature suggestion -> GitHub issue ---------------
-    # A fine-grained personal access token with Issues: Read and write on the ONE repo
-    # named below, and nothing else. Leave unset and the report form is simply off
-    # (GET /feedback/status returns enabled=false and the UI hides the entry point).
+    # THE TOKEN IS THE ONLY SWITCH. Set GITHUB_ISSUE_TOKEN and the report form turns on;
+    # leave it unset and the form is off (GET /feedback/status returns enabled=false and
+    # the UI hides the entry point). Every other setting here has a working default.
+    #
+    # The token is a fine-grained personal access token with Issues: Read and write on the
+    # ONE repo named below, and nothing else.
     github_issue_token: Optional[str] = None
-    github_issue_repo: Optional[str] = None      # "owner/name", e.g. "sdubois777/Rook"
+    # DEFAULTED ON PURPOSE, not left None. This shipped as `Optional[str] = None` with the
+    # repo name supplied only in .env.example — which Railway never reads, because it
+    # injects environment variables and there is no .env file in the image. So setting
+    # GITHUB_ISSUE_TOKEN alone left feedback_enabled False, and the report button stayed
+    # hidden in production with no error anywhere. There is exactly one correct value for
+    # this app: the repository it lives in. The repo name is not a secret (it is the git
+    # remote), and pointing at the wrong repo cannot misfile anything — the TOKEN is what
+    # grants write access, so a mismatched pair fails with an error instead of posting
+    # somewhere unintended. Override with GITHUB_ISSUE_REPO for a fork.
+    github_issue_repo: str = "sdubois777/Rook"   # "owner/name"
     # Comma-separated labels applied to every filed issue. Labels that do not exist yet
     # are created by GitHub; if the API rejects them the issue is re-filed unlabelled
     # rather than lost (see backend/routers/feedback.py).
