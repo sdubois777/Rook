@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { UserButton } from '@clerk/clerk-react'
+import { UserButton, useAuth } from '@clerk/clerk-react'
 import {
   LayoutDashboard,
   Shield,
@@ -59,12 +59,19 @@ export default function Sidebar({ mobileOpen = false, onClose }) {
   const toggle = useUIStore((s) => s.toggleSidebar)
   const openFeedback = useUIStore((s) => s.openFeedback)
   const { credits } = useMe()
+  const { isLoaded } = useAuth()
   // Hidden rather than shown-and-broken when the deployment has no GitHub issue token.
+  //
+  // `enabled: isLoaded` waits for Clerk, the same guard DraftBoard.jsx uses: without it
+  // the request can go out before a token exists and come back 401. Paired with the old
+  // `retry: false`, that single failure left the button hidden with nothing to re-drive
+  // it — a configuration-independent way to reproduce exactly the symptom this feature
+  // was reported for. Retries are left at the react-query default for the same reason.
   const { data: feedbackStatus } = useQuery({
     queryKey: ['feedback-status'],
     queryFn: fetchFeedbackStatus,
     staleTime: Infinity,
-    retry: false,
+    enabled: isLoaded,
   })
   // Labels/brand hide only when desktop-collapsed; on mobile the drawer is full
   // width so they always show.
