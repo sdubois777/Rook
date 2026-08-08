@@ -92,9 +92,11 @@ function App() {
     <LeagueProvider>
       {isFullScreen ? routes : <Layout>{routes}</Layout>}
       <BillingNotice />
-      {/* Mounted here, not in the sidebar, so the draft room (full-screen, no sidebar)
-          can still open it. Mounted only while open, so each open starts with an
-          empty form. */}
+      {/* Mounted here rather than inside the sidebar so it survives on the full-screen
+          draft room, which renders no sidebar. Two triggers open it: the sidebar footer
+          button (Sidebar.jsx) and the draft room status bar (DraftRoom.jsx) — mounting
+          it globally is only useful because both exist. Mounted only while open, so
+          each open starts with an empty form. */}
       {feedbackOpen && <FeedbackModal onClose={closeFeedback} />}
     </LeagueProvider>
   )
