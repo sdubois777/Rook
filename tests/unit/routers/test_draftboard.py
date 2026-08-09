@@ -512,6 +512,71 @@ async def test_non_ppr_without_per_format_market_falls_back_and_discloses():
     assert data["market_format_defaulted"] is True
 
 
+class TestPartialCoverageIsNotADisclosure:
+    """The disclosure flags mean "never populated", not "incomplete".
+
+    They used to be set the moment ONE row lacked a per-format figure, which made the
+    banner permanently visible: FantasyPros publishes about 340 Half-PPR ADP entries
+    against a ~386-row board, so dozens of rows can never have one. Measured on the dev
+    database straight after a clean ingest that matched 335 of the 340 published entries,
+    64 board rows still had no Half-PPR ADP — every one of them a $10-or-cheaper player,
+    with the top 100 by our own valuation fully covered. The always-on warning was then
+    read as "the weekly refresh is broken" when the refresh had worked.
+    """
+
+    @pytest.mark.asyncio
+    async def test_some_rows_missing_does_not_raise_the_disclosure(self):
+        covered, bare = _format_player(), _format_player()
+        covered.name, bare.name = "Covered", "Bare"
+        resp = await _call_board(
+            [covered, bare], "?scoring_format=half_ppr",
+            fmt_rows={
+                str(covered.id): _fmt_row(adp_fantasypros=40.0, auction_value=30.0),
+                str(bare.id): _fmt_row(adp_fantasypros=None, auction_value=None),
+            },
+        )
+        data = resp.json()
+        assert data["adp_format_defaulted"] is False
+        assert data["market_format_defaulted"] is False
+        # ...but the partial coverage is still reported, so it stays diagnosable.
+        assert data["adp_format_rows"] == 1
+        assert data["market_format_rows"] == 1
+        assert data["total_players"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_rows_at_all_does_raise_the_disclosure(self):
+        a, b = _format_player(), _format_player()
+        resp = await _call_board(
+            [a, b], "?scoring_format=half_ppr",
+            fmt_rows={
+                str(a.id): _fmt_row(adp_fantasypros=None, auction_value=None),
+                str(b.id): _fmt_row(adp_fantasypros=None, auction_value=None),
+            },
+        )
+        data = resp.json()
+        assert data["adp_format_defaulted"] is True
+        assert data["market_format_defaulted"] is True
+        assert data["adp_format_rows"] == 0 and data["market_format_rows"] == 0
+
+    @pytest.mark.asyncio
+    async def test_ppr_never_discloses_and_reports_no_per_format_coverage(self):
+        # PPR reads the players table and has no overlay by design — an empty coverage
+        # count there is correct, not a missing refresh.
+        resp = await _call_board([_format_player()], "?scoring_format=ppr")
+        data = resp.json()
+        assert data["adp_format_defaulted"] is False
+        assert data["market_format_defaulted"] is False
+        assert data["adp_format_rows"] == 0 and data["market_format_rows"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_empty_board_is_not_reported_as_a_broken_refresh(self):
+        resp = await _call_board([], "?scoring_format=standard")
+        data = resp.json()
+        assert data["total_players"] == 0
+        assert data["adp_format_defaulted"] is False
+        assert data["market_format_defaulted"] is False
+
+
 @pytest.mark.asyncio
 async def test_non_ppr_snake_diff_and_flag_follow_the_format_adp():
     """Diff is (FP rank − our rank). Once FP rank is the format's, the stored PPR diff
