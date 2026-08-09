@@ -43,7 +43,7 @@ from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
 from backend.services.trade.league_state import LeagueState, RosterPlayer, TeamState
 from backend.services.trade.trade_analysis import DEFAULT_ROSTER_LIMIT
-from backend.utils.seasons import get_current_nfl_week, get_current_season
+from backend.utils.seasons import asof_now, get_current_nfl_week, get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,7 @@ def _resolve_injury(player, rp, now) -> Optional[str]:
 
 async def resolve_team_rosters(
     db, platform: str, team_rosters: list[TeamRoster], my_team_id: Optional[str],
+    now: Optional[datetime] = None,
 ) -> tuple[list[TeamState], list[dict]]:
     """Resolve every roster entry to a canonical Player via resolve_player. Returns
     (teams, unresolved). Unresolved players are loud-warned + collected, never
@@ -170,11 +171,25 @@ async def resolve_team_rosters(
     each player seated, and whether the player is hurt. Both were hardcoded — the
     lineup slot to None and the injury to a platform field no reader ever filled —
     so on every real league the injury-aware lineup filters were silently inert and
-    every roster rendered as entirely bench."""
+    every roster rendered as entirely bench.
+
+    `now` is the instant the injury-staleness window is measured against. It is a
+    PARAMETER because this function used to read the wall clock itself, which made
+    tests that pin a reference date rot: test_roster_injury_and_slots.py builds a
+    roster whose injury was seen two days before its own fixed reference date, and
+    once real time drifted more than INJURY_STALE_AFTER past that date the badge was
+    withheld and the test began failing — on a schedule, with no code change. The
+    sibling _resolve_injury already took `now` for exactly this reason.
+
+    The default is asof_now(), not datetime.now(): CLAUDE.md requires every clock read
+    to go through backend/utils/seasons so an as-of run moves the whole system's clock
+    together. Reading the wall clock here meant an as-of rebuild aged its own injuries
+    against the present day."""
     repo = PlayerRepository(db)
     teams: list[TeamState] = []
     unresolved: list[dict] = []
-    now = datetime.now(timezone.utc)
+    if now is None:
+        now = asof_now()
     for tr in team_rosters:
         players: list[RosterPlayer] = []
         for rp in tr.players:
