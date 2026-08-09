@@ -157,7 +157,13 @@ async def test_resolve_team_rosters_carries_both_fields_through(monkeypatch):
                        position="RB", team_abbr="SF", lineup_slot="BENCH"),
     ])
 
-    teams, unresolved = await resolve_team_rosters(None, "sleeper", [tr], my_team_id="t1")
+    # Pass the same reference instant the fixtures above are dated from. Without it this
+    # function reads the clock itself, so "Stored Guy" — whose injury was seen NOW minus
+    # two days — silently aged past the 10-day staleness window as real time advanced and
+    # this assertion started failing on a date, with no code change.
+    teams, unresolved = await resolve_team_rosters(
+        None, "sleeper", [tr], my_team_id="t1", now=NOW,
+    )
 
     by_name = {p.name: p for p in teams[0].roster}
     assert by_name["Starter"].starter_slot == "RB"
@@ -167,6 +173,39 @@ async def test_resolve_team_rosters_carries_both_fields_through(monkeypatch):
     assert by_name["Stored Guy"].starter_slot == "BENCH"
     assert by_name["Stored Guy"].injury_status == "Q"
     assert unresolved == []
+
+
+async def test_the_staleness_clock_is_injected_not_read_from_the_wall_clock(monkeypatch):
+    """Regression guard for a test that failed on a date rather than on a code change.
+
+    resolve_team_rosters used to call datetime.now() itself. This file dates its fixtures
+    from a fixed NOW, so once real time drifted more than INJURY_STALE_AFTER (10 days)
+    past that constant, a two-day-old injury was measured as ten-days-plus old and the
+    badge was withheld. It broke at 2026-08-09 12:00 UTC with nobody touching the code,
+    and would have turned CI red on the next push.
+
+    This asserts the caller's instant is what decides — the same roster resolves one way
+    at its own reference time and the other way ten days later.
+    """
+    async def _resolve(self, **kw):
+        # "Q", not "QUESTIONABLE": the canonical players row already holds the short code,
+        # and _resolve_injury returns a stored value as-is.
+        return _player(injury="Q", age=timedelta(days=2), name="Recent")
+
+    from backend.repositories.player_repo import PlayerRepository
+    monkeypatch.setattr(PlayerRepository, "resolve_player", _resolve)
+
+    tr = TeamRoster(platform_team_id="t1", manager_name="Me", team_name="My Team", players=[
+        RosteredPlayer(platform_player_id="r", player_name="Recent",
+                       position="RB", team_abbr="SF", lineup_slot="BENCH"),
+    ])
+
+    fresh, _ = await resolve_team_rosters(None, "sleeper", [tr], my_team_id="t1", now=NOW)
+    assert fresh[0].roster[0].injury_status == "Q"
+
+    later = NOW + INJURY_STALE_AFTER + timedelta(days=1)
+    stale, _ = await resolve_team_rosters(None, "sleeper", [tr], my_team_id="t1", now=later)
+    assert stale[0].roster[0].injury_status is None
 
 
 async def test_an_unknown_slot_stays_unknown_through_to_the_engine(monkeypatch):

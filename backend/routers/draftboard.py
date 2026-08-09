@@ -89,12 +89,28 @@ class DraftBoardResponse(BaseModel):
     # yet populated). Auction $ figures stay on the PPR path regardless (dark).
     scoring_format: str = "ppr"
     scoring_format_defaulted: bool = False
-    adp_format_defaulted: bool = False
-    # True → at least one row's MARKET auction $ is still the PPR figure because the
-    # per-format DraftWizard $ has not been scraped yet. The gap is still recomputed
-    # against whatever market $ is shown, so the row stays self-consistent; this flag
-    # only says the market side of that subtraction is PPR.
-    market_format_defaulted: bool = False
+
+    # THESE TWO MEAN "NEVER POPULATED", NOT "INCOMPLETE" — see the note below.
+    #
+    # Both were previously set the moment ANY single row lacked a per-format value, which
+    # made them permanently true and the disclosure banner permanently visible. The cause
+    # is not a failed refresh: FantasyPros publishes about 340 Half-PPR and Standard ADP
+    # entries while this board returns roughly 386 players, so several dozen rows can never
+    # have a per-format figure no matter how well the scrape runs. Measured immediately
+    # after a clean ingest that matched 335 of the 340 published Half-PPR entries, 64 board
+    # rows still had no Half-PPR ADP — all of them $10 players or cheaper, with the top 100
+    # by our own valuation at 100% coverage.
+    #
+    # A warning that cannot turn itself off is worse than no warning: this one was read as
+    # "the weekly data refresh is broken" when the refresh had in fact worked.
+    adp_format_defaulted: bool = False      # no row at all carries this format's own ADP
+    market_format_defaulted: bool = False   # no row at all carries this format's own market $
+
+    # Coverage, so PARTIAL population is still inspectable without a database query. Both
+    # are counts of rows carrying this format's own figure, out of total_players. They stay
+    # 0 for PPR, which reads the players table and has no per-format overlay by design.
+    adp_format_rows: int = 0
+    market_format_rows: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +347,10 @@ async def get_draftboard(
     tiers: dict[str, list[DraftBoardPlayer]] = {}
     built: list[DraftBoardPlayer] = []   # same objects, flat — for the strategy pass below
     total = 0
-    adp_format_defaulted = False
-    market_format_defaulted = False
+    # COUNT rows that carry this format's own figures, rather than flagging on the first
+    # row that does not. The two disclosure booleans are derived from these after the loop.
+    adp_format_rows = 0
+    market_format_rows = 0
 
     prior_year = get_current_season() - 1
 
@@ -379,8 +397,8 @@ async def get_draftboard(
             # inverted WR pairs in the top 40 alone. ppr_to_system_value is affine in this
             # quantity, so displaying it makes the board monotone by construction.
             _raw_proj = float(p.adjusted_points)
-        if scoring_format != "ppr" and ov.adp_defaulted:
-            adp_format_defaulted = True
+        if scoring_format != "ppr" and ov.adp_fantasypros is not None:
+            adp_format_rows += 1
         eff_ai_ceiling = ov.ai_bid_ceiling if ov.ai_bid_ceiling is not None else p.ai_bid_ceiling
         eff_rec_ceiling = ov.recommended_bid_ceiling if ov.recommended_bid_ceiling is not None else (
             float(p.recommended_bid_ceiling) if p.recommended_bid_ceiling else None)
@@ -401,8 +419,8 @@ async def get_draftboard(
             p.value_gap_signal,
             eff_ai_ceiling,
         )
-        if scoring_format != "ppr" and ov.market_defaulted:
-            market_format_defaulted = True
+        if scoring_format != "ppr" and ov.market_value is not None:
+            market_format_rows += 1
 
         # SNAKE columns, same invariant as GAP above. Diff is defined as (FP rank − our
         # rank), so once the FP rank shown is the format's own, the stored PPR diff is a
@@ -494,6 +512,14 @@ async def get_draftboard(
         total_players=total,
         scoring_format=scoring_format,
         scoring_format_defaulted=fmt_defaulted,
-        adp_format_defaulted=adp_format_defaulted,
-        market_format_defaulted=market_format_defaulted,
+        # "Never populated", not "incomplete". `total > 0` so an empty board (a position
+        # filter that matched nobody) does not read as a broken data refresh.
+        adp_format_defaulted=(
+            scoring_format != "ppr" and total > 0 and adp_format_rows == 0
+        ),
+        market_format_defaulted=(
+            scoring_format != "ppr" and total > 0 and market_format_rows == 0
+        ),
+        adp_format_rows=adp_format_rows,
+        market_format_rows=market_format_rows,
     )
