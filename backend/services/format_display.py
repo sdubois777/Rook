@@ -74,7 +74,13 @@ class FormatOverlay:
     tier: Optional[int]
     projected_points: Optional[float]
     adp_fantasypros: Optional[float]
-    adp_defaulted: bool   # True → no per-format market ADP; the shown ADP is still PPR
+    # PER-ROW ONLY. True → THIS player has no per-format ADP, so his row shows the PPR
+    # figure. Do NOT drive a board-wide banner off it: FantasyPros publishes roughly 340
+    # Half-PPR and Standard ADP entries against a ~386-row board, so several dozen rows
+    # are true on a perfectly healthy board and an OR across rows is permanently true.
+    # routers/draftboard.py counts populated rows instead. See the note on
+    # DraftBoardResponse.adp_format_defaulted.
+    adp_defaulted: bool
     # Hybrid auction $ + reasoning (the market-blind opinion; non-PPR only). None → PPR
     # passthrough. These are what make a non-PPR user see their own $ and prose, not PPR's.
     ai_bid_ceiling: Optional[int] = None
@@ -86,7 +92,11 @@ class FormatOverlay:
     # Per-format MARKET auction $ (PFV.auction_value — the same FantasyPros DraftWizard
     # feed that fills players.market_value_fantasypros for PPR, scraped for this format).
     market_value: Optional[float] = None
-    market_defaulted: bool = False  # True → no per-format market $; shown market is PPR
+    # PER-ROW ONLY, same caution as adp_defaulted above. True → THIS player has no
+    # per-format market $, so his row falls back to the PPR figure (and his gap is
+    # recomputed against it). resolve_market_and_gap reads this per row; nothing should
+    # OR it across the board.
+    market_defaulted: bool = False
 
 
 def _market_relative(gap: Optional[float]) -> Optional[str]:
