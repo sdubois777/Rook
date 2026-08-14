@@ -93,10 +93,10 @@ describe('AvailablePlayers league toggle', () => {
     render(withLeague(<AvailablePlayers />, SNAKE))
 
     expect(screen.getByText('AI ADP')).toBeInTheDocument()
-    expect(screen.getByText('FP ADP')).toBeInTheDocument()
+    expect(screen.getByText('Market ADP')).toBeInTheDocument()
     expect(screen.queryByText('Ceiling')).not.toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument() // adp_rank rendered (not adp_ai 3.0)
-    expect(screen.getByText('4')).toBeInTheDocument() // FP ADP rendered as integer rank
+    expect(screen.getByText('4')).toBeInTheDocument() // Market ADP rendered as integer rank
   })
 
   it('shows dollar columns for auction', () => {
