@@ -56,10 +56,10 @@ describe('DraftBoard league toggle', () => {
     renderBoard(true)
     // headers repeat per round group, so allow multiples
     expect((await screen.findAllByText('AI ADP')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText('FP ADP').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Market ADP').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Diff').length).toBeGreaterThan(0)
     expect(screen.queryByText('AI Ceil')).not.toBeInTheDocument()
-    // FP ADP value rendered (Bijan fp_rank 5, unique)
+    // Market ADP value rendered (Bijan fp_rank 5, unique)
     expect(screen.getByText('5')).toBeInTheDocument()
   })
 

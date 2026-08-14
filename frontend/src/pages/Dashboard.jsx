@@ -210,7 +210,7 @@ export default function Dashboard() {
                       <PlayerBadges position={p.position} injuryStatus={p.injury_status} variant="dense" />
                       <span className="text-slate-300 truncate flex-1">{p.name}</span>
                       <span className="text-slate-500 font-mono text-[10px]">
-                        #{formatAdp(p)} · FP {formatFpAdp(p)}
+                        #{formatAdp(p)} · Market {formatFpAdp(p)}
                       </span>
                       <span className={`font-mono text-xs ${getAdpDiff(p) != null && getAdpDiff(p) > 0 ? 'text-emerald-400' : 'text-orange-400'}`}>
                         {formatAdpDiff(p)}

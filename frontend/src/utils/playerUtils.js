@@ -75,7 +75,9 @@ export function formatAdp(player) {
   return adp != null ? String(adp) : '--'
 }
 
-/** FP ADP as an integer string (it's a rank), or '--'. */
+/** The FantasyPros consensus ADP as an integer string (it's a rank), or '--'.
+ *  Labelled "Market ADP" everywhere it is shown; the function keeps the source
+ *  name because the field it reads is adp_fantasypros. */
 export function formatFpAdp(player) {
   const fp = getFpAdp(player)
   return fp != null ? String(Math.round(fp)) : '--'
@@ -260,7 +262,7 @@ export function getRecAdp(rec) {
   return null
 }
 
-/** Rec FP ADP (engine field is adp_fp). */
+/** A recommendation's consensus ADP, shown as "Market ADP" (engine field is adp_fp). */
 export function getRecFpAdp(rec) {
   return rec?.adp_fp ?? null
 }

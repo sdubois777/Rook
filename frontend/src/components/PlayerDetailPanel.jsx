@@ -476,7 +476,7 @@ function ValuationNumbers({ player, isSnake }) {
     return (
       <div className="grid grid-cols-3 gap-3">
         <StatBox label="AI ADP" value={getDisplayAdp(player) != null ? `#${getDisplayAdp(player)}` : '--'} accent />
-        <StatBox label="FP ADP" value={formatFpAdp(player)} />
+        <StatBox label="Market ADP" value={formatFpAdp(player)} />
         <StatBox label="Diff" value={formatAdpDiff(player)} />
       </div>
     )
