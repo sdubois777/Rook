@@ -88,7 +88,10 @@ export default function AvailablePlayers() {
         {isSnake ? (
           <>
             <span className="w-14 text-right">AI ADP</span>
-            <span className="w-14 text-right">FP ADP</span>
+            {/* w-20, not w-14 like the other cells: "Market ADP" is 64px at
+                text-[10px] uppercase and would wrap to two lines in a 56px cell,
+                doubling the header height. The value cell below matches. */}
+            <span className="w-20 text-right">Market ADP</span>
             <span className="w-10 text-right">Diff</span>
           </>
         ) : (
@@ -130,7 +133,7 @@ export default function AvailablePlayers() {
                   <span className="text-sm font-mono text-blue-400 w-14 text-right">
                     {formatAdp(p)}
                   </span>
-                  <span className="text-xs font-mono text-slate-500 w-14 text-right">
+                  <span className="text-xs font-mono text-slate-500 w-20 text-right">
                     {formatFpAdp(p)}
                   </span>
                   <span

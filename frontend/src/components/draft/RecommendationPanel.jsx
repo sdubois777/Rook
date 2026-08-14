@@ -113,7 +113,7 @@ export default function RecommendationPanel() {
       {isSnake ? (
         <div className="flex gap-3 text-xs text-slate-500 mt-2 font-mono">
           <span>AI ADP <span className="text-blue-400">{getRecAdp(rec) ?? '--'}</span></span>
-          <span>FP ADP <span className="text-slate-300">{getRecFpAdp(rec) ?? '--'}</span></span>
+          <span>Market ADP <span className="text-slate-300">{getRecFpAdp(rec) ?? '--'}</span></span>
           <span>Diff <span className="text-slate-300">{getRecAdpDiff(rec) ?? '--'}</span></span>
         </div>
       ) : (
