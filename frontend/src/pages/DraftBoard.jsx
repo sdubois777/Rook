@@ -372,11 +372,11 @@ export default function DraftBoard() {
 
           {isSnake ? (
             <>
-              {/* Snake: AI ADP (clean adp_rank) / FP ADP / Diff (fp_rank -
+              {/* Snake: AI ADP (clean adp_rank) / Market ADP / Diff (fp_rank -
                   adp_rank; positive = we rate them earlier than consensus).
                   OUR OWN PICK POSITION and Diff are the product — both visible at every
-                  tier, narrower at base. FP ADP is consensus (duplicate info) so it stays
-                  the one that gives way on a phone. */}
+                  tier, narrower at base. Market ADP is consensus (duplicate info) so it
+                  stays the one that gives way on a phone. */}
               <span className="block text-sm text-purple-400 font-mono w-10 sm:w-20 shrink-0 text-right">
                 {formatAdp(p)}
               </span>
@@ -486,7 +486,7 @@ export default function DraftBoard() {
         {isSnake ? (
           <>
             <span className="block w-10 sm:w-20 shrink-0"><SortableHeader label="AI ADP" shortLabel="ADP" sortKey="adp_rank" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
-            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="FP ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
+            <span className="hidden md:block w-20 shrink-0"><SortableHeader label="Market ADP" sortKey="adp_fantasypros" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-full justify-end" align="right" defaultOrder="asc" /></span>
             <SortableHeader label="Diff" sortKey="adp_diff" currentSort={sortKey} currentOrder={sortOrder} onSort={handleSort} className="w-12 sm:w-16 shrink-0" align="right" defaultOrder="desc" />
           </>
         ) : (
