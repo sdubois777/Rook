@@ -407,11 +407,32 @@ class EmailService:
     # bodies sit inside try/except and return a status string like send() does.
     # -----------------------------------------------------------------------
 
-    async def send_welcome(self, *, user, promo_code: str, referral_code: str) -> str:
+    async def send_welcome(
+        self,
+        *,
+        user,
+        promo_code: str,
+        referral_code: str,
+        dedupe_suffix: str | None = None,
+    ) -> str:
         """Welcome + first-month discount code for a new free signup.
 
         Never raises. Returns a SEND_* status; SEND_FAILED if the message could
         not even be built.
+
+        `dedupe_suffix` DELIBERATELY LETS THE SAME USER BE MAILED AGAIN, and exists
+        for one narrow case: a batch went out wrong and has to be corrected. It
+        happened once already — a run against the production database used a
+        development APP_URL, so twelve recipients got a message whose every link,
+        including the unsubscribe link, pointed at localhost.
+
+        The alternative was deleting those rows so the normal key could be reused.
+        That is worse: it erases the evidence that a broken message was sent, which
+        is the record you most want during the conversation that follows. A suffix
+        writes a NEW row and leaves the original intact.
+
+        Pass a short reason, e.g. "fixed-links". Never pass a timestamp or a random
+        value — the key would stop deduplicating and a retry would mail twice.
         """
         try:
             token = make_token(user.email)
@@ -430,7 +451,11 @@ class EmailService:
                 text=text,
                 template=TEMPLATE_WELCOME,
                 category=CATEGORY_PROMOTIONAL,
-                dedupe_key=f"welcome:{user.id}",
+                dedupe_key=(
+                    f"welcome:{user.id}:{dedupe_suffix}"
+                    if dedupe_suffix
+                    else f"welcome:{user.id}"
+                ),
                 user_id=user.id,
                 unsubscribe_token=token,
             )
