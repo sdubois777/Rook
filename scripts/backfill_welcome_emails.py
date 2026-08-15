@@ -53,6 +53,17 @@ Run (PowerShell). Plan first, always:
     $env:ROOK_ALLOW_PROD_WRITES = "1"
     uv run python scripts/backfill_welcome_emails.py --limit 1 --send
 
+GETTING A CODE TO A SUBSCRIBER, who is excluded from the batch on purpose:
+
+    $env:ROOK_ALLOW_PROD_WRITES = "1"
+    uv run python scripts/backfill_welcome_emails.py --code-for someone@example.com
+
+That prints one account's referral code and share link and sends nothing. It is
+still a write, because a code is minted on first read, so it takes the same prod
+override. Put the code in a note you write yourself — a paying customer is the
+best referrer you have, and a personal message from you converts better than a
+template anyway.
+
 No email address is printed in full unless --show-emails is passed; the plan masks
 them by default so a shared terminal or a pasted log does not leak the list.
 """
@@ -150,6 +161,54 @@ async def build_plan(db, limit: int | None) -> Plan:
     return plan
 
 
+async def print_code_for(db, address: str) -> int:
+    """Print one account's referral code, minting it if they have none. Sends nothing.
+
+    WHY THIS IS HERE. A subscriber is deliberately excluded from the batch: the
+    welcome email carries a first-month discount code that ReferralService refuses
+    for anyone who has ever subscribed, so mailing it would promise a discount that
+    fails at checkout. But a paying customer is the BEST referrer — they are paying
+    and they stayed — so they still need their code. This gets it out of the
+    database so it can go in a note written by a human.
+
+    It is a WRITE, because a code is minted on first read and most accounts have
+    never had theirs read. That is why it takes the prod override like --send does.
+    """
+    from backend.services.referral_service import ReferralService
+
+    wanted = (address or "").strip().lower()
+    user = (
+        await db.execute(select(User).where(User.email == wanted))
+    ).scalars().first()
+
+    if user is None:
+        print(f"\nNo account with the address {mask(wanted)}.")
+        print("The lookup is exact and case-insensitive; check for a typo.")
+        return 1
+    if user.deleted_at is not None:
+        print(f"\nThe account {mask(user.email)} is deleted.")
+        return 1
+
+    referrals = ReferralService.from_session(db)
+    code = await referrals.get_or_create_code(user.id)
+    await db.commit()
+
+    print()
+    print("=" * 72)
+    print(f"  account       : {mask(user.email)}")
+    print(f"  tier          : {user.tier}")
+    print(f"  referral code : {code}")
+    print(f"  share link    : {settings.app_url.rstrip('/')}/?ref={code}")
+    print("=" * 72)
+    if user.subscription_status is not None:
+        print()
+        print("  This account has (or had) a subscription, so it is NOT in the")
+        print("  backfill batch — the welcome email's first-month discount code")
+        print("  would be refused for them at checkout. The referral code above")
+        print("  is still valid and is what they should share.")
+    return 0
+
+
 async def send_one(db, user) -> str:
     """Mint the codes for one account and send. Returns the SEND_* status.
 
@@ -201,6 +260,9 @@ def print_plan(plan: Plan, *, show_emails: bool) -> None:
 
 async def run(args) -> int:
     async with AsyncSessionLocal() as db:
+        if args.code_for:
+            return await print_code_for(db, args.code_for)
+
         plan = await build_plan(db, args.limit)
         print_plan(plan, show_emails=args.show_emails)
 
@@ -262,16 +324,28 @@ def main() -> int:
         "--show-emails", action="store_true",
         help="print full addresses instead of masked ones",
     )
+    parser.add_argument(
+        "--code-for", metavar="EMAIL", default=None,
+        help=(
+            "print ONE account's referral code (minting it if absent) and exit. "
+            "Sends no email. Use this to get a code to a subscriber, who is "
+            "excluded from the batch on purpose."
+        ),
+    )
     args = parser.parse_args()
 
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.code_for and args.send:
+        parser.error("--code-for prints one code and sends nothing; drop --send")
 
-    # Prod write guard, only on the sending path. Reading to build a plan is
-    # harmless and should not require the override, or nobody will ever look
-    # before they leap.
+    # Prod write guard on both mutating paths. Building a PLAN is exempt: it only
+    # reads, and requiring an override just to look is how people stop looking.
+    # --code-for is NOT exempt — it mints a referral code, which is a write.
     if args.send:
         guard_writes("send welcome emails to existing accounts")
+    elif args.code_for:
+        guard_writes("mint a referral code for one account")
 
     return asyncio.run(run(args))
 

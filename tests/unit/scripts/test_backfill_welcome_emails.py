@@ -196,6 +196,46 @@ def test_send_requires_an_explicit_flag(monkeypatch):
     assert "guarded" not in called
 
 
+def test_code_for_also_consults_the_prod_write_guard(monkeypatch):
+    """--code-for MINTS a code when the account has none, so it is a write and must
+    take the same production override as sending."""
+    import scripts.backfill_welcome_emails as script
+
+    called = {}
+
+    def _guard(operation="database write"):
+        called["operation"] = operation
+
+    def _fake_asyncio_run(coro):
+        coro.close()
+        return 0
+
+    monkeypatch.setattr(script, "guard_writes", _guard)
+    monkeypatch.setattr(script.asyncio, "run", _fake_asyncio_run)
+    monkeypatch.setattr(
+        script.sys, "argv",
+        ["backfill_welcome_emails.py", "--code-for", "someone@example.com"],
+    )
+
+    assert script.main() == 0
+    assert "referral code" in called["operation"]
+
+
+def test_code_for_and_send_together_are_refused(monkeypatch):
+    """They mean opposite things — one prints and sends nothing, the other sends.
+    Accepting both would leave which one happened up to argument order."""
+    import scripts.backfill_welcome_emails as script
+
+    monkeypatch.setattr(
+        script.sys, "argv",
+        ["backfill_welcome_emails.py", "--code-for", "a@b.com", "--send"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        script.main()
+    assert exc.value.code == 2      # argparse usage error
+
+
 def test_send_consults_the_prod_write_guard(monkeypatch):
     import scripts.backfill_welcome_emails as script
 
