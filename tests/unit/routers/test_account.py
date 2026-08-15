@@ -305,6 +305,147 @@ async def test_resolve_limit_keeps_parks_and_commits():
     assert resp.json()["over_limit"] is False
 
 
+# ---------------------------------------------------------------------------
+# Referral state
+# ---------------------------------------------------------------------------
+
+def _referrer_state(count=2, percent_off=7):
+    """The dict ReferralService.referrer_state returns.
+
+    percent_off is deliberately NOT a rate the real program can produce: the
+    endpoint must pass the service's number through, not compute or correct one.
+    The cap and the per-referral rate come from REFERRAL_PROGRAM, as they do in
+    the real service."""
+    from backend.models.user import REFERRAL_PROGRAM
+
+    return {
+        "code": "ROOK-7K2M9X",
+        "referral_count": count,
+        "percent_off": percent_off,
+        "percent_off_cap": REFERRAL_PROGRAM["referrer_percent_off_cap"],
+        "percent_off_per_referral": REFERRAL_PROGRAM[
+            "referrer_percent_off_per_referral"
+        ],
+    }
+
+
+async def _get_referral(user, state, db=None):
+    """Call GET /account/referral with ReferralService.from_session stubbed."""
+    from backend.core.dependencies import get_current_user, get_db
+
+    service = AsyncMock()
+    service.referrer_state.return_value = state
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: (db if db is not None else AsyncMock())
+    with patch(
+        "backend.services.referral_service.ReferralService.from_session",
+        return_value=service,
+    ):
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                resp = await ac.get("/api/account/referral")
+        finally:
+            app.dependency_overrides.clear()
+    return resp, service
+
+
+@pytest.mark.asyncio
+async def test_referral_returns_the_callers_own_state():
+    user = _make_user(tier="standard")
+    user.subscription_status = "active"
+    state = _referrer_state(count=2, percent_off=7)
+
+    resp, service = await _get_referral(user, state)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == "ROOK-7K2M9X"
+    assert data["referral_count"] == 2
+    assert data["percent_off"] == 7
+    assert data["percent_off_cap"] == state["percent_off_cap"]
+    assert data["percent_off_per_referral"] == state["percent_off_per_referral"]
+    # Scoped by the authenticated user id and nothing else.
+    service.referrer_state.assert_awaited_once_with(user.id)
+
+
+@pytest.mark.asyncio
+async def test_referral_share_url_carries_the_code_as_a_ref_param():
+    from backend.config import settings
+
+    user = _make_user(tier="standard")
+    resp, _ = await _get_referral(user, _referrer_state())
+
+    assert resp.json()["share_url"] == f"{settings.app_url}/?ref=ROOK-7K2M9X"
+
+
+@pytest.mark.asyncio
+async def test_referral_never_reveals_who_redeemed():
+    """A count and a rate, never a list. The people who redeemed the code did
+    not consent to having their purchase disclosed to the referrer."""
+    user = _make_user(tier="standard")
+    resp, _ = await _get_referral(user, _referrer_state(count=3, percent_off=9))
+
+    assert set(resp.json()) == {
+        "code", "share_url", "referral_count", "percent_off",
+        "percent_off_cap", "percent_off_per_referral", "eligible",
+    }
+
+
+@pytest.mark.asyncio
+async def test_referral_commits_so_a_new_code_survives_the_request():
+    """Codes are minted lazily on first read and the service does not commit."""
+    user = _make_user(tier="standard")
+    db = AsyncMock()
+
+    resp, _ = await _get_referral(user, _referrer_state(), db=db)
+
+    assert resp.status_code == 200
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_referral_is_eligible_on_a_monthly_subscription():
+    user = _make_user(tier="standard")
+    user.subscription_status = "active"
+    user.tier_expires_at = None
+
+    resp, _ = await _get_referral(user, _referrer_state())
+
+    assert resp.json()["eligible"] is True
+
+
+@pytest.mark.asyncio
+async def test_referral_is_not_eligible_on_the_free_tier():
+    """Nothing to attach a recurring coupon to. The rate is still reported —
+    it is earned and it applies once they take a monthly plan."""
+    user = _make_user(tier="free")
+    user.subscription_status = None
+
+    resp, _ = await _get_referral(user, _referrer_state(count=1, percent_off=6))
+
+    data = resp.json()
+    assert data["eligible"] is False
+    assert data["percent_off"] == 6
+
+
+@pytest.mark.asyncio
+async def test_referral_is_not_eligible_on_a_season_pass():
+    """A season pass is a one-time payment with no recurring invoice, and the
+    program covers monthly intervals only."""
+    from datetime import timedelta
+
+    user = _make_user(tier="pro")
+    user.subscription_status = "active"
+    user.tier_expires_at = datetime.now(timezone.utc) + timedelta(days=90)
+
+    resp, _ = await _get_referral(user, _referrer_state())
+
+    assert resp.json()["eligible"] is False
+
+
 @pytest.mark.asyncio
 async def test_get_connected_platforms():
     """GET /account/credentials returns the platforms with stored credentials."""

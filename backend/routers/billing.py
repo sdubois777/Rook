@@ -9,6 +9,7 @@ success-return URL grants nothing — entitlement flips solely in the webhook.
 """
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from backend.middleware.rate_limit import rate_limit_auth
 from backend.models.user import CREDIT_PACKS, User
 from backend.repositories.user_repo import UserRepository
 from backend.services.billing import catalog, stripe_gateway
+
+logger = logging.getLogger(__name__)
 
 # proration_date reuse window: the confirm must reuse the preview's timestamp so
 # the charge matches, but a client-supplied far-future value (e.g. period_end)
@@ -48,7 +51,7 @@ public_router = APIRouter(prefix="/billing", tags=["billing"])
 @public_router.get("/pricing")
 async def get_pricing():
     from backend.models.user import (
-        CREDIT_COSTS, CREDIT_PACKS, TIER_LIMITS, TIER_ORDER,
+        CREDIT_COSTS, CREDIT_PACKS, REFERRAL_PROGRAM, TIER_LIMITS, TIER_ORDER,
     )
 
     return {
@@ -71,6 +74,19 @@ async def get_pricing():
             {"id": name, "price_usd": p["price_usd"], "credits": p["credits"]}
             for name, p in CREDIT_PACKS.items()
         ],
+        # Referral percentages, served from REFERRAL_PROGRAM so the frontend
+        # renders them instead of restating them. A number typed into a React
+        # component is the drift this block exists to prevent.
+        "referral": {
+            "welcome_percent_off": REFERRAL_PROGRAM["welcome_percent_off"],
+            "referred_percent_off": REFERRAL_PROGRAM["referred_percent_off"],
+            "referrer_percent_off_per_referral":
+                REFERRAL_PROGRAM["referrer_percent_off_per_referral"],
+            "referrer_percent_off_cap":
+                REFERRAL_PROGRAM["referrer_percent_off_cap"],
+            # Tuple in the source dict; JSON has no tuple, so serve a list.
+            "eligible_intervals": list(REFERRAL_PROGRAM["eligible_intervals"]),
+        },
     }
 
 
@@ -82,6 +98,10 @@ class CheckoutRequest(BaseModel):
     tier: Optional[Literal["standard", "pro"]] = None
     interval: Literal["monthly", "season"] = "monthly"
     pack: Optional[str] = None  # validated against CREDIT_PACKS (source of truth)
+    # Referral or welcome code. The code names a discount; the PERCENTAGE is
+    # resolved server-side by ReferralService — the client never supplies an
+    # amount here any more than it supplies a price id.
+    code: Optional[str] = None
 
     @model_validator(mode="after")
     def _exactly_one(self):
@@ -89,6 +109,11 @@ class CheckoutRequest(BaseModel):
             raise ValueError("Provide exactly one of 'tier' or 'pack'")
         if self.pack is not None and self.pack not in CREDIT_PACKS:
             raise ValueError(f"Unknown pack '{self.pack}'")
+        # Normalize once, here, so every downstream read (validation, Stripe
+        # metadata, the redemption row) sees the same string. An all-whitespace
+        # code becomes None rather than an empty string that reads as "supplied".
+        if self.code is not None:
+            self.code = self.code.strip().upper() or None
         return self
 
 
@@ -139,7 +164,7 @@ def _create_pack_session(user: User, customer_id: str, pack: str) -> str:
         raise HTTPException(
             status_code=400, detail=f"No price configured for pack '{pack}'"
         )
-    return stripe_gateway.create_checkout_session(
+    session = stripe_gateway.create_checkout_session(
         customer_id=customer_id,
         mode="payment",
         price_id=price_id,
@@ -151,6 +176,9 @@ def _create_pack_session(user: User, customer_id: str, pack: str) -> str:
         # return the prior, already-completed session ("you're all done here").
         idempotency_key=f"co_{user.id}_pack_{pack}_{uuid.uuid4()}",
     )
+    # Packs carry no discount, so there is nothing to reserve and the session id
+    # is not needed here — the webhook keys the credit grant on it itself.
+    return session.url
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
@@ -164,6 +192,14 @@ async def create_checkout(
     customer_id = await _ensure_customer(user, db)
 
     if body.pack:
+        # A code on a pack purchase is an error, not something to drop quietly.
+        # Silently ignoring it would charge full price while the user believes a
+        # discount was applied, and they would only find out on the receipt.
+        if body.code:
+            raise HTTPException(
+                status_code=400,
+                detail="Discount codes apply to subscription plans, not credit packs.",
+            )
         return CheckoutResponse(url=_create_pack_session(user, customer_id, body.pack))
 
     price_id = catalog.tier_to_price(body.tier, body.interval)
@@ -172,26 +208,159 @@ async def create_checkout(
             status_code=400,
             detail=f"No price configured for tier '{body.tier}' ({body.interval})",
         )
+
+    metadata = {
+        "tier": body.tier, "interval": body.interval,
+        "user_id": str(user.id),
+    }
+    discounts = None
+    referrals = None
+    reservation_id = None
+    if body.code:
+        # ReferralService is the single judge — it enforces monthly-only,
+        # self-referral, mutual referral, the welcome code's audience, and
+        # one-per-kind. The coupon is chosen from the KIND it returns, so the
+        # percentage on the Stripe coupon and the percentage we record both trace
+        # back to REFERRAL_PROGRAM.
+        from backend.services.referral_service import (
+            CHECKOUT_IN_FLIGHT_MESSAGE,
+            ReferralService,
+        )
+
+        referrals = ReferralService.from_session(db)
+        resolved = await referrals.resolve_code(
+            code=body.code,
+            redeemer_user_id=user.id,
+            interval=body.interval,
+        )
+        if not resolved.valid:
+            raise HTTPException(status_code=400, detail=resolved.message)
+
+        # Pick the coupon BEFORE the reservation exists. referral_coupon_id
+        # raises ValueError on a kind it does not know, and raising it after the
+        # reservation is committed but before the release handler below is
+        # installed would leave the slot held by a checkout that was never
+        # created. Nothing has been written yet at this line, so a raise here
+        # costs nothing.
+        discounts = [{"coupon": catalog.referral_coupon_id(resolved.kind)}]
+
+        # RESERVE BEFORE STRIPE. Resolving alone cannot stop two tabs: both read
+        # a clean slate, both get a session carrying the coupon, and both can be
+        # paid. The reservation takes the account's one-per-kind slot at the
+        # database, so the second attempt loses here — before a discounted
+        # session exists to be paid. Doing it the other way round would leave a
+        # live discounted session behind whenever the reservation lost.
+        reservation_id = await referrals.reserve_for_checkout(
+            resolved=resolved, redeemer_user_id=user.id, code=body.code
+        )
+        if reservation_id is None:
+            # The same sentence resolve_code produces for an open checkout, from
+            # the one definition, because it is the same situation: this account
+            # has a payable discounted session already.
+            raise HTTPException(status_code=400, detail=CHECKOUT_IN_FLIGHT_MESSAGE)
+
+        # The webhook records the redemption from these fields — it cannot re-run
+        # the lookup, because by then the code may have been reused or revoked.
+        # Every Stripe metadata value must be a string, so the referrer id is an
+        # empty string (not None, not omitted) when there is no referrer.
+        metadata.update({
+            "redeemed_code": body.code,
+            "redeemed_kind": resolved.kind,
+            "redeemed_percent_off": str(resolved.percent_off),
+            "referrer_user_id": (
+                str(resolved.referrer_user_id) if resolved.referrer_user_id else ""
+            ),
+        })
+
     # SEASON = one-time payment (mode=payment) granting the tier until the
     # season entitlement end; MONTHLY = recurring subscription. Proration/
     # change-plan applies only to subscriptions — season purchases go through
     # here in both directions (see change-plan notes).
     mode = "payment" if body.interval == "season" else "subscription"
-    url = stripe_gateway.create_checkout_session(
-        customer_id=customer_id,
-        mode=mode,
-        price_id=price_id,
-        # These pages grant NOTHING (§0.B) — the webhook is the only grantor.
-        success_url=f"{settings.app_url}/account?billing=success",
-        cancel_url=f"{settings.app_url}/pricing?billing=cancel",
-        metadata={
-            "tier": body.tier, "interval": body.interval,
-            "user_id": str(user.id),
-        },
-        # Fresh session per attempt (see _create_pack_session).
-        idempotency_key=f"co_{user.id}_tier_{body.tier}_{body.interval}_{uuid.uuid4()}",
+    try:
+        session = stripe_gateway.create_checkout_session(
+            customer_id=customer_id,
+            mode=mode,
+            price_id=price_id,
+            # These pages grant NOTHING (§0.B) — the webhook is the only grantor.
+            success_url=f"{settings.app_url}/account?billing=success",
+            cancel_url=f"{settings.app_url}/pricing?billing=cancel",
+            metadata=metadata,
+            discounts=discounts,
+            # Fresh session per attempt (see _create_pack_session).
+            idempotency_key=f"co_{user.id}_tier_{body.tier}_{body.interval}_{uuid.uuid4()}",
+        )
+        if reservation_id is not None:
+            # Now the reservation can be found by the webhook: it looks the row
+            # up by the Stripe session id on the completed event. INSIDE the try
+            # because this is a database write and it can fail: a reservation
+            # still carrying its provisional id can never be matched, so the
+            # webhook would not find it and the slot would stay held for the full
+            # pending TTL behind a discounted session that IS payable.
+            await referrals.attach_checkout_session(reservation_id, session.id)
+    except Exception:
+        # Either Stripe never produced a session, or it did and we could not
+        # point the reservation at it. Both leave a slot held for a checkout the
+        # webhook can never match, so give it back.
+        #
+        # When the session DID get created, releasing is still the right move:
+        # the discounted session stays payable, and the webhook's fallback path
+        # records the redemption from the completed event's metadata, keyed on
+        # the session id. The referrer is still paid, once.
+        if reservation_id is not None:
+            try:
+                await referrals.release_reservation(reservation_id)
+            except Exception:
+                # Swallowed on purpose. Raising here would replace the real
+                # failure — the Stripe error the caller needs to see — with a
+                # database error from the cleanup, and would skip the `raise`
+                # below entirely.
+                logger.exception(
+                    "Could not release referral reservation %s for user %s",
+                    reservation_id, user.id,
+                )
+        raise
+
+    return CheckoutResponse(url=session.url)
+
+
+class ValidateCodeRequest(BaseModel):
+    code: str
+    interval: Literal["monthly", "season"] = "monthly"
+
+
+class ValidateCodeResponse(BaseModel):
+    valid: bool
+    percent_off: int
+    message: str
+
+
+@router.post("/validate-code", response_model=ValidateCodeResponse)
+async def validate_code(
+    body: ValidateCodeRequest,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Check a discount code without applying anything.
+
+    Purely so the UI can show "30% off your first month" beside the input before
+    the user is redirected to Stripe. It writes nothing and creates no session;
+    /checkout re-resolves the code independently, so a code that goes stale
+    between the two calls is still caught. Stripe need not be configured for this
+    to answer — no Stripe call is made.
+    """
+    from backend.services.referral_service import ReferralService
+
+    resolved = await ReferralService.from_session(db).resolve_code(
+        code=body.code,
+        redeemer_user_id=user.id,
+        interval=body.interval,
     )
-    return CheckoutResponse(url=url)
+    return ValidateCodeResponse(
+        valid=resolved.valid,
+        percent_off=resolved.percent_off,
+        message=resolved.message,
+    )
 
 
 class CheckoutPackRequest(BaseModel):

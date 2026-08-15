@@ -19,7 +19,8 @@ from __future__ import annotations
 from typing import Optional
 
 from backend.config import Settings, settings
-from backend.models.user import CREDIT_PACKS, TIER_ORDER
+from backend.models.referral import KIND_REFERRAL, KIND_WELCOME
+from backend.models.user import CREDIT_PACKS, REFERRAL_PROGRAM, TIER_ORDER
 
 INTERVALS = ("monthly", "season")
 
@@ -103,3 +104,40 @@ def price_to_pack_credits(price_id: str, s: Settings = settings) -> Optional[int
         if configured and configured == price_id:
             return pack_to_credits(pack)
     return None
+
+
+# ── Referral coupons ────────────────────────────────────────────────────
+#
+# Coupon ids are DERIVED from the percentage, never configured:
+#
+#   rook_once_PCT      one-time coupons (welcome, referred) — first month only
+#   rook_forever_PCT   the referrer's recurring reward, applied for as long as
+#                      the subscription lives
+#
+# where PCT is the integer percentage. Deterministic ids mean the seeder
+# (scripts/stripe_seed_referral_coupons.py) and this runtime agree without a
+# lookup table, an env var per coupon, or a DB round-trip. Changing a percentage
+# in REFERRAL_PROGRAM changes the id, so the seeder creates the new coupon and
+# nothing silently keeps charging the old rate.
+
+def referral_coupon_id(kind: str) -> str:
+    """Coupon id for a one-time discount kind (welcome or referral)."""
+    percent = {
+        KIND_WELCOME: REFERRAL_PROGRAM["welcome_percent_off"],
+        KIND_REFERRAL: REFERRAL_PROGRAM["referred_percent_off"],
+    }.get(kind)
+    if percent is None:
+        raise ValueError(f"Unknown redemption kind '{kind}'")
+    return f"rook_once_{percent}"
+
+
+def referrer_coupon_id(percent_off: int) -> Optional[str]:
+    """Coupon id for the referrer's recurring reward at this rate.
+
+    None at 0% — there is no zero-percent coupon object. The caller clears the
+    subscription's discounts instead (stripe_gateway.set_subscription_discount
+    with coupon_id=None).
+    """
+    if percent_off <= 0:
+        return None
+    return f"rook_forever_{percent_off}"

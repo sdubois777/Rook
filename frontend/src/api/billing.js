@@ -9,8 +9,15 @@ import { apiClient } from './client'
 
 // Tier checkout. interval: 'monthly' (recurring sub) | 'season' (one-time
 // season pass). Returns the Checkout URL.
-export async function createCheckout(tier, interval = 'monthly') {
-  const { data } = await apiClient.post('/billing/checkout', { tier, interval })
+//
+// `code` is an optional referral or welcome code. Like the tier, it is a NAME:
+// the server resolves it to a percentage and rejects it if it does not apply, so
+// the client never sends an amount. Omitted from the body entirely when empty,
+// because a blank string reads to the server as "a code was supplied".
+export async function createCheckout(tier, interval = 'monthly', code = '') {
+  const body = { tier, interval }
+  if (code) body.code = code
+  const { data } = await apiClient.post('/billing/checkout', body)
   return data.url
 }
 

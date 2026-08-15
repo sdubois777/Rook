@@ -176,7 +176,11 @@ async def test_clerk_webhook_is_idempotent():
     }
 
     mock_db = AsyncMock()
-    mock_db.execute.return_value = None
+    # ON CONFLICT DO NOTHING returns no row, which is how the handler tells a
+    # duplicate from a real signup (and why it does not re-send the welcome mail).
+    duplicate = MagicMock()
+    duplicate.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = duplicate
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_db)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)

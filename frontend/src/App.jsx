@@ -7,6 +7,7 @@ import { LeagueProvider } from './context/LeagueContext'
 import BillingNotice from './components/BillingNotice'
 import FeedbackModal from './components/FeedbackModal'
 import { useUIStore } from './stores/ui'
+import { useReferralCapture } from './hooks/useReferralCode'
 import Landing from './pages/Landing'
 import Pricing from './pages/Pricing'
 import Dashboard from './pages/Dashboard'
@@ -49,6 +50,11 @@ function App() {
     loadWatchlist().catch(() => {})
     loadStrategy().catch(() => {})
   }, [loadWatchlist, loadStrategy])
+
+  // A referral link lands on a PUBLIC route and the code is not used until
+  // checkout, which is after Clerk's sign-up. This must therefore run above the
+  // public/protected split, not inside a page.
+  useReferralCapture()
 
   const isPublic = PUBLIC_ROUTES.some(
     (r) => location.pathname === r || location.pathname.startsWith(r + '/')

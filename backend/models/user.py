@@ -99,6 +99,77 @@ CREDIT_PACKS: dict[str, dict] = {
     "credits_500": {"price_usd": 25, "credits": 500},
 }
 
+# ---------------------------------------------------------------------------
+# Referral program — percentages live HERE and nowhere else.
+#
+# Same anti-drift rule as the pricing dicts above: the Stripe coupon seeder, the
+# referral service, the public /billing/pricing sheet, the email templates, and
+# the frontend copy all DERIVE from this dict. A percentage written into a
+# template string or a React component is the drift this block exists to stop.
+#
+# THREE DISCOUNTS, three different audiences:
+#   * welcome_percent_off      — emailed to a free signup who has not paid. A
+#                                conversion nudge, redeemable whenever they
+#                                subscribe. One per user, ever.
+#   * referred_percent_off     — a NEW customer who checks out with someone
+#                                else's referral code. One per user, ever.
+#   * referrer_percent_off_*   — the reward the REFERRER earns. Each confirmed
+#                                referral adds `per_referral`, stacking up to
+#                                `cap`. Applied as ONE recurring coupon at the
+#                                summed rate (not N stacked coupons — Stripe
+#                                stacking semantics are ambiguous and a
+#                                per-referral coupon cannot be reversed cleanly
+#                                when a referral is refunded).
+#
+# MONTHLY ONLY (decided). Season passes ($29/$59) are one-time payments with no
+# recurring invoice, so a recurring referrer discount has nothing to attach to
+# and "30% off the first month" is undefined. Both discount paths refuse a
+# season checkout rather than silently applying to the full season price. Flip
+# `eligible_intervals` to ("monthly", "season") to change that — but read
+# docs/referral_and_email_design.md first, because the referrer reward needs a
+# different mechanism for one-time payments.
+# ---------------------------------------------------------------------------
+
+REFERRAL_PROGRAM: dict = {
+    "welcome_percent_off": 20,
+    "referred_percent_off": 30,
+    "referrer_percent_off_per_referral": 10,
+    "referrer_percent_off_cap": 50,          # 5 referrals × 10%
+    "eligible_intervals": ("monthly",),
+    # Code shown to the user and typed by their friend. Ambiguous characters
+    # (0/O, 1/I/L) are excluded — these get read aloud and retyped from memory.
+    "code_prefix": "ROOK",
+    "code_alphabet": "23456789ABCDEFGHJKMNPQRSTUVWXYZ",
+    "code_length": 6,
+}
+
+
+def referrer_percent_off(referral_count: int) -> int:
+    """The referrer's total discount rate for `referral_count` confirmed referrals.
+
+    Capped, and floored at 0 so a reversal that drives the count negative (it
+    shouldn't, but a reversal race could) can never produce a negative coupon.
+    """
+    per = REFERRAL_PROGRAM["referrer_percent_off_per_referral"]
+    cap = REFERRAL_PROGRAM["referrer_percent_off_cap"]
+    return max(0, min(cap, per * max(0, referral_count)))
+
+
+def referral_percent_tiers() -> tuple[int, ...]:
+    """Every referrer discount rate the program can produce, ascending.
+
+    The coupon seeder creates exactly one Stripe coupon per rate, so this is
+    what bounds the number of coupon objects (5 at 10/20/30/40/50).
+    """
+    per = REFERRAL_PROGRAM["referrer_percent_off_per_referral"]
+    cap = REFERRAL_PROGRAM["referrer_percent_off_cap"]
+    return tuple(range(per, cap + 1, per))
+
+
+def interval_is_referral_eligible(interval: str) -> bool:
+    """True when a referral/welcome discount may be applied to this interval."""
+    return interval in REFERRAL_PROGRAM["eligible_intervals"]
+
 
 def is_unlimited(tier: str) -> bool:
     """True for paid tiers — metered features run with no debit at all."""
