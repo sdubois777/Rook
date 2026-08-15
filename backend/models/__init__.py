@@ -17,6 +17,8 @@ from backend.models.platform_credential import PlatformCredential
 from backend.models.market_value_historic import MarketValueHistoric
 from backend.models.player_format_values import PlayerFormatValues
 from backend.models.value_snapshot import ValueSnapshot
+from backend.models.referral import ReferralCode, CodeRedemption
+from backend.models.email import EmailSend, EmailSuppression
 
 __all__ = [
     "ValueSnapshot",
@@ -46,4 +48,8 @@ __all__ = [
     "UserLeague",
     "PlatformCredential",
     "MarketValueHistoric",
+    "ReferralCode",
+    "CodeRedemption",
+    "EmailSend",
+    "EmailSuppression",
 ]

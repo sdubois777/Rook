@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import { createCheckout, redirectTo } from '../../api/billing'
+import { validateCode } from '../../api/referral'
+import { readStoredReferralCode } from '../../hooks/useReferralCode'
 import { usePricing } from '../../hooks/usePricing'
 
 /**
@@ -52,12 +54,51 @@ export default function PricingTable({ showHeader = true }) {
   const { tiers, packs, creditCost, isLoading } = usePricing()
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState('')
+  // Pre-filled from a ?ref= link captured at boot. It is only a hint — the
+  // server resolves the code and decides the discount.
+  const [code, setCode] = useState(() => readStoredReferralCode())
+  const [codeResult, setCodeResult] = useState(null) // { valid, percent_off, message }
+  const [checkingCode, setCheckingCode] = useState(false)
+
+  const enteredCode = code.trim().toUpperCase()
+
+  // Ask the server what this code is worth. Writes nothing and creates no
+  // checkout session, so it is safe to call from the input and again from the
+  // buy button. Returns the verdict; null when the call itself failed.
+  const runValidation = async (interval) => {
+    setCheckingCode(true)
+    try {
+      const result = await validateCode(enteredCode, interval)
+      setCodeResult(result)
+      return result
+    } catch {
+      setCodeResult(null)
+      setError('Could not check that code. Please try again.')
+      return null
+    } finally {
+      setCheckingCode(false)
+    }
+  }
 
   const startCheckout = async (tierId, interval) => {
     setBusy(`${tierId}:${interval}`)
     setError('')
     try {
-      redirectTo(await createCheckout(tierId, interval))
+      // Validate before redirecting: an invalid code would otherwise be a 400
+      // from /billing/checkout with the user already halfway to Stripe. Checkout
+      // re-resolves it server-side regardless — this is for the message, not for
+      // trust. Season checkouts never carry a code (the buttons are disabled
+      // while one is entered), so only the monthly path validates.
+      let applied = ''
+      if (enteredCode && interval === 'monthly') {
+        const result = await runValidation(interval)
+        if (!result || !result.valid) {
+          setBusy(null)
+          return
+        }
+        applied = enteredCode
+      }
+      redirectTo(await createCheckout(tierId, interval, applied))
     } catch {
       setError('Could not start checkout. Please try again.')
       setBusy(null)
@@ -86,6 +127,58 @@ export default function PricingTable({ showHeader = true }) {
               Start free. Paid plans are unlimited — one price, no credits.
             </p>
           </>
+        )}
+
+        {/* Discount code. Signed-in only: it has nothing to act on until there
+            is a checkout to attach it to, and the signed-out CTAs are sign-up
+            links. */}
+        {isSignedIn && (
+          <div className="mb-10 max-w-md mx-auto">
+            <label
+              htmlFor="referral-code"
+              className="block text-sm text-gray-400 mb-2"
+            >
+              Referral or welcome code (optional)
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="referral-code"
+                type="text"
+                value={code}
+                onChange={(e) => {
+                  setCode(e.target.value)
+                  setCodeResult(null)
+                }}
+                placeholder="Enter a code"
+                className="flex-1 px-3 py-2 min-h-11 lg:min-h-0 text-sm bg-gray-900 text-gray-200 border border-gray-700 rounded-lg focus:outline-none focus:border-brand placeholder-gray-600 uppercase"
+              />
+              <button
+                type="button"
+                onClick={() => runValidation('monthly')}
+                disabled={!enteredCode || checkingCode}
+                className="px-4 py-2 min-h-11 lg:min-h-0 text-sm font-semibold border border-gray-700 text-gray-200 rounded-lg hover:border-gray-500 disabled:opacity-50 transition-colors"
+              >
+                {checkingCode ? 'Checking…' : 'Check'}
+              </button>
+            </div>
+            {codeResult && (
+              <p
+                className={`mt-2 text-sm ${
+                  codeResult.valid ? 'text-green-400' : 'text-red-400'
+                }`}
+              >
+                {codeResult.message}
+              </p>
+            )}
+            {enteredCode && (
+              <p className="mt-2 text-xs text-gray-500">
+                Codes apply to monthly plans only. A season pass is one payment
+                with no later months to discount, so the season buttons are
+                disabled while a code is entered — clear the code to buy a
+                season pass.
+              </p>
+            )}
+          </div>
         )}
 
         <div className="grid md:grid-cols-3 gap-6">
@@ -158,9 +251,17 @@ export default function PricingTable({ showHeader = true }) {
                         ? 'Redirecting…'
                         : `Monthly — $${tier.price_monthly_usd}/mo`}
                     </button>
+                    {/* Disabled while a code is entered: the server refuses a
+                        code on a season interval, so buying here would either
+                        drop the discount silently or return a 400. */}
                     <button
                       onClick={() => startCheckout(tier.id, 'season')}
-                      disabled={busy !== null}
+                      disabled={busy !== null || !!enteredCode}
+                      title={
+                        enteredCode
+                          ? 'Discount codes apply to monthly plans only'
+                          : undefined
+                      }
                       className="block w-full text-center py-2.5 rounded-lg font-semibold text-sm transition-colors disabled:opacity-50 border border-gray-700 text-gray-200 hover:border-gray-500"
                     >
                       {busy === `${tier.id}:season`

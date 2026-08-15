@@ -15,6 +15,16 @@ export const PRICING_FIXTURE = {
     { id: 'credits_200', price_usd: 9, credits: 200 },
     { id: 'credits_500', price_usd: 25, credits: 500 },
   ],
+  // Deliberately NOT the production percentages: a component that renders these
+  // numbers is reading the sheet, and one that renders the real ones has them
+  // written into it.
+  referral: {
+    welcome_percent_off: 15,
+    referred_percent_off: 25,
+    referrer_percent_off_per_referral: 5,
+    referrer_percent_off_cap: 35,
+    eligible_intervals: ['monthly'],
+  },
 }
 
 export function pricingHookValue() {
@@ -24,6 +34,7 @@ export function pricingHookValue() {
     tiers: PRICING_FIXTURE.tiers,
     tierById: byId,
     packs: PRICING_FIXTURE.packs,
+    referral: PRICING_FIXTURE.referral,
     tierLabel: (id) => {
       const t = byId[id]
       if (!t) return id

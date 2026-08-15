@@ -61,16 +61,68 @@ class FakeLeagueReconciler:
         self.calls.append((user_id, tier))
 
 
+class FakeReferralRepo:
+    """In-memory stand-in for ReferralRepository.
+
+    Models the two things the webhook depends on: a reservation flips to
+    confirmed exactly once, and record_redemption is insert-or-skip on the
+    session id.
+    """
+
+    def __init__(
+        self, *, pending=(), confirmed_count=0, redemption=None, counts_by_user=None
+    ):
+        # session ids that were reserved at checkout time and not yet confirmed
+        self._pending = set(pending)
+        self._confirmed = set()
+        self._confirmed_count = confirmed_count
+        # Per-user override. The count is asked for TWO different users during one
+        # checkout — the referrer being rewarded, and the subscribing customer
+        # themselves, whose own earned rate is pushed onto the subscription they
+        # just started. Answering the same number for both makes every new
+        # subscriber look like they already had referrals, which is not a state
+        # that can exist. Tests that care set this per user id.
+        self._counts_by_user = dict(counts_by_user or {})
+        self._redemption = redemption
+        self.recorded = []
+
+    async def confirm_redemption(self, stripe_session_id):
+        if stripe_session_id not in self._pending:
+            return False
+        self._pending.discard(stripe_session_id)
+        self._confirmed.add(stripe_session_id)
+        return True
+
+    async def record_redemption(self, **kwargs):
+        session_id = kwargs["stripe_session_id"]
+        if session_id in self._confirmed:
+            return False
+        self._confirmed.add(session_id)
+        self.recorded.append(kwargs)
+        return True
+
+    async def confirmed_referral_count(self, referrer_user_id):
+        return self._counts_by_user.get(referrer_user_id, self._confirmed_count)
+
+    async def redemption_for_redeemer(self, redeemer_user_id):
+        return self._redemption
+
+
 class FakeUserRepo:
     """Duck-types the UserRepository methods the webhook + UserService touch."""
 
     def __init__(self, user):
         self._user = user
+        # Extra rows the webhook can look up by id (a referrer, for instance).
+        self.by_id = {user.id: user}
 
     async def get_by_stripe_customer_id(self, customer_id):
         if self._user.stripe_customer_id == customer_id:
             return self._user
         return None
+
+    async def get(self, user_id):
+        return self.by_id.get(user_id)
 
     async def get_or_404(self, user_id):
         return self._user
@@ -111,7 +163,7 @@ def _make_user(tier="free", credits=30, customer_id="cus_1"):
     )
 
 
-def _build(user):
+def _build(user, referrals=None):
     repo = FakeUserRepo(user)
     events = FakeEventRepo()
     db = MagicMock()
@@ -126,9 +178,11 @@ def _build(user):
         events=events,
         packs=(packs := FakePackRepo()),
         leagues=(leagues := FakeLeagueReconciler()),
+        referrals=(referrals or FakeReferralRepo()),
     )
     service._test_packs = packs
     service._test_leagues = leagues
+    service._test_users = repo
     return service, db
 
 
@@ -376,6 +430,428 @@ async def test_subscription_deleted_keeps_unexpired_season_entitlement():
     )
     assert user.tier == "pro"                 # season entitlement holds
     assert user.stripe_subscription_id is None
+
+
+# ── referral redemption + reward ────────────────────────────────────────
+
+def _plain_subscription_checkout(session_id="cs_plain_1"):
+    """A completed subscription checkout carrying NO discount code — the ordinary
+    case, and the one where the subscriber's own earned referrer rate applies."""
+    return {
+        "id": session_id,
+        "customer": "cus_1",
+        "mode": "subscription",
+        "subscription": "sub_new",
+        "metadata": {"tier": "standard", "interval": "monthly"},
+    }
+
+
+def _referral_checkout(referrer_id, session_id="cs_ref_1", percent_off=30):
+    """A completed subscription checkout carrying the metadata our own checkout
+    endpoint wrote when it applied a referral code."""
+    return {
+        "id": session_id,
+        "customer": "cus_1",
+        "mode": "subscription",
+        "subscription": "sub_new",
+        "metadata": {
+            "tier": "standard",
+            "interval": "monthly",
+            "redeemed_code": "ROOK-FRIEND",
+            "redeemed_kind": "referral",
+            "redeemed_percent_off": str(percent_off),
+            "referrer_user_id": str(referrer_id) if referrer_id else "",
+        },
+    }
+
+
+@pytest.fixture
+def captured_discounts(monkeypatch):
+    """Record every set_subscription_discount call instead of reaching Stripe."""
+    from backend.services.billing import stripe_gateway
+
+    calls = []
+    monkeypatch.setattr(
+        stripe_gateway, "set_subscription_discount",
+        lambda **kw: calls.append(kw),
+    )
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def _no_email(monkeypatch):
+    """Referral emails are covered separately; keep them out of every other test."""
+    from backend.services.email.email_service import EmailService
+
+    monkeypatch.setattr(
+        EmailService, "send_referral_reward", AsyncMock(return_value="skipped")
+    )
+
+
+def _referrer(user_repo, *, subscription_id="sub_referrer"):
+    referrer = _make_user(tier="standard", credits=0, customer_id="cus_referrer")
+    referrer.stripe_subscription_id = subscription_id
+    user_repo.by_id[referrer.id] = referrer
+    return referrer
+
+
+@pytest.mark.asyncio
+async def test_checkout_confirms_the_reservation_and_raises_the_referrer_rate(
+    captured_discounts,
+):
+    """The whole money path: the reservation written at checkout time is
+    confirmed, and the referrer's coupon is recomputed from the live count."""
+    from backend.models.user import referrer_percent_off
+
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(pending={"cs_ref_1"}, confirmed_count=2)
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    obj = _referral_checkout(referrer.id)
+    await service.process(_event("checkout.session.completed", obj))
+
+    assert user.tier == "standard"
+    assert captured_discounts[0]["sub_id"] == "sub_referrer"
+    # Two live referrals => the summed rate, from REFERRAL_PROGRAM.
+    assert captured_discounts[0]["coupon_id"].endswith(str(referrer_percent_off(2)))
+
+
+@pytest.mark.asyncio
+async def test_referral_reward_moves_exactly_once_under_redelivery(
+    captured_discounts,
+):
+    """Stripe delivers at least once and a redelivery may carry a different event
+    id, so the session id is the only stable key."""
+    user = _make_user(tier="free", credits=30)
+    # The subscribing customer has referred nobody, so the only coupon pushed is
+    # the referrer's reward. Without this the fake answers 1 for every user id,
+    # including the brand-new subscriber, and their own earned rate is pushed too.
+    referrals = FakeReferralRepo(
+        pending={"cs_ref_1"}, confirmed_count=1, counts_by_user={user.id: 0}
+    )
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    obj = _referral_checkout(referrer.id)
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_a"))
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_b"))
+
+    assert len(captured_discounts) == 1
+
+
+@pytest.mark.asyncio
+async def test_checkout_records_the_redemption_when_no_reservation_exists(
+    captured_discounts,
+):
+    """The reservation is the normal path, not the only one. A completed checkout
+    with no pending row is still recorded — once."""
+    user = _make_user(tier="free", credits=30)
+    # Nothing pending, and the subscribing customer has referred nobody — so the
+    # single coupon pushed here is the referrer's reward, not their own rate.
+    referrals = FakeReferralRepo(confirmed_count=1, counts_by_user={user.id: 0})
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    obj = _referral_checkout(referrer.id)
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_a"))
+    await service.process(_event("checkout.session.completed", obj, event_id="evt_b"))
+
+    assert len(referrals.recorded) == 1
+    assert referrals.recorded[0]["stripe_session_id"] == "cs_ref_1"
+    assert referrals.recorded[0]["redeemer_user_id"] == user.id
+    assert referrals.recorded[0]["referrer_user_id"] == referrer.id
+    assert len(captured_discounts) == 1
+
+
+@pytest.mark.asyncio
+async def test_welcome_redemption_pays_nobody(captured_discounts):
+    """A welcome code has no referrer — the metadata field is present and empty,
+    because Stripe metadata cannot hold a null."""
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(pending={"cs_ref_1"})
+    service, _db = _build(user, referrals)
+
+    obj = _referral_checkout(None)
+    obj["metadata"]["redeemed_kind"] = "welcome"
+    await service.process(_event("checkout.session.completed", obj))
+
+    assert captured_discounts == []
+
+
+@pytest.mark.asyncio
+async def test_referrer_without_a_subscription_is_skipped_cleanly(captured_discounts):
+    """A referrer on the free tier has no recurring invoice to discount. Their
+    rate is applied later, by _apply_own_referrer_rate, on the subscription they
+    start themselves — see test_a_referrer_who_subscribes_later_gets_their_rate."""
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(
+        pending={"cs_ref_1"}, confirmed_count=1, counts_by_user={user.id: 0}
+    )
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users, subscription_id=None)
+
+    result = await service.process(
+        _event("checkout.session.completed", _referral_checkout(referrer.id))
+    )
+
+    assert result.handled
+    assert captured_discounts == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stripe_coupon_call_does_not_fail_the_webhook(monkeypatch):
+    """The entitlement is already granted. Failing here would roll it back and
+    make Stripe redeliver a payment we already applied."""
+    from backend.services.billing import stripe_gateway
+
+    def _boom(**kw):
+        raise RuntimeError("stripe is down")
+
+    monkeypatch.setattr(stripe_gateway, "set_subscription_discount", _boom)
+
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(pending={"cs_ref_1"}, confirmed_count=1)
+    service, db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    result = await service.process(
+        _event("checkout.session.completed", _referral_checkout(referrer.id))
+    )
+
+    assert result.handled
+    assert user.tier == "standard"
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_referrer_who_subscribes_later_gets_their_earned_rate(
+    captured_discounts,
+):
+    """Referrals earned while on the free tier are not lost.
+
+    A referrer's coupon is otherwise only pushed when a new referral lands or
+    when one goes away, and both need a live subscription to write to. Every
+    reward earned before the referrer subscribed used to be skipped and never
+    revisited, so someone who referred five friends and then subscribed started
+    at 0 percent.
+    """
+    user = _make_user(tier="free", credits=30)
+    # This customer referred three people while they were on the free tier. Their
+    # own checkout carries no discount code, so the reward push is the only one.
+    referrals = FakeReferralRepo(counts_by_user={user.id: 3})
+    service, _db = _build(user, referrals)
+
+    from backend.models.user import referrer_percent_off
+    from backend.services.billing.catalog import referrer_coupon_id
+
+    await service.process(
+        _event("checkout.session.completed", _plain_subscription_checkout())
+    )
+
+    assert len(captured_discounts) == 1
+    applied = captured_discounts[0]
+    assert applied["coupon_id"] == referrer_coupon_id(referrer_percent_off(3))
+    # Written to the subscription this checkout just started.
+    assert applied["sub_id"] == "sub_new"
+    # The "self_" marker keeps this push from ever sharing an idempotency key
+    # with the reward push for the REFERRER of the same checkout session.
+    assert "self_" in applied["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_with_no_referrals_has_no_discount_touched(
+    captured_discounts,
+):
+    """Pushing a 0 percent rate would CLEAR the subscription's discount list,
+    including the one-time coupon from a code the customer just redeemed. A user
+    with no referrals must have their discounts left alone entirely."""
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(counts_by_user={user.id: 0})
+    service, _db = _build(user, referrals)
+
+    await service.process(
+        _event("checkout.session.completed", _plain_subscription_checkout())
+    )
+
+    assert captured_discounts == []
+
+
+@pytest.mark.asyncio
+async def test_a_raising_referral_email_does_not_fail_the_webhook(
+    monkeypatch, captured_discounts
+):
+    from backend.services.email.email_service import EmailService
+
+    async def _boom(self, **kwargs):
+        raise RuntimeError("the mail provider is down")
+
+    monkeypatch.setattr(EmailService, "send_referral_reward", _boom)
+
+    user = _make_user(tier="free", credits=30)
+    # Subscribing customer has referred nobody, so exactly one coupon is pushed.
+    referrals = FakeReferralRepo(
+        pending={"cs_ref_1"}, confirmed_count=1, counts_by_user={user.id: 0}
+    )
+    service, db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    result = await service.process(
+        _event("checkout.session.completed", _referral_checkout(referrer.id))
+    )
+
+    assert result.handled
+    assert user.tier == "standard"
+    assert len(captured_discounts) == 1   # the coupon still went out
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_referral_email_tells_the_referrer_the_new_rate(monkeypatch):
+    from backend.models.user import referrer_percent_off
+    from backend.services.email.email_service import EmailService
+
+    sent = {}
+
+    async def _capture(self, *, user, new_total_percent, referral_count):
+        sent.update(
+            to=user.id,
+            percent=new_total_percent,
+            count=referral_count,
+        )
+        return "sent"
+
+    monkeypatch.setattr(EmailService, "send_referral_reward", _capture)
+    monkeypatch.setattr(
+        "backend.services.billing.stripe_gateway.set_subscription_discount",
+        lambda **kw: None,
+    )
+
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(pending={"cs_ref_1"}, confirmed_count=3)
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    await service.process(
+        _event("checkout.session.completed", _referral_checkout(referrer.id))
+    )
+
+    assert sent == {
+        "to": referrer.id,
+        "percent": referrer_percent_off(3),
+        "count": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_season_purchase_ignores_referral_metadata(captured_discounts):
+    """Season passes are one-time payments: no recurring invoice for a recurring
+    referrer reward to attach to. The season branch must not pay one."""
+    user = _make_user(tier="free", credits=30)
+    referrals = FakeReferralRepo(pending={"cs_season_ref"}, confirmed_count=1)
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+
+    obj = {
+        "id": "cs_season_ref",
+        "customer": "cus_1",
+        "mode": "payment",
+        "metadata": {
+            "tier": "pro", "interval": "season",
+            "redeemed_kind": "referral",
+            "referrer_user_id": str(referrer.id),
+        },
+    }
+    await service.process(_event("checkout.session.completed", obj))
+
+    assert user.tier == "pro"
+    assert captured_discounts == []
+    assert referrals.recorded == []
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_lowers_the_referrers_rate(captured_discounts):
+    """A referral only pays for as long as the referred account keeps paying.
+    Otherwise five throwaway accounts buy a permanent recurring discount."""
+    from backend.models.user import referrer_percent_off
+
+    user = _make_user(tier="standard", credits=0)
+    user.stripe_subscription_id = "sub_1"
+    referrer_id = uuid.uuid4()
+    referrals = FakeReferralRepo(
+        # This user was referred; after their downgrade the referrer is down to 1.
+        redemption=SimpleNamespace(referrer_user_id=referrer_id),
+        confirmed_count=1,
+    )
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+    service._test_users.by_id[referrer_id] = referrer
+
+    await service.process(
+        _event("customer.subscription.deleted", _sub_obj(status="canceled"))
+    )
+
+    assert user.tier == "free"
+    assert captured_discounts[0]["sub_id"] == "sub_referrer"
+    assert captured_discounts[0]["coupon_id"].endswith(str(referrer_percent_off(1)))
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_clears_the_coupon_at_zero(captured_discounts):
+    """The last referral went away. There is no zero-percent coupon object, so
+    the discount is cleared outright."""
+    user = _make_user(tier="standard", credits=0)
+    user.stripe_subscription_id = "sub_1"
+    referrer_id = uuid.uuid4()
+    referrals = FakeReferralRepo(
+        redemption=SimpleNamespace(referrer_user_id=referrer_id), confirmed_count=0
+    )
+    service, _db = _build(user, referrals)
+    referrer = _referrer(service._test_users)
+    service._test_users.by_id[referrer_id] = referrer
+
+    await service.process(
+        _event("customer.subscription.deleted", _sub_obj(status="canceled"))
+    )
+
+    assert captured_discounts[0]["coupon_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_subscription_deleted_without_a_referral_touches_nothing(
+    captured_discounts,
+):
+    user = _make_user(tier="standard", credits=0)
+    user.stripe_subscription_id = "sub_1"
+    service, _db = _build(user, FakeReferralRepo(redemption=None))
+
+    await service.process(
+        _event("customer.subscription.deleted", _sub_obj(status="canceled"))
+    )
+
+    assert user.tier == "free"
+    assert captured_discounts == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_rate_recompute_does_not_fail_the_downgrade(monkeypatch):
+    """This is a correction to somebody else's subscription. Failing over it
+    would roll back THIS user's downgrade and make Stripe redeliver forever."""
+    class _Exploding(FakeReferralRepo):
+        async def redemption_for_redeemer(self, redeemer_user_id):
+            raise RuntimeError("the query failed")
+
+    user = _make_user(tier="standard", credits=0)
+    user.stripe_subscription_id = "sub_1"
+    service, db = _build(user, _Exploding())
+
+    result = await service.process(
+        _event("customer.subscription.deleted", _sub_obj(status="canceled"))
+    )
+
+    assert result.handled
+    assert user.tier == "free"
+    db.commit.assert_awaited_once()
 
 
 # ── invoice events: monthly credit grants are DELETED ───────────────────

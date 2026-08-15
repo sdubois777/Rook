@@ -93,6 +93,29 @@ class Settings(BaseSettings):
     stripe_price_pack_200: Optional[str] = None
     stripe_price_pack_500: Optional[str] = None
 
+    # --- Transactional email (Resend) -----------------------------------------
+    # THE API KEY IS THE ONLY SWITCH. Set RESEND_API_KEY and outbound email turns
+    # on; leave it unset and every send is skipped with a log line (no crash, no
+    # silent queue). Every other setting here has a working default, deliberately
+    # — Railway injects env vars and never reads a .env file, so a setting whose
+    # only value is a line in .env.example is None in production.
+    resend_api_key: Optional[str] = None
+    # From-address. MUST be on a domain verified in Resend with SPF+DKIM records,
+    # or Resend rejects the send. Defaulted to the real address so a correct
+    # RESEND_API_KEY alone is enough to send.
+    email_from: str = "Rook <rookadmin@rookff.com>"
+    email_reply_to: str = "rookadmin@rookff.com"
+    # Postal address in the footer of PROMOTIONAL email. US CAN-SPAM requires a
+    # valid physical address on any message whose primary purpose is commercial
+    # (the welcome discount email is; a pure account notice is not). Sends of
+    # promotional templates are BLOCKED while this is empty rather than shipping
+    # a non-compliant message — see backend/services/email/email_service.py.
+    email_postal_address: str = ""
+    # Cap on outbound sends per process per hour. A runaway loop over the users
+    # table is the failure mode that gets a sending domain blacklisted, and the
+    # domain is much harder to get back than the bug is to fix.
+    email_max_per_hour: int = 200
+
     # --- In-app bug report / feature suggestion -> GitHub issue ---------------
     # THE TOKEN IS THE ONLY SWITCH. Set GITHUB_ISSUE_TOKEN and the report form turns on;
     # leave it unset and the form is off (GET /feedback/status returns enabled=false and
@@ -160,6 +183,22 @@ class Settings(BaseSettings):
     def stripe_enabled(self) -> bool:
         """True when Stripe billing is configured (secret key present)."""
         return bool(self.stripe_secret_key)
+
+    @property
+    def email_enabled(self) -> bool:
+        """True when outbound email can be sent (Resend key AND a from-address)."""
+        return bool(self.resend_api_key and self.email_from)
+
+    @property
+    def promotional_email_enabled(self) -> bool:
+        """True when PROMOTIONAL email may be sent.
+
+        Stricter than `email_enabled`: US CAN-SPAM requires a physical postal
+        address on commercial email, so a promotional send with EMAIL_POSTAL_
+        ADDRESS unset is refused rather than sent without one. Transactional
+        mail (receipts, account notices) is unaffected.
+        """
+        return self.email_enabled and bool(self.email_postal_address.strip())
 
     @property
     def feedback_enabled(self) -> bool:

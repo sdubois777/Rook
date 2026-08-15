@@ -36,6 +36,26 @@ describe('billing api module', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', { tier: 'pro', interval: 'season' })
   })
 
+  it('createCheckout sends a discount code as a NAME when one is given', async () => {
+    apiClient.post.mockResolvedValue({ data: { url: 'https://checkout.stripe.com/d' } })
+    await createCheckout('standard', 'monthly', 'ROOK-7K2M9X')
+    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', {
+      tier: 'standard',
+      interval: 'monthly',
+      code: 'ROOK-7K2M9X',
+    })
+  })
+
+  it('createCheckout omits code entirely when it is empty', async () => {
+    // An empty string in the body reads to the server as "a code was supplied".
+    apiClient.post.mockResolvedValue({ data: { url: 'https://checkout.stripe.com/x' } })
+    await createCheckout('standard', 'monthly', '')
+    expect(apiClient.post).toHaveBeenCalledWith('/billing/checkout', {
+      tier: 'standard',
+      interval: 'monthly',
+    })
+  })
+
   it('createPortal posts to the portal endpoint and returns the url', async () => {
     apiClient.post.mockResolvedValue({ data: { url: 'https://billing.stripe.com/p' } })
     const url = await createPortal()
