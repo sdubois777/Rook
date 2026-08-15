@@ -368,13 +368,21 @@ for everyone: player values, teams, player detail, waiver wire browse,
 start/sit, injury revaluation (pipeline-shared — gating it would serve stale
 values). Credits carry over; no monthly credit grants exist.
 
-**Stripe billing: BUILT** (test mode; go-live blocked only on the business bank
-account). Checkout (tier monthly/season + credit pack), change-plan w/ proration
-(monthly<->monthly; season passes are purchases, not plan changes), portal,
-signature-verified webhook entitlements (incl. season expiry + monthly-sub
-cancel-at-period-end on season purchase), league-cap reconciliation, test-mode
-seeder deriving all amounts from user.py. Design doc: `docs/stripe_billing_design.md`
-(decision #3 UPDATED — seasonal is IN as a one-time entitlement).
+**Stripe billing: BUILT and LIVE** (August 2026 — real customers, real money;
+the business bank account that previously blocked go-live is resolved). Checkout
+(tier monthly/season + credit pack), change-plan w/ proration (monthly<->monthly;
+season passes are purchases, not plan changes), portal, signature-verified webhook
+entitlements (incl. season expiry + monthly-sub cancel-at-period-end on season
+purchase), league-cap reconciliation, and a seeder deriving all amounts from
+user.py. Design doc: `docs/stripe_billing_design.md` (decision #3 UPDATED —
+seasonal is IN as a one-time entitlement).
+
+Because it is LIVE, two things follow. **Stripe objects are per-MODE**: anything a
+seeder created against a test key does NOT exist in live mode, so every seeder
+must be run once against each mode in use. And **a billing bug now costs a real
+customer real money** — treat any change under `backend/routers/billing.py`,
+`backend/services/billing/`, or the Stripe webhook as production-critical, and
+never point a local run at the live key without meaning to.
 
 ---
 

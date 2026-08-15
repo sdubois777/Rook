@@ -12,13 +12,19 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from backend.config import settings
 from backend.core.dependencies import (
     get_credit_service,
     get_current_user,
     get_db,
     get_league_service,
 )
-from backend.models.user import TIER_LIMITS, User, effective_tier
+from backend.models.user import (
+    TIER_LIMITS,
+    User,
+    effective_tier,
+    interval_is_referral_eligible,
+)
 from backend.repositories.user_repo import UserRepository
 
 router = APIRouter(prefix="/account", tags=["account"])
@@ -90,6 +96,19 @@ class LeagueLimitStateResponse(BaseModel):
 
 class ResolveLimitRequest(BaseModel):
     keep: list[str]  # league ids to keep active; the rest of the set is parked
+
+
+class ReferralStateResponse(BaseModel):
+    """The caller's own referral state. Every percentage is served from
+    REFERRAL_PROGRAM via ReferralService — none is written down here, and the
+    frontend renders these rather than restating them."""
+    code: str
+    share_url: str
+    referral_count: int
+    percent_off: int
+    percent_off_cap: int
+    percent_off_per_referral: int
+    eligible: bool
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +265,68 @@ async def revoke_draft_token(
     """Regenerate token — invalidates the old one."""
     token = await UserRepository(db).rotate_draft_token(user.id)
     return {"draft_token": token}
+
+
+def _reward_applies_today(user: User) -> bool:
+    """Whether the referrer's earned discount can be applied to this account now.
+
+    The reward is a recurring coupon set on the referrer's own subscription, so
+    it needs a monthly subscription to attach to. A free account has none, and a
+    season pass is a one-time payment on an interval the program does not cover
+    (interval_is_referral_eligible) — its buyer earns a rate that is recorded in
+    code_redemptions but is not being applied to anything.
+
+    Returned so the account page can say that plainly. The rate is still shown:
+    it is earned, it survives, and it starts applying when they take a monthly
+    plan. Without this flag the page would show a discount the user is not
+    actually receiving, which is the one thing the referral design calls out as
+    needing careful wording.
+    """
+    if effective_tier(user) == "free":
+        return False
+    if not getattr(user, "subscription_status", None):
+        return False
+    # tier_expires_at is set ONLY for a one-time season entitlement; a monthly
+    # subscription leaves it NULL (see the User model).
+    interval = "season" if getattr(user, "tier_expires_at", None) else "monthly"
+    return interval_is_referral_eligible(interval)
+
+
+@router.get("/referral", response_model=ReferralStateResponse)
+async def get_referral(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """This user's own referral code, and what it has earned them so far.
+
+    Scoped to the authenticated caller by user.id — there is no parameter that
+    could name another account. It reports a COUNT and a RATE and nothing else:
+    who redeemed the code is never returned, because the people who redeemed it
+    consented to buy a subscription, not to have that purchase disclosed to the
+    person who referred them.
+
+    Codes are minted lazily on first read, so this endpoint is the write path
+    for a brand-new code and commits. Repositories do not commit (house rule),
+    so without this the INSERT would roll back at the end of the request and the
+    next read would mint a different code — a user's shareable code would change
+    under them, and links already sent out would stop resolving.
+    """
+    from backend.services.referral_service import ReferralService
+
+    state = await ReferralService.from_session(db).referrer_state(user.id)
+    await db.commit()
+
+    return ReferralStateResponse(
+        code=state["code"],
+        # Lands on the marketing page, which reads ?ref= and keeps the code for
+        # the signup round trip (Clerk's hosted signup makes no call we control).
+        share_url=f"{settings.app_url}/?ref={state['code']}",
+        referral_count=state["referral_count"],
+        percent_off=state["percent_off"],
+        percent_off_cap=state["percent_off_cap"],
+        percent_off_per_referral=state["percent_off_per_referral"],
+        eligible=_reward_applies_today(user),
+    )
 
 
 @router.delete("/leagues/{league_id}", status_code=204)

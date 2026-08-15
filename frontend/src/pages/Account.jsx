@@ -46,12 +46,17 @@ function ManageSubscriptionButton() {
 }
 
 async function fetchAccountData() {
-  const [me, credits, leagues, tokenResp, creds] = await Promise.all([
+  const [me, credits, leagues, tokenResp, creds, referral] = await Promise.all([
     apiClient.get('/account/me'),
     apiClient.get('/account/credits'),
     apiClient.get('/account/leagues'),
     apiClient.get('/account/draft-token').catch(() => ({ data: {} })),
     apiClient.get('/account/credentials').catch(() => ({ data: { platforms: [] } })),
+    // Mints the code on first read — this page is where a referral code comes
+    // into existence. Tolerated failure: the rest of the account page is more
+    // important than the referral panel, so an error here hides the panel
+    // instead of failing the whole load.
+    apiClient.get('/account/referral').catch(() => ({ data: null })),
   ])
   return {
     user: me.data,
@@ -59,6 +64,7 @@ async function fetchAccountData() {
     leagues: leagues.data,
     draftToken: tokenResp.data.draft_token || null,
     connectedPlatforms: creds.data.platforms || [],
+    referral: referral.data,
   }
 }
 
@@ -203,6 +209,99 @@ function DraftTokenSection({ token, onRevoke }) {
         <li>Open the Rook draft room and start a draft</li>
         <li>Join your draft or a mock draft on a connected platform</li>
       </ol>
+    </section>
+  )
+}
+
+/**
+ * Referral panel. Same shape as DraftTokenSection above — a secret in a code
+ * block with a clipboard button — because it is the same interaction.
+ *
+ * Every percentage here comes from the API: the earned rate and the cap from
+ * /account/referral, the friend's discount from /billing/pricing via usePricing.
+ * A number typed into this file would be a second definition of the program.
+ *
+ * It shows a count and a rate. It never shows who redeemed the code — those
+ * people consented to buy a subscription, not to be named to their referrer.
+ */
+function ReferralSection({ referral }) {
+  const { referral: programRates } = usePricing()
+  const [copied, setCopied] = useState('')
+
+  const copy = (what, text) => {
+    navigator.clipboard.writeText(text)
+    setCopied(what)
+    setTimeout(() => setCopied(''), 2000)
+  }
+
+  const remaining = Math.max(0, referral.percent_off_cap - referral.percent_off)
+
+  return (
+    <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+      <h2 className="text-lg font-semibold mb-2">Refer a friend</h2>
+      <p className="text-sm text-gray-400 mb-1">
+        Share your link. Every friend who starts a monthly plan with it takes{' '}
+        {referral.percent_off_per_referral}% off your monthly price, up to{' '}
+        {referral.percent_off_cap}%, for as long as you stay subscribed.
+      </p>
+      {programRates && (
+        <p className="text-xs text-gray-500 mb-4">
+          They get {programRates.referred_percent_off}% off their first month.
+        </p>
+      )}
+
+      <p className="text-sm text-gray-400 mb-2">Your referral code:</p>
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        <code className="flex-1 min-w-0 bg-gray-800 text-gray-300 text-sm px-3 py-2 rounded-lg font-mono truncate">
+          {referral.code}
+        </code>
+        <button
+          onClick={() => copy('link', referral.share_url)}
+          className="text-sm text-blue-400 hover:text-blue-300 whitespace-nowrap transition-colors min-h-11 lg:min-h-0 px-1"
+        >
+          {copied === 'link' ? 'Copied!' : 'Copy link'}
+        </button>
+        <button
+          onClick={() => copy('code', referral.code)}
+          className="text-sm text-gray-400 hover:text-gray-200 whitespace-nowrap transition-colors min-h-11 lg:min-h-0 px-1"
+        >
+          {copied === 'code' ? 'Copied!' : 'Copy code'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+        <div>
+          <div className="text-gray-400">Referrals counting</div>
+          <div className="text-white">{referral.referral_count}</div>
+        </div>
+        <div>
+          <div className="text-gray-400">Your discount</div>
+          <div className="text-white">{referral.percent_off}% off</div>
+        </div>
+      </div>
+
+      <p className="text-sm text-gray-400">
+        {remaining > 0
+          ? `${remaining}% more is available: each referral adds ` +
+            `${referral.percent_off_per_referral}%, up to the ` +
+            `${referral.percent_off_cap}% cap.`
+          : `You're at the ${referral.percent_off_cap}% cap — the most this program gives.`}
+      </p>
+
+      {/* An earned rate needs a monthly subscription to attach to. Saying so is
+          the difference between an honest number and one the user believes is
+          coming off their bill when it is not. */}
+      {!referral.eligible && referral.percent_off > 0 && (
+        <p className="text-sm text-yellow-500 mt-2">
+          This discount is not being applied right now. It applies to monthly
+          plans, and starts coming off your bill once you're on one.
+        </p>
+      )}
+      {!referral.eligible && referral.percent_off === 0 && (
+        <p className="text-xs text-gray-500 mt-2">
+          The discount applies to monthly plans, so it starts once you're on one.
+        </p>
+      )}
     </section>
   )
 }
@@ -366,7 +465,7 @@ export default function AccountPage() {
     )
   }
 
-  const { user, credits, leagues, draftToken, connectedPlatforms } = data
+  const { user, credits, leagues, draftToken, connectedPlatforms, referral } = data
 
   const handleRevokeToken = async () => {
     await apiClient.post('/account/draft-token/revoke')
@@ -495,6 +594,9 @@ export default function AccountPage() {
               changes. user.tier is the EFFECTIVE tier from /account/me. */}
           {user.tier === 'free' && <BuyCreditsCard />}
         </section>
+
+        {/* Referral — hidden when the endpoint failed (see fetchAccountData) */}
+        {referral && <ReferralSection referral={referral} />}
 
         {/* Browser Extension */}
         {draftToken && (

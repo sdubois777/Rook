@@ -10,6 +10,7 @@ vi.mock('../api/billing', () => ({
   createCheckout: vi.fn(async () => 'https://checkout.stripe.com/x'),
   redirectTo: vi.fn(),
 }))
+vi.mock('../api/referral', () => ({ validateCode: vi.fn() }))
 vi.mock('../hooks/usePricing', () => ({ usePricing: () => pricingHookValue() }))
 
 import PricingTable from '../components/landing/PricingTable'
@@ -28,6 +29,8 @@ describe('PricingTable CTAs', () => {
     createCheckout.mockClear()
     redirectTo.mockClear()
     h.signedIn = true
+    // The code input pre-fills from localStorage; these cases are the no-code path.
+    localStorage.clear()
   })
 
   it('renders prices from the fetched sheet (never hardcoded)', () => {
@@ -42,7 +45,9 @@ describe('PricingTable CTAs', () => {
   it('signed-in: monthly CTA starts a monthly checkout and redirects', async () => {
     renderTable()
     fireEvent.click(screen.getByRole('button', { name: /Monthly — \$8\/mo/i }))
-    await waitFor(() => expect(createCheckout).toHaveBeenCalledWith('standard', 'monthly'))
+    await waitFor(() =>
+      expect(createCheckout).toHaveBeenCalledWith('standard', 'monthly', '')
+    )
     await waitFor(() =>
       expect(redirectTo).toHaveBeenCalledWith('https://checkout.stripe.com/x')
     )
@@ -51,7 +56,7 @@ describe('PricingTable CTAs', () => {
   it('signed-in: season CTA starts a season checkout', async () => {
     renderTable()
     fireEvent.click(screen.getByRole('button', { name: /Season pass — \$59/i }))
-    await waitFor(() => expect(createCheckout).toHaveBeenCalledWith('pro', 'season'))
+    await waitFor(() => expect(createCheckout).toHaveBeenCalledWith('pro', 'season', ''))
   })
 
   it('signed-out: CTAs are sign-up links, not checkout', () => {

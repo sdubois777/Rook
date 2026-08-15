@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import update
@@ -23,6 +24,27 @@ from backend.models.user import TIER_LIMITS, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+def _is_mailable(email: str) -> bool:
+    """False for an address nothing should ever be sent to.
+
+    EmailService refuses these as well, but the check belongs here too: a
+    placeholder address must not even reach the send path, because the dedupe key
+    would then be claimed by a message that could never be delivered — and the
+    real address, if one arrives later, would find the slot taken.
+
+    The list of synthesized placeholder domains lives in email_service, so it is
+    imported rather than restated. An import failure here means no welcome email
+    rather than a failed signup webhook.
+    """
+    try:
+        from backend.services.email.email_service import _is_deliverable
+
+        return _is_deliverable((email or "").strip().lower())
+    except Exception:
+        logger.exception("Could not check whether %r is mailable", email)
+        return False
 
 
 async def _verify_clerk_signature(request: Request) -> dict:
@@ -60,13 +82,49 @@ async def _verify_clerk_signature(request: Request) -> dict:
         )
 
 
+async def _send_welcome_email(user_id, email: str, display_name: str | None) -> None:
+    """Email a brand-new signup their welcome code and their referral code.
+
+    NEVER RAISES. Clerk retries a webhook that answers with an error, and a retry
+    of user.created would run the insert again — so a mail provider outage must
+    not become a signup loop.
+
+    Runs on its own database session, separate from the one that created the
+    user. EmailService.send commits the session it was built from (its dedupe row
+    has to survive a later rollback, since a message cannot be un-sent), and the
+    referral code minted here needs committing anyway.
+    """
+    try:
+        from backend.services.email.email_service import EmailService
+        from backend.services.referral_service import ReferralService
+
+        async with AsyncSessionLocal() as db:
+            referrals = ReferralService.from_session(db)
+            # get_or_create_code does not commit — this caller does.
+            referral_code = await referrals.get_or_create_code(user_id)
+            await db.commit()
+
+            await EmailService.from_session(db).send_welcome(
+                # A stand-in for the User row: send_welcome reads id, email and
+                # display_name only, and re-reading the row we just wrote would
+                # buy nothing.
+                user=SimpleNamespace(
+                    id=user_id, email=email, display_name=display_name
+                ),
+                promo_code=referrals.welcome_code_for(user_id),
+                referral_code=referral_code,
+            )
+    except Exception:
+        logger.exception("Could not send the welcome email to user %s", user_id)
+
+
 @router.post("/clerk")
 async def clerk_webhook(request: Request):
     """
     Handle Clerk user lifecycle events.
 
     Events handled:
-      user.created -> ensure user record exists in DB
+      user.created -> ensure user record exists in DB, then welcome-email it
       user.deleted -> soft delete user record
     """
     event = await _verify_clerk_signature(request)
@@ -75,9 +133,12 @@ async def clerk_webhook(request: Request):
 
     logger.info("Clerk webhook: %s", event_type)
 
+    created_user_id = None
+    email = ""
+    display_name = ""
+
     async with AsyncSessionLocal() as db:
         if event_type == "user.created":
-            email = ""
             email_addresses = data.get("email_addresses", [])
             if email_addresses:
                 email = email_addresses[0].get("email_address", "")
@@ -86,7 +147,7 @@ async def clerk_webhook(request: Request):
             last = data.get("last_name", "") or ""
             display_name = f"{first} {last}".strip()
 
-            await db.execute(
+            result = await db.execute(
                 pg_insert(User)
                 .values(
                     external_id=data["id"],
@@ -96,8 +157,17 @@ async def clerk_webhook(request: Request):
                     credits_remaining=TIER_LIMITS["free"]["credits_signup_bonus"],
                 )
                 .on_conflict_do_nothing(index_elements=["external_id"])
+                # RETURNING yields a row only when the insert actually inserted:
+                # ON CONFLICT DO NOTHING returns nothing on a conflict. That is
+                # the only way to tell a real signup from a redelivered event, and
+                # a redelivery must not re-send the welcome email.
+                .returning(User.id)
             )
-            logger.info("Clerk webhook: created user %s", data["id"])
+            created_user_id = result.scalar_one_or_none()
+            if created_user_id is None:
+                logger.info("Clerk webhook: user %s already existed", data["id"])
+            else:
+                logger.info("Clerk webhook: created user %s", data["id"])
 
         elif event_type == "user.deleted":
             await db.execute(
@@ -108,6 +178,10 @@ async def clerk_webhook(request: Request):
             logger.info("Clerk webhook: soft deleted user %s", data["id"])
 
         await db.commit()
+
+    # After the commit, and only for a row this event actually created.
+    if created_user_id is not None and _is_mailable(email):
+        await _send_welcome_email(created_user_id, email, display_name or None)
 
     return {"ok": True}
 

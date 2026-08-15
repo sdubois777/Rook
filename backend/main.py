@@ -16,7 +16,7 @@ from backend.core.oauth_config_check import check_oauth_redirects
 from backend.middleware.security_headers import SecurityHeadersMiddleware
 from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
-from backend.routers import account, billing, feedback, matchup, trade, waiver, webhooks
+from backend.routers import account, billing, email, feedback, matchup, trade, waiver, webhooks
 from backend.websocket.manager import news_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,14 @@ for _router in (
     waiver.router,
     matchup.router,
     feedback.router,
+    # Unauthenticated unsubscribe. It MUST be mounted: the footer link in every
+    # promotional message points at /api/email/unsubscribe, and an unmounted
+    # route falls through to the SPA catch-all at the bottom of this file, which
+    # answers a GET under "api/" with a 404 and has no POST at all (so the
+    # one-click List-Unsubscribe-Post that Gmail requires would get a 405).
+    # A dead opt-out link is the CAN-SPAM violation the postal-address gate and
+    # the suppression list exist to avoid.
+    email.router,
 ):
     app.include_router(_router, prefix="/api")
 
@@ -150,6 +158,23 @@ async def startup_checks():
     # Checked against the route table so it stays correct if the /api prefix moves.
     check_oauth_redirects(app, settings.yahoo_redirect_uri)
 
+    # The unsubscribe link in every promotional email has the SAME silent failure mode the
+    # check above exists for: if the mounted path and the path baked into the email footer
+    # ever diverge, the link falls through to the SPA catch-all at the bottom of this file
+    # and the recipient sees a page that is not an unsubscribe, while the send path reports
+    # success. A dead opt-out link is a CAN-SPAM violation, not a cosmetic bug, so it is
+    # checked against the route table rather than trusted to stay in sync.
+    from backend.services.email.unsubscribe import UNSUBSCRIBE_PATH
+
+    _mounted = {getattr(r, "path", None) for r in app.routes}
+    if UNSUBSCRIBE_PATH not in _mounted:
+        raise RuntimeError(
+            f"Unsubscribe route {UNSUBSCRIBE_PATH} is not mounted, but every promotional "
+            "email links to it. Refusing to start: sending mail with a dead opt-out link "
+            "is a CAN-SPAM violation. Check that email.router is in the include loop in "
+            "backend/main.py and that UNSUBSCRIBE_PATH matches its mounted prefix."
+        )
+
     missing = []
     if not settings.yahoo_client_id:
         missing.append("YAHOO_CLIENT_ID")
@@ -166,6 +191,17 @@ async def startup_checks():
     # frontend bug. Name it here so the reason is in the boot log.
     if not settings.github_issue_token:
         missing.append("GITHUB_ISSUE_TOKEN (in-app bug reporting is OFF)")
+    # Same failure shape as the token above: with no Resend key, every send is
+    # skipped and the ONLY visible consequence is that a welcome email does not
+    # arrive — indistinguishable from a deliverability problem. Name both here so
+    # the reason is in the boot log rather than inferred from a missing inbox.
+    if not settings.resend_api_key:
+        missing.append("RESEND_API_KEY (all outbound email is OFF)")
+    elif not settings.email_postal_address.strip():
+        missing.append(
+            "EMAIL_POSTAL_ADDRESS (promotional email is OFF — CAN-SPAM requires "
+            "a physical address; transactional email still sends)"
+        )
     if missing:
         logger.warning("Optional settings not configured: %s", missing)
     logger.info(
