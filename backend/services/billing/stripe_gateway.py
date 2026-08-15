@@ -11,11 +11,26 @@ Stripe; we only ever create sessions and read back opaque ids (§0.A).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import stripe
 
 from backend.config import settings
+
+
+@dataclass(frozen=True)
+class CheckoutSession:
+    """What create_checkout_session hands back.
+
+    The url is what the customer is redirected to. The id is the key every
+    later record hangs off: the referral reservation is keyed on it at checkout
+    time and the webhook confirms that same row when the payment completes, which
+    is what makes the discount survive a redelivery without paying twice.
+    """
+
+    id: str
+    url: str
 
 
 def _api_key() -> str:
@@ -50,12 +65,20 @@ def create_checkout_session(
     cancel_url: str,
     metadata: dict,
     idempotency_key: str,
-) -> str:
-    """Create a Checkout Session (subscription or payment); return its URL.
+    discounts: Optional[list] = None,
+) -> CheckoutSession:
+    """Create a Checkout Session (subscription or payment); return its id and URL.
 
     The card is collected on checkout.stripe.com — never on our origin.
+
+    `discounts` is a list of one dict naming a coupon, e.g. [{"coupon": "..."}].
+    It is only forwarded when it is non-empty: Stripe rejects the parameter when
+    it is present but empty, and it is mutually exclusive with
+    allow_promotion_codes (which this app does not use — every discount is
+    resolved server-side by ReferralService, so the customer never types a code
+    into Stripe's page).
     """
-    session = stripe.checkout.Session.create(
+    params = dict(
         api_key=_api_key(),
         mode=mode,
         customer=customer_id,
@@ -65,7 +88,29 @@ def create_checkout_session(
         metadata=metadata,
         idempotency_key=idempotency_key,
     )
-    return session["url"]
+    if discounts:
+        params["discounts"] = discounts
+    session = stripe.checkout.Session.create(**params)
+    return CheckoutSession(id=session["id"], url=session["url"])
+
+
+def set_subscription_discount(
+    *, sub_id: str, coupon_id: Optional[str], idempotency_key: str
+) -> None:
+    """Set the referrer's reward coupon on a live subscription, or clear it.
+
+    One coupon at the summed rate, never a stack of per-referral coupons — the
+    `discounts` list REPLACES whatever was there, so raising the reward from 20%
+    to 30% is a single call with the 30% coupon rather than an addition. A
+    coupon_id of None sends an empty list, which removes every discount (used
+    when a referral is reversed and the count drops back to zero).
+    """
+    stripe.Subscription.modify(
+        sub_id,
+        api_key=_api_key(),
+        discounts=[{"coupon": coupon_id}] if coupon_id else [],
+        idempotency_key=idempotency_key,
+    )
 
 
 def create_portal_session(*, customer_id: str, return_url: str) -> str:

@@ -12,6 +12,22 @@ from backend.main import app
 from backend.models.user import User
 
 
+# Sentinel: "let the helper mint a reservation id", so that passing None can mean
+# "the reservation was refused" without colliding with the default.
+_NEW = object()
+
+
+def _session(url="https://checkout.stripe.com/c/x", session_id="cs_test_1"):
+    """What stripe_gateway.create_checkout_session hands the router back.
+
+    Both fields matter: the url is returned to the client, and the id is what the
+    referral reservation is re-keyed on so the webhook can find it.
+    """
+    from backend.services.billing.stripe_gateway import CheckoutSession
+
+    return CheckoutSession(id=session_id, url=url)
+
+
 def _snap(now=None, price_id="price_standard"):
     now = now or int(time.time())
     return {
@@ -74,7 +90,7 @@ async def test_checkout_subscription_uses_server_price_and_bound_customer(
 
     def fake_create(**kwargs):
         captured.update(kwargs)
-        return "https://checkout.stripe.com/c/test_session"
+        return _session("https://checkout.stripe.com/c/test_session")
 
     monkeypatch.setattr(stripe_gateway, "create_checkout_session", fake_create)
 
@@ -115,7 +131,7 @@ async def test_checkout_pack_uses_payment_mode(stripe_configured, monkeypatch):
     monkeypatch.setattr(
         stripe_gateway,
         "create_checkout_session",
-        lambda **kw: captured.update(kw) or "https://checkout.stripe.com/c/x",
+        lambda **kw: captured.update(kw) or _session(),
     )
 
     user = _make_user(customer_id="cus_1")
@@ -219,7 +235,7 @@ async def test_checkout_pack_creates_payment_session(stripe_configured, monkeypa
     captured = {}
     monkeypatch.setattr(
         stripe_gateway, "create_checkout_session",
-        lambda **kw: captured.update(kw) or "https://checkout.stripe.com/pack",
+        lambda **kw: captured.update(kw) or _session("https://checkout.stripe.com/pack"),
     )
     user = _make_user(customer_id="cus_1")
     _override_auth(user)
@@ -242,7 +258,7 @@ async def test_checkout_pack_uses_fresh_idempotency_key_each_attempt(stripe_conf
     keys = []
     monkeypatch.setattr(
         stripe_gateway, "create_checkout_session",
-        lambda **kw: keys.append(kw["idempotency_key"]) or "https://checkout.stripe.com/x",
+        lambda **kw: keys.append(kw["idempotency_key"]) or _session(),
     )
     user = _make_user(customer_id="cus_1")
     _override_auth(user)
@@ -473,3 +489,439 @@ async def test_change_plan_confirm_downgrade_to_free_cancels(stripe_configured, 
     assert body["target_tier"] == "free"
     assert captured["sub_id"] == "sub_1"
     assert user.tier == "pro"  # webhook is the sole tier-writer, on sub end
+
+
+# ── referral / welcome codes at checkout ────────────────────────────────
+
+def _fake_resolve(monkeypatch, resolved, *, reservation_id=_NEW):
+    """Replace the ReferralService methods /checkout drives with fakes.
+
+    resolve_code always returns `resolved`; the reservation methods record what
+    they were asked to do. `reservation_id=None` simulates losing the race with a
+    concurrent checkout. Everything the endpoint did is captured in one dict so a
+    test can assert on the order of operations.
+    """
+    from backend.services.referral_service import ReferralService
+
+    captured = {"reserved": [], "attached": [], "released": []}
+    if reservation_id is _NEW:
+        reservation_id = uuid.uuid4()
+
+    async def fake_resolve(self, *, code, redeemer_user_id, interval):
+        captured.update(
+            code=code, redeemer_user_id=redeemer_user_id, interval=interval
+        )
+        return resolved
+
+    async def fake_reserve(self, *, resolved, redeemer_user_id, code):
+        captured["reserved"].append((redeemer_user_id, code, resolved.kind))
+        return reservation_id
+
+    async def fake_attach(self, reservation, stripe_session_id):
+        captured["attached"].append((reservation, stripe_session_id))
+
+    async def fake_release(self, reservation):
+        captured["released"].append(reservation)
+
+    monkeypatch.setattr(ReferralService, "resolve_code", fake_resolve)
+    monkeypatch.setattr(ReferralService, "reserve_for_checkout", fake_reserve)
+    monkeypatch.setattr(ReferralService, "attach_checkout_session", fake_attach)
+    monkeypatch.setattr(ReferralService, "release_reservation", fake_release)
+    captured["reservation_id"] = reservation_id
+    return captured
+
+
+def _resolved(**overrides):
+    from backend.services.referral_service import ResolvedCode
+
+    fields = dict(
+        valid=True, kind="referral", percent_off=30,
+        referrer_user_id=uuid.uuid4(), message="30% off your first month.",
+    )
+    fields.update(overrides)
+    return ResolvedCode(**fields)
+
+
+@pytest.mark.asyncio
+async def test_checkout_with_referral_code_applies_coupon_and_metadata(
+    stripe_configured, monkeypatch
+):
+    """The coupon comes from the resolved KIND (server-side), and the referrer id
+    rides in metadata so the webhook can pay the reward."""
+    from backend.services.billing import catalog, stripe_gateway
+
+    resolved = _resolved()
+    _fake_resolve(monkeypatch, resolved)
+    captured = {}
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: captured.update(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout",
+            {"tier": "standard", "interval": "monthly", "code": "rook-friend"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert captured["discounts"] == [
+        {"coupon": catalog.referral_coupon_id("referral")}
+    ]
+    meta = captured["metadata"]
+    assert meta["redeemed_code"] == "ROOK-FRIEND"      # normalized before use
+    assert meta["redeemed_kind"] == "referral"
+    assert meta["redeemed_percent_off"] == "30"
+    assert meta["referrer_user_id"] == str(resolved.referrer_user_id)
+    # Every Stripe metadata value must be a string.
+    assert all(isinstance(v, str) for v in meta.values())
+
+
+@pytest.mark.asyncio
+async def test_checkout_with_welcome_code_sends_empty_referrer_id(
+    stripe_configured, monkeypatch
+):
+    """Nobody earns a reward for a welcome code, and Stripe metadata cannot hold
+    a null — so the field is present and empty, never omitted."""
+    from backend.services.billing import catalog, stripe_gateway
+
+    _fake_resolve(
+        monkeypatch,
+        _resolved(kind="welcome", percent_off=20, referrer_user_id=None),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: captured.update(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        from backend.services.referral_service import ReferralService
+
+        resp = await _post(
+            "/api/billing/checkout",
+            # A welcome code is per-user and derived from the user id — there is
+            # no shared string to post here.
+            {
+                "tier": "standard",
+                "code": ReferralService(None, None).welcome_code_for(user.id),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert captured["metadata"]["referrer_user_id"] == ""
+    assert captured["discounts"] == [
+        {"coupon": catalog.referral_coupon_id("welcome")}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checkout_reserves_the_discount_before_calling_stripe(
+    stripe_configured, monkeypatch
+):
+    """The reservation is what stops two tabs both receiving a paid discount, so
+    it has to be taken before a discounted session exists to be paid. Afterwards
+    the row is re-keyed on the real session id — that is how the webhook finds
+    it."""
+    from backend.services.billing import stripe_gateway
+
+    captured = _fake_resolve(monkeypatch, _resolved())
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: _session(session_id="cs_live_9"),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout", {"tier": "standard", "code": "ROOK-FRIEND"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert captured["reserved"] == [(user.id, "ROOK-FRIEND", "referral")]
+    assert captured["attached"] == [(captured["reservation_id"], "cs_live_9")]
+    assert captured["released"] == []
+
+
+@pytest.mark.asyncio
+async def test_second_concurrent_checkout_is_refused_before_stripe(
+    stripe_configured, monkeypatch
+):
+    """The same code in two tabs. The second reservation loses at the database,
+    and no discounted Stripe session is created for it — without this, both
+    sessions are payable and the discount is applied twice."""
+    from backend.services.billing import stripe_gateway
+
+    _fake_resolve(monkeypatch, _resolved(), reservation_id=None)
+    calls = []
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: calls.append(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout", {"tier": "standard", "code": "ROOK-FRIEND"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "already open" in resp.json()["detail"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_releases_the_reservation_when_stripe_fails(
+    stripe_configured, monkeypatch
+):
+    """No session was created, so the slot we are holding belongs to a checkout
+    that does not exist. Holding it would lock the user out of their discount for
+    the whole pending TTL."""
+    from backend.services.billing import stripe_gateway
+
+    captured = _fake_resolve(monkeypatch, _resolved())
+
+    def _boom(**kw):
+        raise RuntimeError("stripe is down")
+
+    monkeypatch.setattr(stripe_gateway, "create_checkout_session", _boom)
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        with pytest.raises(RuntimeError):
+            await _post(
+                "/api/billing/checkout", {"tier": "standard", "code": "ROOK-FRIEND"}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert captured["released"] == [captured["reservation_id"]]
+    assert captured["attached"] == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_without_a_code_reserves_nothing(stripe_configured, monkeypatch):
+    """No discount, no slot to take."""
+    from backend.services.billing import stripe_gateway
+
+    captured = _fake_resolve(monkeypatch, _resolved())
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session", lambda **kw: _session()
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post("/api/billing/checkout", {"tier": "standard"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert captured["reserved"] == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_with_invalid_code_is_400_and_never_reaches_stripe(
+    stripe_configured, monkeypatch
+):
+    from backend.services.billing import stripe_gateway
+
+    _fake_resolve(
+        monkeypatch,
+        _resolved(
+            valid=False, kind=None, percent_off=0, referrer_user_id=None,
+            message="You cannot use your own referral code.",
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: calls.append(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout", {"tier": "standard", "code": "ROOK-MINE01"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "You cannot use your own referral code."
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_without_code_sends_no_discounts(stripe_configured, monkeypatch):
+    """Stripe rejects an empty discounts list, so the parameter must be absent."""
+    from backend.services.billing import stripe_gateway
+
+    captured = {}
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: captured.update(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post("/api/billing/checkout", {"tier": "standard"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert captured["discounts"] is None
+    assert "redeemed_code" not in captured["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_checkout_pack_with_code_is_rejected(stripe_configured, monkeypatch):
+    """Ignoring the code would charge full price while the user believes a
+    discount was applied."""
+    from backend.services.billing import stripe_gateway
+
+    calls = []
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: calls.append(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout", {"pack": "credits_100", "code": "ROOK-FRIEND"}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_checkout_season_with_code_is_rejected(stripe_configured, monkeypatch):
+    """Season passes are one-time payments — no first month to discount, and no
+    recurring invoice for the referrer's reward to attach to."""
+    from backend.services.billing import stripe_gateway
+
+    calls = []
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: calls.append(kw) or _session(),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/checkout",
+            {"tier": "standard", "interval": "season", "code": "ROOK-FRIEND"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "monthly" in resp.json()["detail"].lower()
+    assert calls == []
+
+
+# ── validate-code ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_validate_code_reports_the_discount_without_applying_it(
+    stripe_configured, monkeypatch
+):
+    from backend.services.billing import stripe_gateway
+
+    captured_args = _fake_resolve(monkeypatch, _resolved())
+    monkeypatch.setattr(
+        stripe_gateway, "create_checkout_session",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("must not create a session")),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post(
+            "/api/billing/validate-code",
+            {"code": "ROOK-FRIEND", "interval": "monthly"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valid"] is True
+    assert body["percent_off"] == 30
+    # Bound to the authenticated user, never a client-supplied id.
+    assert captured_args["redeemer_user_id"] == user.id
+
+
+@pytest.mark.asyncio
+async def test_validate_code_returns_the_rejection_message(stripe_configured, monkeypatch):
+    _fake_resolve(
+        monkeypatch,
+        _resolved(
+            valid=False, kind=None, percent_off=0, referrer_user_id=None,
+            message="That code is not valid.",
+        ),
+    )
+
+    user = _make_user(customer_id="cus_1")
+    _override_auth(user)
+    try:
+        resp = await _post("/api/billing/validate-code", {"code": "ROOK-NOPE01"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valid"] is False
+    assert body["percent_off"] == 0
+    assert body["message"] == "That code is not valid."
+
+
+# ── pricing sheet ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pricing_serves_referral_percentages_from_the_source_of_truth():
+    from backend.models.user import REFERRAL_PROGRAM
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        resp = await ac.get("/api/billing/pricing")
+
+    assert resp.status_code == 200
+    referral = resp.json()["referral"]
+    assert referral["welcome_percent_off"] == REFERRAL_PROGRAM["welcome_percent_off"]
+    assert referral["referred_percent_off"] == REFERRAL_PROGRAM["referred_percent_off"]
+    assert (
+        referral["referrer_percent_off_per_referral"]
+        == REFERRAL_PROGRAM["referrer_percent_off_per_referral"]
+    )
+    assert (
+        referral["referrer_percent_off_cap"]
+        == REFERRAL_PROGRAM["referrer_percent_off_cap"]
+    )
+    assert referral["eligible_intervals"] == list(
+        REFERRAL_PROGRAM["eligible_intervals"]
+    )

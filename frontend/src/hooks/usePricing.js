@@ -38,6 +38,9 @@ export function usePricing() {
     tiers,
     tierById: byId,
     packs: data?.packs ?? [],
+    // Referral percentages, served from REFERRAL_PROGRAM. null while loading —
+    // render nothing rather than a placeholder number.
+    referral: data?.referral ?? null,
     tierLabel,
     creditCost,
     isLoading,
