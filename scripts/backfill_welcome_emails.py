@@ -125,6 +125,32 @@ def is_undeliverable(address: str) -> bool:
     return not a or a.endswith(UNDELIVERABLE_EMAIL_SUFFIXES)
 
 
+# Hosts that mean "this URL only works on the machine that generated it".
+_LOCAL_URL_MARKERS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", ".local")
+
+
+def app_url_is_public(url: str) -> bool:
+    """True when settings.app_url is an address a recipient could actually open.
+
+    WHY THIS IS CHECKED, and why it is fatal rather than a warning. Every link in
+    the email is built from settings.app_url: the button, the share link, and the
+    unsubscribe link. This script points DATABASE_URL at production via
+    ROOK_ENV_FILE=.env.prod, but that overlay carries only the database URL — every
+    other setting still comes from the local .env, where APP_URL is a dev address.
+    So it is entirely possible, and has happened, to mail production users a
+    message whose every link points at localhost.
+
+    The unsubscribe link is what makes this fatal instead of cosmetic: a
+    promotional message whose opt-out does not work is a CAN-SPAM violation, not a
+    broken button. Refusing to send is the only correct response.
+    """
+    u = (url or "").strip().lower()
+    if not u.startswith(("http://", "https://")):
+        return False
+    host = u.split("//", 1)[1].split("/", 1)[0]
+    return not any(marker in host for marker in _LOCAL_URL_MARKERS)
+
+
 async def build_plan(db, limit: int | None) -> Plan:
     """Read every live account and decide who is in the batch.
 
@@ -209,7 +235,7 @@ async def print_code_for(db, address: str) -> int:
     return 0
 
 
-async def send_one(db, user) -> str:
+async def send_one(db, user, dedupe_suffix: str | None = None) -> str:
     """Mint the codes for one account and send. Returns the SEND_* status.
 
     Both services are built on the SAME session the caller commits, because the
@@ -228,7 +254,10 @@ async def send_one(db, user) -> str:
 
     promo_code = referrals.welcome_code_for(user.id)
     return await EmailService.from_session(db).send_welcome(
-        user=user, promo_code=promo_code, referral_code=referral_code
+        user=user,
+        promo_code=promo_code,
+        referral_code=referral_code,
+        dedupe_suffix=dedupe_suffix,
     )
 
 
@@ -240,8 +269,16 @@ def print_plan(plan: Plan, *, show_emails: bool) -> None:
     print(f"  database host : {db_host() or '<unknown>'}"
           f"{'   [PRODUCTION]' if is_prod_db() else ''}")
     print(f"  from address  : {settings.email_from}")
+    print(f"  app url       : {settings.app_url}"
+          f"{'' if app_url_is_public(settings.app_url) else '   [NOT PUBLIC]'}")
     print(f"  email enabled : {settings.email_enabled}")
     print(f"  promo allowed : {settings.promotional_email_enabled}")
+    if not app_url_is_public(settings.app_url):
+        print("     ^ EVERY LINK IN THE EMAIL is built from this, including the")
+        print("       unsubscribe link. Pointing DATABASE_URL at production does")
+        print("       NOT change APP_URL — .env.prod overlays only the database.")
+        print("       Sending now would mail real users a dead opt-out link.")
+        print("       Set APP_URL to the public site for this command.")
     if not settings.promotional_email_enabled:
         print("     ^ EMAIL_POSTAL_ADDRESS is empty, so every promotional send is")
         print("       refused. Set it before a real run or this does nothing.")
@@ -284,11 +321,32 @@ async def run(args) -> int:
             print("address on commercial email. Set it and re-run.")
             return 1
 
+        if not app_url_is_public(settings.app_url):
+            print(f"\nREFUSING TO SEND: APP_URL is {settings.app_url!r}, which no")
+            print("recipient can open. Every link in the email is built from it,")
+            print("including the unsubscribe link — and a promotional message whose")
+            print("opt-out does not work is a CAN-SPAM violation.")
+            print()
+            print("Pointing the database at production does NOT fix this:")
+            print("ROOK_ENV_FILE=.env.prod overlays only DATABASE_URL, so APP_URL")
+            print("still comes from the local .env. Set it for this one command:")
+            print('    $env:APP_URL = "https://rookff.com"')
+            return 1
+
+        if args.redo:
+            print()
+            print("!" * 72)
+            print(f"  REDO MODE — dedupe suffix {args.redo!r}")
+            print("  Accounts that already received this email WILL receive it")
+            print("  again. The original send rows are kept, not deleted, so the")
+            print("  record of what went out first survives.")
+            print("!" * 72)
+
         print(f"\nSending to {len(plan.eligible)} account(s)...\n")
         counts: dict[str, int] = {}
         for user in plan.eligible:
             try:
-                status = await send_one(db, user)
+                status = await send_one(db, user, args.redo)
             except Exception as exc:  # one bad row must not end the batch
                 status = f"error: {type(exc).__name__}"
                 await db.rollback()
@@ -332,12 +390,29 @@ def main() -> int:
             "excluded from the batch on purpose."
         ),
     )
+    parser.add_argument(
+        "--redo", metavar="REASON", default=None,
+        help=(
+            "MAIL PEOPLE AGAIN who already received this. Only for correcting a "
+            "batch that went out wrong. REASON becomes part of the dedupe key "
+            "(e.g. fixed-links), so the original send rows survive. Must be a "
+            "short fixed word — never a timestamp, or nothing deduplicates."
+        ),
+    )
     args = parser.parse_args()
 
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
     if args.code_for and args.send:
         parser.error("--code-for prints one code and sends nothing; drop --send")
+    if args.redo and not args.send:
+        parser.error("--redo only affects sending; it does nothing without --send")
+    if args.redo and not args.redo.replace("-", "").replace("_", "").isalnum():
+        parser.error(
+            "--redo must be a short plain label such as fixed-links. A value "
+            "containing punctuation, spaces or a timestamp would make the dedupe "
+            "key unique per run, and every run would mail everyone again."
+        )
 
     # Prod write guard on both mutating paths. Building a PLAN is exempt: it only
     # reads, and requiring an override just to look is how people stop looking.

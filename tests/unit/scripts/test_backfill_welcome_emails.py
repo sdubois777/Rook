@@ -161,6 +161,147 @@ def test_undeliverable_matches_the_shared_constant_not_a_local_copy():
     assert not is_undeliverable("someone@rookff.com")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "https://localhost",
+        "http://127.0.0.1:8000",
+        "http://0.0.0.0:3000",
+        "http://rook.local",
+        "",
+        "rookff.com",           # no scheme
+        "/account",             # relative
+    ],
+)
+def test_a_non_public_app_url_is_rejected(url):
+    """Every link in the email is built from APP_URL, including the unsubscribe
+    link. This exact mistake shipped once: the database was pointed at production
+    while APP_URL stayed at the dev value, so twelve real users received a message
+    whose opt-out link pointed at localhost."""
+    from scripts.backfill_welcome_emails import app_url_is_public
+
+    assert not app_url_is_public(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://rookff.com", "https://www.rookff.com", "http://rookff.com",
+     "https://fantasymanager-production.up.railway.app"],
+)
+def test_a_public_app_url_is_accepted(url):
+    from scripts.backfill_welcome_emails import app_url_is_public
+
+    assert app_url_is_public(url)
+
+
+def test_the_prod_env_overlay_does_not_carry_app_url():
+    """The reason the check above has to exist, asserted directly.
+
+    ROOK_ENV_FILE=.env.prod layers over .env rather than replacing it, and the
+    overlay carries only DATABASE_URL. So pointing the database at production
+    leaves APP_URL — and therefore every link in the email — at whatever the local
+    .env says. If someone ever adds APP_URL to the overlay this test should be
+    revisited, not deleted: the guard is still correct, it just stops being the
+    only thing standing between a dev URL and a production send.
+    """
+    from backend.config import resolve_env_files
+
+    files = resolve_env_files(".env.prod")
+    assert files == (".env", ".env.prod"), (
+        "the prod selection layers over the base file rather than replacing it, "
+        "so non-database settings still come from .env"
+    )
+
+
+def test_redo_without_send_is_refused(monkeypatch):
+    """--redo only changes the dedupe key used while sending. Accepting it without
+    --send would print a plan that looks like a redo and mail nobody."""
+    import scripts.backfill_welcome_emails as script
+
+    monkeypatch.setattr(
+        script.sys, "argv", ["backfill_welcome_emails.py", "--redo", "fixed-links"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        script.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["2026-08-15T22:08", "fixed links", "v2!", "run@now", "2026/08/15"],
+)
+def test_a_redo_label_that_would_vary_per_run_is_refused(monkeypatch, label):
+    """A timestamp or punctuated label makes the dedupe key unique every run, so
+    every run would mail everyone again — the exact failure the key prevents."""
+    import scripts.backfill_welcome_emails as script
+
+    monkeypatch.setattr(
+        script.sys, "argv",
+        ["backfill_welcome_emails.py", "--send", "--redo", label],
+    )
+    with pytest.raises(SystemExit) as exc:
+        script.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("label", ["fixed-links", "v2", "fixed_links", "retry2"])
+def test_a_plain_redo_label_is_accepted(monkeypatch, label):
+    import scripts.backfill_welcome_emails as script
+
+    monkeypatch.setattr(script, "guard_writes", lambda operation="x": None)
+    monkeypatch.setattr(script.asyncio, "run", lambda c: (c.close(), 0)[1])
+    monkeypatch.setattr(
+        script.sys, "argv",
+        ["backfill_welcome_emails.py", "--send", "--redo", label],
+    )
+    assert script.main() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_redo_suffix_reaches_send_welcome(monkeypatch):
+    """The suffix must actually change the dedupe key, or a redo silently sends
+    nothing because every account looks already-mailed."""
+    import scripts.backfill_welcome_emails as script
+
+    captured = {}
+
+    class _FakeEmailService:
+        @classmethod
+        def from_session(cls, db):
+            return cls()
+
+        async def send_welcome(self, *, user, promo_code, referral_code,
+                               dedupe_suffix=None):
+            captured["dedupe_suffix"] = dedupe_suffix
+            return "sent"
+
+    class _FakeReferralService:
+        @classmethod
+        def from_session(cls, db):
+            return cls()
+
+        async def get_or_create_code(self, user_id):
+            return "ROOK-ABC123"
+
+        def welcome_code_for(self, user_id):
+            return "ROOK-WXXXXXXXXX"
+
+    class _FakeDb:
+        async def commit(self):
+            pass
+
+    import backend.services.email.email_service as es
+    import backend.services.referral_service as rs
+
+    monkeypatch.setattr(es, "EmailService", _FakeEmailService)
+    monkeypatch.setattr(rs, "ReferralService", _FakeReferralService)
+
+    assert await script.send_one(_FakeDb(), _user(), "fixed-links") == "sent"
+    assert captured["dedupe_suffix"] == "fixed-links"
+
+
 def test_mask_hides_the_local_part_but_keeps_the_domain():
     assert mask("stephen@rookff.com") == "s*****n@rookff.com"
     assert mask("ab@rookff.com") == "a*@rookff.com"
