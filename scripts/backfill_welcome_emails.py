@@ -125,6 +125,32 @@ def is_undeliverable(address: str) -> bool:
     return not a or a.endswith(UNDELIVERABLE_EMAIL_SUFFIXES)
 
 
+# Hosts that mean "this URL only works on the machine that generated it".
+_LOCAL_URL_MARKERS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", ".local")
+
+
+def app_url_is_public(url: str) -> bool:
+    """True when settings.app_url is an address a recipient could actually open.
+
+    WHY THIS IS CHECKED, and why it is fatal rather than a warning. Every link in
+    the email is built from settings.app_url: the button, the share link, and the
+    unsubscribe link. This script points DATABASE_URL at production via
+    ROOK_ENV_FILE=.env.prod, but that overlay carries only the database URL — every
+    other setting still comes from the local .env, where APP_URL is a dev address.
+    So it is entirely possible, and has happened, to mail production users a
+    message whose every link points at localhost.
+
+    The unsubscribe link is what makes this fatal instead of cosmetic: a
+    promotional message whose opt-out does not work is a CAN-SPAM violation, not a
+    broken button. Refusing to send is the only correct response.
+    """
+    u = (url or "").strip().lower()
+    if not u.startswith(("http://", "https://")):
+        return False
+    host = u.split("//", 1)[1].split("/", 1)[0]
+    return not any(marker in host for marker in _LOCAL_URL_MARKERS)
+
+
 async def build_plan(db, limit: int | None) -> Plan:
     """Read every live account and decide who is in the batch.
 
@@ -240,8 +266,16 @@ def print_plan(plan: Plan, *, show_emails: bool) -> None:
     print(f"  database host : {db_host() or '<unknown>'}"
           f"{'   [PRODUCTION]' if is_prod_db() else ''}")
     print(f"  from address  : {settings.email_from}")
+    print(f"  app url       : {settings.app_url}"
+          f"{'' if app_url_is_public(settings.app_url) else '   [NOT PUBLIC]'}")
     print(f"  email enabled : {settings.email_enabled}")
     print(f"  promo allowed : {settings.promotional_email_enabled}")
+    if not app_url_is_public(settings.app_url):
+        print("     ^ EVERY LINK IN THE EMAIL is built from this, including the")
+        print("       unsubscribe link. Pointing DATABASE_URL at production does")
+        print("       NOT change APP_URL — .env.prod overlays only the database.")
+        print("       Sending now would mail real users a dead opt-out link.")
+        print("       Set APP_URL to the public site for this command.")
     if not settings.promotional_email_enabled:
         print("     ^ EMAIL_POSTAL_ADDRESS is empty, so every promotional send is")
         print("       refused. Set it before a real run or this does nothing.")
@@ -282,6 +316,18 @@ async def run(args) -> int:
             print("\nREFUSING TO SEND: promotional email is disabled because")
             print("EMAIL_POSTAL_ADDRESS is empty. US CAN-SPAM requires a physical")
             print("address on commercial email. Set it and re-run.")
+            return 1
+
+        if not app_url_is_public(settings.app_url):
+            print(f"\nREFUSING TO SEND: APP_URL is {settings.app_url!r}, which no")
+            print("recipient can open. Every link in the email is built from it,")
+            print("including the unsubscribe link — and a promotional message whose")
+            print("opt-out does not work is a CAN-SPAM violation.")
+            print()
+            print("Pointing the database at production does NOT fix this:")
+            print("ROOK_ENV_FILE=.env.prod overlays only DATABASE_URL, so APP_URL")
+            print("still comes from the local .env. Set it for this one command:")
+            print('    $env:APP_URL = "https://rookff.com"')
             return 1
 
         print(f"\nSending to {len(plan.eligible)} account(s)...\n")

@@ -161,6 +161,60 @@ def test_undeliverable_matches_the_shared_constant_not_a_local_copy():
     assert not is_undeliverable("someone@rookff.com")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "https://localhost",
+        "http://127.0.0.1:8000",
+        "http://0.0.0.0:3000",
+        "http://rook.local",
+        "",
+        "rookff.com",           # no scheme
+        "/account",             # relative
+    ],
+)
+def test_a_non_public_app_url_is_rejected(url):
+    """Every link in the email is built from APP_URL, including the unsubscribe
+    link. This exact mistake shipped once: the database was pointed at production
+    while APP_URL stayed at the dev value, so twelve real users received a message
+    whose opt-out link pointed at localhost."""
+    from scripts.backfill_welcome_emails import app_url_is_public
+
+    assert not app_url_is_public(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://rookff.com", "https://www.rookff.com", "http://rookff.com",
+     "https://fantasymanager-production.up.railway.app"],
+)
+def test_a_public_app_url_is_accepted(url):
+    from scripts.backfill_welcome_emails import app_url_is_public
+
+    assert app_url_is_public(url)
+
+
+def test_the_prod_env_overlay_does_not_carry_app_url():
+    """The reason the check above has to exist, asserted directly.
+
+    ROOK_ENV_FILE=.env.prod layers over .env rather than replacing it, and the
+    overlay carries only DATABASE_URL. So pointing the database at production
+    leaves APP_URL — and therefore every link in the email — at whatever the local
+    .env says. If someone ever adds APP_URL to the overlay this test should be
+    revisited, not deleted: the guard is still correct, it just stops being the
+    only thing standing between a dev URL and a production send.
+    """
+    from backend.config import resolve_env_files
+
+    files = resolve_env_files(".env.prod")
+    assert files == (".env", ".env.prod"), (
+        "the prod selection layers over the base file rather than replacing it, "
+        "so non-database settings still come from .env"
+    )
+
+
 def test_mask_hides_the_local_part_but_keeps_the_domain():
     assert mask("stephen@rookff.com") == "s*****n@rookff.com"
     assert mask("ab@rookff.com") == "a*@rookff.com"
