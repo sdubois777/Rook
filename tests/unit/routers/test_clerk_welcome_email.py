@@ -29,16 +29,33 @@ def _event(external_id="user_clerk_1", email="new@example.com"):
     }
 
 
-def _mock_session(inserted_id):
-    """A session whose INSERT ... RETURNING yields `inserted_id`.
+def _mock_session(*scalars):
+    """A session whose successive execute() calls yield `scalars` in order.
 
-    None is what ON CONFLICT DO NOTHING returns on a conflict — the row already
-    existed and this event is a redelivery.
+    The handler can issue more than one statement, so a single fixed return value
+    cannot model it. The order for a signup where the row ALREADY EXISTED is:
+
+        1. INSERT ... ON CONFLICT DO NOTHING RETURNING id   -> None (conflict)
+        2. SELECT id WHERE external_id = ...                -> the existing id
+        3. UPDATE ... SET display_name                      -> unused
+
+    The last value repeats, so passing one scalar still models the simple case.
     """
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = inserted_id
+    results = []
+    for value in scalars:
+        r = MagicMock()
+        r.scalar_one_or_none.return_value = value
+        results.append(r)
+
     db = AsyncMock()
-    db.execute.return_value = result
+    calls = {"n": 0}
+
+    async def _execute(*_a, **_kw):
+        i = min(calls["n"], len(results) - 1)
+        calls["n"] += 1
+        return results[i]
+
+    db.execute = _execute
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=db)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -118,16 +135,75 @@ async def test_new_signup_is_welcomed_with_their_own_codes(sent):
 
 
 @pytest.mark.asyncio
-async def test_a_redelivered_user_created_sends_nothing(sent):
-    """ON CONFLICT DO NOTHING returns no row, which is the only signal that the
-    account already existed. Without it every Clerk retry re-mails the user."""
-    _db, ctx = _mock_session(None)
+async def test_the_request_path_winning_the_race_still_gets_a_welcome_email(sent):
+    """REGRESSION. This shipped broken and cost a real signup their email.
+
+    Two paths create a user row: this webhook, and UserService.get_or_create on
+    the first authenticated request. Clerk webhooks are asynchronous, so a fast
+    browser routinely calls the API first and the lazy path wins — this insert
+    then conflicts and RETURNING yields nothing.
+
+    The original code read "no row returned" as "not a new signup" and skipped the
+    email. That was wrong twice over: it is the normal case for a fast client, and
+    exactly-once was already guaranteed by the send lock, which claims the dedupe
+    key welcome:<user_id> before the provider is called. The handler must look the
+    user up and attempt the send regardless.
+    """
+    existing_id = uuid.uuid4()
+    # INSERT conflicts (None), then the SELECT finds the row the other path made.
+    _db, ctx = _mock_session(None, existing_id)
+
+    with patch("backend.routers.webhooks.AsyncSessionLocal", return_value=ctx):
+        resp = await _post(_event())
+
+    assert resp.status_code == 200
+    assert len(sent) == 1, "a signup created by the request path must still be welcomed"
+    assert sent[0]["user_id"] == existing_id
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_clerk_id_sends_nothing(sent):
+    """Insert conflicted AND the lookup found nobody. There is no user to mail;
+    attempting one would be a crash, not an email."""
+    _db, ctx = _mock_session(None, None)
 
     with patch("backend.routers.webhooks.AsyncSessionLocal", return_value=ctx):
         resp = await _post(_event())
 
     assert resp.status_code == 200
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_redelivered_event_is_deduped_by_the_send_lock_not_by_this_handler(
+    sent, monkeypatch
+):
+    """Clerk retries an errored webhook, so the same event can arrive twice.
+
+    Exactly-once is enforced one layer down: EmailService claims the dedupe key
+    before calling the provider, so the second attempt is refused at the database.
+    This test asserts the handler DOES attempt both times and that the refusal is
+    what stops the duplicate — the division of responsibility the previous design
+    got wrong by trying to decide it here.
+    """
+    from backend.services.email.email_service import EmailService
+
+    existing_id = uuid.uuid4()
+    statuses = ["sent", "skipped"]
+
+    async def _capture(self, *, user, promo_code, referral_code):
+        sent.append({"user_id": user.id, "status": statuses[len(sent)]})
+        return statuses[len(sent) - 1]
+
+    monkeypatch.setattr(EmailService, "send_welcome", _capture)
+
+    for _ in range(2):
+        _db, ctx = _mock_session(None, existing_id)
+        with patch("backend.routers.webhooks.AsyncSessionLocal", return_value=ctx):
+            resp = await _post(_event())
+        assert resp.status_code == 200
+
+    assert [c["status"] for c in sent] == ["sent", "skipped"]
 
 
 @pytest.mark.asyncio

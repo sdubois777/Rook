@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -157,15 +157,51 @@ async def clerk_webhook(request: Request):
                     credits_remaining=TIER_LIMITS["free"]["credits_signup_bonus"],
                 )
                 .on_conflict_do_nothing(index_elements=["external_id"])
-                # RETURNING yields a row only when the insert actually inserted:
-                # ON CONFLICT DO NOTHING returns nothing on a conflict. That is
-                # the only way to tell a real signup from a redelivered event, and
-                # a redelivery must not re-send the welcome email.
                 .returning(User.id)
             )
             created_user_id = result.scalar_one_or_none()
+
             if created_user_id is None:
-                logger.info("Clerk webhook: user %s already existed", data["id"])
+                # The row already existed. DO NOT read this as "not a new signup"
+                # and skip the welcome email — that was a real bug, and it silently
+                # cost a real user their email.
+                #
+                # There are TWO paths that create a user row. This webhook is one.
+                # The other is UserService.get_or_create, which runs from
+                # get_current_user on the first authenticated request. Clerk
+                # webhooks are asynchronous, so the browser routinely calls the API
+                # before this event lands — the lazy path wins the race and this
+                # insert conflicts. That is the NORMAL case for a fast client, not
+                # an error, and it is indistinguishable here from a redelivered
+                # event.
+                #
+                # Telling those two apart is unnecessary: the send lock already
+                # guarantees exactly-once. EmailService claims the dedupe key
+                # welcome:<user_id> before calling the provider, so a redelivery
+                # is refused at the database. Gating on "did I insert the row"
+                # added a second guard that only ever produced false negatives.
+                created_user_id = (
+                    await db.execute(
+                        select(User.id).where(User.external_id == data["id"])
+                    )
+                ).scalar_one_or_none()
+                logger.info(
+                    "Clerk webhook: user %s already existed (created by the "
+                    "request path); welcome email still attempted, the send lock "
+                    "prevents a duplicate",
+                    data["id"],
+                )
+                # The lazy path stores an EMPTY display_name because it only ever
+                # receives an id and an email. This event carries the real name,
+                # and the welcome email greets the recipient by it, so fill it in.
+                if created_user_id is not None and display_name:
+                    await db.execute(
+                        update(User)
+                        .where(User.id == created_user_id)
+                        .where((User.display_name.is_(None))
+                               | (User.display_name == ""))
+                        .values(display_name=display_name)
+                    )
             else:
                 logger.info("Clerk webhook: created user %s", data["id"])
 
@@ -179,7 +215,9 @@ async def clerk_webhook(request: Request):
 
         await db.commit()
 
-    # After the commit, and only for a row this event actually created.
+    # After the commit, for the user this event refers to — whether this insert
+    # created the row or the request path got there first. Exactly-once is the
+    # send lock's job, not ours.
     if created_user_id is not None and _is_mailable(email):
         await _send_welcome_email(created_user_id, email, display_name or None)
 
