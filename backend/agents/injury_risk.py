@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.agents.base_agent import BaseAgent, parse_json_output, HAIKU
 from backend.agents.team_systems import NFL_TEAMS
 from backend.database import AsyncSessionLocal
+from backend.integrations.nfl_data import normalize_player_name
 from backend.models.player import Player, PlayerInjuryProfile
 from backend.utils.seasons import get_current_season, get_analysis_seasons, get_analysis_year
 
@@ -427,6 +428,49 @@ class InjuryRiskAgent(BaseAgent):
 
         return result
 
+    async def _get_db_team_players(self, team: str) -> list[dict]:
+        """Skill-position players the DATABASE currently assigns to this team.
+
+        The warehouse roster above is nflverse data, which reflects the season it was
+        published for. It therefore omits two groups entirely: rookies, and anyone who
+        changed teams in the offseason (they appear under their OLD team, or not at
+        all). Those players got no injury profile row at all, and player_profiles then
+        described them to the model as availability "unknown" with nothing logged.
+
+        player_profiles has carried this same supplement since it was written
+        (backend/agents/player_profiles.py:_get_db_team_players); this agent did not,
+        which is why the two agents disagreed about who is on a roster.
+
+        Each entry carries the DB row's id and its cross-source ids, so profile
+        write-back resolves by identity instead of by matching a name.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                players = (await session.execute(
+                    select(Player).where(
+                        Player.team_abbr == team,
+                        Player.position.in_(SKILL_POSITIONS),
+                    )
+                )).scalars().all()
+        except Exception as exc:
+            logger.debug("Could not fetch DB team players for %s: %s", team, exc)
+            return []
+
+        entries: list[dict] = []
+        for p in players:
+            entry = {
+                "name": p.name,
+                "position": (p.position or "").upper(),
+                "player_id": str(p.id),
+                "sleeper_id": p.sleeper_id,
+                "sportradar_id": p.sportradar_id,
+                "gsis_id": p.gsis_id,
+            }
+            if p.age is not None:
+                entry["age"] = int(p.age)
+            entries.append(entry)
+        return entries
+
     def _get_player_injury_season(
         self, player_name: str, team: str, season: int
     ) -> dict:
@@ -534,13 +578,38 @@ class InjuryRiskAgent(BaseAgent):
     # Context builder — all Python, zero API calls
     # ------------------------------------------------------------------
 
-    async def _build_team_context(self, team_abbr: str) -> dict:
+    async def _build_team_context(
+        self, team_abbr: str, db_players: list[dict] | None = None
+    ) -> dict:
+        """Pre-aggregated per-team injury context.
+
+        ``db_players`` is the database's current roster for this team. It is a
+        parameter so run_for_team can fetch it once and reuse the same list for the
+        identity map; passing None fetches it here.
+
+        The returned dict is the model prompt AND the agent-cache key, so it holds
+        only the analysis fields. Identity ids live in the separate map built by
+        _identity_index and never enter the prompt.
+        """
         team             = team_abbr.upper()
         current_season   = get_current_season()
         analysis_seasons = get_analysis_seasons(3)
         analysis_year    = get_analysis_year()
 
         roster = self._get_team_roster(team, current_season)
+
+        # Add database players the nflverse roster does not list — rookies and
+        # offseason team-changers. Without this they get no injury profile at all.
+        if db_players is None:
+            db_players = await self._get_db_team_players(team)
+        roster_names = {r["name"] for r in roster}
+        for dbp in db_players:
+            if dbp["name"] not in roster_names:
+                roster.append({
+                    k: v for k, v in dbp.items()
+                    if k in ("name", "position", "age")
+                })
+
         seen:    set[str]   = set()
         players: list[dict] = []
 
@@ -604,7 +673,9 @@ class InjuryRiskAgent(BaseAgent):
         logger.info("Building injury risk context for %s", team)
 
         try:
-            context = await self._build_team_context(team)
+            db_players = await self._get_db_team_players(team)
+            context = await self._build_team_context(team, db_players=db_players)
+            identity = _identity_index(db_players)
 
             if not context["players"]:
                 logger.info("%s: no skill-position players, skipping", team)
@@ -632,7 +703,7 @@ class InjuryRiskAgent(BaseAgent):
                 return 0
 
             written = await _write_injury_profiles(
-                profiles, context, team, self._warehouse
+                profiles, context, team, self._warehouse, identity_by_name=identity
             )
             logger.info("%s: %d injury profiles written", team, written)
             return written
@@ -676,54 +747,100 @@ class InjuryRiskAgent(BaseAgent):
 # Bulk DB write helpers
 # ---------------------------------------------------------------------------
 
+def _identity_index(db_players: list[dict]) -> dict[str, dict]:
+    """{player name -> identity dict} for the database rows the context was built from.
+
+    Keyed on both the exact name and its normalized form, so a model that echoes back
+    "Marquise Brown" for a row stored as "Hollywood Brown" still resolves.
+    """
+    index: dict[str, dict] = {}
+    for entry in db_players:
+        name = entry.get("name") or ""
+        if not name:
+            continue
+        index[name] = entry
+        index.setdefault(normalize_player_name(name), entry)
+    return index
+
+
 async def _bulk_resolve_player_ids(
     session: AsyncSession,
     names_and_teams: list[tuple[str, str]],
+    identity_by_name: dict[str, dict] | None = None,
 ) -> dict[tuple[str, str], str | None]:
-    """Resolve player IDs from (name, team) pairs in a single query.
+    """Resolve the model's returned player names back to database player ids.
 
-    Uses team-based fetch for efficiency and builds gsis_id lookup map
-    alongside name-based matching for future gsis_id-first support.
+    ``identity_by_name`` is the identity map built by _identity_index from the same
+    database rows the prompt was built from, so the normal case is a direct id lookup
+    with no matching at all. A name that reaches here without one (an nflverse roster
+    entry with no database row) falls back to normalized full name PLUS position on
+    that team, and resolves only when that pair is unique. Anything ambiguous returns
+    None: no injury profile is better than one written onto the wrong player.
+
+    This NEVER matches on last name. The previous implementation keyed its lookup on
+    ``name.split()[-1].lower()`` and, whenever exactly one player on the team shared
+    that surname, wrote the profile to that player without ever comparing first name
+    or position. Two same-surname players on one roster got an arbitrary assignment,
+    and a roster name with no real counterpart silently took another player's row.
+    CLAUDE.md rule 7 forbids last-name matching for exactly this reason.
     """
     results: dict[tuple, str | None] = {}
     if not names_and_teams:
         return results
 
-    unique_teams = {t for _, t in names_and_teams if t}
-    if not unique_teams:
-        return results
+    identity_by_name = identity_by_name or {}
 
-    # Fetch all players for relevant teams (single efficient query)
-    team_conditions = [Player.team_abbr == t for t in unique_teams]
-    all_players = (
-        await session.execute(select(Player).where(or_(*team_conditions)))
-    ).scalars().all()
+    # Only names with no known database id need the fallback query. An entry that
+    # carries just a position still needs it — that is the nflverse-only case.
+    unresolved = [
+        (name, team) for name, team in names_and_teams
+        if name and not (_lookup_identity(identity_by_name, name) or {}).get("player_id")
+    ]
 
-    # Build lookup maps
-    player_map: dict[str, list[Player]] = {}
-    for p in all_players:
-        last = p.name.split()[-1].lower()
-        player_map.setdefault(last, []).append(p)
+    fallback: dict[tuple[str, str], list[Player]] = {}
+    unique_teams = {t for _, t in unresolved if t}
+    if unique_teams:
+        team_conditions = [Player.team_abbr == t for t in unique_teams]
+        candidates = (
+            await session.execute(select(Player).where(or_(*team_conditions)))
+        ).scalars().all()
+        for p in candidates:
+            key = (normalize_player_name(p.name), (p.position or "").upper())
+            fallback.setdefault(key, []).append(p)
 
     for name, team in names_and_teams:
         if not name:
             results[(name, team)] = None
             continue
-        last       = name.split()[-1].lower()
-        candidates = player_map.get(last, [])
-        if not candidates:
-            results[(name, team)] = None
-        elif len(candidates) == 1:
-            results[(name, team)] = str(candidates[0].id)
+
+        entry = _lookup_identity(identity_by_name, name)
+        if entry and entry.get("player_id"):
+            results[(name, team)] = str(entry["player_id"])
+            continue
+
+        position = (entry or {}).get("position", "")
+        matches = fallback.get((normalize_player_name(name), (position or "").upper()), [])
+        if len(matches) == 1:
+            results[(name, team)] = str(matches[0].id)
         else:
-            match = [p for p in candidates if p.team_abbr and p.team_abbr.upper() == team.upper()]
-            results[(name, team)] = str(match[0].id) if match else str(candidates[0].id)
+            results[(name, team)] = None
+            logger.warning(
+                "injury_risk: no unique player for %r (%s, position=%r) — "
+                "%d candidate(s); skipping rather than guessing",
+                name, team, position or "unknown", len(matches),
+            )
 
     return results
 
 
+def _lookup_identity(identity_by_name: dict[str, dict], name: str) -> dict | None:
+    """Identity entry for a name, trying the exact string then its normalized form."""
+    return identity_by_name.get(name) or identity_by_name.get(normalize_player_name(name))
+
+
 async def _write_injury_profiles(
-    profiles: list[dict], context: dict, team: str, warehouse=None
+    profiles: list[dict], context: dict, team: str, warehouse=None,
+    identity_by_name: dict[str, dict] | None = None,
 ) -> int:
     """Bulk upsert player_injury_profiles — one DB transaction per team.
 
@@ -740,9 +857,21 @@ async def _write_injury_profiles(
     # career durability pattern, not recent production trend.
     availability_seasons = get_analysis_seasons(AVAILABILITY_SEASONS)
 
+    # Resolution identity: the database rows where we have them, plus the context's
+    # position for every other name. Position is what makes the name fallback safe —
+    # without it a name match cannot tell two same-named players of different
+    # positions apart, and that is how profiles landed on the wrong player before.
+    resolution_identity: dict[str, dict] = dict(identity_by_name or {})
+    for ctx_player in context.get("players", []):
+        ctx_name = ctx_player.get("name")
+        if ctx_name and ctx_name not in resolution_identity:
+            resolution_identity[ctx_name] = {"position": ctx_player.get("position", "")}
+
     async with AsyncSessionLocal() as session:
         names_and_teams = [(p.get("player_name", ""), team) for p in profiles]
-        id_map = await _bulk_resolve_player_ids(session, names_and_teams)
+        id_map = await _bulk_resolve_player_ids(
+            session, names_and_teams, identity_by_name=resolution_identity
+        )
 
         # Load Player ORM objects once so availability can resolve by ID.
         # Only needed when a warehouse is available to compute availability.

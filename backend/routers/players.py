@@ -20,7 +20,8 @@ from backend.agents.valuation_agent import classify_snake_flag, compute_adp_diff
 from backend.schemas.player_badges import PlayerBadgeFields
 from backend.core.dependencies import get_current_user, get_db
 from backend.engines.valuation import get_market_context
-from backend.utils.seasons import get_current_season
+from backend.utils.seasons import get_current_season, season_for_date
+from backend.models.market_value_historic import REALIZED_SOURCES
 from backend.models.player import Player
 from backend.repositories.player_repo import PlayerRepository
 from backend.repositories.team_system_repo import TeamSystemRepository
@@ -211,10 +212,15 @@ class PlayerSummaryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_prior_season_price(player: Player) -> tuple[float | None, int | None]:
-    """Look up prior season price from historic_prices relationship."""
+    """Look up prior season price from historic_prices relationship.
+
+    REALIZED prices only. The same table also holds FantasyPros preseason consensus
+    estimates archived by the market sync, and showing an estimate labelled as what a
+    player cost last season would be wrong in a way the user cannot see.
+    """
     prior_year = get_current_season() - 1
     for hp in (player.historic_prices or []):
-        if hp.season_year == prior_year:
+        if hp.season_year == prior_year and hp.source in REALIZED_SOURCES:
             return float(hp.price), prior_year
     return None, None
 
@@ -291,7 +297,18 @@ def _player_to_summary(player: Player, overlay=None) -> PlayerSummary:
         ceiling_value=float(player.ceiling_value) if player.ceiling_value else None,
         floor_value=float(player.floor_value) if player.floor_value else None,
         market_value=eff_market,
-        market_value_season=get_current_season() if eff_market is not None else None,
+        # The season this price actually came from — see the matching note in
+        # backend/routers/draftboard.py. Reported only when the displayed price is the
+        # players-table one: market_value_updated_at times that scrape, so using it to
+        # date the per-format overlay's price would label one number with another
+        # number's timestamp. None when not established.
+        market_value_season=(
+            season_for_date(player.market_value_updated_at)
+            if eff_market is not None
+            and (_ov is None or _ov.market_value is None)
+            and player.market_value_updated_at is not None
+            else None
+        ),
         prior_season_price=prior_price,
         prior_season_year=prior_year,
         # `is not None`, not truthiness — an exactly-zero gap is a real answer, not

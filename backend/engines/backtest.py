@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.integrations.nfl_data import get_seasonal_stats
 from backend.models.league_auction_history import LeagueAuctionHistory
-from backend.models.market_value_historic import MarketValueHistoric
+from backend.models.market_value_historic import MarketValueHistoric, REALIZED_SOURCES
 from backend.models.player import Player, PlayerProfile
 from backend.utils.seasons import get_current_season
 
@@ -776,6 +776,12 @@ async def _load_historical_prices(
     # signatures. league_auction_history is empty here, so without this branch the
     # backtest silently fell through to current-season ADP and scored every signal
     # against the wrong number.
+    # REALIZED prices only. This table also holds FantasyPros preseason consensus
+    # estimates, written when the market sync archives the outgoing price
+    # (backend/engines/market_values.py). Scoring against those would compare our
+    # projection with another projection and report it as a market edge, which is the
+    # class of error the source filter exists to prevent. Rows written before the
+    # source column existed default to league_auction, which is what they were.
     result3 = await session.execute(
         select(
             MarketValueHistoric.player_id,
@@ -784,6 +790,7 @@ async def _load_historical_prices(
         .where(
             MarketValueHistoric.season_year == season,
             MarketValueHistoric.price > 0,
+            MarketValueHistoric.source.in_(REALIZED_SOURCES),
         )
         .group_by(MarketValueHistoric.player_id)
     )
@@ -792,7 +799,7 @@ async def _load_historical_prices(
 
     total = len(by_id) + len(by_name)
     if total >= MIN_PRICE_COVERAGE:
-        return by_id, by_name, f"market_value_historic ({season}, N={total})"
+        return by_id, by_name, f"market_value_historic ({season}, realized, N={total})"
 
     # Fallback: use market_value_league from players table
     # This may contain current ADP data rather than historical prices —

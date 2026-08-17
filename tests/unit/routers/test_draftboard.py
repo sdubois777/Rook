@@ -50,6 +50,10 @@ def mock_player_rb_tier1():
     p.dependencies = []
     p.injury_profile = None
     p.injury_status = None
+    # Real Player rows always carry this column. The board derives the season it
+    # labels a price with from it, so a mock without it hands the router a
+    # MagicMock where a datetime belongs.
+    p.market_value_updated_at = None
     return p
 
 
@@ -79,6 +83,10 @@ def mock_player_wr_tier2():
     p.dependencies = []
     p.injury_profile = None
     p.injury_status = None
+    # Real Player rows always carry this column. The board derives the season it
+    # labels a price with from it, so a mock without it hands the router a
+    # MagicMock where a datetime belongs.
+    p.market_value_updated_at = None
     return p
 
 
@@ -316,6 +324,10 @@ def _snake_player(name, position, adp_rank, adp_ai, adp_fp, adp_diff, snake_flag
     p.dependencies = []
     p.injury_profile = None
     p.injury_status = None
+    # Real Player rows always carry this column. The board derives the season it
+    # labels a price with from it, so a mock without it hands the router a
+    # MagicMock where a datetime belongs.
+    p.market_value_updated_at = None
     p.profile = None
     p.historic_prices = []
     return p
@@ -395,6 +407,10 @@ def _format_player(**over):
     p.dependencies = []
     p.injury_profile = None
     p.injury_status = None
+    # Real Player rows always carry this column. The board derives the season it
+    # labels a price with from it, so a mock without it hands the router a
+    # MagicMock where a datetime belongs.
+    p.market_value_updated_at = None
     p.profile = None
     p.historic_prices = []
     return p
