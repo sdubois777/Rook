@@ -91,6 +91,19 @@ def asof_active() -> bool:
     return bool(os.environ.get(ASOF_ENV, "").strip())
 
 
+def season_for_date(when: date | datetime) -> int:
+    """The NFL season a given moment falls in — the same March cutoff as
+    get_current_season(), but for an ARBITRARY date instead of today.
+
+    Use this whenever a stored value has to be labelled with the season it came from
+    rather than the season it is being read in. Reading the clock instead is an
+    off-by-one at every season boundary: a price scraped in one season and archived
+    by the first run after the following March gets recorded under the wrong year.
+    """
+    d = when.date() if isinstance(when, datetime) else when
+    return d.year if d.month >= 3 else d.year - 1
+
+
 def get_current_season() -> int:
     """
     Returns the most recently started NFL season year.
