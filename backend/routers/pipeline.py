@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -13,8 +14,14 @@ from pydantic import BaseModel
 
 from backend.core.dependencies import require_admin
 from backend.middleware.rate_limit import rate_limit_pipeline
+from backend.utils.seasons import asof_now
 
 logger = logging.getLogger(__name__)
+
+# How old a market price refresh may be before the status endpoint calls it stale.
+# Every value gap on the board is our bid ceiling minus these prices, and prices move
+# daily through training camp, so a week is already a long time before draft day.
+MARKET_VALUE_STALE_DAYS = 7
 
 # Operator-only router: every route triggers agent runs / scrapes / syncs that cost
 # real money and time. ADMIN auth gates the whole router (a regular logged-in user
@@ -152,16 +159,46 @@ async def refresh_market_values():
     async with AsyncSessionLocal() as session:
         result = await sync_market_values(session, scoring_format="ppr")
 
+    # RECOMPUTE what the new price invalidates — and ONLY that. The sync writes just the
+    # price columns, but value_gap, value_gap_signal, value_assessment, pay_up_flag,
+    # nomination_target_flag and signal_conviction are DERIVED from the price and stored,
+    # not computed at read time (a PPR board passes the stored values straight through —
+    # see resolve_market_and_gap in backend/services/format_display.py). Without this the
+    # board printed a fresh price beside a gap computed from the price it replaced.
+    #
+    # run_valuation_pass is deliberately NOT called here — see the longer note in
+    # scripts/refresh_market_values.py. It rewrites bid ceilings, which a market move did
+    # not change, and re-running it outside the pipeline reprices the board on different
+    # terms from the pipeline's own call.
+    revalued = None
+    if result.get("matched"):
+        from backend.engines.valuation import reconcile_value_signals
+        rec = await reconcile_value_signals()
+        revalued = {"signals": rec.get("updated")}
+        result["revalued"] = revalued
+
+    if result.get("error"):
+        return PipelineResponse(
+            status="failed",
+            message=f"Market value sync did not run: {result['error']}",
+            details=result,
+        )
+
     year = result.get("year")
     is_current = result.get("is_current_season")
     season_label = "current" if is_current else "previous"
+    revalue_note = (
+        f", reconciled {revalued['signals']} market-relative signal(s)"
+        if revalued else ""
+    )
 
     return PipelineResponse(
         status="complete",
         message=(
             f"Market values synced — "
-            f"{result['matched']} matched, {result['unmatched']} unmatched "
-            f"({year} {season_label} season)"
+            f"{result['matched']} matched, {result['unmatched']} unmatched, "
+            f"{result.get('ambiguous', 0)} skipped as ambiguous "
+            f"({year} {season_label} season){revalue_note}"
         ),
         details=result,
     )
@@ -197,8 +234,31 @@ async def market_values_status():
             "note": "No market values loaded yet — run the refresh pipeline",
         }
 
+    # WARN ON AGE, not on the season flag. The old check was `if not is_current_season`,
+    # but get_fantasypros_auction_year (backend/utils/seasons.py) now returns True
+    # unconditionally, which is written straight into this column — so the branch could
+    # never fire and this endpoint reported a clean status for a refresh of any age.
+    # Measured on the development database before the price refresh was added to the
+    # pipeline: the newest refresh was 91 days old and this endpoint said nothing.
+    # asof_now(), not datetime.now(): CLAUDE.md requires every clock read to go through
+    # the as-of helpers, so that a past-dated run reports the age the prices had on that
+    # date rather than their age today.
+    now = asof_now()
+    age_days = None
     note = None
-    if not row.is_current_season:
+    if row.refreshed_at is not None:
+        refreshed = row.refreshed_at
+        if refreshed.tzinfo is None:
+            refreshed = refreshed.replace(tzinfo=timezone.utc)
+        age_days = (now - refreshed).days
+        if age_days >= MARKET_VALUE_STALE_DAYS:
+            note = (
+                f"Market prices are {age_days} days old (last refreshed "
+                f"{refreshed.date()}). Every value gap is computed against these "
+                f"prices. Re-run the pre-draft pipeline, or the market value refresh "
+                f"on its own, before trusting them."
+            )
+    elif not row.is_current_season:
         note = (
             f"Using {row.year} data — "
             f"refresh in July when {row.year + 1} data is available"
@@ -210,6 +270,8 @@ async def market_values_status():
         "is_current_season": row.is_current_season,
         "player_count": row.player_count,
         "refreshed_at": row.refreshed_at.isoformat() if row.refreshed_at else None,
+        "age_days": age_days,
+        "is_stale": bool(age_days is not None and age_days >= MARKET_VALUE_STALE_DAYS),
         "note": note,
     }
 

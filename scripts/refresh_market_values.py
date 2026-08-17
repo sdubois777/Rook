@@ -32,9 +32,16 @@ async def main() -> None:
         help="Show matches without writing to DB",
     )
     parser.add_argument(
+        "--no-revalue",
+        action="store_true",
+        help="Skip the valuation + signal recompute after syncing (leaves the board's "
+             "value gap computed against the price this run replaced)",
+    )
+    parser.add_argument(
         "--revalue",
         action="store_true",
-        help="Re-run valuation pass after syncing market values",
+        help="Accepted for compatibility and ignored — revaluing is now the default. "
+             "Use --no-revalue to skip it.",
     )
     args = parser.parse_args()
 
@@ -80,23 +87,56 @@ async def main() -> None:
         for name in result["unmatched_names"][:20]:
             print(f"    - {name}")
 
+    # Names that DID match but matched several player rows. Reported separately from
+    # unmatched because these were skipped deliberately rather than not found, and each
+    # one is a duplicate-row problem in the players table worth fixing at the source.
+    if result.get("ambiguous"):
+        print(f"\n  Skipped as ambiguous ({result['ambiguous']} matched several "
+              f"player rows; priced none rather than guessing):")
+        for name in result.get("ambiguous_names", [])[:20]:
+            print(f"    - {name}")
+
     if result.get("updated_at"):
         print(f"\n  Updated at: {result['updated_at']}")
 
     # Summary banner
     print(f"\n  Market value source: FantasyPros {year_used} PPR")
 
-    # Optionally re-run valuations
-    if args.revalue and not args.dry_run and result["matched"] > 0:
-        print("\n=== Re-running Valuation Pass ===")
-        from backend.engines.valuation import run_valuation_pass
+    # RECOMPUTE BY DEFAULT what the new price invalidates — and ONLY that.
+    #
+    # The sync writes only the price columns, but the board's value gap, its buy/sell
+    # signal and the "top opportunities" ranking are DERIVED from the price and stored,
+    # not computed at read time. Leaving them means the board shows the new price beside
+    # a gap computed from the price it replaced, so the two numbers on one row no longer
+    # subtract.
+    #
+    # reconcile_value_signals is exactly the right pass: it rewrites value_gap,
+    # value_gap_signal, value_assessment, pay_up_flag, nomination_target_flag and
+    # signal_conviction from the (unchanged) bid ceiling against the (new) market, and
+    # touches no ceiling.
+    #
+    # It deliberately does NOT run run_valuation_pass. That pass rewrites
+    # recommended_bid_ceiling from projections, which a market move did not change, and
+    # doing it here would be wrong twice over: outside the pipeline it has no
+    # prior_production argument, so the displaced-direction guard behaves differently
+    # from the pipeline's own call and the board reprices inconsistently; and it would
+    # leave recommended_bid_ceiling recomputed while ai_bid_ceiling — owned by the
+    # valuation agent and then railed by the positional budget enforcement — stayed as
+    # it was. A price refresh must not silently rescale the board.
+    if not args.no_revalue and not args.dry_run and result["matched"] > 0:
+        print("\n=== Recomputing market-relative signals against the new prices ===")
+        from backend.engines.valuation import reconcile_value_signals
 
-        val_result = await run_valuation_pass()
+        rec = await reconcile_value_signals()
         print(
-            f"  Updated  : {val_result['updated']} players\n"
-            f"  Skipped  : {val_result['skipped']} players\n"
-            f"  Year     : {val_result['analysis_year']}"
+            f"  Signals  : {rec['updated']} player(s) reconciled; "
+            f"pay_up={rec['flag_counts']['pay_up']}, "
+            f"nomination_target={rec['flag_counts']['nomination_target']}"
         )
+    elif args.no_revalue and result["matched"] > 0:
+        print("\n  NOTE: --no-revalue was passed. The board now holds new prices beside "
+              "\n  value gaps computed against the OLD ones. Run the pre-draft pipeline, "
+              "\n  or this command without --no-revalue, before using the board.")
 
     print()
 

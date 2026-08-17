@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from backend.agents.valuation_agent import classify_snake_flag, compute_adp_diff
 from backend.core.dependencies import get_current_user
 from backend.database import AsyncSessionLocal
+from backend.models.market_value_historic import REALIZED_SOURCES
 from backend.models.player import Player, PlayerProfile
 from backend.models.dependency import PlayerDependency
 from backend.models.league_config import DEFAULT_LEAGUE_CONFIG
@@ -25,7 +26,7 @@ from backend.models.league_config import DEFAULT_LEAGUE_CONFIG
 from backend.routers.preferences import VALID_STRATEGIES
 from backend.schemas.player_badges import PlayerBadgeFields
 from backend.repositories.player_repo import draftable_filter
-from backend.utils.seasons import get_current_season
+from backend.utils.seasons import get_current_season, season_for_date
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/draftboard", tags=["draftboard"])
@@ -363,10 +364,13 @@ async def get_draftboard(
                 confidence=dep.confidence,
             ))
 
-        # Look up prior season price from historic table
+        # Look up prior season price from historic table. REALIZED prices only — the
+        # same table also holds FantasyPros preseason consensus estimates archived by
+        # the market sync, and an estimate shown as what a player actually cost last
+        # season is wrong in a way the user cannot see.
         hist_price = None
         for hp in (p.historic_prices or []):
-            if hp.season_year == prior_year:
+            if hp.season_year == prior_year and hp.source in REALIZED_SOURCES:
                 hist_price = float(hp.price)
                 break
 
@@ -450,7 +454,24 @@ async def get_draftboard(
             recommended_bid_ceiling=round(eff_rec_ceiling * avf, 1) if eff_rec_ceiling else None,
             baseline_value=eff_baseline,
             market_value=eff_market,
-            market_value_season=get_current_season() if eff_market is not None else None,
+            # The season this price ACTUALLY came from, read from when it was scraped —
+            # not from today's clock. Stamping the clock labelled a price of any age as
+            # the current season, so a months-old figure rendered as this year's market
+            # with nothing to distinguish it from one scraped this morning.
+            #
+            # Reported ONLY when the displayed price is the players-table one. On a
+            # non-PPR board the price can come from the per-format overlay instead, and
+            # market_value_updated_at times the players-table scrape, not that row — so
+            # labelling the overlay's price with it would date one number using another
+            # number's timestamp. None means "not established", which the surface can
+            # render honestly.
+            market_value_season=(
+                season_for_date(p.market_value_updated_at)
+                if eff_market is not None
+                and ov.market_value is None
+                and p.market_value_updated_at is not None
+                else None
+            ),
             prior_season_price=hist_price,
             prior_season_year=prior_year if hist_price else None,
             # `is not None`, not truthiness: an exactly-zero gap is a real answer

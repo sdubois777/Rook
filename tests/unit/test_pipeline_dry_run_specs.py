@@ -107,6 +107,77 @@ def test_pipeline_order_has_no_duplicates():
     assert len(m.PIPELINE_ORDER) == len(set(m.PIPELINE_ORDER))
 
 
+def test_market_values_runs_before_everything_that_reads_a_price():
+    """The board's PPR auction price must be refreshed before anything consumes it.
+
+    players.market_value_fantasypros is what a PPR league sees in the market column
+    (backend/routers/draftboard.py:417 -> backend/services/format_display.py:180), and
+    its only writer is sync_market_values. That writer was in NO pipeline phase, so a
+    full run never refreshed the displayed price — the reported "market prices are out
+    of date". The 6b format_market stage scrapes a fresh PPR price too, but writes it
+    to player_format_values, which load_format_rows deliberately skips for PPR.
+    """
+    m = _load()
+    order = m.PIPELINE_ORDER
+    assert "market_values" in order, (
+        "market_values must be a pipeline phase, or the displayed PPR market price "
+        "only ever changes when someone runs scripts/refresh_market_values.py by hand"
+    )
+    # player_profiles routes players to Sonnet on market value; valuation_agent's
+    # value_gap is the bid ceiling minus this price.
+    assert order.index("market_values") < order.index("player_profiles")
+    assert order.index("market_values") < order.index("valuation")
+    assert order.index("market_values") < order.index("valuation_agent")
+
+
+@pytest.mark.asyncio
+async def test_market_values_is_skipped_under_an_asof_clock():
+    """A live scrape on a past-dated board would overwrite that season's real prices.
+
+    Same reason sync_adp and format_market skip: the FantasyPros scrape is
+    current-season only. The as-of market comes from market_value_historic via
+    _seed_asof_market, and this stage would undo it.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    m = _load()
+    sync = AsyncMock()
+
+    with (
+        patch("backend.utils.seasons.asof_active", return_value=True),
+        patch("backend.engines.market_values.sync_market_values", sync),
+    ):
+        await m.run_agent("market_values", None, warehouse=None)
+
+    sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_market_scrape_is_recorded_not_swallowed():
+    """A scrape failure leaves the OLD prices, which look identical to fresh ones.
+
+    The run must therefore say so at the end rather than only warn mid-log.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    m = _load()
+    m._STAGE_FAILURES.clear()
+
+    with (
+        patch("backend.utils.seasons.asof_active", return_value=False),
+        patch(
+            "backend.engines.market_values.sync_market_values",
+            AsyncMock(return_value={"error": "FantasyPros timed out"}),
+        ),
+    ):
+        await m.run_agent("market_values", None, warehouse=None)
+
+    assert any("market_values" in f for f in m._STAGE_FAILURES), (
+        "a failed market scrape must be recorded so the end-of-run summary reports it"
+    )
+    m._STAGE_FAILURES.clear()
+
+
 def test_grade_owner_runs_before_its_consumers():
     """team_metrics is the SOLE owner of the deterministic grades and must precede
     roster_changes and player_profiles, which read them."""

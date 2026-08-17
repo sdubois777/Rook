@@ -3,38 +3,53 @@ Tests for market_value_historic — snapshot, API exposure, valuation agent cont
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.engines.market_values import sync_market_values, _snapshot_current_market_values
+from backend.models.market_value_historic import SOURCE_FANTASYPROS_CONSENSUS
 
 
 # ---------------------------------------------------------------------------
 # Snapshot — preserves current FP values before overwrite
 # ---------------------------------------------------------------------------
 
+def _scraped_rows(n, extra=None):
+    """n scraped auction rows — enough to clear the minimum-rows guard in the sync."""
+    rows = [
+        {"name": f"Filler{i}", "position": "WR", "avg_value": 5.0,
+         "min_value": None, "max_value": None}
+        for i in range(n)
+    ]
+    return rows + list(extra or [])
+
+
 @pytest.mark.asyncio
 async def test_snapshot_runs_before_overwrite():
     """sync_market_values calls _snapshot_current_market_values before scraping."""
     fake_player = MagicMock()
     fake_player.name = "Patrick Mahomes"
+    fake_player.position = "QB"
+    fake_player.recommended_bid_ceiling = 30.0
     fake_player.market_value = Decimal("35")
     fake_player.market_value_fantasypros = Decimal("35")
-    fake_player.market_value_prior_season = None
-    fake_player.market_value_prior_season_year = None
     fake_player.market_value_confidence = "medium"
     fake_player.market_value_updated_at = None
 
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalars.return_value.all.return_value = [fake_player]
-    # execute returns different things for snapshot vs player load
-    mock_result.all.return_value = []  # snapshot query returns no rows
+    mock_result.all.return_value = []       # snapshot query returns no rows
+    mock_result.scalar_one.return_value = 0  # nothing priced yet
     mock_session.execute.return_value = mock_result
 
-    scraped = [{"name": "Patrick Mahomes", "avg_value": 40.0, "min_value": 35, "max_value": 45}]
+    scraped = _scraped_rows(120, [
+        {"name": "Patrick Mahomes", "position": "QB", "avg_value": 40.0,
+         "min_value": 35, "max_value": 45},
+    ])
 
     with patch(
         "backend.engines.market_values._scrape_in_thread",
@@ -51,7 +66,9 @@ async def test_snapshot_runs_before_overwrite():
 
     # Snapshot was called
     mock_snapshot.assert_awaited_once_with(mock_session)
+    # The 120 filler names match no player row; Mahomes does.
     assert result["matched"] == 1
+    assert fake_player.market_value_fantasypros == 40.0
 
 
 @pytest.mark.asyncio
@@ -75,27 +92,69 @@ async def test_snapshot_skipped_on_dry_run():
     mock_snapshot.assert_not_awaited()
 
 
+def _priced_row(price, updated_at, pid="fake-uuid"):
+    row = MagicMock()
+    row.id = pid
+    row.market_value_fantasypros = Decimal(str(price))
+    row.market_value_updated_at = updated_at
+    return row
+
+
 @pytest.mark.asyncio
-async def test_snapshot_is_idempotent():
-    """Running snapshot twice same year does not duplicate rows (ON CONFLICT DO NOTHING)."""
+async def test_snapshot_labels_each_price_with_the_season_it_was_scraped_in():
+    """The archived season comes from the price's OWN timestamp, not today's clock.
+
+    The snapshot deliberately runs BEFORE the scrape, so the column still holds the
+    PREVIOUS run's price. Stamping get_current_season() therefore mislabelled every
+    carried-over price at each season boundary: a price scraped in one season and
+    archived by the first run after the following March was recorded under the later
+    year. Both readers of the table look for get_current_season() - 1, so a row
+    written that way is invisible for a year and then served as the wrong season's
+    price.
+    """
+    from backend.engines.market_values import _snapshot_payload
+
+    # Two prices scraped in DIFFERENT seasons, archived by one run. A February
+    # timestamp belongs to the PREVIOUS season — the league year turns over in March.
+    rows = [
+        _priced_row(40, datetime(2025, 8, 1, tzinfo=timezone.utc), "scraped-in-2025"),
+        _priced_row(50, datetime(2026, 8, 1, tzinfo=timezone.utc), "scraped-in-2026"),
+        _priced_row(60, datetime(2026, 2, 1, tzinfo=timezone.utc), "scraped-in-feb"),
+    ]
+    payload, skipped = _snapshot_payload(rows)
+
+    assert skipped == 0
+    seasons = {p["player_id"]: p["season_year"] for p in payload}
+    assert seasons == {
+        "scraped-in-2025": 2025,
+        "scraped-in-2026": 2026,
+        "scraped-in-feb": 2025,
+    }
+    # Everything this function writes is a consensus estimate, never a realized price.
+    assert {p["source"] for p in payload} == {SOURCE_FANTASYPROS_CONSENSUS}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_skips_a_price_with_no_timestamp():
+    """A price with no timestamp cannot be assigned to a season, so it is not archived.
+
+    That is the marker the as-of market seeder leaves: it fills this column with a PAST
+    season's realized auction prices and sets no timestamp. Without the skip, the next
+    ordinary sync would read those real prices out of the column and file them in the
+    historic table under the PRESENT season, where the backtest would later score
+    against them as if they were that season's market.
+    """
     mock_session = AsyncMock()
-
-    # Simulate player rows
-    player_row = MagicMock()
-    player_row.id = "fake-uuid"
-    player_row.market_value_fantasypros = Decimal("40")
-
     mock_result = MagicMock()
-    mock_result.all.return_value = [player_row]
+    mock_result.all.return_value = [_priced_row(40, None)]
     mock_session.execute.return_value = mock_result
 
-    with patch("backend.engines.market_values.get_current_season", return_value=2026):
-        count = await _snapshot_current_market_values(mock_session)
+    count = await _snapshot_current_market_values(mock_session)
 
-    assert count == 1
-    # execute called twice: SELECT + INSERT
-    assert mock_session.execute.call_count == 2
-    mock_session.flush.assert_awaited_once()
+    assert count == 0
+    # SELECT only — no INSERT was issued.
+    assert mock_session.execute.await_count == 1
+    mock_session.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -115,14 +174,31 @@ async def test_snapshot_returns_zero_when_no_players():
 
 
 # ---------------------------------------------------------------------------
-# Rotation — existing FP value moves to prior_season on refresh
+# The prior-season rotation was REMOVED, deliberately.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_rotation_on_refresh():
-    """When FP value changes, old value rotates to prior_season on players table."""
+async def test_sync_no_longer_rotates_a_same_season_price_into_prior_season():
+    """The sync must not write market_value_prior_season.
+
+    It used to move the outgoing price into that column and label it
+    ``year_used - 1``. Two things were wrong with that. The value is not last
+    season's price — it is the previous SCRAPE of the current season, often days
+    old, so the label was a different quantity from the number. And the rotation only
+    fired when the price had CHANGED, so the stored value carried an arbitrary
+    per-player date. Adding the market refresh to the pre-draft pipeline would have
+    run this on every pipeline pass, making the column drift further with each run.
+
+    The column has no readers anywhere in the application — consistent with it being
+    NULL on every row of the development database — so the contradiction is resolved
+    by deleting the write rather than by correcting the label.
+    seed_prior_season_from_auction_history, which populates it from real auction
+    history, is untouched.
+    """
     fake_player = MagicMock()
     fake_player.name = "Patrick Mahomes"
+    fake_player.position = "QB"
+    fake_player.recommended_bid_ceiling = 30.0
     fake_player.market_value = Decimal("35")
     fake_player.market_value_fantasypros = Decimal("35")
     fake_player.market_value_prior_season = None
@@ -133,9 +209,14 @@ async def test_rotation_on_refresh():
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalars.return_value.all.return_value = [fake_player]
+    mock_result.all.return_value = []
+    mock_result.scalar_one.return_value = 0
     mock_session.execute.return_value = mock_result
 
-    scraped = [{"name": "Patrick Mahomes", "avg_value": 40.0, "min_value": 35, "max_value": 45}]
+    scraped = _scraped_rows(120, [
+        {"name": "Patrick Mahomes", "position": "QB", "avg_value": 40.0,
+         "min_value": 35, "max_value": 45},
+    ])
 
     with patch(
         "backend.engines.market_values._scrape_in_thread",
@@ -151,9 +232,9 @@ async def test_rotation_on_refresh():
         result = await sync_market_values(mock_session)
 
     assert result["matched"] == 1
-    assert fake_player.market_value_prior_season == Decimal("35")
-    assert fake_player.market_value_prior_season_year == 2025
     assert fake_player.market_value_fantasypros == 40.0
+    assert fake_player.market_value_prior_season is None
+    assert fake_player.market_value_prior_season_year is None
 
 
 # ---------------------------------------------------------------------------

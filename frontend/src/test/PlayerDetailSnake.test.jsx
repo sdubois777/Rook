@@ -100,7 +100,11 @@ describe('PlayerDetailPanel — the numbers that were cut', () => {
   it('keeps the three that matter', async () => {
     renderPanel(false)
     expect(await screen.findByText('AI Ceiling')).toBeInTheDocument()
-    expect(screen.getByText('2026 ADP')).toBeInTheDocument()
+    // "Market $", not "ADP": the box renders a dollar auction price, never an average
+    // draft position. The same mislabel was already corrected on the draft board.
+    // The season in brackets now comes from when the price was actually scraped
+    // rather than from today's date, so it is omitted when that is unknown.
+    expect(screen.getByText(/^Market \$/)).toBeInTheDocument()
     expect(screen.getByText('Confidence Range')).toBeInTheDocument()
   })
 })
