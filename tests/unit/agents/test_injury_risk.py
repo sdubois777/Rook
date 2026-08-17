@@ -20,6 +20,7 @@ import pytest
 from backend.agents.injury_risk import (
     InjuryRiskAgent,
     _bulk_resolve_player_ids,
+    _identity_index,
     _to_decimal,
     _write_injury_profiles,
     classify_injury,
@@ -270,11 +271,15 @@ async def test_risk_modifier_applied_to_risk_adjusted_value():
     baseline=50.0, modifier=-0.10 → risk_adjusted_value=45.0
     """
     player_id   = str(uuid.uuid4())
-    profile     = _make_profile("Hill", risk_level="moderate", modifier=-0.10)
+    # Full name, as the context gives it to the model. This test previously passed
+    # the surname alone ("Hill") and relied on last-name matching to find Tyreek
+    # Hill — the behaviour that let one player's injury history land on another.
+    profile     = _make_profile("Tyreek Hill", risk_level="moderate", modifier=-0.10)
 
     mock_player = MagicMock()
     mock_player.id             = player_id
     mock_player.name           = "Tyreek Hill"
+    mock_player.position       = "WR"
     mock_player.team_abbr      = "MIA"
     mock_player.baseline_value = Decimal("50.00")
     mock_player.risk_adjusted_value = None
@@ -301,7 +306,7 @@ async def test_risk_modifier_applied_to_risk_adjusted_value():
 
     context = {
         "players": [{
-            "name":               "Hill",
+            "name":               "Tyreek Hill",
             "position":           "WR",
             "age":                30,
             "age_risk_mult":      1.25,
@@ -370,6 +375,7 @@ async def test_single_api_call_per_team():
         return json.dumps([_make_profile("Justin Herbert")])
 
     with (
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=[])),
         patch.object(agent, "_build_team_context", AsyncMock(return_value=mock_context)),
         patch.object(agent, "call_once", side_effect=_fake_call_once),
         patch("backend.agents.injury_risk._write_injury_profiles", AsyncMock(return_value=1)),
@@ -614,6 +620,7 @@ async def test_build_team_context_returns_players():
 
     with (
         patch.object(agent, "_get_team_roster", return_value=roster),
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=[])),
         patch.object(agent, "_get_player_injury_season", return_value={
             "season": 2024, "injuries": [], "games_missed": 0
         }),
@@ -629,6 +636,62 @@ async def test_build_team_context_returns_players():
     assert player["pattern_flags"] == []
 
 
+@pytest.mark.asyncio
+async def test_build_team_context_includes_db_players_missing_from_roster():
+    """Rookies and offseason movers are absent from the nflverse roster.
+
+    Before this, they got no injury profile row at all, and player_profiles then
+    described them to the model as availability "unknown" with nothing logged.
+    """
+    agent = InjuryRiskAgent(dry_run=True)
+    agent._warehouse = _make_warehouse()
+
+    roster = [{"name": "Ladd McConkey", "position": "WR", "age": 23}]
+    db_players = [
+        {"name": "Ladd McConkey", "position": "WR", "age": 23, "player_id": "id-1"},
+        {"name": "Rookie Receiver", "position": "WR", "age": 22, "player_id": "id-2"},
+    ]
+
+    with (
+        patch.object(agent, "_get_team_roster", return_value=roster),
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=db_players)),
+        patch.object(agent, "_get_player_injury_season", return_value={
+            "season": 2024, "injuries": [], "games_missed": 0
+        }),
+        patch.object(agent, "_get_player_carries", return_value=0),
+    ):
+        context = await agent._build_team_context("LAC")
+
+    names = {p["name"] for p in context["players"]}
+    assert names == {"Ladd McConkey", "Rookie Receiver"}
+
+
+@pytest.mark.asyncio
+async def test_build_team_context_keeps_identity_out_of_the_prompt():
+    """The context is the prompt AND the agent-cache key — no ids belong in it."""
+    agent = InjuryRiskAgent(dry_run=True)
+    agent._warehouse = _make_warehouse()
+
+    db_players = [{
+        "name": "Rookie Receiver", "position": "WR", "age": 22,
+        "player_id": "id-2", "sleeper_id": "9999", "gsis_id": "00-0000000",
+    }]
+
+    with (
+        patch.object(agent, "_get_team_roster", return_value=[]),
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=db_players)),
+        patch.object(agent, "_get_player_injury_season", return_value={
+            "season": 2024, "injuries": [], "games_missed": 0
+        }),
+        patch.object(agent, "_get_player_carries", return_value=0),
+    ):
+        context = await agent._build_team_context("LAC")
+
+    player = context["players"][0]
+    for id_field in ("player_id", "sleeper_id", "gsis_id", "sportradar_id"):
+        assert id_field not in player, f"{id_field} leaked into the model prompt"
+
+
 # ---- run_for_team edge cases -----------------------------------------------
 
 @pytest.mark.asyncio
@@ -636,7 +699,10 @@ async def test_run_for_team_empty_players_returns_zero():
     agent = InjuryRiskAgent(dry_run=True)
     empty_context = {"team": "LAC", "analysis_year": 2026, "players": []}
 
-    with patch.object(agent, "_build_team_context", AsyncMock(return_value=empty_context)):
+    with (
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=[])),
+        patch.object(agent, "_build_team_context", AsyncMock(return_value=empty_context)),
+    ):
         result = await agent.run_for_team("LAC")
 
     assert result == 0
@@ -646,7 +712,10 @@ async def test_run_for_team_empty_players_returns_zero():
 async def test_run_for_team_exception_returns_zero():
     agent = InjuryRiskAgent(dry_run=True)
 
-    with patch.object(agent, "_build_team_context", AsyncMock(side_effect=RuntimeError("boom"))):
+    with (
+        patch.object(agent, "_get_db_team_players", AsyncMock(return_value=[])),
+        patch.object(agent, "_build_team_context", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
         result = await agent.run_for_team("LAC")
 
     assert result == 0
@@ -681,42 +750,114 @@ async def test_bulk_resolve_player_ids_empty_input():
     mock_session.execute.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_bulk_resolve_player_ids_single_candidate():
-    mock_player     = MagicMock()
-    mock_player.id  = uuid.uuid4()
-    mock_player.name = "Ladd McConkey"
-    mock_player.team_abbr = "LAC"
+def _db_player(name: str, position: str, team: str = "LAC"):
+    p = MagicMock()
+    p.id = uuid.uuid4()
+    p.name = name
+    p.position = position
+    p.team_abbr = team
+    return p
 
+
+def _session_returning(players: list):
     mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = [mock_player]
+    mock_result.scalars.return_value.all.return_value = players
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=mock_result)
+    return session
 
-    mock_session        = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
 
-    result = await _bulk_resolve_player_ids(mock_session, [("Ladd McConkey", "LAC")])
+@pytest.mark.asyncio
+async def test_bulk_resolve_player_ids_uses_identity_id_without_querying():
+    """A name whose identity entry carries a database id resolves with no query."""
+    player_id = str(uuid.uuid4())
+    identity = _identity_index([{
+        "name": "Ladd McConkey", "position": "WR", "player_id": player_id,
+    }])
+
+    mock_session = AsyncMock()
+    result = await _bulk_resolve_player_ids(
+        mock_session, [("Ladd McConkey", "LAC")], identity_by_name=identity
+    )
+
+    assert result[("Ladd McConkey", "LAC")] == player_id
+    mock_session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_player_ids_falls_back_to_name_and_position():
+    """No database id → unique normalized full name + position on the team resolves."""
+    mock_player = _db_player("Ladd McConkey", "WR")
+    session = _session_returning([mock_player])
+
+    result = await _bulk_resolve_player_ids(
+        session, [("Ladd McConkey", "LAC")],
+        identity_by_name={"Ladd McConkey": {"position": "WR"}},
+    )
     assert result[("Ladd McConkey", "LAC")] == str(mock_player.id)
 
 
 @pytest.mark.asyncio
-async def test_bulk_resolve_player_ids_team_match_preferred():
-    """When multiple candidates share a last name, the correct team is preferred."""
-    p1, p2  = MagicMock(), MagicMock()
-    p1.id   = uuid.uuid4()
-    p1.name = "Tyler Johnson"
-    p1.team_abbr = "TB"
-    p2.id   = uuid.uuid4()
-    p2.name = "Tyler Johnson"
-    p2.team_abbr = "LAC"
+async def test_bulk_resolve_player_ids_never_matches_on_last_name():
+    """A surname match with a different first name must NOT resolve.
 
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = [p1, p2]
+    The old implementation keyed its lookup on name.split()[-1] and, because exactly
+    one player on the team had the surname "Johnson", wrote Diontae Johnson's injury
+    history onto Tyler Johnson's row without comparing first names at all.
+    """
+    tyler = _db_player("Tyler Johnson", "WR")
+    session = _session_returning([tyler])
 
-    mock_session        = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    result = await _bulk_resolve_player_ids(
+        session, [("Diontae Johnson", "LAC")],
+        identity_by_name={"Diontae Johnson": {"position": "WR"}},
+    )
+    assert result[("Diontae Johnson", "LAC")] is None
 
-    result = await _bulk_resolve_player_ids(mock_session, [("Tyler Johnson", "LAC")])
-    assert result[("Tyler Johnson", "LAC")] == str(p2.id)
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_player_ids_never_crosses_positions():
+    """Same name, different position → no match rather than the wrong player."""
+    running_back = _db_player("Michael Carter", "RB")
+    session = _session_returning([running_back])
+
+    result = await _bulk_resolve_player_ids(
+        session, [("Michael Carter", "LAC")],
+        identity_by_name={"Michael Carter": {"position": "WR"}},
+    )
+    assert result[("Michael Carter", "LAC")] is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_player_ids_ambiguous_pair_resolves_to_none():
+    """Two players sharing name AND position on one team: skip, never guess.
+
+    The old code took candidates[0] here, so which player received the injury
+    profile depended on database row order.
+    """
+    a = _db_player("Frank Gore", "RB")
+    b = _db_player("Frank Gore", "RB")
+    session = _session_returning([a, b])
+
+    result = await _bulk_resolve_player_ids(
+        session, [("Frank Gore", "LAC")],
+        identity_by_name={"Frank Gore": {"position": "RB"}},
+    )
+    assert result[("Frank Gore", "LAC")] is None
+
+
+@pytest.mark.asyncio
+async def test_identity_index_matches_normalized_name():
+    """A model echoing a punctuation variant still resolves to the same row."""
+    player_id = str(uuid.uuid4())
+    identity = _identity_index([{
+        "name": "Ja'Marr Chase", "position": "WR", "player_id": player_id,
+    }])
+
+    result = await _bulk_resolve_player_ids(
+        AsyncMock(), [("JaMarr Chase", "CIN")], identity_by_name=identity
+    )
+    assert result[("JaMarr Chase", "CIN")] == player_id
 
 
 # ---- _write_injury_profiles ------------------------------------------------
@@ -761,6 +902,7 @@ async def test_write_injury_profiles_inserts_new_record():
     mock_player = MagicMock()
     mock_player.id        = player_id
     mock_player.name      = "Saquon Barkley"
+    mock_player.position  = "RB"
     mock_player.team_abbr = "PHI"
     mock_player.baseline_value = None  # No baseline yet — skip risk_adjusted_value update
 
@@ -811,6 +953,7 @@ async def test_write_injury_profiles_updates_existing_record():
     mock_player = MagicMock()
     mock_player.id        = player_id
     mock_player.name      = "Justin Jefferson"
+    mock_player.position  = "WR"
     mock_player.team_abbr = "MIN"
     mock_player.baseline_value = None
 
@@ -976,6 +1119,7 @@ async def test_injury_agent_covers_full_roster():
         p = MagicMock()
         p.id = uuid.uuid4()
         p.name = f"Player{i}"          # unique single-token surname
+        p.position = "WR"
         p.team_abbr = "KC"
         p.baseline_value = None        # skip risk_adjusted update path
         players.append(p)

@@ -62,15 +62,37 @@ def test_the_automatic_run_does_not_pass_the_repair_flag():
 
 def test_a_refresh_failure_does_not_stop_the_pipeline():
     """Stale platform ids degrade league matching. They do not invalidate the
-    board, so a failure here must not abort a run that costs real model spend."""
+    board, so a failure here must not abort a run that costs real model spend.
+
+    The failure is reported through _record_failure, which prints the warning line
+    AND adds the stage to the end-of-run failure block. That block exists because a
+    stage that quietly kept its previous values is invisible afterwards — the older
+    data is still there and still renders normally.
+    """
     start = SRC.index("scripts/backfill_platform_ids.py")
     window = SRC[start:start + 600]
     assert "returncode != 0" in window, "the refresh result is not checked at all"
-    assert "WARNING" in window, (
-        "a refresh failure should warn and continue, not pass silently"
+    assert "_record_failure" in window, (
+        "a refresh failure should be recorded and the run continue, not pass silently"
     )
     assert "sys.exit" not in window and "raise" not in window, (
         "a platform id refresh failure must not abort the pipeline"
+    )
+
+
+def test_recorded_failures_are_reported_at_the_end_of_the_run():
+    """Recording a failure is only useful if the run actually reports it.
+
+    Every non-fatal stage keeps its previous values on failure, so nothing on the
+    board looks wrong afterwards: stale prices, stale ADP and stale ids all render
+    exactly like fresh ones. The single warning line scrolls off mid-log, which is
+    how a failed scrape could pass for a healthy run.
+    """
+    assert "_print_failure_summary" in SRC, (
+        "recorded stage failures are never reported back to the operator"
+    )
+    assert "sys.exit(1)" in SRC, (
+        "a run with failed stages must exit non-zero so automation can see it"
     )
 
 

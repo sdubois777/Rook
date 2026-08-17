@@ -70,11 +70,24 @@ AGENT_SPECS: dict[str, dict] = {
     "injury_risk": {
         "model": "haiku",
         "model_id": "claude-haiku-4-5-20251001",
-        "max_tokens": 1000,
+        # Mirrors InjuryRiskAgent.AGENT_MAX_TOKENS (backend/agents/injury_risk.py:387),
+        # which was raised to 4000 because 1000 truncated the JSON at ~10 players per
+        # team and silently dropped starters. This table still said 1000, so the
+        # dry-run under-estimated this agent's cost by about four times.
+        "max_tokens": 4000,
         "est_input_tokens": 400,
         "api_calls": 32,
         "status": "built",
         "description": "Injury risk profiles and risk-adjusted value modifiers",
+    },
+    "market_values": {
+        "model": "none",
+        "model_id": "none",
+        "max_tokens": 0,
+        "est_input_tokens": 0,
+        "api_calls": 0,  # Playwright scrape, no AI calls
+        "status": "built",
+        "description": "FantasyPros PPR auction prices onto players.market_value_fantasypros",
     },
     "schedule": {
         "model": "haiku",
@@ -171,6 +184,21 @@ AGENT_SPECS: dict[str, dict] = {
 # Pipeline dependency phases — the SINGLE source of truth for execution order.
 # Inner lists run in parallel (independent agents); the outer list is sequential.
 PHASES = [
+    # Phase 0: the PPR auction market the board actually displays. This is a live
+    # FantasyPros scrape, an INPUT in the same sense as sync_adp above, not a derived
+    # value — so it runs before anything reads a price.
+    #
+    # It was missing from this list entirely, which is why market prices went stale:
+    # players.market_value_fantasypros is the column the board shows for a PPR league
+    # (backend/routers/draftboard.py:417 -> backend/services/format_display.py:180),
+    # and its only writer, sync_market_values, ran nowhere in the pipeline. The
+    # format_market stage at 6b scrapes a fresh PPR price too, but writes it to
+    # player_format_values, which load_format_rows deliberately does not read for PPR
+    # — so that fresh number was stored and never displayed.
+    #
+    # Must precede player_profiles (which routes players to Sonnet on market value),
+    # valuation, and valuation_agent (whose value_gap is ceiling minus this price).
+    ["market_values"],
     ["team_systems"],                              # Phase 1: identity + inputs (rows, QB id, sack_rate, rookie flag) — NO grades
     ["team_metrics"],                              # Phase 1b: DETERMINISTIC grades + composite — the SOLE grade owner
     ["roster_changes"],                            # Phase 2: needs team_systems + the deterministic grades above
@@ -269,6 +297,40 @@ def print_dry_run(agents: list[str], single_team: bool) -> None:
         for n in not_built:
             print(f"       - {n}: {AGENT_SPECS[n]['description']}")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Non-fatal stage failures
+# ---------------------------------------------------------------------------
+# Several stages are deliberately non-fatal: a failed scrape leaves the PREVIOUS
+# values in the database and the run continues. That is the right behaviour — a
+# broken FantasyPros page should not throw away an otherwise good pipeline run —
+# but it is invisible afterwards. The old numbers are still on the board and still
+# look current, and the only trace was one warning line scrolled off mid-log.
+#
+# So every non-fatal failure is recorded here and reprinted as a block at the end,
+# and the script exits non-zero. "Pipeline complete" must not be the last word when
+# the market data it was supposed to refresh did not refresh.
+_STAGE_FAILURES: list[str] = []
+
+
+def _record_failure(stage: str, detail: str) -> None:
+    _STAGE_FAILURES.append(f"{stage} — {detail}")
+    print(f"[{stage}] WARNING — {detail}")
+
+
+def _print_failure_summary() -> None:
+    if not _STAGE_FAILURES:
+        return
+    print("=" * 74)
+    print(f"  {len(_STAGE_FAILURES)} STAGE(S) FAILED. These kept their PREVIOUS values:")
+    for failure in _STAGE_FAILURES:
+        print(f"    - {failure}")
+    print()
+    print("  A failed scrape does not look like a failure on the board: the older")
+    print("  numbers are still there and still render normally. Re-run the named")
+    print("  stage before trusting prices, ADP, or the value gap.")
+    print("=" * 74)
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +554,47 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         for _fmt, _s in sorted(fenf["formats"].items()):
             print(f"[{name}] {_fmt} budget: {_s['updated']}/{_s['rows']} ceiling(s) railed.")
 
+    elif name == "market_values":
+        # The PPR auction price the board displays. Scrapes FantasyPros DraftWizard and
+        # writes players.market_value / market_value_fantasypros, snapshotting the old
+        # values into market_value_historic first.
+        #
+        # Skipped under an as-of clock for the same reason as sync_adp and
+        # format_market: the scrape is current-season only, so on a past-dated board it
+        # would overwrite that season's real prices with next year's. The as-of market
+        # comes from _seed_asof_market() instead — running this would undo it.
+        #
+        # Failure is non-fatal (prior prices stay) but IS recorded, because a stale
+        # price is invisible on the board and silently poisons every value gap.
+        from backend.utils.seasons import asof_active as _aa
+
+        if _aa():
+            print(f"[{name}] SKIPPED — as-of run. Live auction prices are "
+                  f"current-season only; the as-of market comes from "
+                  f"market_value_historic.")
+            return
+
+        from backend.database import AsyncSessionLocal
+        from backend.engines.market_values import sync_market_values
+        try:
+            async with AsyncSessionLocal() as _db:
+                result = await sync_market_values(_db, scoring_format="ppr")
+        except Exception as exc:  # noqa: BLE001 — a scrape failure must not abort the run
+            _record_failure(name, f"scrape raised {type(exc).__name__}: {exc}; "
+                                  f"prior market prices unchanged")
+        else:
+            if result.get("error"):
+                _record_failure(name, f"{result['error']}; prior market prices unchanged")
+            elif result.get("note"):
+                _record_failure(name, f"{result['note']}; prior market prices unchanged")
+            elif not result.get("matched"):
+                _record_failure(name, "0 players matched; prior market prices unchanged")
+            else:
+                print(
+                    f"[{name}] {result['matched']} player(s) priced from FantasyPros "
+                    f"{result['year']} PPR auction, {result['unmatched']} unmatched."
+                )
+
     elif name == "format_market":
         # Per-format ADP (FantasyPros) + auction (DraftWizard, canonical flex roster)
         # re-scraped LIVE every run and written to player_format_values. NOT cached — the
@@ -511,7 +614,8 @@ async def run_agent(name: str, teams: list[str] | None, force: bool = False, war
         try:
             result = await run_format_market_ingest_stage()
         except Exception as exc:  # noqa: BLE001 — scrape failures must not abort the pipeline
-            print(f"[{name}] WARNING — ingest failed ({exc}); prior market rows unchanged.")
+            _record_failure(name, f"ingest raised {type(exc).__name__}: {exc}; "
+                                  f"prior per-format ADP and auction rows unchanged")
         else:
             for _fmt, _s in result["formats"].items():
                 print(
@@ -673,15 +777,34 @@ async def _seed_asof_market() -> None:
         #    A wrong market is worse than no market — no market yields no signal, which is
         #    honest; a wrong one yields a confident wrong signal, which is what voided an
         #    earlier backtest run.
+        #    market_value is cleared TOO. It holds the same number as
+        #    market_value_fantasypros and has the same single writer, but it was left
+        #    out of this clear, so it survived an as-of rebuild holding the previous
+        #    real-time consensus. The market refresh stage is skipped under an as-of
+        #    clock, so nothing restored agreement: the same player then showed the
+        #    as-of price on the draft board and a different, present-day price on the
+        #    Teams page (backend/routers/teams.py) and in the draft room
+        #    (backend/engines/live_draft.py), both of which read market_value.
         await s.execute(_text(
-            "UPDATE players SET market_value_fantasypros = NULL, market_value_league = NULL"
+            "UPDATE players SET market_value = NULL, market_value_fantasypros = NULL, "
+            "                   market_value_league = NULL, "
+            "                   market_value_updated_at = NULL"
         ))
 
         # 2. The league's OWN auction first. league_auction_history is what the results
         #    importer and the league sync write, and run_backtest prefers it too, so the
         #    board and the scoring agree on what "the market" was.
+        #
+        #    market_value_updated_at is deliberately LEFT NULL on every row this
+        #    function prices. It means "this price did not come from a live scrape",
+        #    and the market sync's archive step keys off exactly that: a NULL timestamp
+        #    makes a price unarchivable, because there is no way to establish which
+        #    season it belongs to. Without the marker, the next ordinary sync would
+        #    read these PAST-season realized auction prices out of the column and file
+        #    them in market_value_historic under the PRESENT season.
         league = await s.execute(_text(
-            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "UPDATE players p SET market_value = h.price, "
+            "       market_value_fantasypros = h.price, "
             "       market_value_league = h.price "
             "FROM (SELECT player_id, avg(price) AS price FROM league_auction_history "
             "      WHERE season_year = :yr AND price > 0 AND player_id IS NOT NULL "
@@ -690,11 +813,16 @@ async def _seed_asof_market() -> None:
         ), {"yr": season})
 
         # 3. Fall back to the season-keyed price reference for anyone still unpriced.
+        #    REALIZED prices only: this table also holds FantasyPros consensus
+        #    estimates, and seeding an estimate as "what the market actually was"
+        #    is the contamination this whole function exists to prevent.
         historic = await s.execute(_text(
-            "UPDATE players p SET market_value_fantasypros = h.price, "
+            "UPDATE players p SET market_value = h.price, "
+            "       market_value_fantasypros = h.price, "
             "       market_value_league = h.price "
             "FROM market_value_historic h "
             "WHERE h.player_id = p.id AND h.season_year = :yr AND h.price > 0 "
+            "  AND h.source = 'league_auction' "
             "  AND p.market_value_fantasypros IS NULL"
         ), {"yr": season})
         await s.commit()
@@ -818,7 +946,11 @@ async def main() -> None:
         [sys.executable, "scripts/sync_rosters.py"],
     )
     if sync_result.returncode != 0:
-        print("[sync_rosters] WARNING — sync failed, continuing with seed data.")
+        _record_failure(
+            "sync_rosters",
+            "sync failed; teams, depth charts and injury designations are whatever "
+            "the seed step left, not current Sleeper state",
+        )
     print()
 
     # Refresh players.espn_id / players.yahoo_id from Sleeper (primary) with
@@ -839,8 +971,11 @@ async def main() -> None:
         [sys.executable, "scripts/backfill_platform_ids.py"],
     )
     if ids_result.returncode != 0:
-        print("[platform_ids] WARNING — refresh failed; ESPN/Sleeper league sync "
-              "may not resolve newly added players.")
+        _record_failure(
+            "platform_ids",
+            "refresh failed; ESPN and Sleeper league sync may not resolve newly "
+            "added players",
+        )
     print()
 
     # Sync FantasyPros ADP (snake-draft support) — populates adp_fantasypros
@@ -861,7 +996,11 @@ async def main() -> None:
             [sys.executable, "scripts/sync_adp.py"],
         )
         if adp_result.returncode != 0:
-            print("[sync_adp] WARNING — ADP sync failed, continuing without ADP.")
+            _record_failure(
+                "sync_adp",
+                "FantasyPros ADP scrape failed; players.adp_fantasypros still holds "
+                "the previous run's ranks",
+            )
     print()
 
     # As-of market: the season's REAL auction, from market_value_historic. That is what
@@ -899,6 +1038,26 @@ async def main() -> None:
                 run_agent(a, teams, force=args.force, warehouse=warehouse)
                 for a in phase_agents
             ))
+
+    # A price refresh WITHOUT the valuation stages that normally follow it leaves the
+    # board showing new prices beside value gaps computed against the prices they
+    # replaced. In a full run the valuation agent phase already reconciles them, so this
+    # only fires for a targeted run such as `--agent market_values`.
+    if "market_values" in agents and "valuation_agent" not in agents:
+        from backend.utils.seasons import asof_active as _aa2
+
+        if not _aa2():
+            print("[market_values] Reconciling market-relative signals — the valuation "
+                  "phases are not in this run, so the stored value gaps still refer to "
+                  "the prices this refresh replaced.")
+            from backend.engines.valuation import reconcile_value_signals
+            rec = await reconcile_value_signals()
+            print(f"[market_values] {rec['updated']} signal(s) reconciled.\n")
+
+    if _STAGE_FAILURES:
+        _print_failure_summary()
+        print("\n=== Pipeline finished WITH FAILURES — see the block above ===\n")
+        sys.exit(1)
 
     print("=== Pipeline complete ===\n")
 

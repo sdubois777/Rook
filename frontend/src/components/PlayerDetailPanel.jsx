@@ -491,8 +491,14 @@ function ValuationNumbers({ player, isSnake }) {
         {hasCeiling && (
           <StatBox label="AI Ceiling" value={`$${getBidCeiling(player)}`} accent />
         )}
+        {/* "Market $", not "ADP": this box renders a DOLLAR auction price
+            (market_value), never an average draft position. The same mislabel was
+            already corrected on the draft board header. The season suffix is appended
+            only when the backend could establish which season the price came from —
+            it now derives that from when the price was scraped rather than from
+            today's date, so it is absent rather than wrong for an undated price. */}
         <StatBox
-          label={`${player.market_value_season || ''} ADP`}
+          label={player.market_value_season ? `Market $ (${player.market_value_season})` : 'Market $'}
           value={`$${player.market_value?.toFixed(0) || '--'}`}
         />
       </div>
