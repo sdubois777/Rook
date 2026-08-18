@@ -116,6 +116,34 @@ class Settings(BaseSettings):
     # domain is much harder to get back than the bug is to fix.
     email_max_per_hour: int = 200
 
+    # --- Welcome-email backstop ----------------------------------------------
+    # The Clerk user.created webhook is the PRIMARY welcome trigger. It is not the
+    # only one, because it was the only one for months and it never fired: no
+    # webhook endpoint existed in Clerk, so every account was created by the
+    # first-authenticated-request path instead, which sends nothing. The result was
+    # zero automatic welcome emails, no database row, and no log line.
+    #
+    # This sweep is the backstop. It does not care WHY the primary trigger did not
+    # fire — a missing endpoint, a bad signature, a provider outage, a deploy
+    # mid-signup — it just finds accounts with no welcome email and sends one.
+    welcome_sweep_enabled: bool = True
+    welcome_sweep_minutes: int = 15
+    # Accounts mailed per sweep. The point of a ceiling is that a bug here mails a
+    # handful of people, not the whole users table; the hourly send cap is the
+    # second line of defence, not the first.
+    welcome_sweep_batch: int = 25
+    # Grace period before the sweep will touch a new account, so the webhook (which
+    # arrives seconds after signup) is the one that normally sends, and the sweep
+    # only picks up what it missed.
+    welcome_sweep_min_age_minutes: int = 10
+
+    # --- Logging -------------------------------------------------------------
+    # Level for the application's own loggers (the "backend" tree). Uvicorn
+    # configures only its own loggers and no root logger, so without the setup in
+    # backend/main.py every INFO line the application writes is discarded — which
+    # is exactly how a silently-skipped welcome email left no record anywhere.
+    log_level: str = "INFO"
+
     # --- In-app bug report / feature suggestion -> GitHub issue ---------------
     # THE TOKEN IS THE ONLY SWITCH. Set GITHUB_ISSUE_TOKEN and the report form turns on;
     # leave it unset and the form is off (GET /feedback/status returns enabled=false and

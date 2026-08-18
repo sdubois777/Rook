@@ -104,7 +104,7 @@ async def _send_welcome_email(user_id, email: str, display_name: str | None) -> 
             referral_code = await referrals.get_or_create_code(user_id)
             await db.commit()
 
-            await EmailService.from_session(db).send_welcome(
+            status = await EmailService.from_session(db).send_welcome(
                 # A stand-in for the User row: send_welcome reads id, email and
                 # display_name only, and re-reading the row we just wrote would
                 # buy nothing.
@@ -113,6 +113,23 @@ async def _send_welcome_email(user_id, email: str, display_name: str | None) -> 
                 ),
                 promo_code=referrals.welcome_code_for(user_id),
                 referral_code=referral_code,
+            )
+
+        # ACT ON THE RESULT. This return value used to be discarded, which meant a
+        # refused send and a delivered one were indistinguishable here. That
+        # mattered: most of the reasons send_welcome declines write NO row to
+        # email_sends, so with the status thrown away there was no record anywhere
+        # that a customer had not been welcomed. Logged at WARNING because the
+        # skip reasons inside EmailService are logged at INFO, and INFO was
+        # invisible in production until backend/main.py configured logging.
+        from backend.services.email.email_service import SEND_SENT
+
+        if status != SEND_SENT:
+            logger.warning(
+                "Welcome email for user %s was not sent (status=%s). Most "
+                "non-send outcomes write no email_sends row, so this line may be "
+                "the only record. The scheduled backstop will retry it.",
+                user_id, status,
             )
     except Exception:
         logger.exception("Could not send the welcome email to user %s", user_id)
