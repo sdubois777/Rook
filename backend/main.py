@@ -1,8 +1,11 @@
 import logging
 import os
+import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
@@ -11,6 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
+from backend.core.dependencies import require_admin
 from backend.core.exceptions import AppError
 from backend.core.oauth_config_check import check_oauth_redirects
 from backend.middleware.security_headers import SecurityHeadersMiddleware
@@ -18,6 +22,49 @@ from backend.middleware.request_logging import RequestLoggingMiddleware
 from backend.routers import admin, auth, draft, draftboard, league, league_connect, news, pipeline, players, preferences, teams
 from backend.routers import account, billing, email, feedback, matchup, trade, waiver, webhooks
 from backend.websocket.manager import news_ws_manager
+
+
+def _configure_logging() -> None:
+    """Attach a stdout handler to the root logger and set the application level.
+
+    WITHOUT THIS THE APPLICATION HAS NO PRODUCTION LOGGING BELOW WARNING, and that
+    is not a cosmetic gap — it is how a customer-facing failure stayed invisible
+    for months.
+
+    railway.toml starts the server as `uvicorn backend.main:app` with no
+    --log-config, and uvicorn's default configuration attaches handlers to its own
+    three loggers only ("uvicorn", "uvicorn.error", "uvicorn.access"). It defines
+    no root logger. So every `backend.*` logger inherited the root default of
+    WARNING with no handler: logger.info(...) was discarded before any handler ran,
+    and logger.warning(...) and above fell through to logging.lastResort, which
+    prints a bare message with no timestamp, no level and no logger name.
+
+    The concrete cost: backend/services/email/email_service.py documents its
+    INFO-level skip lines as "the only record" of a message that was never sent.
+    In production those lines were never emitted at all, so a welcome email that
+    was skipped left no row, no log, and a 200 back to the caller.
+
+    Idempotent — safe under an import that happens more than once, and under a
+    test harness that configures its own logging.
+    """
+    root = logging.getLogger()
+    if not any(getattr(h, "_rook_stdout", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+        ))
+        handler._rook_stdout = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    # The application's own loggers, at the configured level. Third-party
+    # libraries stay at the root level so a debug setting here cannot drown the
+    # log in someone else's INFO.
+    logging.getLogger("backend").setLevel(
+        getattr(logging, settings.log_level.upper(), logging.INFO)
+    )
+
+
+_configure_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +287,38 @@ async def startup_checks():
         replace_existing=True,
     )
 
+    # Welcome-email backstop. The Clerk user.created webhook is the PRIMARY
+    # trigger; this catches anything it missed. It exists because that webhook was
+    # the ONLY trigger for months and never fired once — no endpoint had been
+    # created in Clerk — so every account was made by the first-authenticated-
+    # request path, which sends nothing. Zero welcome emails went out
+    # automatically, and nothing detected it: a skipped send writes no row and the
+    # process discarded INFO logs.
+    if settings.welcome_sweep_enabled:
+        _scheduler.add_job(
+            _sweep_missing_welcome_emails,
+            "interval",
+            minutes=settings.welcome_sweep_minutes,
+            id="welcome_email_sweep",
+            replace_existing=True,
+        )
+
     _scheduler.start()
     logger.info("Beat Reporter scheduler started (daily at 7am)")
+    if settings.welcome_sweep_enabled:
+        logger.info(
+            "Welcome-email backstop registered (every %d min, max %d account(s) "
+            "per run, accounts older than %d min)",
+            settings.welcome_sweep_minutes,
+            settings.welcome_sweep_batch,
+            settings.welcome_sweep_min_age_minutes,
+        )
+    else:
+        logger.warning(
+            "Welcome-email backstop is DISABLED. The Clerk webhook is then the "
+            "only thing that sends a welcome email, and a delivery failure is "
+            "permanent and silent."
+        )
     logger.info("Stale draft-session reaper registered (every 30 min)")
     logger.info(
         "Weekly full sweep registered (%s %02d:00 UTC, draft-window-gated)",
@@ -278,6 +355,24 @@ async def shutdown_checks():
 _DRAFT_SESSION_TTL_SECONDS = int(
     os.environ.get("DRAFT_SESSION_SAFETY_TTL_SECONDS", str(8 * 60 * 60))
 )
+
+
+async def _sweep_missing_welcome_emails():
+    """Mail any account the Clerk user.created webhook did not welcome.
+
+    Never raises — this runs on the scheduler, and a failure here must not stop
+    the other jobs. The sweep itself is bounded by a batch ceiling, a minimum
+    account age, and the send lock that makes a second send impossible; see
+    backend/services/email/welcome_sweep.py for why all three exist.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.services.email.welcome_sweep import run_welcome_sweep
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await run_welcome_sweep(db)
+    except Exception:
+        logger.exception("Welcome-email backstop failed")
 
 
 async def _evict_stale_draft_sessions():
@@ -339,10 +434,53 @@ async def _weekly_full_sweep():
 
 @app.get("/health")
 async def health():
+    """Liveness plus the capability flags that are otherwise unknowable remotely.
+
+    The email flags are here because their absence cost real time: a welcome email
+    was silently not being sent, and answering "can the running process see the
+    Resend key" required either Railway access or a guess. Three guesses were made
+    and all three were wrong. These are BOOLEANS DERIVED FROM CONFIG — no secret,
+    no address, nothing that is not already implied by whether mail arrives.
+
+    email_enabled          — a Resend key and a from-address are present.
+    promotional_email_enabled — the above, plus a postal address. The welcome email
+                             is promotional, so THIS is the flag that governs it;
+                             email_enabled alone being true is not sufficient.
+    """
     return {
         "status": "ok",
         "environment": settings.environment,
         "version": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "local")[:8],
+        "email_enabled": settings.email_enabled,
+        "promotional_email_enabled": settings.promotional_email_enabled,
+        "welcome_sweep_enabled": settings.welcome_sweep_enabled,
+    }
+
+
+@app.get("/health/welcome-emails", dependencies=[Depends(require_admin)])
+async def welcome_email_health():
+    """How many accounts have no welcome email — the invariant nothing asserted.
+
+    A signup should produce a welcome send. Nothing in this application ever
+    checked that, which is why every account went unwelcomed for months and it
+    surfaced only when a customer said so. Admin-gated because it counts accounts.
+
+    A non-zero count is not automatically an incident: accounts newer than the
+    backstop's grace period have not been swept yet, and placeholder addresses are
+    never mailed. A count that stays non-zero across several sweep intervals is
+    the signal.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.services.email.welcome_sweep import count_accounts_missing_welcome
+
+    async with AsyncSessionLocal() as db:
+        missing = await count_accounts_missing_welcome(db)
+
+    return {
+        "accounts_missing_welcome": missing,
+        "promotional_email_enabled": settings.promotional_email_enabled,
+        "sweep_enabled": settings.welcome_sweep_enabled,
+        "sweep_interval_minutes": settings.welcome_sweep_minutes,
     }
 
 
