@@ -204,6 +204,54 @@ def assign_adp_ranks(players) -> int:
     return len(players)
 
 
+def repair_adp_within_position(players) -> int:
+    """Force each position's ``adp_ai`` values to follow that position's projection order.
+
+    The model emits ``adp_ai`` (a snake pick) and ``ai_bid_ceiling`` (an auction dollar)
+    as INDEPENDENT fields, produced in separate tier-batched calls that cannot see one
+    another (T1 individual, T2-3 batches of 5, T4-5 batches of 10). Nothing made the TE it
+    picks earliest also the TE it prices highest. Measured on the board: ``adjusted_points``
+    disagreed with ``adp_ai`` on 9.1% of TE pairs and 17.7% of QB pairs, while it disagreed
+    with ``ai_bid_ceiling`` on 0.3%. Brock Bowers came out TE2 by pick and TE5 by price off
+    one 178.0 raw / 160.2 adjusted projection — the board contradicting itself in public.
+
+    Dollars are already monotone in ``adjusted_points`` within a position by construction
+    (``ppr_to_system_value`` is affine in it — see the note on ``Player.adjusted_points``,
+    which records the same class of defect being fixed once already). This puts the snake
+    pick on that same basis: inside one position, the better-projected player always gets
+    the earlier pick.
+
+    ONLY THE ASSIGNMENT CHANGES. Each position keeps the exact multiset of ``adp_ai``
+    values the model gave it, so the model's CROSS-position judgment — how early tight ends
+    start coming off the board at all — survives untouched. That is deliberate: snake and
+    auction legitimately disagree ACROSS positions (a snake pick buys scarcity, a dollar
+    buys points), and only within a position is disagreement a straight contradiction.
+    Same shape as ``enforce_position_budget``, which rescales dollars and never reorders
+    them.
+
+    Players with no position or no ``adjusted_points`` cannot be ordered against anyone and
+    are left exactly as the model wrote them.
+
+    Mutates each player; returns the count whose ``adp_ai`` changed.
+    """
+    by_pos: dict[str, list] = {}
+    for p in players:
+        if p.position and p.adp_ai is not None and p.adjusted_points is not None:
+            by_pos.setdefault(p.position, []).append(p)
+
+    changed = 0
+    for group in by_pos.values():
+        # The picks this position already owns, earliest first.
+        picks = sorted(round(float(p.adp_ai), 1) for p in group)
+        # Best projection first. id breaks ties so a rerun cannot reshuffle equals.
+        ordered = sorted(group, key=lambda p: (-float(p.adjusted_points), str(p.id)))
+        for p, pick in zip(ordered, picks):
+            if round(float(p.adp_ai), 1) != pick:
+                p.adp_ai = pick
+                changed += 1
+    return changed
+
+
 def classify_snake_flag(adp_diff, tier, adp_rank=None, fp_rank=None) -> str:
     """Deterministic snake_flag from the ADP differential + VORP tier.
 
@@ -854,11 +902,23 @@ class ValuationAgent(BaseAgent):
             # VALUE/SLEEPER split — it's a column on Player, no profile load needed.
             players = (
                 await session.execute(
-                    select(Player)
-                    .where(Player.adp_ai.isnot(None))
-                    .order_by(Player.adp_ai.asc())
+                    select(Player).where(Player.adp_ai.isnot(None))
                 )
             ).scalars().all()
+
+            # Put the snake pick on the same footing as the dollars BEFORE ranking:
+            # adp_rank, adp_diff and snake_flag all derive from adp_ai, so repairing
+            # afterwards would leave three columns describing the discarded order.
+            repaired = repair_adp_within_position(players)
+
+            # Sort in Python, not SQL — the repair above has just moved adp_ai. Among
+            # equal picks the better projection ranks first (adp_ai ties are heavy:
+            # Bijan/Gibbs/Chase all land on 4.0), and id keeps the result stable.
+            players.sort(key=lambda p: (
+                float(p.adp_ai),
+                -(float(p.adjusted_points) if p.adjusted_points is not None else float("-inf")),
+                str(p.id),
+            ))
             count = assign_adp_ranks(players)
 
             for p in players:
@@ -873,7 +933,11 @@ class ValuationAgent(BaseAgent):
                 )
 
             await session.commit()
-        logger.info("adp_rank + adp_diff + snake_flag computed for %d players", count)
+        logger.info(
+            "adp_rank + adp_diff + snake_flag computed for %d players "
+            "(%d adp_ai repaired onto within-position projection order)",
+            count, repaired,
+        )
 
     def _build_player_context(
         self, p: Player, scoring_format: str = "ppr", fmt_points: float | None = None
