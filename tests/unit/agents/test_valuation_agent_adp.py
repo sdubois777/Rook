@@ -18,6 +18,7 @@ from backend.agents.valuation_agent import (
     classify_snake_flag,
     clamp_adp,
     compute_adp_diff,
+    repair_adp_within_position,
 )
 
 
@@ -311,3 +312,92 @@ def test_prompt_qb_anti_cluster_rule():
     assert "Minimum 8-pick gap" in SYSTEM_PROMPT
     assert "Maximum 6 QBs in any 30-pick window" in SYSTEM_PROMPT
     assert "Do NOT stack QBs at the cap" in SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# repair_adp_within_position — the snake pick must not contradict the dollars
+# ---------------------------------------------------------------------------
+def _pl(pid, pos, adp, pts):
+    return SimpleNamespace(id=pid, position=pos, adp_ai=adp, adjusted_points=pts)
+
+
+def test_repair_gives_the_better_projection_the_earlier_pick():
+    # The model priced these correctly and picked them backwards.
+    a = _pl("a", "TE", 22.0, 160.2)   # worse projection, earlier pick
+    b = _pl("b", "TE", 38.0, 198.5)   # better projection, later pick
+    changed = repair_adp_within_position([a, b])
+    assert changed == 2
+    assert b.adp_ai == 22.0
+    assert a.adp_ai == 38.0
+
+
+def test_repair_preserves_the_positions_own_picks():
+    # Each position keeps the exact set of picks it started with — the repair
+    # reassigns, it never invents or moves a pick between positions.
+    tes = [_pl("t1", "TE", 18.0, 160.0), _pl("t2", "TE", 22.0, 220.0),
+           _pl("t3", "TE", 52.0, 198.0)]
+    rbs = [_pl("r1", "RB", 4.0, 261.0), _pl("r2", "RB", 8.0, 385.0)]
+    repair_adp_within_position(tes + rbs)
+    assert sorted(p.adp_ai for p in tes) == [18.0, 22.0, 52.0]
+    assert sorted(p.adp_ai for p in rbs) == [4.0, 8.0]
+
+
+def test_repair_does_not_move_picks_across_positions():
+    # A TE must never be handed a RB's pick, however the projections compare.
+    te = _pl("t", "TE", 60.0, 400.0)   # best projection on the board
+    rb = _pl("r", "RB", 3.0, 100.0)    # worst projection, earliest pick
+    repair_adp_within_position([te, rb])
+    assert te.adp_ai == 60.0
+    assert rb.adp_ai == 3.0
+
+
+def test_repair_leaves_players_without_a_projection_alone():
+    # No adjusted_points means no way to order him — the model's pick stands.
+    known = _pl("k", "TE", 40.0, 150.0)
+    unknown = _pl("u", "TE", 20.0, None)
+    changed = repair_adp_within_position([known, unknown])
+    assert changed == 0
+    assert unknown.adp_ai == 20.0
+    assert known.adp_ai == 40.0
+
+
+def test_repair_leaves_players_without_a_position_alone():
+    orphan = _pl("o", None, 30.0, 200.0)
+    changed = repair_adp_within_position([orphan])
+    assert changed == 0
+    assert orphan.adp_ai == 30.0
+
+
+def test_repair_is_a_no_op_when_the_order_is_already_right():
+    good = [_pl("a", "WR", 5.0, 300.0), _pl("b", "WR", 9.0, 250.0),
+            _pl("c", "WR", 14.0, 200.0)]
+    assert repair_adp_within_position(good) == 0
+    assert [p.adp_ai for p in good] == [5.0, 9.0, 14.0]
+
+
+def test_repair_is_stable_across_reruns_when_projections_tie():
+    # Equal projections must not reshuffle on a second pipeline run.
+    first = [_pl("a", "RB", 12.0, 200.0), _pl("b", "RB", 30.0, 200.0)]
+    repair_adp_within_position(first)
+    snapshot = [(p.id, p.adp_ai) for p in first]
+    repair_adp_within_position(first)
+    assert [(p.id, p.adp_ai) for p in first] == snapshot
+
+
+def test_repair_fixes_the_reported_tight_end_board():
+    # Regression for the board a user reported: Bowers came out TE2 by pick and
+    # TE5 by price off the same projection. Numbers are the measured dev board.
+    board = [
+        _pl("mcbride",  "TE", 18.0, 220.0),
+        _pl("bowers",   "TE", 22.0, 160.2),
+        _pl("warren",   "TE", 28.0, 205.0),
+        _pl("loveland", "TE", 38.0, 198.5),
+        _pl("pitts",    "TE", 52.0, 198.0),
+    ]
+    repair_adp_within_position(board)
+    by_pick = sorted(board, key=lambda p: p.adp_ai)
+    assert [p.id for p in by_pick] == [
+        "mcbride", "warren", "loveland", "pitts", "bowers",
+    ]
+    # Bowers now sits last among these five by pick, exactly as he does by price.
+    assert next(p for p in board if p.id == "bowers").adp_ai == 52.0
