@@ -15,6 +15,8 @@ import NominationPanel from '../components/draft/NominationPanel'
 import SnakePanel from '../components/draft/SnakePanel'
 import AvailablePlayers from '../components/draft/AvailablePlayers'
 import TeamRosterPanel from '../components/draft/TeamRosterPanel'
+import ExtensionStatus from '../components/draft/ExtensionStatus'
+import ExtensionBlockedBanner from '../components/draft/ExtensionBlockedBanner'
 import { useLeague } from '../context/LeagueContext'
 
 const WS_STATUS_LABEL = {
@@ -123,6 +125,10 @@ export default function DraftRoom() {
         <div className="flex items-center gap-3">
           <span className={`w-2 h-2 rounded-full ${statusInfo.color}`} />
           <span className="text-xs text-slate-500">{statusInfo.text}</span>
+          {/* Whether the EXTENSION is delivering, which the dot above does not
+              answer — it reports only the browser-to-Rook socket, and stays
+              green through a draft that never receives a single update (#461). */}
+          <ExtensionStatus />
           {feedbackStatus?.enabled && (
             <button
               onClick={openFeedback}
@@ -146,6 +152,10 @@ export default function DraftRoom() {
           </button>
         </div>
       </div>
+
+      {/* Named reason when the server is refusing this user's extension updates.
+          Renders nothing unless something is actually wrong (#461). */}
+      <ExtensionBlockedBanner />
 
       {/* 3-column layout on desktop (fills the viewport, only inner lists
           scroll). On mobile the three zones stack and the whole area scrolls —

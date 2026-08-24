@@ -211,6 +211,113 @@ def _relay_message(event: "DraftEventPayload", draft_format: str | None = None) 
         msg["draft_format"] = draft_format
     return msg
 
+
+# A refused extension keeps posting for the whole draft — the readers send an
+# update roughly once a second — so the reason is pushed at most this often per
+# user. Without the throttle one blocked draft would put thousands of identical
+# messages on that user's socket.
+EXTENSION_BLOCKED_NOTICE_INTERVAL_S = 60
+
+# {session_key: monotonic seconds of the last notice}. Single-worker, in-memory
+# (see the concurrency note at the top of this module), and only ever holds
+# users who are actively being refused, so it stays small.
+_last_blocked_notice: dict[str, float] = {}
+
+
+async def _notify_extension_blocked(session_key: str, *, code: str, message: str) -> None:
+    """Tell a user's draft room WHY their extension's updates are being refused.
+
+    The extension cannot report this itself: `postDraftEvent` in
+    extension/src/utils/api.js discards the response status, so a refusal is
+    indistinguishable from success everywhere in the product — the popup still
+    reads "Connected", still reads "relaying", and the room simply never updates.
+    That is what made issue #461 undiagnosable from the report alone.
+
+    Best-effort and non-blocking by design: a failure here must never turn a
+    refused event into a failed request.
+    """
+    import time
+
+    now = time.monotonic()
+    last = _last_blocked_notice.get(session_key)
+    if last is not None and (now - last) < EXTENSION_BLOCKED_NOTICE_INTERVAL_S:
+        return
+    _last_blocked_notice[session_key] = now
+    try:
+        await ws_manager.broadcast_to_session(
+            session_key,
+            {
+                "type": "extension_blocked",
+                "payload": {"code": code, "message": message},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception:
+        logger.exception("Could not deliver extension_blocked notice (user %s)", session_key)
+
+
+# ---------------------------------------------------------------------------
+# Refusal attribution — WHO is being refused, and why (#466)
+# ---------------------------------------------------------------------------
+# The request log cannot answer this. RequestLoggingMiddleware reads the user
+# from an `X-User-Id` header that only exists in development
+# (backend/core/dependencies.py sets it when Clerk is disabled), so in production
+# EVERY line reads `user=-`. Diagnosing issue #461 meant staring at a wall of
+# identical "POST /api/draft/event 403" lines with no way to tell whose they
+# were, or even how many accounts were involved.
+#
+# So the refusal is logged HERE, where the user is already resolved, with the
+# fields that distinguish the two very different causes:
+#   - a genuinely free account trying live draft (expected; now also told why,
+#     via the browser notice above), and
+#   - an account whose stored plan says paid but whose entitlement has EXPIRED,
+#     which looks paid to us and to them and is refused anyway.
+REFUSAL_LOG_INTERVAL_S = 60
+
+# {key: [monotonic seconds of last emitted line, suppressed count since]}.
+# Single-worker and in-memory (see the concurrency note at the top of this
+# module); only holds keys actively being refused, so it stays small.
+_refusal_log_state: dict[str, list] = {}
+
+
+def _should_log_refusal(key: str) -> tuple[bool, int]:
+    """Rate-limit a repeated refusal line to one per REFUSAL_LOG_INTERVAL_S.
+
+    Returns (emit_now, suppressed_since_last). A refused extension posts about
+    once a second for a whole draft, so logging every one would bury the signal
+    in thousands of duplicates — but the RATE is itself diagnostic, so the
+    suppressed count is carried into the next line rather than discarded.
+    The first refusal for a key always emits immediately.
+    """
+    import time
+
+    now = time.monotonic()
+    entry = _refusal_log_state.get(key)
+    if entry is None:
+        _refusal_log_state[key] = [now, 0]
+        return True, 0
+    if (now - entry[0]) < REFUSAL_LOG_INTERVAL_S:
+        entry[1] += 1
+        return False, 0
+    suppressed = entry[1]
+    _refusal_log_state[key] = [now, 0]
+    return True, suppressed
+
+
+def _token_fingerprint(token: str) -> str:
+    """A short, stable, NON-REVERSIBLE handle for an unrecognised draft token.
+
+    An unrecognised token cannot be traced to a user — that is what makes it
+    unrecognised — but we still need to know whether one stale token is being
+    retried thousands of times or many different ones are failing. Those call for
+    completely different responses. The token is a live credential, so it is
+    never logged: this logs a truncated SHA-256 of it instead, which correlates
+    across lines and is useless to anyone reading the logs.
+    """
+    import hashlib
+
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()[:12]
+
 @router.post("/event", summary="Relay draft event from browser extension")
 async def relay_draft_event(
     event: DraftEventPayload,
@@ -227,6 +334,17 @@ async def relay_draft_event(
     repo = UserRepository(db)
     user = await repo.get_by_draft_token(x_draft_token)
     if not user:
+        # An unrecognised token cannot name a user, but the FINGERPRINT tells us
+        # whether one stale token is being retried for hours or many different
+        # ones are failing — different problems, different responses (#466).
+        fp = _token_fingerprint(x_draft_token)
+        emit, suppressed = _should_log_refusal(f"401:{fp}")
+        if emit:
+            logger.warning(
+                "draft/event REFUSED 401 unknown_draft_token token_fp=%s "
+                "suppressed_since_last=%d",
+                fp, suppressed,
+            )
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
     # ── Live-draft entitlement gate (F4/F8/F11) ──────────────────────────
@@ -247,6 +365,41 @@ async def relay_draft_event(
     try:
         FeatureService.check_feature_access(user, "live_draft")
     except FeatureNotAvailableError:
+        # NAME WHO, AND WHICH KIND (#466). The request log reads `user=-` for
+        # every extension request in production, so a wall of identical 403 lines
+        # could not be attributed to an account — or even counted by account.
+        # stored_tier vs computed_tier is the field that separates a genuinely
+        # free account (expected) from one whose paid entitlement has EXPIRED
+        # (looks paid to us and to them, refused anyway).
+        from backend.models.user import effective_tier
+
+        emit, suppressed = _should_log_refusal(f"403:{user.id}")
+        if emit:
+            logger.warning(
+                "draft/event REFUSED 403 live_draft_requires_paid_plan "
+                "user=%s stored_tier=%s computed_tier=%s tier_expires_at=%s "
+                "subscription_status=%s platform=%s suppressed_since_last=%d",
+                user.id,
+                getattr(user, "tier", None),
+                effective_tier(user),
+                getattr(user, "tier_expires_at", None),
+                getattr(user, "subscription_status", None),
+                event.platform,
+                suppressed,
+            )
+        # TELL THE ROOM WHY (#461). Returning 403 alone made this invisible: the
+        # extension discards the response status, so a rejected user saw a draft
+        # room that simply never updated, with every indicator still reading
+        # healthy. We know exactly who was rejected here, so push the reason to
+        # THEIR WebSocket clients — a named cause beats silence.
+        await _notify_extension_blocked(
+            str(user.id),
+            code="live_draft_requires_paid_plan",
+            message=(
+                "Your Rook extension is sending draft updates, but this account's "
+                "plan does not include live draft, so they are being refused."
+            ),
+        )
         # Flat body (not HTTPException's nested {"detail": {...}}) so the extension
         # / web app can read a top-level machine-readable `code`.
         return JSONResponse(
@@ -392,15 +545,44 @@ async def relay_draft_event(
     return {"status": "relayed"}
 
 
-async def _resolve_player(player_name: str, sleeper_id: str | None = None):
+def _event_team(payload) -> str | None:
+    """The NFL team abbreviation a draft-event payload carries, or None.
+
+    The readers disagree on the key: the ESPN snake reader, the Yahoo reader and
+    the Sleeper reader all send `nfl_team`; the ESPN auction reader sends
+    `pro_team`. Reading only one of them would silently cover half the platforms,
+    so both are read in one place.
+    """
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("nfl_team") or payload.get("pro_team") or None
+
+
+async def _resolve_player(
+    player_name: str,
+    sleeper_id: str | None = None,
+    *,
+    position: str | None = None,
+    team: str | None = None,
+):
     """Resolve a draft event's player to a Player (or None).
 
-    Sleeper sends a canonical `sleeper_id` (its pick/nomination frames are
-    id-only), so try that exact, indexed match FIRST — `resolution_source=id_map`,
-    the clean case. Yahoo/ESPN send no sleeper_id and fall straight through to the
-    name-fuzzy path (`name_backstop`), so they're unaffected.
+    TEAM DEFENSE FIRST (#461). A defense is not a person, so no name path can
+    reach it: ESPN's board writes the nickname plus a suffix ("Lions D/ST") while
+    our rows store "Detroit Lions", and the name fallback searches on the LAST
+    word — "d/st" — which matches no row at all. Every ESPN and Yahoo defense
+    pick therefore resolved to None, stayed in the available list, and stayed
+    recommendable (measured: 14 of 192 picks in a 12-team ESPN snake draft).
+    Every reader already sends the team abbreviation next to the position, so a
+    defense routes to the exact 32-team lookup instead. A miss falls through, so
+    a payload carrying no usable team is no worse off than before.
+
+    Then Sleeper's canonical `sleeper_id` (its pick/nomination frames are
+    id-only) — an exact, indexed match. Yahoo/ESPN send no sleeper_id and fall
+    through to the name-fuzzy path (`name_backstop`), so they're unaffected.
     """
     from backend.repositories.player_repo import PlayerRepository
+    from backend.utils.player_resolver import is_team_defense
 
     # Second layer of the F5/F7 bound: the draft_sync path builds internal events
     # from Sleeper REST names that never pass through the /event ingress cap, and
@@ -410,6 +592,13 @@ async def _resolve_player(player_name: str, sleeper_id: str | None = None):
 
     async with AsyncSessionLocal() as session:
         repo = PlayerRepository(session)
+        if is_team_defense(position):
+            # find_by_dst_team accepts either the abbreviation ("DET") or the
+            # full stored name ("Detroit Lions"), so the name is a usable second
+            # key for a reader that omits the team.
+            by_team = await repo.find_by_dst_team(team or player_name)
+            if by_team is not None:
+                return by_team
         if sleeper_id:
             by_id = await repo.find_by_sleeper_id(sleeper_id)
             if by_id is not None:
@@ -428,7 +617,10 @@ async def _enrich_nomination(event: "DraftEventPayload"):
     """
     payload = event.payload
     player = await _resolve_player(
-        payload.get("player_name") or "", payload.get("sleeper_player_id")
+        payload.get("player_name") or "",
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
     )
     if player is not None:
         payload["player_name"] = player.name
@@ -472,7 +664,12 @@ async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
     """
     payload = event.payload
     player_name = payload.get("player_name", "")
-    player = await _resolve_player(player_name, payload.get("sleeper_player_id"))
+    player = await _resolve_player(
+        player_name,
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
+    )
     player_id = player.yahoo_player_id if player else ""
     winner = payload.get("winner", "")
     final_price = payload.get("final_price", 0) or 0
@@ -525,11 +722,20 @@ async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
     "nfl_<gsis>", a different id space from Yahoo's frame id. The DOM 'Last:' name
     is abbreviated ("C. MCCAFFREY"); find_by_name_fuzzy handles that. The enriched
     full name + UUID id let the UI match + remove the picked player.
+
+    The exception is a team defense, which has no personal name to abbreviate —
+    position + team route it to the exact team lookup instead (see
+    _resolve_player).
     """
     payload = event.payload
     abbreviated = payload.get("player_name", "") or ""
 
-    player = await _resolve_player(abbreviated, payload.get("sleeper_player_id"))
+    player = await _resolve_player(
+        abbreviated,
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
+    )
     if player is not None:
         payload["id"] = str(player.id)
         payload["player_name"] = player.name

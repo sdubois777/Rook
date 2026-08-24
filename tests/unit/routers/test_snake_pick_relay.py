@@ -39,7 +39,11 @@ def test_record_snake_pick_enriches_from_abbreviated_name(monkeypatch):
     asyncio.run(draft._record_snake_pick(_event(payload), engine=engine, state=state))
 
     # Resolution is by NAME (no sleeper_id in this Yahoo payload → second arg None).
-    resolve.assert_awaited_once_with("C. MCCAFFREY", None)
+    # position/team are forwarded too (#461) so a team defense can route to the
+    # exact team lookup; for a person they are just carried through.
+    resolve.assert_awaited_once_with(
+        "C. MCCAFFREY", None, position=None, team=None
+    )
     assert payload["id"] == "uuid-7"
     assert payload["player_name"] == "Christian McCaffrey"
     assert payload["position"] == "RB"
