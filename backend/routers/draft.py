@@ -211,6 +211,50 @@ def _relay_message(event: "DraftEventPayload", draft_format: str | None = None) 
         msg["draft_format"] = draft_format
     return msg
 
+
+# A refused extension keeps posting for the whole draft — the readers send an
+# update roughly once a second — so the reason is pushed at most this often per
+# user. Without the throttle one blocked draft would put thousands of identical
+# messages on that user's socket.
+EXTENSION_BLOCKED_NOTICE_INTERVAL_S = 60
+
+# {session_key: monotonic seconds of the last notice}. Single-worker, in-memory
+# (see the concurrency note at the top of this module), and only ever holds
+# users who are actively being refused, so it stays small.
+_last_blocked_notice: dict[str, float] = {}
+
+
+async def _notify_extension_blocked(session_key: str, *, code: str, message: str) -> None:
+    """Tell a user's draft room WHY their extension's updates are being refused.
+
+    The extension cannot report this itself: `postDraftEvent` in
+    extension/src/utils/api.js discards the response status, so a refusal is
+    indistinguishable from success everywhere in the product — the popup still
+    reads "Connected", still reads "relaying", and the room simply never updates.
+    That is what made issue #461 undiagnosable from the report alone.
+
+    Best-effort and non-blocking by design: a failure here must never turn a
+    refused event into a failed request.
+    """
+    import time
+
+    now = time.monotonic()
+    last = _last_blocked_notice.get(session_key)
+    if last is not None and (now - last) < EXTENSION_BLOCKED_NOTICE_INTERVAL_S:
+        return
+    _last_blocked_notice[session_key] = now
+    try:
+        await ws_manager.broadcast_to_session(
+            session_key,
+            {
+                "type": "extension_blocked",
+                "payload": {"code": code, "message": message},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception:
+        logger.exception("Could not deliver extension_blocked notice (user %s)", session_key)
+
 @router.post("/event", summary="Relay draft event from browser extension")
 async def relay_draft_event(
     event: DraftEventPayload,
@@ -247,6 +291,19 @@ async def relay_draft_event(
     try:
         FeatureService.check_feature_access(user, "live_draft")
     except FeatureNotAvailableError:
+        # TELL THE ROOM WHY (#461). Returning 403 alone made this invisible: the
+        # extension discards the response status, so a rejected user saw a draft
+        # room that simply never updated, with every indicator still reading
+        # healthy. We know exactly who was rejected here, so push the reason to
+        # THEIR WebSocket clients — a named cause beats silence.
+        await _notify_extension_blocked(
+            str(user.id),
+            code="live_draft_requires_paid_plan",
+            message=(
+                "Your Rook extension is sending draft updates, but this account's "
+                "plan does not include live draft, so they are being refused."
+            ),
+        )
         # Flat body (not HTTPException's nested {"detail": {...}}) so the extension
         # / web app can read a top-level machine-readable `code`.
         return JSONResponse(

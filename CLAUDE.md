@@ -60,10 +60,12 @@ as of June 2026).
 
 Three phases:
 1. **Pre-draft pipeline** — 6 research agents build a structured "draft bible"
-2. **Live draft** — a **sideloaded browser extension** reads the draft room and
-   relays events to the backend, which gives real-time AI recommendations. One
-   poller per platform/format; all map onto a single backend event contract. (The
-   old Playwright bridge is superseded — see the Live-Draft Extension section.)
+2. **Live draft** — a **browser extension, published on the Chrome Web Store**,
+   reads the draft room and relays events to the backend, which gives real-time AI
+   recommendations. One poller per platform/format; all map onto a single backend
+   event contract. (The old Playwright bridge is superseded — see the Live-Draft
+   Extension section.) Being store-published means an extension change costs a
+   submission + review, so prefer a backend/frontend fix where one exists.
 3. **In-season** — Trade analyzer, lineup optimizer, waiver wire agent (not yet built)
 
 Core philosophy: **never trust third-party projections**. Build valuations from raw data and chain-of-reasoning. The canonical failure case this system exists to prevent: Keenan Allen signing with LAC should have automatically flagged Ladd McConkey's target share as capped. It didn't in 2024. It must in this system.
