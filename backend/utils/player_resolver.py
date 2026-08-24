@@ -21,6 +21,29 @@ from typing import Optional, Sequence
 logger = logging.getLogger(__name__)
 
 
+# Position tokens that mean TEAM DEFENSE rather than a person. The platforms
+# disagree: ESPN's draft board writes "D/ST", Sleeper and Yahoo write "DEF".
+# Our players rows store "DEF" (PlayerRepository.find_by_dst_team filters on it),
+# so the vocabulary is reconciled HERE, once, instead of at each call site.
+#
+# NOTE the deliberate difference from _canonical_position in
+# backend/engines/market_values.py and backend/services/format_market_ingest.py:
+# those normalise scraped market rows to "DST", which is the token that feed
+# uses. This one answers a yes/no question about the DB's own vocabulary, so it
+# is a predicate rather than a third, conflicting spelling.
+_TEAM_DEFENSE_TOKENS = frozenset({"DEF", "DST", "D/ST", "D-ST", "DEFENSE"})
+
+
+def is_team_defense(position: str | None) -> bool:
+    """True when a platform's position token means a team defense, not a person.
+
+    A team defense has no personal name to match on, so every caller that can
+    reach a name-similarity path must branch on this FIRST and resolve by team
+    instead. See PlayerRepository.find_by_dst_team.
+    """
+    return (position or "").strip().upper() in _TEAM_DEFENSE_TOKENS
+
+
 def _norm(name: str) -> str:
     """Suffix-stripped, lowercased canonical form (reuses the one _norm_name)."""
     from backend.agents.roster_changes import _norm_name

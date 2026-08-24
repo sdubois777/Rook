@@ -392,15 +392,44 @@ async def relay_draft_event(
     return {"status": "relayed"}
 
 
-async def _resolve_player(player_name: str, sleeper_id: str | None = None):
+def _event_team(payload) -> str | None:
+    """The NFL team abbreviation a draft-event payload carries, or None.
+
+    The readers disagree on the key: the ESPN snake reader, the Yahoo reader and
+    the Sleeper reader all send `nfl_team`; the ESPN auction reader sends
+    `pro_team`. Reading only one of them would silently cover half the platforms,
+    so both are read in one place.
+    """
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("nfl_team") or payload.get("pro_team") or None
+
+
+async def _resolve_player(
+    player_name: str,
+    sleeper_id: str | None = None,
+    *,
+    position: str | None = None,
+    team: str | None = None,
+):
     """Resolve a draft event's player to a Player (or None).
 
-    Sleeper sends a canonical `sleeper_id` (its pick/nomination frames are
-    id-only), so try that exact, indexed match FIRST — `resolution_source=id_map`,
-    the clean case. Yahoo/ESPN send no sleeper_id and fall straight through to the
-    name-fuzzy path (`name_backstop`), so they're unaffected.
+    TEAM DEFENSE FIRST (#461). A defense is not a person, so no name path can
+    reach it: ESPN's board writes the nickname plus a suffix ("Lions D/ST") while
+    our rows store "Detroit Lions", and the name fallback searches on the LAST
+    word — "d/st" — which matches no row at all. Every ESPN and Yahoo defense
+    pick therefore resolved to None, stayed in the available list, and stayed
+    recommendable (measured: 14 of 192 picks in a 12-team ESPN snake draft).
+    Every reader already sends the team abbreviation next to the position, so a
+    defense routes to the exact 32-team lookup instead. A miss falls through, so
+    a payload carrying no usable team is no worse off than before.
+
+    Then Sleeper's canonical `sleeper_id` (its pick/nomination frames are
+    id-only) — an exact, indexed match. Yahoo/ESPN send no sleeper_id and fall
+    through to the name-fuzzy path (`name_backstop`), so they're unaffected.
     """
     from backend.repositories.player_repo import PlayerRepository
+    from backend.utils.player_resolver import is_team_defense
 
     # Second layer of the F5/F7 bound: the draft_sync path builds internal events
     # from Sleeper REST names that never pass through the /event ingress cap, and
@@ -410,6 +439,13 @@ async def _resolve_player(player_name: str, sleeper_id: str | None = None):
 
     async with AsyncSessionLocal() as session:
         repo = PlayerRepository(session)
+        if is_team_defense(position):
+            # find_by_dst_team accepts either the abbreviation ("DET") or the
+            # full stored name ("Detroit Lions"), so the name is a usable second
+            # key for a reader that omits the team.
+            by_team = await repo.find_by_dst_team(team or player_name)
+            if by_team is not None:
+                return by_team
         if sleeper_id:
             by_id = await repo.find_by_sleeper_id(sleeper_id)
             if by_id is not None:
@@ -428,7 +464,10 @@ async def _enrich_nomination(event: "DraftEventPayload"):
     """
     payload = event.payload
     player = await _resolve_player(
-        payload.get("player_name") or "", payload.get("sleeper_player_id")
+        payload.get("player_name") or "",
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
     )
     if player is not None:
         payload["player_name"] = player.name
@@ -472,7 +511,12 @@ async def _record_pick(event: "DraftEventPayload", engine, state) -> None:
     """
     payload = event.payload
     player_name = payload.get("player_name", "")
-    player = await _resolve_player(player_name, payload.get("sleeper_player_id"))
+    player = await _resolve_player(
+        player_name,
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
+    )
     player_id = player.yahoo_player_id if player else ""
     winner = payload.get("winner", "")
     final_price = payload.get("final_price", 0) or 0
@@ -525,11 +569,20 @@ async def _record_snake_pick(event: "DraftEventPayload", engine, state) -> None:
     "nfl_<gsis>", a different id space from Yahoo's frame id. The DOM 'Last:' name
     is abbreviated ("C. MCCAFFREY"); find_by_name_fuzzy handles that. The enriched
     full name + UUID id let the UI match + remove the picked player.
+
+    The exception is a team defense, which has no personal name to abbreviate —
+    position + team route it to the exact team lookup instead (see
+    _resolve_player).
     """
     payload = event.payload
     abbreviated = payload.get("player_name", "") or ""
 
-    player = await _resolve_player(abbreviated, payload.get("sleeper_player_id"))
+    player = await _resolve_player(
+        abbreviated,
+        payload.get("sleeper_player_id"),
+        position=payload.get("position"),
+        team=_event_team(payload),
+    )
     if player is not None:
         payload["id"] = str(player.id)
         payload["player_name"] = player.name
