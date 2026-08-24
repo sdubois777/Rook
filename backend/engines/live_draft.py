@@ -1000,9 +1000,19 @@ class LiveDraftEngine:
                     "high")
 
         if not need_candidates:
+            # Say which of the two this is. The single "All starter needs filled"
+            # message used to cover BOTH, so a roster with an empty kicker and
+            # defense slot was told its starters were complete — a claim the
+            # user's own roster contradicted (#464).
+            if not needs:
+                return (bpa,
+                        "All starter needs filled — best available by ADP for depth.",
+                        "low")
+            unfilled = ", ".join(sorted(needs))
             return (bpa,
-                    "All starter needs filled — best available by ADP for depth.",
-                    "low")
+                    f"Still need {unfilled}, but no one at those positions is "
+                    f"draftable yet — best available by ADP.",
+                    "medium")
 
         best_need = need_candidates[0]
         # Urgency tiebreak: within a small band of the best need candidate,
@@ -1015,7 +1025,15 @@ class LiveDraftEngine:
                 best_need = urgent[0]
 
         gap = (best_need.get("adp_rank") or 0) - (bpa.get("adp_rank") or 0)
-        if gap > NEED_RANK_WINDOW:
+        # The reach guard asks "is this need pick too far below the board's best
+        # to justify?" — a sensible question for a skill player, and a meaningless
+        # one for a kicker or defense. Every K/DEF ranks ~460+ by construction,
+        # far outside NEED_RANK_WINDOW, so the guard vetoed them 100% of the time
+        # and the roster finished the draft with those slots EMPTY, scoring zero
+        # there (#464). There is no cheaper kicker to wait for and no other way to
+        # fill the slot, so the gap carries no information. Reaching this line at
+        # all means the round guardrail already opened the K/DEF window.
+        if gap > NEED_RANK_WINDOW and best_need.get("position") not in ("K", "DEF"):
             return (bpa,
                     f"Best need option is {gap} ranks below the board's best — "
                     f"too far a reach; take value now.",
@@ -1032,15 +1050,23 @@ class LiveDraftEngine:
         Excludes by NAME (state.is_drafted), since the snake pick id is a
         Yahoo-internal id that doesn't match our DB yahoo_player_id.
 
-        K/DEF are included (they carry adp_rank from the T1 static pass, ranking
-        near the bottom at ~460+), so a kicker/defense surfaces in the LATE rounds
-        instead of the list going empty when only K/DEF remain. We can't cap the
-        query with a small LIMIT: the old limit(60) only ever fetched ranks 1-60,
-        so the late-round available pool (and K/DEF specifically) was never
-        reachable once those were drafted. Instead we scan by ascending rank and
-        stop once TOP_N undrafted are collected — the fetch is bounded by the
-        ranked pool (~720) and the scan short-circuits, so early rounds cost the
-        same and late rounds walk deeper until the real best-available appear.
+        THE TOP-N CUT IS BY OVERALL RANK, WHICH IS NOT ENOUGH ON ITS OWN (#464).
+        Kickers and defenses carry adp_rank ~460+, so while ANY better-ranked
+        skill player is undrafted — and hundreds always are — not one of them
+        reaches a 20-deep cut. The pick logic then found no candidate at a need
+        position and fell through to "best available for depth", so a roster
+        whose only open slots were K and DEF finished the draft with them EMPTY.
+        Fixing the earlier limit(60) on the QUERY did not fix this, because the
+        cap on the RESULT reintroduces the same blind spot.
+
+        So the list is the top TOP_N by rank PLUS, for every unfilled need
+        position not already represented, the best undrafted player at it. The
+        extras are appended in rank order AFTER the top-N block, which matters:
+        the pick logic reads element 0 as the board's true best available.
+
+        This is not a K/DEF special case. Any need whose best remaining player
+        sits below the cut had the same blind spot — a league still needing a TE
+        in a late round when the top 20 are all RB/WR never saw one either.
         """
         TOP_N = 20
         async with self._db_session_factory() as session:
@@ -1055,11 +1081,8 @@ class LiveDraftEngine:
             result = await session.execute(stmt)
             players = result.scalars().all()
 
-        out: list[dict] = []
-        for p in players:
-            if self.state.is_drafted(p.name):
-                continue
-            out.append({
+        def _row(p) -> dict:
+            return {
                 "name": p.name,
                 "position": p.position,
                 "team": p.team_abbr,
@@ -1072,9 +1095,29 @@ class LiveDraftEngine:
                 "adp_diff": float(p.adp_diff) if p.adp_diff is not None else None,
                 "snake_flag": p.snake_flag,
                 "tier": p.tier,
-            })
-            if len(out) >= TOP_N:
-                break
+            }
+
+        needed = self.state.need_positions(self.state.get_my_roster())
+        out: list[dict] = []
+        covered: set[str] = set()
+        extras: dict[str, dict] = {}
+
+        for p in players:                       # ascending adp_rank
+            if self.state.is_drafted(p.name):
+                continue
+            if len(out) < TOP_N:
+                out.append(_row(p))
+                covered.add(p.position)
+                continue
+            # Past the cut: keep only the FIRST (best-ranked) player at each
+            # still-unrepresented need position.
+            if p.position in needed and p.position not in covered \
+                    and p.position not in extras:
+                extras[p.position] = _row(p)
+            if needed <= (covered | set(extras)):
+                break                           # every need is represented
+
+        out.extend(sorted(extras.values(), key=lambda r: r["adp_rank"] or 0))
         return out
 
     def _format_my_roster(self, roster: list[dict]) -> str:

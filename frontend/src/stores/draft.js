@@ -52,6 +52,18 @@ export const useDraftStore = create((set, get) => ({
   wsStatus: 'disconnected',
   bridgeStatus: null,
 
+  // Has the browser extension actually delivered anything, and when (#461).
+  // wsStatus is NOT this: it reports only the browser-to-Rook socket, which
+  // stays green whether or not a single draft update ever arrives. A user whose
+  // extension is not installed, not running on the draft page, orphaned by a
+  // Chrome update, or refused by the server sees an identical, healthy-looking
+  // room. Milliseconds since the epoch; null = nothing has arrived yet.
+  lastExtensionEventAt: null,
+  // { code, message } when the server has told us it is REFUSING this user's
+  // extension updates, so the room can name the cause instead of just sitting
+  // still. Null when nothing is known to be wrong.
+  extensionBlocked: null,
+
   // Current nomination
   recommendation: null,
   currentBid: null,
@@ -142,6 +154,10 @@ export const useDraftStore = create((set, get) => ({
       comboAlerts: [],
       selectedTeam: null,
       liveDraftType: null,
+      // A new draft has heard nothing from the extension yet, and any refusal
+      // notice from a previous draft is stale (the plan may since have changed).
+      lastExtensionEventAt: null,
+      extensionBlocked: null,
       currentNomination: null,
       currentBid: null,
       recommendation: null,
@@ -486,6 +502,15 @@ export const useDraftStore = create((set, get) => ({
   setBridgeStatus: (status) => set({ bridgeStatus: status }),
 
   setWsStatus: (status) => set({ wsStatus: status }),
+
+  // A draft update actually arrived from the extension. Any arrival also clears
+  // a standing refusal notice — updates are getting through again, so leaving
+  // the warning up would be telling the user something untrue.
+  markExtensionEvent: (at = Date.now()) =>
+    set((s) => (s.extensionBlocked ? { lastExtensionEventAt: at, extensionBlocked: null }
+                                   : { lastExtensionEventAt: at })),
+
+  setExtensionBlocked: (blocked) => set({ extensionBlocked: blocked }),
 
   refreshState: async () => {
     const state = await getDraftState()

@@ -1230,7 +1230,14 @@ async def test_draft_event_free_tier_blocked_before_engine_and_session():
             mgr.create.assert_not_awaited()
             trig.assert_not_awaited()
             sonnet.assert_not_awaited()
-            mock_ws.broadcast_to_session.assert_not_awaited()
+            # NO DRAFT CONTENT reaches the room — that is the property this
+            # guards, and it is unchanged. The room does now receive a refusal
+            # NOTICE (#461): returning 403 alone was invisible to the user,
+            # because the extension discards the response status. The notice
+            # carries a reason and no draft data, so nothing paid-for leaks.
+            sent = [c[0][1] for c in mock_ws.broadcast_to_session.await_args_list]
+            assert [m["type"] for m in sent] == ["extension_blocked"]
+            assert "payload" not in sent[0] or "your_turn" not in str(sent[0]["payload"])
         finally:
             app.dependency_overrides.clear()
 
