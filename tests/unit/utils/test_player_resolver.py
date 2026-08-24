@@ -145,3 +145,33 @@ async def test_resolve_player_dst_routes_to_team_map_never_name():
     got = await repo.resolve_player(position="DEF", team="DEN", name="ignored")
     assert got.id == "den"
     assert repo._session.calls == 1          # single deterministic DST query
+
+
+# ---------------------------------------------------------------------------
+# is_team_defense — the platform position vocabulary (#461)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "token",
+    [
+        "D/ST",     # ESPN draft board + roster surfaces
+        "d/st",     # casing must not matter
+        " D/ST ",   # a stray space must not matter
+        "DEF",      # Sleeper, Yahoo, and our own players rows
+        "DST",      # the market-scrape spelling
+        "D-ST",
+        "DEFENSE",
+    ],
+)
+def test_is_team_defense_accepts_every_platform_spelling(token):
+    from backend.utils.player_resolver import is_team_defense
+
+    assert is_team_defense(token) is True
+
+
+@pytest.mark.parametrize("token", ["QB", "RB", "WR", "TE", "K", "", None, "DL", "LB"])
+def test_is_team_defense_rejects_real_positions(token):
+    """A kicker must NOT route to the team lookup — ESPN kickers are people with
+    ordinary names ("Cam Little") and resolve on the normal path."""
+    from backend.utils.player_resolver import is_team_defense
+
+    assert is_team_defense(token) is False
