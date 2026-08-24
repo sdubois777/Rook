@@ -255,6 +255,69 @@ async def _notify_extension_blocked(session_key: str, *, code: str, message: str
     except Exception:
         logger.exception("Could not deliver extension_blocked notice (user %s)", session_key)
 
+
+# ---------------------------------------------------------------------------
+# Refusal attribution — WHO is being refused, and why (#466)
+# ---------------------------------------------------------------------------
+# The request log cannot answer this. RequestLoggingMiddleware reads the user
+# from an `X-User-Id` header that only exists in development
+# (backend/core/dependencies.py sets it when Clerk is disabled), so in production
+# EVERY line reads `user=-`. Diagnosing issue #461 meant staring at a wall of
+# identical "POST /api/draft/event 403" lines with no way to tell whose they
+# were, or even how many accounts were involved.
+#
+# So the refusal is logged HERE, where the user is already resolved, with the
+# fields that distinguish the two very different causes:
+#   - a genuinely free account trying live draft (expected; now also told why,
+#     via the browser notice above), and
+#   - an account whose stored plan says paid but whose entitlement has EXPIRED,
+#     which looks paid to us and to them and is refused anyway.
+REFUSAL_LOG_INTERVAL_S = 60
+
+# {key: [monotonic seconds of last emitted line, suppressed count since]}.
+# Single-worker and in-memory (see the concurrency note at the top of this
+# module); only holds keys actively being refused, so it stays small.
+_refusal_log_state: dict[str, list] = {}
+
+
+def _should_log_refusal(key: str) -> tuple[bool, int]:
+    """Rate-limit a repeated refusal line to one per REFUSAL_LOG_INTERVAL_S.
+
+    Returns (emit_now, suppressed_since_last). A refused extension posts about
+    once a second for a whole draft, so logging every one would bury the signal
+    in thousands of duplicates — but the RATE is itself diagnostic, so the
+    suppressed count is carried into the next line rather than discarded.
+    The first refusal for a key always emits immediately.
+    """
+    import time
+
+    now = time.monotonic()
+    entry = _refusal_log_state.get(key)
+    if entry is None:
+        _refusal_log_state[key] = [now, 0]
+        return True, 0
+    if (now - entry[0]) < REFUSAL_LOG_INTERVAL_S:
+        entry[1] += 1
+        return False, 0
+    suppressed = entry[1]
+    _refusal_log_state[key] = [now, 0]
+    return True, suppressed
+
+
+def _token_fingerprint(token: str) -> str:
+    """A short, stable, NON-REVERSIBLE handle for an unrecognised draft token.
+
+    An unrecognised token cannot be traced to a user — that is what makes it
+    unrecognised — but we still need to know whether one stale token is being
+    retried thousands of times or many different ones are failing. Those call for
+    completely different responses. The token is a live credential, so it is
+    never logged: this logs a truncated SHA-256 of it instead, which correlates
+    across lines and is useless to anyone reading the logs.
+    """
+    import hashlib
+
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()[:12]
+
 @router.post("/event", summary="Relay draft event from browser extension")
 async def relay_draft_event(
     event: DraftEventPayload,
@@ -271,6 +334,17 @@ async def relay_draft_event(
     repo = UserRepository(db)
     user = await repo.get_by_draft_token(x_draft_token)
     if not user:
+        # An unrecognised token cannot name a user, but the FINGERPRINT tells us
+        # whether one stale token is being retried for hours or many different
+        # ones are failing — different problems, different responses (#466).
+        fp = _token_fingerprint(x_draft_token)
+        emit, suppressed = _should_log_refusal(f"401:{fp}")
+        if emit:
+            logger.warning(
+                "draft/event REFUSED 401 unknown_draft_token token_fp=%s "
+                "suppressed_since_last=%d",
+                fp, suppressed,
+            )
         raise HTTPException(status_code=401, detail="Invalid draft token")
 
     # ── Live-draft entitlement gate (F4/F8/F11) ──────────────────────────
@@ -291,6 +365,28 @@ async def relay_draft_event(
     try:
         FeatureService.check_feature_access(user, "live_draft")
     except FeatureNotAvailableError:
+        # NAME WHO, AND WHICH KIND (#466). The request log reads `user=-` for
+        # every extension request in production, so a wall of identical 403 lines
+        # could not be attributed to an account — or even counted by account.
+        # stored_tier vs computed_tier is the field that separates a genuinely
+        # free account (expected) from one whose paid entitlement has EXPIRED
+        # (looks paid to us and to them, refused anyway).
+        from backend.models.user import effective_tier
+
+        emit, suppressed = _should_log_refusal(f"403:{user.id}")
+        if emit:
+            logger.warning(
+                "draft/event REFUSED 403 live_draft_requires_paid_plan "
+                "user=%s stored_tier=%s computed_tier=%s tier_expires_at=%s "
+                "subscription_status=%s platform=%s suppressed_since_last=%d",
+                user.id,
+                getattr(user, "tier", None),
+                effective_tier(user),
+                getattr(user, "tier_expires_at", None),
+                getattr(user, "subscription_status", None),
+                event.platform,
+                suppressed,
+            )
         # TELL THE ROOM WHY (#461). Returning 403 alone made this invisible: the
         # extension discards the response status, so a rejected user saw a draft
         # room that simply never updated, with every indicator still reading

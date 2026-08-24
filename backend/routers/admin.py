@@ -311,3 +311,99 @@ async def get_backtest_results(season: int | None = None):
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return metrics.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Live-draft entitlement mismatches (#466)
+# ---------------------------------------------------------------------------
+# Which accounts are having their browser-extension draft updates refused, and
+# which of those look paid while being refused.
+#
+# This exists because the request log cannot answer it: RequestLoggingMiddleware
+# reads the user from an `X-User-Id` header that only exists in development, so
+# in production every extension request logs `user=-`. Diagnosing issue #461
+# meant reading a wall of identical "POST /api/draft/event 403" lines with no way
+# to tell whose they were.
+#
+# The refusal itself is now logged with the account id (backend/routers/draft.py),
+# which answers "who is being refused right now". This endpoint answers the
+# question you cannot get from logs at all: "who WOULD be refused if they tried",
+# without waiting for them to hit it and complain.
+
+
+class EntitlementMismatch(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    stored_tier: str
+    computed_tier: str
+    tier_expires_at: Optional[str] = None
+    subscription_status: Optional[str] = None
+    has_draft_token: bool = False
+
+
+class EntitlementMismatchResponse(BaseModel):
+    # Accounts whose STORED plan says standard/pro but whose entitlement has
+    # expired, so live draft is refused. These are the dangerous ones: the
+    # account page, the billing state and the customer's own memory all say paid.
+    expired_paid: list[EntitlementMismatch]
+    # Free-tier accounts that hold a draft token, i.e. have installed the
+    # extension and can be refused. Expected behaviour, not a defect — listed
+    # because a run of refusals in the logs is otherwise unattributable, and
+    # because it is a real signal about people trying a paid feature.
+    free_with_extension: list[EntitlementMismatch]
+
+
+@router.get("/live-draft-entitlement", response_model=EntitlementMismatchResponse)
+async def get_live_draft_entitlement_mismatches():
+    """Accounts whose live-draft extension updates are (or would be) refused.
+
+    Split by CAUSE, because the two need opposite responses: an expired paid
+    account is a billing problem to fix for that customer, while a free account
+    holding a draft token is working as designed.
+    """
+    from backend.models.user import User, effective_tier
+
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User).where(
+                # Only accounts that could actually be posting draft events — a
+                # token is minted the first time the extension is set up.
+                User.draft_token.isnot(None),
+            )
+        )
+        users = list(result.scalars().all())
+
+    def _row(u) -> EntitlementMismatch:
+        expires = getattr(u, "tier_expires_at", None)
+        return EntitlementMismatch(
+            user_id=str(u.id),
+            email=getattr(u, "email", None),
+            stored_tier=u.tier,
+            computed_tier=effective_tier(u),
+            tier_expires_at=expires.isoformat() if expires else None,
+            subscription_status=getattr(u, "subscription_status", None),
+            has_draft_token=True,
+        )
+
+    expired_paid: list[EntitlementMismatch] = []
+    free_with_extension: list[EntitlementMismatch] = []
+    for u in users:
+        if effective_tier(u) not in ("free",):
+            continue                      # live draft works for them
+        expires = getattr(u, "tier_expires_at", None)
+        if u.tier in ("standard", "pro") and expires is not None and now >= expires:
+            expired_paid.append(_row(u))
+        else:
+            free_with_extension.append(_row(u))
+
+    if expired_paid:
+        logger.warning(
+            "%d account(s) hold a paid tier with an EXPIRED entitlement and are "
+            "being refused live draft: %s",
+            len(expired_paid), [m.user_id for m in expired_paid],
+        )
+    return EntitlementMismatchResponse(
+        expired_paid=expired_paid,
+        free_with_extension=free_with_extension,
+    )
