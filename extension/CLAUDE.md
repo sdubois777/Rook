@@ -7,7 +7,10 @@
 
 ## Live Draft — Browser Extension Architecture (Yahoo / ESPN / Sleeper)
 
-The extension (`extension/`, MV3, sideloaded) reads each draft room and POSTs events
+The extension (`extension/`, MV3, PUBLISHED on the Chrome Web Store — so a change
+here costs a store submission and reaches users via Chrome's auto-update, which
+also orphans running content scripts; see the backlog note at the bottom) reads
+each draft room and POSTs events
 to the backend; the backend enriches + runs the AI rec + broadcasts to the React room
 over WebSocket. **One poller per platform/format**, all mapping onto **one backend
 event contract** (so backend/frontend are platform-agnostic — a new platform that maps
@@ -159,6 +162,28 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
   June 2026 mock draft. Re-verify against
   real August draft room — Yahoo may change
   their DOM between now and then.
-- Extension not yet published to Chrome
-  Web Store or Firefox Add-ons. Sideload
-  only (Load unpacked / Temporary Add-on).
+- PUBLISHED on the Chrome Web Store (this
+  line previously said "not yet published,
+  sideload only" and was stale — it misled
+  a #461 investigation into assuming an
+  extension change was free to ship).
+  Two consequences that change how you work
+  on this directory:
+  (1) An extension change now costs a store
+  submission and a review wait, and reaches
+  users on Google's auto-update schedule,
+  not on yours. Prefer a backend/frontend
+  fix whenever one exists — those ship with
+  a normal release.
+  (2) Chrome AUTO-UPDATES store extensions,
+  including while a draft tab is open, and
+  every auto-update ORPHANS the running
+  content scripts. Only sleeper_draft.js
+  recovers from that (see rule 5 below);
+  espn_draft.js and both Yahoo pollers do
+  NOT, so an auto-update mid-draft silently
+  ends their relay for the rest of the
+  draft. This was a theoretical gap while
+  the extension was sideloaded — sideloaded
+  extensions do not auto-update — and is a
+  live production risk now that it is not.
