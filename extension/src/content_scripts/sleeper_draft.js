@@ -6,6 +6,12 @@ import {
   MAX_CAPTURED_FRAMES,
 } from '../utils/constants.js'
 import {
+  extensionAlive,
+  noteHealthyRelay,
+  recoverInvalidatedContext,
+  resetContextReloadCap,
+} from '../utils/context_recovery.js'
+import {
   parseFrame,
   isDraftFrame,
   parseUserId,
@@ -204,57 +210,17 @@ async function captureIfEnabled(detail) {
   }
 }
 
-/** False once the extension is reloaded/updated and this content script orphaned. */
-function extensionAlive() {
-  try {
-    return !!(browser && browser.runtime && browser.runtime.id)
-  } catch {
-    return false
-  }
-}
-
-/**
- * When the extension is reloaded or AUTO-UPDATED, content scripts already running
- * in open tabs are orphaned: their browser.* calls throw "Extension context
- * invalidated" and relaying silently dies (the MAIN-world interceptor keeps posting
- * frames, but nothing reaches the backend). The only recovery is a fresh content-
- * script injection = a page reload. Auto-reload once (capped to avoid a loop if the
- * extension is disabled, reset on the next healthy relay) so a LIVE draft survives
- * an extension update without the user noticing.
- */
-const CTX_RELOAD_KEY = 'rook_ctx_reloads'
-
-// Fresh, healthy injection ⇒ reset the reload cap. The cap previously only reset
-// on a healthy DRAFT frame, so a tab that sat on the lobby through two extension
-// reloads (a normal dev session) exhausted it PERMANENTLY — the third orphaning
-// then only console.warned and the draft silently relayed nothing until a manual
-// reload ("extension showed inactive; reloading fixed it"). Resetting at startup
-// makes the cap per-orphaning-episode, not per-tab-lifetime; the reload loop it
-// guards against can't happen here because a disabled/broken extension never
-// injects this script at all (guarded by extensionAlive()).
-if (extensionAlive()) {
-  try {
-    sessionStorage.setItem(CTX_RELOAD_KEY, '0')
-  } catch {
-    // sessionStorage blocked — the in-page cap still applies
-  }
-}
-
-function recoverInvalidatedContext() {
-  try {
-    const n = Number(sessionStorage.getItem(CTX_RELOAD_KEY) || 0)
-    if (n >= 2) {
-      console.warn(
-        'Rook: extension was reloaded/updated — refresh this Sleeper tab to resume draft tracking.'
-      )
-      return
-    }
-    sessionStorage.setItem(CTX_RELOAD_KEY, String(n + 1))
-  } catch {
-    // sessionStorage blocked — still attempt a single reload
-  }
-  location.reload()
-}
+// Orphaned-context recovery now lives in ../utils/context_recovery.js, shared
+// with the ESPN and Yahoo readers (#461). It was implemented here first and was
+// Sleeper-only; a second copy was added for the other platforms, and two copies
+// of this logic would drift. The behaviour is unchanged — the cap, the
+// reset-at-startup rule and the warning are the same, and the reasoning that
+// produced them is preserved in that module's header.
+//
+// Sleeper differs from the other readers only in WHERE the check happens: it is
+// driven by WebSocket frames, so it checks on each draft frame below, while the
+// polling readers check at the top of each tick.
+resetContextReloadCap()
 
 window.addEventListener('message', (e) => {
   // Only our own MAIN-world interceptor's messages, from this window.
@@ -265,14 +231,10 @@ window.addEventListener('message', (e) => {
   const frame = parseFrame(d.data)
   if (!frame || !isDraftFrame(frame)) return
   if (!extensionAlive()) {
-    recoverInvalidatedContext() // orphaned by an extension reload/update → reconnect
+    recoverInvalidatedContext('Sleeper') // orphaned by a reload/update → reconnect
     return
   }
-  try {
-    sessionStorage.setItem(CTX_RELOAD_KEY, '0') // healthy relay → reset the reload cap
-  } catch {
-    // ignore
-  }
+  noteHealthyRelay()                     // healthy relay → reset the reload cap
   captureIfEnabled(d)
   handleFrame(frame)
 })
