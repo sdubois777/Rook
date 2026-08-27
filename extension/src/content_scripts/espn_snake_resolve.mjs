@@ -12,9 +12,29 @@
  *     `.positionPill`, `.byeWeek`. Column→team + self via the board header cells
  *     (`.draft-board-grid-header-cell` / `.myTeam` / `.onTheClock`).
  *
- * Self-team comes from the board's `.myTeam` header (URL teamId is a live cross-
- * check). The 4807-byte status-widget captures lack the board, so the resolver
- * accepts an optional `myTeam` override for those (runtime always has the board).
+ * SELF-TEAM COMES FROM THE PICK TRAIN, NOT THE BOARD (#461). This file used to
+ * read it ONLY from the board's `.myTeam` header, and its own comment claimed
+ * "runtime always has the board". That claim was false and untested: the three
+ * captures that would have covered it are truncated mid-tag at 4807 bytes, and
+ * the one complete capture is from a MOCK draft. A customer in a REAL league
+ * draft had no board grid in the page, and the consequences were exactly what
+ * the dependency predicts —
+ *   - own-team unresolvable  → isYourTurn could NEVER be true
+ *                            → `your_turn` never fired
+ *                            → the AI recommendation never ran, all draft
+ *   - completed picks empty  → no `snake_pick`, so no pick was ever recorded
+ *   - clock + pick train intact → `snake_status` kept working, so the round and
+ *                                 pick numbers displayed correctly the whole time
+ * which is precisely what they reported: "correctly indicating what round # and
+ * pick # it was but nothing else", and "never populated recommended picks at all".
+ *
+ * ESPN already marks your own entries in the pick train, which does NOT depend on
+ * the board being rendered: `own-pick` on the `[data-testid="current-pick"]`
+ * widget means it is YOUR turn now, and `own-pick` on a `.pick-component` marks
+ * an upcoming pick of yours. Those are the primary source now. The board is a
+ * fallback for the display name, and remains the only source of completed picks —
+ * that is inherent, since the board is where ESPN renders them — but its absence
+ * no longer disables turn detection, the countdown, or the recommendation.
  *
  * Emits the existing snake event contract verbatim. linkedom-testable
  * (test/fixtures/espn/snake/).
@@ -35,7 +55,12 @@ export function isSnake(root) {
   return !!root.querySelector('[data-testid="current-pick"]')
 }
 
-/** Upcoming picks from the picklist → [{ pickNum, team, auto }]. */
+/**
+ * Upcoming picks from the picklist → [{ pickNum, team, auto, isMine }].
+ *
+ * `isMine` is ESPN's own `own-pick` marker on the entry. It is what makes the
+ * countdown to your next turn work without the draft board (#461).
+ */
 export function resolvePicklist(root) {
   const items = root ? Array.from(root.querySelectorAll('.picklist .pick-component')) : []
   return items
@@ -43,11 +68,52 @@ export function resolvePicklist(root) {
       pickNum: num(txt(p.querySelector('.pick-number'))),
       team: txt(p.querySelector('.team-name')) || null,
       auto: !!txt(p.querySelector('.auto-word')),
+      isMine: p.classList ? p.classList.contains('own-pick') : false,
     }))
     .filter((p) => p.pickNum != null)
 }
 
-/** Full snake board state. `opts.myTeam` overrides board-derived self-id. */
+/**
+ * Is the viewer on the clock RIGHT NOW, from the pick train alone?
+ *
+ * ESPN puts `own-pick` on a child of the current-pick widget when the turn is
+ * yours. Board-independent, which is the whole point: comparing team NAMES
+ * required the board to supply the viewer's own name, and returned false forever
+ * when the board was not rendered.
+ */
+export function isOwnTurn(root) {
+  const cp = root && root.querySelector('[data-testid="current-pick"]')
+  if (!cp) return false
+  return !!(cp.classList && cp.classList.contains('own-pick')) ||
+    !!cp.querySelector('.own-pick')
+}
+
+/**
+ * The viewer's own team DISPLAY NAME, without needing the board.
+ *
+ * Cosmetic only — attribution rides on the `own-pick` marker, never on this
+ * string. Taken from the current-pick widget when the turn is yours, else from
+ * the first pick-train entry marked as yours.
+ */
+export function resolveOwnTeamName(root) {
+  if (!root) return null
+  const cp = root.querySelector('[data-testid="current-pick"]')
+  if (cp && isOwnTurn(root)) {
+    const name = cp.getAttribute('title') || txt(cp.querySelector('.team-name'))
+    if (name) return name
+  }
+  const mine = root.querySelector('.picklist .pick-component.own-pick')
+  if (mine) {
+    const name = mine.getAttribute('title') || txt(mine.querySelector('.team-name'))
+    if (name) return name
+  }
+  return null
+}
+
+/**
+ * Full snake state. `opts.myTeam` supplies the own-team DISPLAY NAME when the
+ * page cannot (partial captures); it never decides whose turn it is.
+ */
 export function resolveSnakeState(root, opts = {}) {
   const clock = resolveClock(root)
   const cp = root && root.querySelector('[data-testid="current-pick"]')
@@ -56,19 +122,32 @@ export function resolveSnakeState(root, opts = {}) {
     (cp && (cp.getAttribute('title') || txt(cp.querySelector('.team-name')))) || null
   const currentPick = num(onClockText) // "On the Clock: Pick 11" → 11
   const headers = resolveBoardHeaders(root)
-  const myTeam = opts.myTeam || resolveMyTeam(root)
   const picklist = resolvePicklist(root)
   const completedPicks = resolveCompletedPicks(root, headers)
   const teamCount = headers.length || null
 
-  const isYourTurn = !!(myTeam && onClockTeam && onClockTeam === myTeam)
-  // picks until my next turn = my next picklist pick number − current pick number.
+  // OWN-TEAM NAME: pick train first, board second, caller-supplied last. Only
+  // the display label — nothing below decides anything from it (#461).
+  const myTeam = resolveOwnTeamName(root) || resolveMyTeam(root) || opts.myTeam || null
+
+  // WHOSE TURN IT IS comes from ESPN's own `own-pick` marker, NOT from comparing
+  // team names. The name comparison needed the board to supply the viewer's own
+  // name, so with no board it was false forever and `your_turn` never fired —
+  // which is why the AI recommendation never ran for a whole draft (#461).
+  // The name comparison is kept as a fallback for a page that somehow lacks the
+  // marker but does identify both sides.
+  const isYourTurn = isOwnTurn(root) ||
+    !!(myTeam && onClockTeam && onClockTeam === myTeam)
+
+  // Picks until my next turn = my next pick-train entry − the current pick.
+  // Prefer ESPN's `own-pick` marker; fall back to matching the display name.
   let picksUntil = null
-  if (!isYourTurn && myTeam && currentPick != null) {
-    const mine = picklist.find((p) => p.team === myTeam)
-    if (mine) picksUntil = mine.pickNum - currentPick
-  } else if (isYourTurn) {
+  if (isYourTurn) {
     picksUntil = 0
+  } else if (currentPick != null) {
+    const mine = picklist.find((p) => p.isMine) ||
+      (myTeam ? picklist.find((p) => p.team === myTeam) : null)
+    if (mine) picksUntil = mine.pickNum - currentPick
   }
 
   return {

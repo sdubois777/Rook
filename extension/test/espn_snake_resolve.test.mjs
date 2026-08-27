@@ -52,7 +52,7 @@ test('self-team resolves from the board .myTeam header', () => {
 // Status widget (partial captures) — current pick / on-clock / picklist
 // ---------------------------------------------------------------------------
 test('status: on-the-clock = my team → your_turn', () => {
-  const st = resolveSnakeState(docFor('on-the-clock.html'), { myTeam: MY_TEAM })
+  const st = resolveSnakeState(docFor('on-the-clock.html'))
   assert.equal(st.currentPick, 11)
   assert.equal(st.onClockTeam, MY_TEAM)
   assert.equal(st.isYourTurn, true)
@@ -60,7 +60,7 @@ test('status: on-the-clock = my team → your_turn', () => {
 })
 
 test('status: opponent on the clock, my next pick is 2 away', () => {
-  const st = resolveSnakeState(docFor('your-turn-soon.html'), { myTeam: MY_TEAM })
+  const st = resolveSnakeState(docFor('your-turn-soon.html'))
   assert.equal(st.currentPick, 9)
   assert.equal(st.onClockTeam, 'Team 9')
   assert.equal(st.isYourTurn, false)
@@ -77,7 +77,7 @@ test('picklist: upcoming pick numbers + teams', () => {
 // Events
 // ---------------------------------------------------------------------------
 test('your_turn fires on the rising edge only', () => {
-  const st = resolveSnakeState(docFor('on-the-clock.html'), { myTeam: MY_TEAM })
+  const st = resolveSnakeState(docFor('on-the-clock.html'))
   const first = detectSnakeEvents(initSnakeMemory(), st)
   const yt = first.events.find((e) => e.type === 'your_turn')
   assert.ok(yt)
@@ -90,7 +90,7 @@ test('ALL snake_picks relay BEFORE your_turn in the same tick', () => {
   // signal. Picks must relay FIRST so the backend records them before
   // generating the recommendation — else the engine recommends a just-drafted
   // player (the McConkey bug).
-  const board = resolveSnakeState(docFor('board-mid.html'), { myTeam: MY_TEAM })
+  const board = resolveSnakeState(docFor('board-mid.html'))
   const curr = { ...board, isYourTurn: true, picksUntil: 0 }
   const { events } = detectSnakeEvents(initSnakeMemory(), curr)
   const types = events.map((e) => e.type)
@@ -102,7 +102,7 @@ test('ALL snake_picks relay BEFORE your_turn in the same tick', () => {
 })
 
 test('your_turn_soon fires once at exactly 2 away', () => {
-  const st = resolveSnakeState(docFor('your-turn-soon.html'), { myTeam: MY_TEAM })
+  const st = resolveSnakeState(docFor('your-turn-soon.html'))
   const start = { ...initSnakeMemory(), lastPicksUntil: 3 }
   const r = detectSnakeEvents(start, st)
   const soon = r.events.find((e) => e.type === 'your_turn_soon')
@@ -112,7 +112,7 @@ test('your_turn_soon fires once at exactly 2 away', () => {
 })
 
 test('snake_status carries pick/round/countdown, deduped then re-fires on change', () => {
-  const a = resolveSnakeState(docFor('your-turn-soon.html'), { myTeam: MY_TEAM })
+  const a = resolveSnakeState(docFor('your-turn-soon.html'))
   const r1 = detectSnakeEvents(initSnakeMemory(), a)
   const s1 = r1.events.find((e) => e.type === 'snake_status')
   assert.equal(s1.payload.current_pick, 9)
@@ -120,7 +120,7 @@ test('snake_status carries pick/round/countdown, deduped then re-fires on change
   assert.equal(s1.payload.picks_until_your_turn, 2)
   assert.equal(s1.payload.your_team_name, MY_TEAM)  // derived display name rides along
   assert.equal(detectSnakeEvents(r1.next, a).events.some((e) => e.type === 'snake_status'), false)
-  const b = resolveSnakeState(docFor('post-pick.html'), { myTeam: MY_TEAM })
+  const b = resolveSnakeState(docFor('post-pick.html'))
   assert.ok(detectSnakeEvents(r1.next, b).events.some((e) => e.type === 'snake_status'))
 })
 
@@ -149,4 +149,91 @@ test('snake_pick global number reverses correctly across the round boundary', ()
   const picks = detectSnakeEvents(initSnakeMemory(), st).events.filter((e) => e.type === 'snake_pick')
   const r2p1 = picks.find((p) => p.payload.round === 2 && p.payload.pick_number === 13)
   assert.ok(r2p1, 'round-2 pick 1 maps to global pick 13')
+})
+
+
+// ---------------------------------------------------------------------------
+// NO DRAFT BOARD IN THE PAGE (#461)
+//
+// The resolver used to take the viewer's own team ONLY from the board grid's
+// `.myTeam` header, and asserted in its own comment that "runtime always has the
+// board". That was false and untested — the three captures that would have
+// covered it are truncated mid-tag at 4807 bytes, and the only complete capture
+// is from a MOCK draft.
+//
+// A customer in a REAL league draft had no board grid. The consequences follow
+// mechanically from the dependency: own-team unresolvable, so isYourTurn could
+// never be true, so `your_turn` never fired, so the AI recommendation never ran
+// for the entire draft — while the clock and pick train kept `snake_status`
+// flowing, so the round and pick numbers displayed correctly the whole time.
+// Their words: "correctly indicating what round # and pick # it was but nothing
+// else", and "never populated recommended picks at all".
+//
+// These fixtures are the real captures with ONLY the board grid removed.
+// ---------------------------------------------------------------------------
+function docWithoutBoard(name) {
+  const doc = docFor(name)
+  for (const el of Array.from(
+    doc.querySelectorAll('.draft-board-grid-header-cell, .completedPick')
+  )) {
+    el.remove()
+  }
+  return doc
+}
+
+test('no board: YOUR TURN is still detected, so the recommendation still runs', () => {
+  // THE REGRESSION THAT COST A CUSTOMER A DRAFT. Without this, your_turn is 0.
+  const doc = docWithoutBoard('on-the-clock.html')
+  assert.equal(resolveMyTeam(doc), null, 'precondition: no board to read')
+
+  const st = resolveSnakeState(doc)
+  assert.equal(st.isYourTurn, true)
+  assert.equal(st.picksUntil, 0)
+
+  const events = detectSnakeEvents(initSnakeMemory(), st).events
+  assert.equal(events.filter((e) => e.type === 'your_turn').length, 1)
+})
+
+test('no board: the countdown to your next turn still works', () => {
+  const st = resolveSnakeState(docWithoutBoard('your-turn-soon.html'))
+  assert.equal(st.isYourTurn, false)
+  assert.equal(st.picksUntil, 2)   // from ESPN's own-pick marker, not the board
+})
+
+test('no board: the round and pick numbers keep working', () => {
+  // This is the part the customer SAW working, and it must not regress — it is
+  // what proves the reader was alive while everything else was dead.
+  const st = resolveSnakeState(docWithoutBoard('board-mid.html'))
+  assert.equal(st.round, 4)
+  assert.equal(st.currentPick, 46)
+  const events = detectSnakeEvents(initSnakeMemory(), st).events
+  assert.ok(events.some((e) => e.type === 'snake_status'))
+})
+
+test('no board: the own-team display name still resolves, from the pick train', () => {
+  const st = resolveSnakeState(docWithoutBoard('board-mid.html'))
+  assert.equal(st.myTeam, MY_TEAM)
+  assert.equal(st.picksUntil, 13)
+})
+
+test('no board: completed picks are absent, and that is expected', () => {
+  // The board is where ESPN renders completed picks, so this cannot be recovered
+  // from elsewhere. It must DEGRADE, not disable turn detection with it.
+  const st = resolveSnakeState(docWithoutBoard('board-mid.html'))
+  assert.equal(st.completedPicks.length, 0)
+  assert.equal(st.isYourTurn, false)          // still computed
+  assert.equal(st.picksUntil, 13)             // still computed
+})
+
+test('own-turn detection does not rely on comparing team names', () => {
+  // Name comparison was the original mechanism and it needed the board to supply
+  // one side of the comparison. Blank both name sources and the marker must still
+  // carry it.
+  const doc = docWithoutBoard('on-the-clock.html')
+  const cp = doc.querySelector('[data-testid="current-pick"]')
+  cp.removeAttribute('title')
+  for (const el of Array.from(cp.querySelectorAll('.team-name'))) el.remove()
+
+  const st = resolveSnakeState(doc)
+  assert.equal(st.isYourTurn, true, 'the own-pick marker alone must be enough')
 })
