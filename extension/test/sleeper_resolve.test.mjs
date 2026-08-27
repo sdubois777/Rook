@@ -106,19 +106,54 @@ test('roundOf + mySlotFrom', () => {
 // dead context on a draft frame and reload the tab (capped) to re-inject a fresh,
 // connected content script. (Static wiring assertion — behavior needs a browser.)
 // ---------------------------------------------------------------------------
+// The recovery LOGIC moved to src/utils/context_recovery.js, shared with the ESPN
+// and Yahoo readers (#461) — it was Sleeper-only, and a second copy for the other
+// platforms would have drifted. Its behaviour is now covered properly in
+// test/context_recovery.test.mjs, which can catch a logic change; this file keeps
+// only the WIRING assertion, which is what it could ever really check.
 test('content script recovers from an invalidated extension context', () => {
   const __dirname = dirname(fileURLToPath(import.meta.url))
   const src = readFileSync(
     join(__dirname, '..', 'src', 'content_scripts', 'sleeper_draft.js'),
     'utf-8'
   )
-  assert.match(src, /function extensionAlive\(\)/)
-  assert.match(src, /browser\.runtime\.id/)
-  assert.match(src, /location\.reload\(\)/)
-  // recovery is gated on a real draft frame + a dead context, and capped to avoid
-  // a reload loop when the extension is disabled.
-  assert.match(src, /if \(!extensionAlive\(\)\) \{\s*\n\s*recoverInvalidatedContext\(\)/)
-  assert.match(src, /n >= 2/)
+  assert.match(src, /from '\.\.\/utils\/context_recovery\.js'/)
+  // Recovery stays gated on a real draft frame plus a dead context.
+  assert.match(src, /if \(!extensionAlive\(\)\) \{\s*\n\s*recoverInvalidatedContext\(/)
+  // A healthy relay still clears the reload cap.
+  assert.match(src, /noteHealthyRelay\(\)/)
+  // A fresh injection still clears it too (the per-episode cap rule).
+  assert.match(src, /resetContextReloadCap\(\)/)
+})
+
+// EVERY reader must have recovery, not just Sleeper. This is the gap that let a
+// customer lose the first six rounds of a draft (#461): Chrome auto-updates the
+// store-published extension while a draft tab is open, orphaning the reader, and
+// only Sleeper could come back from it.
+test('every platform reader is wired to orphaned-context recovery', () => {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const readers = [
+    'espn_draft.js',
+    'yahoo_draft.js',
+    'yahoo_snake_draft.js',
+    'sleeper_draft.js',
+  ]
+  for (const f of readers) {
+    const src = readFileSync(
+      join(__dirname, '..', 'src', 'content_scripts', f), 'utf-8'
+    )
+    assert.match(
+      src, /from '\.\.\/utils\/context_recovery\.js'/,
+      `${f} must import the shared recovery module`
+    )
+    assert.match(
+      src, /resetContextReloadCap\(\)/,
+      `${f} must clear the reload cap on a fresh injection`
+    )
+    // Sleeper checks per WebSocket frame; the pollers check per tick.
+    const checks = /guardTick\(|!extensionAlive\(\)/.test(src)
+    assert.ok(checks, `${f} must check for a dead context before relaying`)
+  }
 })
 
 test('cross-poller: snake/auction resolvers emit nothing for non-draft frames', () => {

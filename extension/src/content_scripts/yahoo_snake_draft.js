@@ -2,6 +2,11 @@ import browser from '../utils/browser.js'
 import { postDraftEvent } from '../utils/api.js'
 import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
 import {
+  guardTick,
+  noteHealthyRelay,
+  resetContextReloadCap,
+} from '../utils/context_recovery.js'
+import {
   snakeRoot,
   shouldSnakeActivate,
   resolveSnakeState,
@@ -37,13 +42,24 @@ let active = false
 let inactivityTimer = null
 
 function markDraftActive() {
-  browser.storage.local.set({
-    [STORAGE_KEYS.ACTIVE_DRAFT]: true,
-    [STORAGE_KEYS.DRAFT_PLATFORM]: 'yahoo',
-  })
+  // Guarded: on an orphaned content script every browser.* call throws, and an
+  // uncaught throw here would abandon the rest of that tick's events. The tick
+  // guard owns the recovery; this just refuses to take the queue down with it.
+  try {
+    browser.storage.local.set({
+      [STORAGE_KEYS.ACTIVE_DRAFT]: true,
+      [STORAGE_KEYS.DRAFT_PLATFORM]: 'yahoo',
+    })
+  } catch {
+    return
+  }
   if (inactivityTimer) clearTimeout(inactivityTimer)
   inactivityTimer = setTimeout(() => {
-    browser.storage.local.set({ [STORAGE_KEYS.ACTIVE_DRAFT]: false })
+    try {
+      browser.storage.local.set({ [STORAGE_KEYS.ACTIVE_DRAFT]: false })
+    } catch {
+      // orphaned before the timer fired — nothing to clear
+    }
   }, DRAFT_INACTIVITY_MS)
 }
 
@@ -57,6 +73,12 @@ let postQueue = Promise.resolve()
 
 /** One non-destructive read of the React board → relay any new events. */
 function tick() {
+  // ORPHANED-CONTEXT CHECK FIRST (#461). A Chrome extension auto-update orphans
+  // this script: it keeps reading the board, but nothing reaches the backend
+  // again and it reports nothing. Reload once to re-inject a fresh reader
+  // rather than parsing a live draft into a void.
+  if (guardTick('Yahoo')) return
+
   const root = snakeRoot(document)
   if (!root) return
   const state = resolveSnakeState(root)
@@ -74,7 +96,10 @@ function tick() {
   for (const event of events) {
     if (event.type === 'your_turn' || event.type === 'snake_pick') markDraftActive()
     postQueue = postQueue.then(() =>
-      postDraftEvent(event).catch(() => {
+      postDraftEvent(event).then((ok) => {
+        // An accepted relay proves the context is alive — clear the reload cap.
+        if (ok) noteHealthyRelay()
+      }).catch(() => {
         // Network hiccup — drop this event, keep polling.
       })
     )
@@ -84,6 +109,9 @@ function tick() {
 function startPoller() {
   if (active) return
   active = true
+  // A fresh injection proves the context is healthy — clear the reload cap so
+  // the NEXT orphaning gets its own attempts (see context_recovery.js).
+  resetContextReloadCap()
   markDraftActive()
   setInterval(tick, POLL_INTERVAL_MS)
 

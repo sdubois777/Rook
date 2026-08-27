@@ -48,10 +48,15 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
 4. **The SPA persistent socket opens at app boot.** Sleeper opens one WS on the lobby
    and joins the draft as a channel — so the interceptor + poller match ALL of the
    site (`sleeper.com/*`), not just `/draft/*`, or it misses early picks.
-5. **Orphaned-context recovery.** An extension reload/auto-update orphans the running
-   content script (`browser.*` throws "Extension context invalidated"); the poller
-   detects a dead `browser.runtime.id` on a draft frame and reloads the tab once
-   (capped, reset on healthy relay) to re-inject a fresh poller.
+5. **Orphaned-context recovery — EVERY reader, via one shared module.** An extension
+   reload/auto-update orphans the running content script (`browser.*` throws
+   "Extension context invalidated"), so it keeps parsing the page while nothing
+   reaches the backend. `src/utils/context_recovery.js` detects a dead
+   `browser.runtime.id` and reloads the tab (capped at 2 per episode, cap cleared on a
+   fresh injection AND on an accepted relay) to re-inject a live reader. Polling
+   readers call `guardTick()` at the top of each tick; Sleeper is frame-driven and
+   checks per draft frame. NEVER copy this logic into a reader — it was Sleeper-only
+   once and cost a customer the first six rounds of an ESPN draft (#461).
 6. **Anchor policy.** `data-testid` + hand-authored semantic classes = PRIMARY;
    build-hash classes (`_ys_*`, `jsx-<digits>`) ROTATE per deploy → FALLBACK ONLY,
    behind a text/structure check, with loud `console.warn` + `selector_health`.
@@ -178,12 +183,23 @@ tested against real captures in `extension/test/fixtures/<platform>/`):
   (2) Chrome AUTO-UPDATES store extensions,
   including while a draft tab is open, and
   every auto-update ORPHANS the running
-  content scripts. Only sleeper_draft.js
-  recovers from that (see rule 5 below);
-  espn_draft.js and both Yahoo pollers do
-  NOT, so an auto-update mid-draft silently
-  ends their relay for the rest of the
-  draft. This was a theoretical gap while
-  the extension was sideloaded — sideloaded
-  extensions do not auto-update — and is a
-  live production risk now that it is not.
+  content scripts — every browser.* call
+  then throws, so the reader keeps parsing
+  the page while nothing reaches the backend
+  and it reports nothing.
+  RESOLVED for all four readers: recovery
+  lives in src/utils/context_recovery.js and
+  is imported by espn_draft.js,
+  yahoo_draft.js, yahoo_snake_draft.js and
+  sleeper_draft.js. It was Sleeper-only
+  before; a customer lost the first six
+  rounds of an ESPN draft to it (#461, their
+  session recorded 86 of ~160 picks with
+  their own picks starting at ROUND 7).
+  Do NOT reintroduce a per-file copy — two
+  copies of this logic already drifted once.
+  Behaviour is covered in
+  test/context_recovery.test.mjs, and
+  test/sleeper_resolve.test.mjs asserts that
+  EVERY reader is wired to it, so a new
+  platform reader cannot ship without it.

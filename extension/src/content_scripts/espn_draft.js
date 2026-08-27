@@ -1,6 +1,11 @@
 import browser from '../utils/browser.js'
 import { postDraftEvent } from '../utils/api.js'
 import { STORAGE_KEYS, DRAFT_INACTIVITY_MS } from '../utils/constants.js'
+import {
+  guardTick,
+  noteHealthyRelay,
+  resetContextReloadCap,
+} from '../utils/context_recovery.js'
 import { stripDarkreader } from './espn_shared.mjs'
 import {
   isSalaryCap,
@@ -41,13 +46,26 @@ let memory = null
 let inactivityTimer = null
 
 function markDraftActive() {
-  browser.storage.local.set({
-    [STORAGE_KEYS.ACTIVE_DRAFT]: true,
-    [STORAGE_KEYS.DRAFT_PLATFORM]: 'espn',
-  })
+  // Guarded: on an orphaned content script every browser.* call throws, and an
+  // uncaught throw here would escape tick() and abandon the REST of that tick's
+  // events — which are already marked as sent in `memory`, so they would be lost
+  // for good. The tick guard handles the actual recovery; this just refuses to
+  // take the event queue down with it.
+  try {
+    browser.storage.local.set({
+      [STORAGE_KEYS.ACTIVE_DRAFT]: true,
+      [STORAGE_KEYS.DRAFT_PLATFORM]: 'espn',
+    })
+  } catch {
+    return
+  }
   if (inactivityTimer) clearTimeout(inactivityTimer)
   inactivityTimer = setTimeout(() => {
-    browser.storage.local.set({ [STORAGE_KEYS.ACTIVE_DRAFT]: false })
+    try {
+      browser.storage.local.set({ [STORAGE_KEYS.ACTIVE_DRAFT]: false })
+    } catch {
+      // orphaned before the timer fired — nothing to clear
+    }
   }, DRAFT_INACTIVITY_MS)
 }
 
@@ -59,6 +77,12 @@ function detectFormat(root) {
 }
 
 async function tick() {
+  // ORPHANED-CONTEXT CHECK FIRST (#461). A Chrome extension auto-update orphans
+  // this script: it keeps reading the page, but nothing it reads can reach the
+  // backend again, and it reports nothing. Reload once to re-inject a fresh
+  // reader rather than parsing a draft into a void for the next two hours.
+  if (guardTick('ESPN')) return
+
   const root = stripDarkreader(document)
   // Format can only be confirmed once; if the gate goes quiet (between states)
   // keep the locked format so we don't thrash.
@@ -75,7 +99,11 @@ async function tick() {
       markDraftActive()
     }
     try {
-      await postDraftEvent(event)
+      if (await postDraftEvent(event)) {
+        // A relay that the backend accepted proves the context is alive, so the
+        // reload cap is clear for the next orphaning episode.
+        noteHealthyRelay()
+      }
     } catch {
       // Network hiccup — drop this event, keep polling.
     }
@@ -109,6 +137,9 @@ function waitForDraft() {
 }
 
 function bootstrap() {
+  // A fresh injection proves the context is healthy — clear the reload cap so
+  // the NEXT orphaning gets its own attempts (see context_recovery.js).
+  resetContextReloadCap()
   const fmt = ready()
   if (fmt) {
     startPoller(fmt)
